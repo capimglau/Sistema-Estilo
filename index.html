@@ -14293,7 +14293,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 10, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch", paddingBottom: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1057}}
             , React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: () => { setForm(Object.assign({}, c)); setEdit(c.id); setModal(true); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1058}}, "Editar")
             , c.status === "ativo" && !foiRenovado && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: () => renovar(c), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1059}}, "↻ Renovar" )
-            , isPendente && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
+            , isPendente && !foiRenovado && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
               var dtPag = new Date().toISOString().split("T")[0];
               var obs = c.observacoes ? c.observacoes + "\n" : "";
               obs += "Recebido em " + dtPag + " (" + (c.forma_pagamento || "sem forma") + ")";
@@ -16084,11 +16084,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         if (c.status === "cancelado") return false;
         var ini = c.data_inicio || ""; var fim = c.data_fim || "9999-12-31";
         if (ini > fimMes || fim < inicioMes) return false;
-        if (c.recorrente) return true; // recorrente: aparece em todo mês ativo
-        // Se já existe receita para este mês, sempre incluir (mesmo após avanço do previsao_pagamento)
-        var refKeyCheck = "fat_" + c.id + "_" + mesFat;
-        if ((receitas||[]).some(function(r){ return r.ref_fatura === refKeyCheck; })) return true;
-        // Não-recorrente: aparece só no mês da previsão de pagamento (ou data_fim)
+        // Todos os contratos: aparece no mês da data de pagamento prevista (ou data_fim)
         var mesAlvo = c.previsao_pagamento ? c.previsao_pagamento.slice(0,7)
           : (c.data_fim ? c.data_fim.slice(0,7) : mesFat);
         return mesAlvo === mesFat;
@@ -16110,13 +16106,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           var valorDiaria = parseFloat(c.valor_diaria || 0);
           valorFatura = valorDiaria > 0 ? parseFloat((valorDiaria * diasEfetivos).toFixed(2)) : parseFloat(c.valor_total || 0);
         }
-        var dtVencContrato;
-        if (c.recorrente && c.previsao_pagamento) {
-          var diaVenc = Math.min(parseInt(c.previsao_pagamento.split("-")[2]), diasNoMes);
-          dtVencContrato = mesFat + "-" + String(diaVenc).padStart(2, "0");
-        } else {
-          dtVencContrato = c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === mesFat ? c.previsao_pagamento : dtVencPadrao;
-        }
+        var dtVencContrato = c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === mesFat ? c.previsao_pagamento : dtVencPadrao;
         var vencFatura = recExist ? (recExist.data_vencimento || dtVencContrato) : dtVencContrato;
         var status;
         if (!recExist) {
@@ -16127,8 +16117,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           status = "cancelada";
         } else if (recExist.status === "prevista") {
           status = vencFatura < hoje2 ? "vencida" : "prevista";
+        } else if (vencFatura < hoje2) {
+          status = "vencida";
         } else {
-          status = "emitida"; // emitida formalmente → sempre na aba "Emitidas"
+          status = "emitida";
         }
         return {
           refKey: refKey, contratoId: c.id,
@@ -16138,7 +16130,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           vencimento: vencFatura,
           emissao: recExist ? (recExist.data_emissao || recExist.data) : null,
           numeroFatura: recExist ? recExist.numero_fatura : null,
-          foiEmitida: !!(recExist && recExist.data_emissao),
           status: status, recId: recExist ? recExist.id : null,
           contrato: c
         };
@@ -16146,9 +16137,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
       var filtroSt = filtroStatusFat; var setFiltroSt = setFiltroStatusFat;
       var fatsFiltradas = filtroSt === "todas" ? competencias
-        : filtroSt === "emitida"
-          ? competencias.filter(function(f) { return f.status === "emitida" || (f.status === "paga" && f.foiEmitida); })
-          : competencias.filter(function(f) { return f.status === filtroSt; });
+        : competencias.filter(function(f) { return f.status === filtroSt; });
 
       var totPrevista = competencias.filter(function(f){return f.status==="prevista";}).reduce(function(s,f){return s+f.valorFatura;},0);
       var totEmitida  = competencias.filter(function(f){return f.status==="emitida";}).reduce(function(s,f){return s+f.valorFatura;},0);
@@ -16170,25 +16159,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         setModalFat({ tipo: "pagar", fat: fat, dtInput: new Date().toISOString().split("T")[0] });
       }
 
-      function printFaturaComp(fat) {
-        var cl = (clientes||[]).find(function(x){ return x.id == fat.contrato.cliente_id; }) || {};
-        var ve = (veiculos||[]).find(function(x){ return x.id == fat.contrato.veiculo_id; }) || {};
-        var emp = empresa || {};
-        var numFat = fat.numeroFatura || fat.refKey;
-        var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>'+numFat+'</title><style>body{font-family:Arial,sans-serif;max-width:700px;margin:30px auto;font-size:13px}table{width:100%;border-collapse:collapse}th{background:#f5f5f7;padding:10px 14px;text-align:left;font-size:11px;text-transform:uppercase;border-bottom:2px solid #ddd}td{padding:10px 14px;border-bottom:1px solid #eee}.tot td{font-size:18px;font-weight:800;color:#34C759;border-top:2px solid #ddd;border-bottom:none}.ib{background:#f5f5f7;border-radius:8px;padding:14px;margin:12px 0;font-size:12px;line-height:2}@media print{body{margin:0}}</style></head><body>';
-        h += buildHeader(emp);
-        h += '<div style="display:flex;justify-content:space-between;margin-bottom:16px"><div><div style="font-size:22px;font-weight:800">FATURA</div><div style="font-size:13px;color:#666">'+numFat+' — Contrato #'+fat.contratoId+'</div></div><div style="font-size:12px;color:#666;text-align:right">Emissão: '+(fat.emissao ? new Date(fat.emissao+'T12:00:00').toLocaleDateString('pt-BR') : new Date().toLocaleDateString('pt-BR'))+'<br/>Vencimento: '+(fat.vencimento ? new Date(fat.vencimento+'T12:00:00').toLocaleDateString('pt-BR') : '—')+'<br/>Competência: '+fat.mesFat+'</div></div>';
-        h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px"><div class="ib"><b>Cliente</b><br/>'+(cl.nome||fat.cliente||'--')+'<br/>CPF/CNPJ: '+(cl.cpf||'--')+'<br/>Tel: '+(cl.telefone||'--')+'</div><div class="ib"><b>Veículo</b><br/>'+(ve.placa||fat.placa||'--')+' — '+(ve.marca||'')+' '+(ve.modelo||fat.veiculo||'')+'<br/>Período: '+(fat.contrato.data_inicio||'--')+' a '+(fat.contrato.data_fim||'--')+'</div></div>';
-        h += '<table><tr><th>Descrição</th><th>Total</th></tr>';
-        h += '<tr><td>Locação — Comp. '+fat.mesFat+' ('+fat.diasEfetivos+' dia(s))</td><td>'+fmtBRL(fat.valorFatura)+'</td></tr>';
-        h += '<tr class="tot"><td><b>TOTAL</b></td><td><b>'+fmtBRL(fat.valorFatura)+'</b></td></tr></table>';
-        h += '<p style="text-align:center;font-size:11px;color:#aaa;margin-top:20px">'+(emp.nome||'')+(emp.cnpj?' — CNPJ '+emp.cnpj:'')+(emp.telefone?' — Tel '+emp.telefone:'')+'<br/>AutoGest Pro — '+new Date().toLocaleString('pt-BR')+'</p>';
-        h += "</body></html>";
-        var blob = new Blob([h], { type: "text/html" });
-        var url = URL.createObjectURL(blob);
-        window.open(url, "_blank");
-      }
-
       async function confirmarModalFat() {
         if (!modalFat || !modalFat.dtInput) return;
         var fat = modalFat.fat;
@@ -16201,7 +16171,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             try {
               var u = await db.patch("receitas", fat.recId, { status: "emitida", data_emissao: dtHoje, data_vencimento: dtVenc, numero_fatura: num });
               setReceitas(function(p){return p.map(function(r){return r.id===fat.recId?Object.assign({},r,u):r;});});
-              toast("Fatura " + num + " emitida!"); setFiltroSt("emitida");
+              toast("Fatura " + num + " emitida!");
             } catch(e) { toast("Erro ao emitir"); }
           } else {
             var num = "FAT-" + proximoNumero();
@@ -16212,7 +16182,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               numero_fatura: num, status: "emitida", tipo: "locacao",
               cliente_id: fat.contrato.cliente_id, ref_fatura: fat.refKey
             };
-            try { var r = await db.post("receitas", payload); setReceitas(function(p){return [r].concat(p);}); toast("Fatura " + num + " emitida!"); setFiltroSt("emitida"); }
+            try { var r = await db.post("receitas", payload); setReceitas(function(p){return [r].concat(p);}); toast("Fatura " + num + " emitida!"); }
             catch(e) { toast("Erro ao emitir"); }
           }
         } else {
@@ -16235,19 +16205,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             try { var r2 = await db.post("receitas", payload2); setReceitas(function(p){return [r2].concat(p);}); toast("FAT-"+num2+" emitida e paga!"); }
             catch(e) { toast("Erro!"); }
           }
-        }
-        // Avança previsao_pagamento em 1 mês para contratos recorrentes
-        var ct = fat.contrato;
-        if (ct && ct.recorrente && ct.previsao_pagamento) {
-          var diaP = parseInt(ct.previsao_pagamento.split("-")[2]);
-          var nextPag = new Date(ct.previsao_pagamento + "T12:00:00");
-          nextPag.setMonth(nextPag.getMonth() + 1);
-          nextPag.setDate(diaP);
-          var novaPP = nextPag.toISOString().split("T")[0];
-          try {
-            await db.patch("contratos", ct.id, { previsao_pagamento: novaPP });
-            setContratos(function(p){ return p.map(function(cx){ return cx.id===ct.id ? Object.assign({},cx,{previsao_pagamento:novaPP}) : cx; }); });
-          } catch(e) {}
         }
         setModalFat(null);
       }
@@ -16336,8 +16293,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                   React.createElement('button', { className:"lg-pill lg-pill-sm lg-blue", style:{ fontWeight:300 }, onClick:function(){emitirFatura(fat);} }, "\ud83d\udce4 Emitir")
                 , (fat.status==="prevista"||fat.status==="emitida"||fat.status==="vencida") &&
                   React.createElement('button', { className:"lg-pill lg-pill-sm lg-green", style:{ fontWeight:300 }, onClick:function(){marcarPaga(fat);} }, "\u2705 Marcar paga")
-                , (fat.status==="emitida"||fat.status==="paga") &&
-                  React.createElement('button', { className:"lg-pill lg-pill-sm lg-ghost", style:{ fontWeight:300, fontSize:11 }, onClick:function(){ printFaturaComp(fat); } }, "\ud83d\udcc4 PDF")
                 , (fat.status==="emitida"||fat.status==="paga") &&
                   React.createElement('button', { className:"lg-pill lg-pill-sm lg-ghost", style:{ fontWeight:300, fontSize:11 }, onClick:function(){cancelarFatura(fat);} }, fat.status==="paga" ? "\u21a9 Estornar" : "\ud83d\udeab Cancelar")
               )
@@ -18160,13 +18115,7 @@ function App() {
           var valDiaria = parseFloat(c.valor_diaria || 0);
           valorFat = valDiaria > 0 ? parseFloat((valDiaria * diasEf).toFixed(2)) : parseFloat(c.valor_total || 0);
         }
-        var dtVencC;
-        if (c.recorrente && c.previsao_pagamento) {
-          var diaVencAF = Math.min(parseInt(c.previsao_pagamento.split("-")[2]), diasNoMesAF);
-          dtVencC = mesAtualAF + "-" + String(diaVencAF).padStart(2, "0");
-        } else {
-          dtVencC = c.previsao_pagamento ? c.previsao_pagamento : dtVencAF;
-        }
+        var dtVencC = c.previsao_pagamento ? c.previsao_pagamento : dtVencAF;
         var payload = {
           descricao: "Comp. " + mesAtualAF + " | Contrato #" + numCt(c.id),
           valor: valorFat.toFixed(2),
@@ -18201,28 +18150,6 @@ function App() {
       if (ok > 0) {
         setContratos(function(p) { var ids = new Set(duplicatas.map(function(c){return c.id;})); return p.filter(function(c){return !ids.has(c.id);}); });
         toast(ok + " contrato(s) duplicado(s) removidos automaticamente.");
-      }
-    })();
-  }, [contratos.length]);
-
-  // Corrige contratos "ativo + renovado_para" → devem ser "concluido" (veículo NÃO é alterado)
-  const autoFixRenovadosFeito = React.useRef(false);
-  React.useEffect(function() {
-    if (!contratos.length || autoFixRenovadosFeito.current) return;
-    autoFixRenovadosFeito.current = true;
-    var inconsistentes = contratos.filter(function(c) {
-      return c.status === "ativo" && c.renovado_para;
-    });
-    if (!inconsistentes.length) return;
-    (async function() {
-      var ok = 0;
-      for (var i = 0; i < inconsistentes.length; i++) {
-        try { await db.patch("contratos", inconsistentes[i].id, { status: "concluido" }); ok++; } catch(e) {}
-      }
-      if (ok > 0) {
-        var ids = new Set(inconsistentes.map(function(c){return c.id;}));
-        setContratos(function(p){ return p.map(function(c){ return ids.has(c.id) ? Object.assign({},c,{status:"concluido"}) : c; }); });
-        toast(ok + " contrato(s) corrigido(s): ativo→concluido.");
       }
     })();
   }, [contratos.length]);

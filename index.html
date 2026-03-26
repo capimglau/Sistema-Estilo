@@ -16073,16 +16073,24 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         var totalDias = c.data_fim
           ? Math.max(1, Math.round((new Date(c.data_fim) - new Date(c.data_inicio)) / 86400000) + 1)
           : diasNoMes;
-        var valorDiaria = parseFloat(c.valor_diaria || 0) || (c.valor_total && totalDias > 0 ? parseFloat(c.valor_total) / totalDias : 0);
-        var valorFatura = valorDiaria > 0 ? parseFloat((valorDiaria * diasEfetivos).toFixed(2)) : parseFloat(c.valor_total || 0);
-        var vencFatura = recExist ? (recExist.data_vencimento || dtVencPadrao) : dtVencPadrao;
+        var valorFatura;
+        if (c.recorrente) {
+          valorFatura = parseFloat(c.valor_total || 0);
+        } else {
+          var valorDiaria = parseFloat(c.valor_diaria || 0) || (c.valor_total && totalDias > 0 ? parseFloat(c.valor_total) / totalDias : 0);
+          valorFatura = valorDiaria > 0 ? parseFloat((valorDiaria * diasEfetivos).toFixed(2)) : parseFloat(c.valor_total || 0);
+        }
+        var dtVencContrato = c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === mesFat ? c.previsao_pagamento : dtVencPadrao;
+        var vencFatura = recExist ? (recExist.data_vencimento || dtVencContrato) : dtVencContrato;
         var status;
         if (!recExist) {
-          status = hoje2 > dtVencPadrao ? "vencida" : "prevista";
+          status = hoje2 > dtVencContrato ? "vencida" : "prevista";
         } else if (recExist.status === "recebido") {
           status = "paga";
         } else if (recExist.status === "cancelado") {
           status = "cancelada";
+        } else if (recExist.status === "prevista") {
+          status = vencFatura < hoje2 ? "vencida" : "prevista";
         } else if (vencFatura < hoje2) {
           status = "vencida";
         } else {
@@ -16131,17 +16139,27 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         var fat = modalFat.fat;
         if (modalFat.tipo === "emitir") {
           var dtVenc = modalFat.dtInput;
-          var num = proximoNumero();
           var dtHoje = new Date().toISOString().split("T")[0];
-          var payload = {
-            descricao: "FAT-"+num+" | "+fat.cliente+" | "+fat.placa+" | Comp. "+mesFat,
-            valor: fat.valorFatura.toFixed(2),
-            data: dtHoje, data_emissao: dtHoje, data_vencimento: dtVenc,
-            numero_fatura: "FAT-"+num, status: "emitida", tipo: "locacao",
-            cliente_id: fat.contrato.cliente_id, ref_fatura: fat.refKey
-          };
-          try { var r = await db.post("receitas", payload); setReceitas(function(p){return [r].concat(p);}); toast("Fatura FAT-"+num+" emitida!"); }
-          catch(e) { toast("Erro ao emitir"); }
+          if (fat.recId) {
+            // Atualiza receita "prevista" existente para "emitida" (evita duplicata)
+            var num = fat.numeroFatura || ("FAT-" + proximoNumero());
+            try {
+              var u = await db.patch("receitas", fat.recId, { status: "emitida", data_emissao: dtHoje, data_vencimento: dtVenc, numero_fatura: num });
+              setReceitas(function(p){return p.map(function(r){return r.id===fat.recId?Object.assign({},r,u):r;});});
+              toast("Fatura " + num + " emitida!");
+            } catch(e) { toast("Erro ao emitir"); }
+          } else {
+            var num = "FAT-" + proximoNumero();
+            var payload = {
+              descricao: num+" | "+fat.cliente+" | "+fat.placa+" | Comp. "+mesFat,
+              valor: fat.valorFatura.toFixed(2),
+              data: dtHoje, data_emissao: dtHoje, data_vencimento: dtVenc,
+              numero_fatura: num, status: "emitida", tipo: "locacao",
+              cliente_id: fat.contrato.cliente_id, ref_fatura: fat.refKey
+            };
+            try { var r = await db.post("receitas", payload); setReceitas(function(p){return [r].concat(p);}); toast("Fatura " + num + " emitida!"); }
+            catch(e) { toast("Erro ao emitir"); }
+          }
         } else {
           var dtPag = modalFat.dtInput;
           if (fat.recId) {
@@ -18050,13 +18068,18 @@ function App() {
       var criadas = 0;
       for (var i = 0; i < paraGerar.length; i++) {
         var c = paraGerar[i];
-        var ini2 = c.data_inicio > inicioMesAF ? c.data_inicio : inicioMesAF;
-        var fim2 = (c.data_fim && c.data_fim < fimMesAF) ? c.data_fim : fimMesAF;
-        var diasEf = Math.max(1, Math.round((new Date(fim2) - new Date(ini2)) / 86400000) + 1);
-        var valDiaria = parseFloat(c.valor_diaria || 0) || (c.valor_total && diasNoMesAF > 0 ? parseFloat(c.valor_total) / diasNoMesAF : 0);
-        var valorFat = valDiaria > 0 ? parseFloat((valDiaria * diasEf).toFixed(2)) : parseFloat(c.valor_total || 0);
         var refKey = "fat_" + c.id + "_" + mesAtualAF;
-        var dtVencC = c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === mesAtualAF ? c.previsao_pagamento : dtVencAF;
+        var valorFat;
+        if (c.recorrente) {
+          valorFat = parseFloat(c.valor_total || 0);
+        } else {
+          var ini2 = c.data_inicio > inicioMesAF ? c.data_inicio : inicioMesAF;
+          var fim2 = (c.data_fim && c.data_fim < fimMesAF) ? c.data_fim : fimMesAF;
+          var diasEf = Math.max(1, Math.round((new Date(fim2) - new Date(ini2)) / 86400000) + 1);
+          var valDiaria = parseFloat(c.valor_diaria || 0) || (c.valor_total && diasNoMesAF > 0 ? parseFloat(c.valor_total) / diasNoMesAF : 0);
+          valorFat = valDiaria > 0 ? parseFloat((valDiaria * diasEf).toFixed(2)) : parseFloat(c.valor_total || 0);
+        }
+        var dtVencC = c.previsao_pagamento ? c.previsao_pagamento : dtVencAF;
         var payload = {
           descricao: "Comp. " + mesAtualAF + " | Contrato #" + numCt(c.id),
           valor: valorFat.toFixed(2),

@@ -16130,19 +16130,23 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       var competencias = (contratos || []).filter(function(c) {
         if (c.status === "cancelado") return false;
         var ini = c.data_inicio || ""; var fim = c.data_fim || "9999-12-31";
-        if (ini > fimMes || fim < inicioMes) return false;
-        if (c.recorrente) return true; // recorrente: aparece em todo mês ativo
-        // Se já existe receita para este mês, sempre incluir (mesmo após avanço do previsao_pagamento)
-        var refKeyCheck = "fat_" + c.id + "_" + mesFat;
-        if ((receitas||[]).some(function(r){ return r.ref_fatura === refKeyCheck; })) return true;
-        // Não-recorrente: aparece só no mês da previsão de pagamento (ou data_fim)
+        if (c.recorrente) {
+          // Recorrente: aparece em todo mês em que o período de locação está ativo
+          return !(ini > fimMes || fim < inicioMes);
+        }
+        // Não-recorrente: aparece NO MÊS DO VENCIMENTO DO PAGAMENTO (previsao_pagamento)
         var mesAlvo = c.previsao_pagamento ? c.previsao_pagamento.slice(0,7)
           : (c.data_fim ? c.data_fim.slice(0,7) : mesFat);
+        // Se já existe receita ref_fatura para o mês de pagamento, incluir
+        var refKeyCheck = "fat_" + c.id + "_" + mesAlvo;
+        if ((receitas||[]).some(function(r){ return r.ref_fatura === refKeyCheck; })) return mesAlvo === mesFat;
         return mesAlvo === mesFat;
       }).map(function(c) {
         var cl = (clientes || []).find(function(x) { return x.id == c.cliente_id; });
         var ve = (veiculos || []).find(function(x) { return x.id == c.veiculo_id; });
-        var refKey = "fat_" + c.id + "_" + mesFat;
+        // Chave baseada no mês do PAGAMENTO para não-recorrente
+        var mesKey = c.recorrente ? mesFat : (c.previsao_pagamento ? c.previsao_pagamento.slice(0,7) : mesFat);
+        var refKey = "fat_" + c.id + "_" + mesKey;
         var recExist = (receitas || []).find(function(r) { return r.ref_fatura === refKey; });
         var ini2 = c.data_inicio > inicioMes ? c.data_inicio : inicioMes;
         var fim2 = (c.data_fim && c.data_fim < fimMes) ? c.data_fim : fimMes;
@@ -18202,24 +18206,27 @@ function App() {
     var dtVencAF = mesSeguinte + "-10";
     var paraGerar = contratos.filter(function(c) {
       if (c.status !== "ativo") return false;
-      var ini = c.data_inicio || ""; var fim = c.data_fim || "9999-12-31";
-      if (ini > fimMesAF || fim < inicioMesAF) return false;
-      // Contratos não-recorrentes sem valor_diaria: gerar só no mês do pagamento/vencimento
-      if (!c.recorrente && !parseFloat(c.valor_diaria || 0)) {
-        var mesAlvo = c.previsao_pagamento ? c.previsao_pagamento.slice(0,7)
-          : (c.data_fim ? c.data_fim.slice(0,7) : mesAtualAF);
-        if (mesAlvo !== mesAtualAF) return false;
+      if (c.recorrente) {
+        // Recorrente: gerar para o mês atual se o período está ativo
+        var ini = c.data_inicio || ""; var fim = c.data_fim || "9999-12-31";
+        if (ini > fimMesAF || fim < inicioMesAF) return false;
+        var refKey = "fat_" + c.id + "_" + mesAtualAF;
+        return !receitas.some(function(r) { return r.ref_fatura === refKey; });
       }
-      var refKey = "fat_" + c.id + "_" + mesAtualAF;
-      var jaExiste = receitas.some(function(r) { return r.ref_fatura === refKey; });
-      return !jaExiste;
+      // Não-recorrente: gerar no mês do PAGAMENTO (previsao_pagamento)
+      var mesAlvo = c.previsao_pagamento ? c.previsao_pagamento.slice(0,7)
+        : (c.data_fim ? c.data_fim.slice(0,7) : mesAtualAF);
+      if (mesAlvo !== mesAtualAF) return false;
+      var refKey = "fat_" + c.id + "_" + mesAlvo;
+      return !receitas.some(function(r) { return r.ref_fatura === refKey; });
     });
     if (!paraGerar.length) return;
     (async function() {
       var criadas = 0;
       for (var i = 0; i < paraGerar.length; i++) {
         var c = paraGerar[i];
-        var refKey = "fat_" + c.id + "_" + mesAtualAF;
+        var mesKey = c.recorrente ? mesAtualAF : (c.previsao_pagamento ? c.previsao_pagamento.slice(0,7) : mesAtualAF);
+        var refKey = "fat_" + c.id + "_" + mesKey;
         var valorFat = parseFloat(c.valor_total || 0);
         var dtVencC;
         if (c.recorrente && c.previsao_pagamento) {

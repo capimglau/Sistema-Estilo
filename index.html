@@ -14037,7 +14037,7 @@ function DocsModalBody({ contrato, clientes, veiculos, onSave }) {
 }
 
 // -- CONTRATOS --------------------------------------------------------------
-function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, empresa, usos, setUsos, toast }) {
+function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, empresa, usos, setUsos, receitas, setReceitas, toast }) {
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({});
   const [edit, setEdit] = useState(null);
@@ -14064,6 +14064,18 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   const [docsContrato, setDocsContrato] = useState(null);
   function limparFiltros() { setFilDe(""); setFilAte(""); setFilVeiculo(""); setFilCliente(""); }
   async function remove(id) { if (!confirm("Excluir contrato?")) return; await db.del("contratos", id); setContratos(p => p.filter(c => c.id !== id)); toast("Excluído!"); }
+  async function sincronizarRefFatura(c, dtPag) {
+    var mes = (c.previsao_pagamento || c.data_fim || "").slice(0, 7);
+    if (!mes) return;
+    var refKey = "fat_" + c.id + "_" + mes;
+    var recExist = (receitas || []).find(function(r) { return r.ref_fatura === refKey; });
+    if (recExist && recExist.status !== "recebido") {
+      try {
+        var upd = await db.patch("receitas", recExist.id, { status: "recebido", data_pagamento: dtPag });
+        setReceitas(function(p) { return p.map(function(r) { return r.id === recExist.id ? Object.assign({}, r, upd) : r; }); });
+      } catch(e) {}
+    }
+  }
   const hoje = new Date().toISOString().split("T")[0];
   function getCl(id) { return clientes.find(c => c.id == id); }
   function getVe(id) { return veiculos.find(v => v.id == id); }
@@ -14316,6 +14328,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               obs += "Recebido em " + dtPag + " (" + (c.forma_pagamento || "sem forma") + ")";
               await db.patch("contratos", c.id, { status_pagamento: "pago", observacoes: obs });
               setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", observacoes: obs }) : x));
+              await sincronizarRefFatura(c, dtPag);
               toast("✅ Pagamento registrado!");
             }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1060}}, "💰 Receber" )
             , isParcial && React.createElement('button', { className: bCls(Ghost(C.teal)), style: bStyle(Ghost(C.teal)), onClick: () => {
@@ -14329,6 +14342,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               obs += "Pagamento completo em " + dtPag;
               await db.patch("contratos", c.id, { status_pagamento: "pago", observacoes: obs });
               setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", observacoes: obs }) : x));
+              await sincronizarRefFatura(c, dtPag);
               toast("✅ Pagamento completo!");
             }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1073}}, "✅ Completar pgto"  )
             , isParcial && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
@@ -15470,7 +15484,18 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
   // Filtros por mês (abas despesas/receitas)
   var despFiltradas = despesas.filter(d => despesaVisivelNoMes(d, filtroMes));
-  var recFiltradas = receitas.filter(r => receitaVisivelNoMes(r, filtroMes));
+  var recFiltradas = receitas.filter(r => receitaVisivelNoMes(r, filtroMes)).map(r => {
+    if (r.ref_fatura && r.status !== "recebido") {
+      var m = r.ref_fatura.match(/^fat_(\d+)_/);
+      if (m) {
+        var ct = contratos.find(c => String(c.id) === m[1]);
+        if (ct && (ct.status_pagamento === "pago" || ct.status === "concluido")) {
+          return Object.assign({}, r, { status: "recebido", data_pagamento: ct.data_pagamento || r.data_pagamento });
+        }
+      }
+    }
+    return r;
+  });
   // Incluir contratos do mês (por previsao_pagamento, igual ao Resumo)
   // Mostra todos independente de status_pagamento — igual às despesas
   var ctsDoMes = contratos.filter(c => {

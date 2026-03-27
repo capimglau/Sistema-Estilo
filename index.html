@@ -14069,10 +14069,25 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (!mes) return;
     var refKey = "fat_" + c.id + "_" + mes;
     var recExist = (receitas || []).find(function(r) { return r.ref_fatura === refKey; });
-    if (recExist && recExist.status !== "recebido") {
+    if (recExist) {
+      if (recExist.status !== "recebido") {
+        try {
+          var upd = await db.patch("receitas", recExist.id, { status: "recebido", data_pagamento: dtPag });
+          setReceitas(function(p) { return p.map(function(r) { return r.id === recExist.id ? Object.assign({}, r, upd) : r; }); });
+        } catch(e) {}
+      }
+    } else {
+      // Não existe receipt → criar como recebido (ex: contratos concluídos não passam pelo auto-fatura)
       try {
-        var upd = await db.patch("receitas", recExist.id, { status: "recebido", data_pagamento: dtPag });
-        setReceitas(function(p) { return p.map(function(r) { return r.id === recExist.id ? Object.assign({}, r, upd) : r; }); });
+        var nova = await db.post("receitas", {
+          descricao: "Comp. " + mes + " | Contrato #" + numCt(c.id),
+          valor: parseFloat(c.valor_total || 0).toFixed(2),
+          data: dtPag, data_pagamento: dtPag,
+          data_vencimento: c.previsao_pagamento || dtPag,
+          status: "recebido", tipo: "locacao",
+          cliente_id: c.cliente_id, ref_fatura: refKey
+        });
+        setReceitas(function(p) { return p.concat([nova]); });
       } catch(e) {}
     }
   }
@@ -15396,7 +15411,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 }
 
 // -- FINANCEIRO ------------------------------------------------------------─
-function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setContas, contratos, manutencoes, multas, veiculos, clientes, empresa, toast }) {
+function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setContas, contratos, setContratos, manutencoes, multas, veiculos, clientes, empresa, toast }) {
   const [modal, setModal] = useState(false);
   const [modalTipo, setModalTipo] = useState("despesa");
   const [form, setForm] = useState({});
@@ -15716,6 +15731,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 if (!dt) return;
                 var upd = await db.patch("receitas", r.id, { status: "recebido", data_pagamento: dt });
                 setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
+                // Sincronizar contrato se for ref_fatura
+                if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){} } } }
                 toast("Receita baixada!");
               }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2235}}, "✅ Baixar" )
               , !r._fromContrato && r.status === "recebido" && !isRec && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
@@ -16165,7 +16182,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         var vencFatura = recExist ? (recExist.data_vencimento || dtVencContrato) : dtVencContrato;
         var status;
         if (!recExist) {
-          status = hoje2 > dtVencContrato ? "vencida" : "prevista";
+          if (c.status_pagamento === "pago") status = "paga";
+          else status = hoje2 > dtVencContrato ? "vencida" : "prevista";
         } else if (recExist.status === "recebido") {
           status = "paga";
         } else if (recExist.status === "cancelado") {
@@ -16270,6 +16288,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             try {
               var u = await db.patch("receitas", fat.recId, { status: "recebido", data_pagamento: dtPag });
               setReceitas(function(p){return p.map(function(r){return r.id===fat.recId?Object.assign({},r,u):r;});});
+              // Sincronizar contrato
+              try { await db.patch("contratos", fat.contratoId, { status_pagamento: "pago", data_pagamento: dtPag }); setContratos(function(p){return p.map(function(cx){return cx.id==fat.contratoId?Object.assign({},cx,{status_pagamento:"pago",data_pagamento:dtPag}):cx;});}); } catch(e2){}
               toast("Pagamento registrado!");
             } catch(e) { toast("Erro!"); }
           } else {
@@ -16281,8 +16301,11 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               data_pagamento: dtPag, numero_fatura: "FAT-"+num2, status: "recebido",
               tipo: "locacao", cliente_id: fat.contrato.cliente_id, ref_fatura: fat.refKey
             };
-            try { var r2 = await db.post("receitas", payload2); setReceitas(function(p){return [r2].concat(p);}); toast("FAT-"+num2+" emitida e paga!"); }
-            catch(e) { toast("Erro!"); }
+            try {
+              var r2 = await db.post("receitas", payload2); setReceitas(function(p){return [r2].concat(p);});
+              try { await db.patch("contratos", fat.contratoId, { status_pagamento: "pago", data_pagamento: dtPag }); setContratos(function(p){return p.map(function(cx){return cx.id==fat.contratoId?Object.assign({},cx,{status_pagamento:"pago",data_pagamento:dtPag}):cx;});}); } catch(e2){}
+              toast("FAT-"+num2+" emitida e paga!");
+            } catch(e) { toast("Erro!"); }
           }
         }
         // Avança previsao_pagamento em 1 mês para contratos recorrentes

@@ -14215,6 +14215,19 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     });
     return result;
   }, [contratos]);
+  // parentOfMap: childId → parentContract (via renovado_para field)
+  var parentOfMap = React.useMemo(function() {
+    var map = {};
+    contratos.forEach(function(c) { if (c.renovado_para) map[c.renovado_para] = c; });
+    return map;
+  }, [contratos]);
+  // Returns renewal label: root contract → "#00001", 1st renewal → "#00001/1", etc.
+  function getRenLabel(c) {
+    var depth = 0, cur = c;
+    while (parentOfMap[cur.id]) { cur = parentOfMap[cur.id]; depth++; }
+    if (depth === 0) return "#" + numCt(c.id);
+    return "#" + numCt(cur.id) + "/" + depth;
+  }
   var fil2 = filtrarContratos(contratos);
   var fil2Limitado = fil2.slice(0, 150);
   var totalFil = fil2.reduce((s,c) => s + parseFloat(c.valor_total||0), 0);
@@ -14246,6 +14259,30 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               setContratos(function(p) { var ids = new Set(duplicatas.map(function(c){return c.id;})); return p.filter(function(c){return !ids.has(c.id);}); });
               toast("Limpeza: " + (duplicatas.length - erros) + " excluídos.");
             }, style: { padding: "8px 16px", borderRadius: 10, border: "none", background: C.red, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer", flexShrink: 0 } }, "🧹 Limpar")
+        );
+      })()
+    , (() => {
+        // Auto-fix: old renewed contracts still marked "ativo" should be "concluido"
+        var ativosRenovados = contratos.filter(function(c) {
+          return c.status === "ativo" && c.renovado_para;
+        });
+        if (!ativosRenovados.length) return null;
+        return React.createElement('div', { style: { background: "rgba(255,149,0,0.08)", border: "1px solid rgba(255,149,0,0.3)", borderRadius: 14, padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 } }
+          , React.createElement('div', null
+            , React.createElement('div', { style: { fontWeight: 700, color: C.orange, fontSize: 13 } }, "⚠️ " + ativosRenovados.length + " contrato(s) renovado(s) ainda marcado(s) como ativo")
+            , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 2 } }, "Clique em Corrigir para atualizar o status para concluído.")
+          )
+          , React.createElement('button', { onClick: async function() {
+              var erros = 0;
+              for (var i = 0; i < ativosRenovados.length; i++) {
+                try { await db.patch("contratos", ativosRenovados[i].id, { status: "concluido" }); } catch(e) { erros++; }
+              }
+              setContratos(function(p) {
+                var ids = new Set(ativosRenovados.map(function(c){return c.id;}));
+                return p.map(function(c){ return ids.has(c.id) ? Object.assign({}, c, { status: "concluido" }) : c; });
+              });
+              toast("Corrigido: " + (ativosRenovados.length - erros) + " contrato(s) atualizados.");
+            }, style: { padding: "8px 16px", borderRadius: 10, border: "none", background: C.orange, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer", flexShrink: 0 } }, "🔧 Corrigir")
         );
       })()
     , mostrarFiltros && React.createElement('div', { className: CARD_CLS, style: Object.assign({},CARD,{ display: "flex", flexDirection: "column", gap: 10 }), __self: this, __source: {fileName: _jsxFileName, lineNumber: 961}}
@@ -14306,11 +14343,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         return React.createElement('div', { key: c.id, style: cardStyle, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1026}}
           , React.createElement('div', { style: { marginBottom: 6 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1027}}
             , React.createElement('div', { style: { fontWeight: 600, fontSize: 14, color: "var(--c-text)" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1028}}, cl && cl.nome || "--")
-            , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1029}}, "#", numCt(c.id), " · "  , React.createElement('span', { style: { color: "var(--c-text)", fontWeight: 500 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1029}}, ve && ve.placa || "--"), " " , ve && ve.modelo || ""
-              , c.observacoes && c.observacoes.startsWith("Renovação contrato") && (() => {
-                var match = c.observacoes.match(/Renovação contrato #(\d+)/);
-                return match ? React.createElement('span', { style: { marginLeft: 6, fontSize: 10, background: C.teal + "18", color: C.teal, borderRadius: 6, padding: "1px 6px", fontWeight: 600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1032}}, "renovação de #"  , match[1]) : null;
-              })()
+            , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1029}}, getRenLabel(c), " · "  , React.createElement('span', { style: { color: "var(--c-text)", fontWeight: 500 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1029}}, ve && ve.placa || "--"), " " , ve && ve.modelo || ""
             )
             , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1035}}, fmtDate(c.data_inicio), " → "  , fmtDate(c.data_fim))
             , c.previsao_pagamento && React.createElement('div', { style: { fontSize: 12, color: pagAtrasado ? C.red : C.sub, fontWeight: pagAtrasado ? 600 : 400, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1036}}
@@ -14329,7 +14362,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             , React.createElement('div', { style: { display: "flex", gap: 4, flexWrap: "wrap", flex: 1, minWidth: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1049}}
               , React.createElement('span', { style: Badge(SC[c.status] || C.gray), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1050}}, c.status)
               , React.createElement('span', { style: Badge(spCor), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1051}}, spLabel)
-              , foiRenovado && React.createElement('span', { style: Badge(C.teal), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1052}}, "↻ renovado" , ctFilho ? " → #" + numCt(ctFilho.id) : "")
+              , foiRenovado && React.createElement('span', { style: Badge(C.teal), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1052}}, "↻ renovado" , ctFilho ? " → " + getRenLabel(ctFilho) : "")
             )
             , React.createElement('div', { style: { fontWeight: 700, fontSize: 15, color: isPago ? C.green : "#1C1C1E", whiteSpace: "nowrap", flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1054}}, fmtBRL(c.valor_total))
           )

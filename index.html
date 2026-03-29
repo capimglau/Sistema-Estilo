@@ -16279,10 +16279,13 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       var totPaga     = competencias.filter(function(f){return f.status==="paga";}).reduce(function(s,f){return s+f.valorFatura;},0);
       var totGeral    = competencias.reduce(function(s,f){return s+f.valorFatura;},0);
 
-      function proximoNumero() {
-        var existentes = (receitas||[]).filter(function(r){return r.numero_fatura;}).map(function(r){return parseInt(r.numero_fatura.replace(/\D/g,""))||0;});
-        var max = existentes.length > 0 ? Math.max.apply(null,existentes) : 0;
-        return String(max + 1).padStart(5,"0");
+      function numFatura(contratoId) {
+        var map = {};
+        (contratos||[]).forEach(function(c){ if (c.renovado_para) map[c.renovado_para] = c; });
+        var depth = 0, cur = (contratos||[]).find(function(c){ return c.id == contratoId; });
+        if (!cur) return String(contratoId);
+        while (map[cur.id]) { cur = map[cur.id]; depth++; }
+        return depth === 0 ? String(cur.id) : String(cur.id) + "/" + (depth + 1);
       }
 
       function emitirFatura(fat) {
@@ -16322,16 +16325,15 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         if (modalFat.tipo === "emitir") {
           var dtVenc = modalFat.dtInput;
           var dtHoje = new Date().toISOString().split("T")[0];
+          var num = numFatura(fat.contratoId);
           if (fat.recId) {
-            // Atualiza receita "prevista" existente para "emitida" (evita duplicata)
-            var num = fat.numeroFatura || ("FAT-" + proximoNumero());
+            // Atualiza receita existente para "emitida" (evita duplicata)
             try {
               var u = await db.patch("receitas", fat.recId, { status: "emitida", data_emissao: dtHoje, data_vencimento: dtVenc, numero_fatura: num });
               setReceitas(function(p){return p.map(function(r){return r.id===fat.recId?Object.assign({},r,u):r;});});
               toast("Fatura " + num + " emitida!"); setFiltroSt("emitida");
             } catch(e) { toast("Erro ao emitir"); }
           } else {
-            var num = "FAT-" + proximoNumero();
             var payload = {
               descricao: num+" | "+fat.cliente+" | "+fat.placa+" | Comp. "+mesFat,
               valor: fat.valorFatura.toFixed(2),
@@ -16353,18 +16355,18 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               toast("Pagamento registrado!");
             } catch(e) { toast("Erro!"); }
           } else {
-            var num2 = proximoNumero();
+            var num2 = numFatura(fat.contratoId);
             var payload2 = {
-              descricao: "FAT-"+num2+" | "+fat.cliente+" | "+fat.placa+" | Comp. "+mesFat,
+              descricao: num2+" | "+fat.cliente+" | "+fat.placa+" | Comp. "+mesFat,
               valor: fat.valorFatura.toFixed(2),
               data: dtPag, data_emissao: dtPag, data_vencimento: fat.vencimento,
-              data_pagamento: dtPag, numero_fatura: "FAT-"+num2, status: "recebido",
+              data_pagamento: dtPag, numero_fatura: num2, status: "recebido",
               tipo: "locacao", cliente_id: fat.contrato.cliente_id, ref_fatura: fat.refKey
             };
             try {
               var r2 = await db.post("receitas", payload2); setReceitas(function(p){return [r2].concat(p);});
               try { await db.patch("contratos", fat.contratoId, { status_pagamento: "pago", data_pagamento: dtPag }); setContratos(function(p){return p.map(function(cx){return cx.id==fat.contratoId?Object.assign({},cx,{status_pagamento:"pago",data_pagamento:dtPag}):cx;});}); } catch(e2){}
-              toast("FAT-"+num2+" emitida e paga!");
+              toast("Fatura "+num2+" registrada e paga!");
             } catch(e) { toast("Erro!"); }
           }
         }

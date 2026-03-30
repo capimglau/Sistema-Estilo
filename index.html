@@ -13371,6 +13371,30 @@ function Inicio({ veiculos, clientes, contratos, multas, manutencoes, despesas, 
   const em20dias = new Date(); em20dias.setDate(em20dias.getDate() + 20); const str20 = em20dias.toISOString().split("T")[0];
   const nomeMes = new Date().toLocaleString("pt-BR", { month: "long", year: "numeric" });
 
+  // Renewal label (same 3-tier logic as Contratos tab)
+  var _inicioById = {};
+  (contratos||[]).forEach(function(c){ _inicioById[c.id] = c; });
+  var _inicioParentMap = {};
+  (contratos||[]).forEach(function(c){ if (c.renovado_para) _inicioParentMap[c.renovado_para] = c; });
+  (contratos||[]).forEach(function(child) {
+    if (_inicioParentMap[child.id] || !child.observacoes) return;
+    var m = child.observacoes.match(/Renova[çc][aã]o (?:autom[aá]tica )?contrato #?(\d+)/i);
+    if (m && _inicioById[parseInt(m[1])]) _inicioParentMap[child.id] = _inicioById[parseInt(m[1])];
+  });
+  (contratos||[]).forEach(function(child) {
+    if (_inicioParentMap[child.id]) return;
+    var parent = (contratos||[]).find(function(p) {
+      return p.id !== child.id && p.data_fim && p.data_fim === child.data_inicio && String(p.cliente_id) === String(child.cliente_id) && String(p.veiculo_id) === String(child.veiculo_id);
+    });
+    if (parent) _inicioParentMap[child.id] = parent;
+  });
+  function inicioRenLabel(c) {
+    var depth = 0, cur = c;
+    while (_inicioParentMap[cur.id]) { cur = _inicioParentMap[cur.id]; depth++; }
+    if (depth === 0) return "nº " + numCt(c.id);
+    return "nº " + numCt(cur.id) + "/" + (depth + 1);
+  }
+
   const disponiveis = veiculos.filter(v => statusEfetivoVeiculo(v, contratos) === "disponivel").length;
   const alugados = veiculos.filter(v => statusEfetivoVeiculo(v, contratos) === "alugado").length;
   const emManut = veiculos.filter(v => v.status === "manutencao").length;
@@ -13682,54 +13706,69 @@ function Inicio({ veiculos, clientes, contratos, multas, manutencoes, despesas, 
       )
     )
 
-    , React.createElement('div', { className: "lg-card", style: CARD, __self: this, __source: {fileName: _jsxFileName, lineNumber: 460}}
-      , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 461}}, "Mês Vigente — Contratos"   )
+    , React.createElement('div', { className: "lg-card", style: CARD }
       , (() => {
-        var ctsMesLista = contratos.filter(c => c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === mesAtual);
-        if (ctsMesLista.length === 0) return React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 20, fontSize: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 464}}, "Nenhum contrato com pagamento neste mês"     );
-        return ctsMesLista.map((c, i) => {
-          var cl = clientes.find(x => x.id == c.cliente_id); var ve = veiculos.find(x => x.id == c.veiculo_id);
-          var pago = c.status_pagamento === "pago" || c.status_pagamento === "isento";
-          var atrasado = !pago && c.previsao_pagamento && c.previsao_pagamento < hoje;
-          var cor = pago ? C.green : atrasado ? C.red : C.orange;
-          var label = pago ? "pago" : atrasado ? "atrasado" : "pendente";
-          return React.createElement('div', { key: c.id, onClick: () => setTab("contratos"), style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: i < ctsMesLista.length - 1 ? "1px solid " + C.border : "none", cursor: "pointer" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 471}}
-            , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 472}}
-              , React.createElement('div', { style: { fontWeight: 600, fontSize: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 473}}, "No " , numCt(c.id))
-              , React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 474}}, cl && cl.nome || "--", " · "  , ve && ve.placa || "--")
-              , React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 475}}, "📆 " , fmtDate(c.previsao_pagamento), c.forma_pagamento && " · " + c.forma_pagamento)
-            )
-            , React.createElement('div', { style: { textAlign: "right" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 477}}
-              , React.createElement('div', { style: { fontWeight: 700, fontSize: 15 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 478}}, fmtBRL(c.valor_total))
-              , React.createElement('span', { style: Badge(cor), __self: this, __source: {fileName: _jsxFileName, lineNumber: 479}}, label)
-            )
-          );
-        });
+        var ctsMesLista = contratos.filter(function(c) { return c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === mesAtual && c.status !== "cancelado"; });
+        var totalMes = ctsMesLista.reduce(function(s,c){ return s + parseFloat(c.valor_total||0); }, 0);
+        return [
+          React.createElement('div', { key: "hdr", style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 } }
+            , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5 } }, "Mês Vigente — Contratos")
+            , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: C.green } }, fmtBRL(totalMes))
+          )
+        ].concat(ctsMesLista.length === 0
+          ? [React.createElement('div', { key: "empty", style: { color: C.sub, textAlign: "center", padding: 20, fontSize: 14 } }, "Nenhum contrato com pagamento neste mês")]
+          : ctsMesLista.map(function(c, i) {
+            var cl = clientes.find(function(x){ return x.id == c.cliente_id; });
+            var ve = veiculos.find(function(x){ return x.id == c.veiculo_id; });
+            var pago = c.status_pagamento === "pago" || c.status_pagamento === "isento";
+            var atrasado = !pago && c.previsao_pagamento && c.previsao_pagamento < hoje;
+            var cor = pago ? C.green : atrasado ? C.red : C.orange;
+            var label = pago ? "pago" : atrasado ? "atrasado" : "pendente";
+            return React.createElement('div', { key: c.id, onClick: function(){ setTab("contratos"); }, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: i < ctsMesLista.length - 1 ? "1px solid " + C.border : "none", cursor: "pointer" } }
+              , React.createElement('div', null
+                , React.createElement('div', { style: { fontWeight: 600, fontSize: 14 } }, inicioRenLabel(c))
+                , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--"))
+                , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, "📆 " + fmtDate(c.previsao_pagamento) + (c.forma_pagamento ? " · " + c.forma_pagamento : ""))
+              )
+              , React.createElement('div', { style: { textAlign: "right" } }
+                , React.createElement('div', { style: { fontWeight: 700, fontSize: 15 } }, fmtBRL(c.valor_total))
+                , React.createElement('span', { style: Badge(cor) }, label)
+              )
+            );
+          })
+        );
       })()
     )
 
     , React.createElement('div', { className: "lg-card", style: CARD }
-      , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12 } }, "Próximo Mês — Contratos")
       , (() => {
         var ctsProxMes = contratos.filter(function(c) { return c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === mesSeguinte && c.status !== "cancelado"; });
-        if (ctsProxMes.length === 0) return React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 20, fontSize: 14 } }, "Nenhum contrato com pagamento no próximo mês");
-        return ctsProxMes.map(function(c, i) {
-          var cl = clientes.find(function(x) { return x.id == c.cliente_id; });
-          var ve = veiculos.find(function(x) { return x.id == c.veiculo_id; });
-          var refKey = "fat_" + c.id + "_" + mesSeguinte;
-          var temFatura = (receitas||[]).some(function(r) { return r.ref_fatura === refKey; });
-          return React.createElement('div', { key: c.id, onClick: function() { setTab("contratos"); }, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: i < ctsProxMes.length - 1 ? "1px solid " + C.border : "none", cursor: "pointer" } }
-            , React.createElement('div', null
-              , React.createElement('div', { style: { fontWeight: 600, fontSize: 14 } }, "nº ", numCt(c.id))
-              , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--"))
-              , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, "📆 " + fmtDate(c.previsao_pagamento) + (c.forma_pagamento ? " · " + c.forma_pagamento : ""))
-            )
-            , React.createElement('div', { style: { textAlign: "right" } }
-              , React.createElement('div', { style: { fontWeight: 700, fontSize: 15 } }, fmtBRL(c.valor_total))
-              , React.createElement('span', { style: Badge(temFatura ? C.blue : C.gray) }, temFatura ? "emitida" : "a emitir")
-            )
-          );
-        });
+        var totalProx = ctsProxMes.reduce(function(s,c){ return s + parseFloat(c.valor_total||0); }, 0);
+        return [
+          React.createElement('div', { key: "hdr", style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 } }
+            , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5 } }, "Próximo Mês — Contratos")
+            , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: C.blue } }, fmtBRL(totalProx))
+          )
+        ].concat(ctsProxMes.length === 0
+          ? [React.createElement('div', { key: "empty", style: { color: C.sub, textAlign: "center", padding: 20, fontSize: 14 } }, "Nenhum contrato com pagamento no próximo mês")]
+          : ctsProxMes.map(function(c, i) {
+            var cl = clientes.find(function(x){ return x.id == c.cliente_id; });
+            var ve = veiculos.find(function(x){ return x.id == c.veiculo_id; });
+            var refKey = "fat_" + c.id + "_" + mesSeguinte;
+            var temFatura = (receitas||[]).some(function(r){ return r.ref_fatura === refKey; });
+            return React.createElement('div', { key: c.id, onClick: function(){ setTab("contratos"); }, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: i < ctsProxMes.length - 1 ? "1px solid " + C.border : "none", cursor: "pointer" } }
+              , React.createElement('div', null
+                , React.createElement('div', { style: { fontWeight: 600, fontSize: 14 } }, inicioRenLabel(c))
+                , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--"))
+                , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, "📆 " + fmtDate(c.previsao_pagamento) + (c.forma_pagamento ? " · " + c.forma_pagamento : ""))
+              )
+              , React.createElement('div', { style: { textAlign: "right" } }
+                , React.createElement('div', { style: { fontWeight: 700, fontSize: 15 } }, fmtBRL(c.valor_total))
+                , React.createElement('span', { style: Badge(temFatura ? C.blue : C.gray) }, temFatura ? "emitida" : "a emitir")
+              )
+            );
+          })
+        );
       })()
     )
   );

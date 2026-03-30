@@ -17461,24 +17461,54 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   });
 
   function exportarICS() {
+    var hojeStr = new Date().toISOString().split("T")[0];
     function esc(s) { return String(s||"").replace(/\\/g,"\\\\").replace(/;/g,"\\;").replace(/,/g,"\\,").replace(/\n/g,"\\n"); }
     var icsLines = [
       "BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//AutoGest Pro//PT",
       "CALSCALE:GREGORIAN","METHOD:PUBLISH",
-      "X-WR-CALNAME:AutoGest Pro","X-WR-TIMEZONE:America/Sao_Paulo"
+      "X-WR-CALNAME:AutoGest Pro","X-WR-TIMEZONE:America/Sao_Paulo",
+      "REFRESH-INTERVAL;VALUE=DURATION:PT1H","X-PUBLISHED-TTL:PT1H"
     ];
-    eventos.forEach(function(ev, i) {
+    // Gera eventos de emissão separadamente para garantir que estejam presentes
+    var eventosEmissao = [];
+    (contratos || []).forEach(function(c) {
+      if (!c.previsao_pagamento || c.status === "cancelado") return;
+      if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return;
+      var refKey = "fat_" + c.id + "_" + c.previsao_pagamento.slice(0,7);
+      if ((receitas||[]).some(function(r){ return r.ref_fatura === refKey; })) return;
+      var dtE = new Date(c.previsao_pagamento + "T12:00:00");
+      dtE.setDate(dtE.getDate() - 20);
+      var dtEStr = dtE.toISOString().split("T")[0];
+      var cl = (clientes||[]).find(function(x){ return x.id == c.cliente_id; });
+      var ve = (veiculos||[]).find(function(x){ return x.id == c.veiculo_id; });
+      eventosEmissao.push({
+        data: dtEStr, tipo: "emissao", emoji: "📤",
+        titulo: "Emitir Fatura " + calRenLabel(c) + " · " + fmtComp(c.previsao_pagamento),
+        sub: (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + " · venc. " + fmtD(c.previsao_pagamento)
+      });
+    });
+    var todosEventos = eventos.filter(function(ev){ return ev.tipo !== "emissao"; }).concat(eventosEmissao);
+    todosEventos.forEach(function(ev, i) {
       if (!ev.data) return;
       var d = ev.data.replace(/-/g, "");
       var dtEnd = new Date(ev.data + "T12:00:00");
       dtEnd.setDate(dtEnd.getDate() + 1);
       var dEnd = dtEnd.toISOString().split("T")[0].replace(/-/g, "");
+      var isFuture = ev.data >= hojeStr;
       icsLines.push("BEGIN:VEVENT");
-      icsLines.push("UID:autoguest-" + i + "-" + d + "@autoguest");
+      icsLines.push("UID:autoguest-" + i + "-" + d + "-" + (ev.tipo||"ev") + "@autoguest");
       icsLines.push("DTSTART;VALUE=DATE:" + d);
       icsLines.push("DTEND;VALUE=DATE:" + dEnd);
       icsLines.push("SUMMARY:" + esc((ev.emoji ? ev.emoji + " " : "") + ev.titulo));
       if (ev.sub) icsLines.push("DESCRIPTION:" + esc(ev.sub));
+      // Alarme no dia do evento às 9h (apenas eventos futuros)
+      if (isFuture) {
+        icsLines.push("BEGIN:VALARM");
+        icsLines.push("TRIGGER;VALUE=DATE-TIME:" + d + "T120000Z");
+        icsLines.push("ACTION:DISPLAY");
+        icsLines.push("DESCRIPTION:" + esc((ev.emoji ? ev.emoji + " " : "") + ev.titulo));
+        icsLines.push("END:VALARM");
+      }
       icsLines.push("END:VEVENT");
     });
     icsLines.push("END:VCALENDAR");

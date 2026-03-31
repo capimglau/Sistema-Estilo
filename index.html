@@ -14205,6 +14205,24 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   const hoje = new Date().toISOString().split("T")[0];
   function getCl(id) { return clientes.find(c => c.id == id); }
   function getVe(id) { return veiculos.find(v => v.id == id); }
+  // Cria automaticamente uma receita "prevista" vinculada ao contrato (fatura prevista)
+  async function criarFaturaPrevista(c) {
+    if (!c.previsao_pagamento) return;
+    var mes = c.previsao_pagamento.slice(0,7);
+    var refKey = "fat_" + c.id + "_" + mes;
+    if ((receitas||[]).find(function(r){ return r.ref_fatura === refKey; })) return;
+    var cl = getCl(c.cliente_id); var ve = getVe(c.veiculo_id);
+    try {
+      var nova = await db.post("receitas", {
+        descricao: "Fatura | " + (cl ? cl.nome : "") + " | " + (ve ? ve.placa : "") + " | Comp. " + fmtComp(mes),
+        valor: parseFloat(c.valor_total || 0).toFixed(2),
+        data: c.previsao_pagamento, data_vencimento: c.previsao_pagamento,
+        status: "prevista", tipo: "locacao",
+        cliente_id: c.cliente_id, ref_fatura: refKey
+      });
+      setReceitas(function(p){ return [nova].concat(p); });
+    } catch(e) {}
+  }
   function dias(fm) { if (!fm.data_inicio || !fm.data_fim) return 0; return Math.max(1, Math.ceil((new Date(fm.data_fim) - new Date(fm.data_inicio)) / 86400000)); }
   function calcValor(fm) {
     var v = getVe(fm.veiculo_id); if (!v) return 0;
@@ -14231,8 +14249,20 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     try {
       const valorFinal = form.valor_total !== undefined && form.valor_total !== "" ? parseFloat(form.valor_total).toFixed(2) : (parseFloat(calcValor(form)) - parseFloat(form.desconto||0) + parseFloat(form.acrescimo||0)).toFixed(2);
       const payload = Object.assign({}, form, { valor_total: valorFinal });
-      if (edit) { const u = await db.patch("contratos", edit, payload); setContratos(p => p.map(c => c.id === edit ? Object.assign({}, c, u) : c)); toast("Atualizado!"); }
-      else { const c = await db.post("contratos", payload); setContratos(p => [c].concat(p)); await db.patch("veiculos", form.veiculo_id, { status: "alugado" }); setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: "alugado" }) : v)); toast("Contrato No " + numCt(c.id) + " criado!"); }
+      if (edit) {
+        const u = await db.patch("contratos", edit, payload);
+        setContratos(p => p.map(c => c.id === edit ? Object.assign({}, c, u) : c));
+        // Se previsao_pagamento mudou, garantir que existe fatura prevista para o novo mês
+        if (payload.previsao_pagamento) { await criarFaturaPrevista(Object.assign({}, u, { id: edit })); }
+        toast("Atualizado!");
+      } else {
+        const c = await db.post("contratos", payload);
+        setContratos(p => [c].concat(p));
+        await db.patch("veiculos", form.veiculo_id, { status: "alugado" });
+        setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: "alugado" }) : v));
+        await criarFaturaPrevista(c);
+        toast("Contrato nº " + numCt(c.id) + " criado!");
+      }
       setModal(false);
     } catch(e) { toast("Erro: " + e.message, "error"); }
     setLoading(false);
@@ -14275,7 +14305,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       // grava o id do novo contrato no original para rastreamento
       await db.patch("contratos", ct.id, { renovado_para: novo.id });
       setContratos(p => p.map(c => c.id === ct.id ? Object.assign({}, c, { status: "concluido", renovado_para: novo.id }) : c).concat([novo]));
-      toast("Renovado! Novo contrato No " + numCt(novo.id));
+      await criarFaturaPrevista(novo);
+      toast("Renovado! Novo contrato nº " + numCt(novo.id));
     } catch(e) { toast("Erro ao renovar: " + e.message, "error"); }
   }
   async function concluir(ct) {
@@ -15643,7 +15674,18 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     setLoading(false);
   }
   async function removeDespesa(id) { if (!confirm("Excluir?")) return; await db.del("despesas", id); setDespesas(p => p.filter(d => d.id !== id)); toast("Excluido!"); }
-  async function removeReceita(id) { if (!confirm("Excluir?")) return; await db.del("receitas", id); setReceitas(p => p.filter(r => r.id !== id)); toast("Excluido!"); }
+  async function removeReceita(id) {
+    if (!confirm("Excluir receita?")) return;
+    var rec = (receitas||[]).find(function(r){ return r.id === id; });
+    await db.del("receitas", id);
+    setReceitas(p => p.filter(r => r.id !== id));
+    // Sincronizar contrato se esta receita era o registro de pagamento
+    if (rec && rec.ref_fatura && rec.status === "recebido") {
+      var m = rec.ref_fatura.match(/^fat_(\d+)_/);
+      if (m) { var ctId = parseInt(m[1]); try { await db.patch("contratos", ctId, { status_pagamento: "pendente", data_pagamento: null }); setContratos(p => p.map(x => x.id===ctId ? Object.assign({},x,{status_pagamento:"pendente",data_pagamento:null}) : x)); } catch(e){} }
+    }
+    toast("Excluído!");
+  }
 
   // Totais gerais acumulados — contratos pagos integralmente + valor_pago dos parciais
   var receitaContratos = contratos.reduce((s, c) => {
@@ -16518,33 +16560,66 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             } catch(e) { toast("Erro!"); }
           }
         }
-        // Avança previsao_pagamento em 1 mês para contratos recorrentes — só ao registrar pagamento
+        // Para contratos recorrentes: concluir atual e criar novo contrato + fatura prevista
         if (modalFat.tipo !== "pagar") { setModalFat(null); return; }
         var ct = fat.contrato;
         if (ct && ct.recorrente && ct.previsao_pagamento) {
-          var diaP = parseInt(ct.previsao_pagamento.split("-")[2]);
-          var nextPag = new Date(ct.previsao_pagamento + "T12:00:00");
-          nextPag.setMonth(nextPag.getMonth() + 1);
-          nextPag.setDate(diaP);
-          var novaPP = nextPag.toISOString().split("T")[0];
           try {
-            await db.patch("contratos", ct.id, { previsao_pagamento: novaPP });
-            setContratos(function(p){ return p.map(function(cx){ return cx.id===ct.id ? Object.assign({},cx,{previsao_pagamento:novaPP}) : cx; }); });
-          } catch(e) {}
+            // Novo período: data_fim do atual + 30 dias
+            var novaIni = ct.data_fim || ct.previsao_pagamento;
+            var novaFimD = new Date(novaIni + "T12:00:00"); novaFimD.setDate(novaFimD.getDate() + 30);
+            var novaFim = novaFimD.toISOString().split("T")[0];
+            // Novo pagamento: mesmo dia, mês seguinte
+            var diaP = parseInt(ct.previsao_pagamento.split("-")[2]);
+            var nextPag = new Date(ct.previsao_pagamento + "T12:00:00");
+            nextPag.setMonth(nextPag.getMonth() + 1);
+            nextPag.setDate(Math.min(diaP, new Date(nextPag.getFullYear(), nextPag.getMonth()+1, 0).getDate()));
+            var novaPP = nextPag.toISOString().split("T")[0];
+            // Concluir contrato atual
+            await db.patch("contratos", ct.id, { status: "concluido", renovado_para: 0 });
+            setContratos(function(p){ return p.map(function(cx){ return cx.id===ct.id ? Object.assign({},cx,{status:"concluido"}) : cx; }); });
+            // Criar novo contrato
+            var novoCt = await db.post("contratos", {
+              cliente_id: ct.cliente_id, veiculo_id: ct.veiculo_id,
+              data_inicio: novaIni, data_fim: novaFim,
+              previsao_pagamento: novaPP, valor_total: ct.valor_total,
+              status: "ativo", status_pagamento: "pendente",
+              forma_pagamento: ct.forma_pagamento, recorrente: true,
+              km_franquia: ct.km_franquia, valor_km_excedente: ct.valor_km_excedente,
+              observacoes: "Renovação contrato nº " + numCt(ct.id)
+            });
+            await db.patch("contratos", ct.id, { renovado_para: novoCt.id });
+            setContratos(function(p){ return p.map(function(cx){ return cx.id===ct.id ? Object.assign({},cx,{renovado_para:novoCt.id}) : cx; }).concat([novoCt]); });
+            // Auto-criar fatura prevista para novo contrato
+            var cl2 = (clientes||[]).find(function(x){return x.id==novoCt.cliente_id;});
+            var ve2 = (veiculos||[]).find(function(x){return x.id==novoCt.veiculo_id;});
+            var mesPP = novaPP.slice(0,7); var refKeyNovo = "fat_"+novoCt.id+"_"+mesPP;
+            try {
+              var novaFat = await db.post("receitas", {
+                descricao: "Fatura | "+(cl2?cl2.nome:"")+" | "+(ve2?ve2.placa:"")+" | Comp. "+fmtComp(mesPP),
+                valor: parseFloat(novoCt.valor_total||0).toFixed(2),
+                data: novaPP, data_vencimento: novaPP,
+                status: "prevista", tipo: "locacao",
+                cliente_id: novoCt.cliente_id, ref_fatura: refKeyNovo
+              });
+              setReceitas(function(p){ return [novaFat].concat(p); });
+            } catch(e3) {}
+            toast("Pago! Novo contrato nº " + numCt(novoCt.id) + " criado.");
+          } catch(e) { toast("Erro ao renovar: " + e.message, "error"); }
         }
         setModalFat(null);
       }
 
       async function cancelarFatura(fat) {
         if (!fat.recId) return;
-        if (!confirm((fat.status==="paga"?"Estornar":"Cancelar") + " a fatura " + (fat.numeroFatura||fat.refKey) + "?")) return;
+        if (!confirm((fat.status==="paga"?"Estornar pagamento e excluir":"Excluir") + " a fatura " + (fat.numeroFatura||fat.refKey) + "?")) return;
         try {
-          await db.patch("receitas", fat.recId, { status: "cancelado" });
-          setReceitas(function(p){return p.map(function(r){return r.id===fat.recId?Object.assign({},r,{status:"cancelado"}):r;});});
+          await db.del("receitas", fat.recId);
+          setReceitas(function(p){return p.filter(function(r){return r.id!==fat.recId;});});
           if (fat.status === "paga" && fat.contratoId) {
             try { await db.patch("contratos", fat.contratoId, { status_pagamento: "pendente", data_pagamento: null }); setContratos(function(p){return p.map(function(cx){return cx.id==fat.contratoId?Object.assign({},cx,{status_pagamento:"pendente",data_pagamento:null}):cx;});}); } catch(e2) {}
           }
-          toast(fat.status==="paga" ? "↩ Estornado!" : "Fatura cancelada.");
+          toast(fat.status==="paga" ? "↩ Estornado e excluído!" : "Fatura excluída.");
         } catch(e) { toast("Erro!"); }
       }
 

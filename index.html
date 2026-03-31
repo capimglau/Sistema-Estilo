@@ -13438,7 +13438,7 @@ function Inicio({ veiculos, clientes, contratos, multas, manutencoes, despesas, 
     if (c.status === "cancelado") renovadosIds.add(c.id);
   });
   const contratosAtrasados = contratos.filter(c => c.status === "ativo" && !c.renovado_para && (c.status_pagamento === "pendente" || !c.status_pagamento) && c.previsao_pagamento && c.previsao_pagamento < hoje);
-  const contratosVencendo = contratos.filter(c => c.status === "ativo" && c.data_fim && c.data_fim >= hoje && c.data_fim <= str7 && !renovadosIds.has(c.id) && !c.recorrente);
+  const contratosVencendo = contratos.filter(c => c.status === "ativo" && c.data_fim && c.data_fim >= hoje && c.data_fim <= str7 && !renovadosIds.has(c.id));
 
   const cnhVencida = clientes.filter(c => c.vencimento_cnh && c.vencimento_cnh < hoje);
   const cnhVencendo = clientes.filter(c => c.vencimento_cnh && c.vencimento_cnh >= hoje && c.vencimento_cnh <= str30);
@@ -14223,36 +14223,6 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       setReceitas(function(p){ return [nova].concat(p); });
     } catch(e) {}
   }
-  // Para contratos recorrentes: concluir o atual e criar o próximo período (30 dias + pagamento mês seguinte)
-  async function renovarContratoPago(ct, dtPag) {
-    if (!ct || !ct.recorrente) return;
-    try {
-      var novaIni = ct.data_fim || dtPag;
-      var novaFimD = new Date(novaIni + "T12:00:00"); novaFimD.setDate(novaFimD.getDate() + 30);
-      var novaFim = novaFimD.toISOString().split("T")[0];
-      var diaP = ct.previsao_pagamento ? parseInt(ct.previsao_pagamento.split("-")[2]) : parseInt(dtPag.split("-")[2]);
-      var basePag = ct.previsao_pagamento || dtPag;
-      var nextPag = new Date(basePag + "T12:00:00");
-      nextPag.setMonth(nextPag.getMonth() + 1);
-      nextPag.setDate(Math.min(diaP, new Date(nextPag.getFullYear(), nextPag.getMonth() + 1, 0).getDate()));
-      var novaPP = nextPag.toISOString().split("T")[0];
-      await db.patch("contratos", ct.id, { status: "concluido", renovado_para: 0 });
-      setContratos(function(p){ return p.map(function(cx){ return cx.id===ct.id ? Object.assign({},cx,{status:"concluido"}) : cx; }); });
-      var novoCt = await db.post("contratos", {
-        cliente_id: ct.cliente_id, veiculo_id: ct.veiculo_id,
-        data_inicio: novaIni, data_fim: novaFim,
-        previsao_pagamento: novaPP, valor_total: ct.valor_total,
-        status: "ativo", status_pagamento: "pendente",
-        forma_pagamento: ct.forma_pagamento, recorrente: true,
-        km_franquia: ct.km_franquia, valor_km_excedente: ct.valor_km_excedente,
-        observacoes: "Renovação contrato nº " + numCt(ct.id)
-      });
-      await db.patch("contratos", ct.id, { renovado_para: novoCt.id });
-      setContratos(function(p){ return p.map(function(cx){ return cx.id===ct.id ? Object.assign({},cx,{renovado_para:novoCt.id}) : cx; }).concat([novoCt]); });
-      await criarFaturaPrevista(novoCt);
-      toast("Renovado! Próximo contrato nº " + numCt(novoCt.id) + " criado.");
-    } catch(e) { toast("Erro ao renovar: " + e.message, "error"); }
-  }
   function dias(fm) { if (!fm.data_inicio || !fm.data_fim) return 0; return Math.max(1, Math.ceil((new Date(fm.data_fim) - new Date(fm.data_inicio)) / 86400000)); }
   function calcValor(fm) {
     var v = getVe(fm.veiculo_id); if (!v) return 0;
@@ -14321,7 +14291,6 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       valor_total: ct.valor_total, status: "ativo",
       status_pagamento: "pendente",
       forma_pagamento: ct.forma_pagamento,
-      recorrente: ct.recorrente || false,
       previsao_pagamento: novaPrevPag,
       desconto: ct.desconto, acrescimo: ct.acrescimo,
       checklist_retirada: ct.checklist_devolucao || ct.checklist_retirada,
@@ -14369,7 +14338,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       else if (filter === "proximo_mes") { if (!c.previsao_pagamento || c.previsao_pagamento.slice(0,7) !== proxMes) return false; }
       else if (filter === "a_receber") { if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false; if (!c.previsao_pagamento || c.previsao_pagamento.slice(0,7) !== mesAtual) return false; }
       else if (filter === "parcial") { if (c.status_pagamento !== "parcial") return false; }
-      else if (filter === "recorrente") { if (!c.recorrente) return false; }
+
       else if (filter === "recebidos_mes") { if (c.status_pagamento !== "pago") return false; if (!c.previsao_pagamento || c.previsao_pagamento.slice(0,7) !== mesAtual) return false; }
       else if (filter === "mes_anterior") { var maDate = new Date(); maDate.setMonth(maDate.getMonth() - 1); var mesAnt = maDate.toISOString().slice(0,7); if (!c.previsao_pagamento || c.previsao_pagamento.slice(0,7) !== mesAnt) return false; }
       if (filDe && c.data_inicio && c.data_inicio < filDe) return false;
@@ -14495,7 +14464,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         ["mes_vigente", "Mês Vigente", C.teal],
         ["a_receber", "A Receber/Mês", C.orange],
         ["parcial", "Parcial", C.teal],
-        ["recorrente", "Recorrentes", C.purple],
+
         ["recebidos_mes", "Recebidos/Mês", C.green],
         ["proximo_mes", "Próx. Mês", C.purple],
         ["mes_anterior", "Mês Anterior", C.gray],
@@ -14537,7 +14506,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             )
             , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1035}}, fmtDate(c.data_inicio), " → "  , fmtDate(c.data_fim))
             , c.previsao_pagamento && React.createElement('div', { style: { fontSize: 12, color: pagAtrasado ? C.red : C.sub, fontWeight: pagAtrasado ? 600 : 400, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1036}}
-              , pagAtrasado ? "⚠ " : "", c.recorrente ? "↻ Recorrente · " : "", "Pgto: " , fmtDate(c.previsao_pagamento)
+              , pagAtrasado ? "⚠ " : "", "Pgto: " , fmtDate(c.previsao_pagamento)
             )
             , isParcial && c.valor_pago && React.createElement('div', { style: { fontSize: 12, color: C.teal, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1039}}, "Pago: "
                , fmtBRL(c.valor_pago), " · Restante: "   , fmtBRL(Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0)))
@@ -14567,7 +14536,6 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               await db.patch("contratos", c.id, { status_pagamento: "pago", observacoes: obs });
               setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", observacoes: obs }) : x));
               await sincronizarRefFatura(c, dtPag);
-              await renovarContratoPago(c, dtPag);
               toast("✅ Pagamento registrado!");
             }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1060}}, "💰 Receber" )
             , isParcial && React.createElement('button', { className: bCls(Ghost(C.teal)), style: bStyle(Ghost(C.teal)), onClick: () => {
@@ -14582,7 +14550,6 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               await db.patch("contratos", c.id, { status_pagamento: "pago", observacoes: obs });
               setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", observacoes: obs }) : x));
               await sincronizarRefFatura(c, dtPag);
-              await renovarContratoPago(c, dtPag);
               toast("✅ Pagamento completo!");
             }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1073}}, "✅ Completar pgto"  )
             , isParcial && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
@@ -14716,7 +14683,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         , React.createElement(Lbl, { label: "Cliente *" , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1133}}, React.createElement('select', { style: FI, value: form.cliente_id || "", onChange: e => F("cliente_id", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1133}}, React.createElement('option', { value: "", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1133}}, "Selecione..."), clientes.map(c => React.createElement('option', { key: c.id, value: c.id, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1133}}, c.nome, c.bloqueado ? " [BLOQUEADO]" : ""))))
         , React.createElement(Lbl, { label: "Veiculo *" , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, React.createElement('select', { style: FI, value: form.veiculo_id || "", onChange: e => F("veiculo_id", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, React.createElement('option', { value: "", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, "Selecione..."), veiculos.filter(v => statusEfetivoVeiculo(v, contratos) === "disponivel" || v.id == form.veiculo_id).map(v => { var stEf = statusEfetivoVeiculo(v, contratos); return React.createElement('option', { key: v.id, value: v.id, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, v.placa, " - ", v.marca, " ", v.modelo, " - ", fmtBRL(v.valor_diaria), "/dia", stEf !== "disponivel" ? " (" + stEf + ")" : ""); })))
         , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1135}}
-          , React.createElement(Lbl, { label: "Retirada", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1136}}, React.createElement('input', { style: FI, type: "date", value: form.data_inicio || "", onChange: e => { var val = e.target.value; var upd = { data_inicio: val }; if (form.recorrente && val) { var _d = new Date(val+"T12:00:00"); var _f = new Date(_d); _f.setDate(_f.getDate()+30); var _p = new Date(_d); _p.setMonth(_p.getMonth()+1); upd.data_fim = _f.toISOString().split("T")[0]; upd.previsao_pagamento = _p.toISOString().split("T")[0]; } setForm(function(p){ return Object.assign({},p,upd); }); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1136}} ))
+          , React.createElement(Lbl, { label: "Retirada", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1136}}, React.createElement('input', { style: FI, type: "date", value: form.data_inicio || "", onChange: e => F("data_inicio", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1136}} ))
           , React.createElement(Lbl, { label: "Devolucao", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1137}}, React.createElement('input', { style: FI, type: "date", value: form.data_fim || "", onChange: e => F("data_fim", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1137}} ))
         )
         , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1139}}
@@ -14741,16 +14708,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             )
           )
         )
-        , React.createElement('div', { style: { background: C.bg, borderRadius: 12, padding: "12px 14px", border: "1px solid " + C.border }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1161}}
-          , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "var(--c-text)", marginBottom: 8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1162}}, "Contrato Recorrente" )
-          , React.createElement('div', { style: { display: "flex", gap: 10, alignItems: "center", marginBottom: form.recorrente ? 10 : 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1163}}
-            , React.createElement('label', { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1164}}
-              , React.createElement('input', { type: "checkbox", checked: !!form.recorrente, onChange: function(e) { var checked = e.target.checked; var upd = { recorrente: checked }; if (checked && form.data_inicio) { var _d = new Date(form.data_inicio+"T12:00:00"); var _f = new Date(_d); _f.setDate(_f.getDate()+30); var _p = new Date(_d); _p.setMonth(_p.getMonth()+1); upd.data_fim = _f.toISOString().split("T")[0]; upd.previsao_pagamento = _p.toISOString().split("T")[0]; } setForm(function(p){ return Object.assign({},p,upd); }); }, style: { width: 16, height: 16 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1165}} ), "Contrato recorrente (renova a cada 30 dias)"
-            )
-          )
-          , form.recorrente && React.createElement(Lbl, { label: "Previsão de Pagamento", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1173}}, React.createElement('input', { style: FI, type: "date", value: form.previsao_pagamento || "", onChange: e => F("previsao_pagamento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1173}} ))
-        )
-        , !form.recorrente && React.createElement(Lbl, { label: "Previsao de Pagamento"  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1177}}, React.createElement('input', { style: FI, type: "date", value: form.previsao_pagamento || "", onChange: e => F("previsao_pagamento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1177}} ))
+        , React.createElement(Lbl, { label: "Previsão de Pagamento", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1177}}, React.createElement('input', { style: FI, type: "date", value: form.previsao_pagamento || "", onChange: e => F("previsao_pagamento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1177}} ))
         , React.createElement(Lbl, { label: "Checklist Vistoria Retirada"  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1178}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 60, fontSize: 13 }), value: form.checklist_retirada || "", onChange: e => F("checklist_retirada", e.target.value), placeholder: "Ex: Sem arranhoes, tanque cheio, pneus ok..."      , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1178}} ))
         , React.createElement(Lbl, { label: "Checklist Vistoria Devolucao"  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1179}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 60, fontSize: 13 }), value: form.checklist_devolucao || "", onChange: e => F("checklist_devolucao", e.target.value), placeholder: "Ex: Arranhao no para-choque traseiro..."    , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1179}} ))
         , React.createElement(Lbl, { label: "Observacoes", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1180}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 50 }), value: form.observacoes || "", onChange: e => F("observacoes", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1180}} ))
@@ -15766,7 +15724,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     if (!c.previsao_pagamento) return false;
     if (c.status === "cancelado" || c.status === "concluido") return false;
     if (c.renovado_para) return false;
-    if (c.recorrente) return false; // recorrentes são gerenciados pela aba Faturas
+
     if (c.previsao_pagamento.slice(0,7) !== filtroMes) return false;
     // Se já existe receita ref_fatura para este contrato/mês, não duplicar
     var refKey = "fat_" + c.id + "_" + filtroMes;
@@ -15984,7 +15942,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 var upd = await db.patch("receitas", r.id, { status: "recebido", data_pagamento: dt });
                 setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
                 // Sincronizar contrato se for ref_fatura
-                if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){} } if (ct2) await renovarContratoPago(ct2, dt); } }
+                if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){} } } }
                 toast("Receita baixada!");
               }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2235}}, "✅ Baixar" )
               , !r._fromContrato && r.status === "recebido" && !isRec && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
@@ -16004,8 +15962,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 var recEx = (receitas||[]).find(function(rx){ return rx.ref_fatura === refKey; });
                 if (recEx) { var upd = await db.patch("receitas", recEx.id, { status: "recebido", data_pagamento: dt }); setReceitas(p => p.map(x => x.id===recEx.id ? Object.assign({},x,upd) : x)); }
                 else { var ct = contratos.find(function(cx){return cx.id==r.contrato_id;}); if (ct) { var nova = await db.post("receitas", { descricao: "Comp. "+fmtComp(mes)+" | "+r.descricao, valor: parseFloat(r.valor||0).toFixed(2), data: dt, data_pagamento: dt, data_vencimento: r.data, status: "recebido", tipo: "locacao", cliente_id: ct.cliente_id, ref_fatura: refKey }); setReceitas(p => p.concat([nova])); } }
-                var ctRec = contratos.find(function(cx){return cx.id==r.contrato_id;});
-                await renovarContratoPago(ctRec, dt);
                 toast("✅ Recebido!");
               }}, "💰 Receber")
               , r._fromContrato && r.status === "recebido" && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
@@ -16587,10 +16543,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             } catch(e) { toast("Erro!"); }
           }
         }
-        // Para contratos recorrentes: renovarContratoPago cuida de tudo (concluir + novo + fatura)
-        if (modalFat.tipo !== "pagar") { setModalFat(null); return; }
-        var ct = fat.contrato;
-        if (ct && ct.recorrente) await renovarContratoPago(ct, modalFat.dtInput);
         setModalFat(null);
       }
 
@@ -18489,7 +18441,6 @@ function App() {
   const [usos, setUsos] = useState([]);
   const [empresa, setEmpresa] = useState({});
   const [toastState, setToastState] = useState({ msg: "", type: "ok" });
-  const autoRenovacaoFeita = React.useRef(false);
   const autoFaturaFeita = React.useRef(false);
   const mobile = useMobile();
   const [darkMode, setDarkMode] = React.useState(() => localStorage.getItem("dm") === "1");
@@ -18549,57 +18500,6 @@ function App() {
     }
   }, [darkMode]);
 
-  // Auto-renovação de contratos recorrentes vencidos
-  useEffect(() => {
-    if (!contratos.length || autoRenovacaoFeita.current) return;
-    autoRenovacaoFeita.current = true;
-    var hoje = new Date().toISOString().split("T")[0];
-    var paraRenovar = contratos.filter(function(c) {
-      return c.status === "ativo" && c.recorrente && c.data_fim && c.data_fim < hoje && !c.renovado_para;
-    });
-    if (!paraRenovar.length) return;
-    (async function() {
-      var renovados = 0;
-      for (var i = 0; i < paraRenovar.length; i++) {
-        var ct = paraRenovar[i];
-        var novaFimDt = new Date(ct.data_fim);
-        do { novaFimDt.setDate(novaFimDt.getDate() + 30); } while (novaFimDt.toISOString().split("T")[0] <= hoje);
-        var novaFim = novaFimDt.toISOString().split("T")[0];
-        var novaPrevPag = "";
-        if (ct.previsao_pagamento) {
-          var diaOrig = parseInt(ct.previsao_pagamento.split("-")[2]);
-          var proxMesDt = new Date(ct.previsao_pagamento);
-          proxMesDt.setMonth(proxMesDt.getMonth() + 1);
-          proxMesDt.setDate(diaOrig);
-          novaPrevPag = proxMesDt.toISOString().split("T")[0];
-        }
-        var payload = {
-          cliente_id: ct.cliente_id, veiculo_id: ct.veiculo_id,
-          data_inicio: ct.data_fim, data_fim: novaFim,
-          km_inicial: ct.km_final || ct.km_inicial, km_final: null,
-          km_franquia: ct.km_franquia, valor_km_excedente: ct.valor_km_excedente,
-          valor_total: ct.valor_total, valor_diaria: ct.valor_diaria,
-          status: "ativo", status_pagamento: "pendente",
-          forma_pagamento: ct.forma_pagamento,
-          previsao_pagamento: novaPrevPag,
-          recorrente: true, tipo_recorrencia: ct.tipo_recorrencia,
-          desconto: ct.desconto, acrescimo: ct.acrescimo,
-          observacoes: "Renovação automática contrato #" + numCt(ct.id)
-        };
-        try {
-          await db.patch("contratos", ct.id, { status: "concluido", renovado_para: 0 });
-          var novo = await db.post("contratos", payload);
-          await db.patch("contratos", ct.id, { renovado_para: novo.id });
-          setContratos(function(p) {
-            return p.map(function(c) { return c.id === ct.id ? Object.assign({}, c, { status: "concluido", renovado_para: novo.id }) : c; }).concat([novo]);
-          });
-          renovados++;
-        } catch(e) { /* silencia erros individuais */ }
-      }
-      if (renovados > 0) toast(renovados + " contrato(s) renovado(s) automaticamente.");
-    })();
-  }, [contratos.length]);
-
   // Auto-geração de faturas previstas para contratos do mês atual
   // Só roda quando AMBOS contratos e receitas já foram carregados do banco
   useEffect(() => {
@@ -18616,14 +18516,6 @@ function App() {
     var dtVencAF = mesSeguinte + "-10";
     var paraGerar = contratos.filter(function(c) {
       if (c.status !== "ativo") return false;
-      if (c.recorrente) {
-        // Recorrente: gerar para o mês atual se o período está ativo
-        var ini = c.data_inicio || ""; var fim = c.data_fim || "9999-12-31";
-        if (ini > fimMesAF || fim < inicioMesAF) return false;
-        var refKey = "fat_" + c.id + "_" + mesAtualAF;
-        return !receitas.some(function(r) { return r.ref_fatura === refKey; });
-      }
-      // Não-recorrente: gerar no mês do PAGAMENTO (previsao_pagamento)
       var mesAlvo = c.previsao_pagamento ? c.previsao_pagamento.slice(0,7)
         : (c.data_fim ? c.data_fim.slice(0,7) : mesAtualAF);
       if (mesAlvo !== mesAtualAF) return false;
@@ -18635,16 +18527,10 @@ function App() {
       var criadas = 0;
       for (var i = 0; i < paraGerar.length; i++) {
         var c = paraGerar[i];
-        var mesKey = c.recorrente ? mesAtualAF : (c.previsao_pagamento ? c.previsao_pagamento.slice(0,7) : mesAtualAF);
+        var mesKey = c.previsao_pagamento ? c.previsao_pagamento.slice(0,7) : mesAtualAF;
         var refKey = "fat_" + c.id + "_" + mesKey;
         var valorFat = parseFloat(c.valor_total || 0);
-        var dtVencC;
-        if (c.recorrente && c.previsao_pagamento) {
-          var diaVencAF = Math.min(parseInt(c.previsao_pagamento.split("-")[2]), diasNoMesAF);
-          dtVencC = mesAtualAF + "-" + String(diaVencAF).padStart(2, "0");
-        } else {
-          dtVencC = c.previsao_pagamento ? c.previsao_pagamento : dtVencAF;
-        }
+        var dtVencC = c.previsao_pagamento ? c.previsao_pagamento : dtVencAF;
         var jaPago = c.status_pagamento === "pago" || c.status === "concluido";
         var payload = {
           descricao: "Comp. " + fmtComp(mesAtualAF) + " | Contrato nº " + numCt(c.id),

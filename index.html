@@ -14223,6 +14223,36 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       setReceitas(function(p){ return [nova].concat(p); });
     } catch(e) {}
   }
+  // Para contratos recorrentes: concluir o atual e criar o próximo período (30 dias + pagamento mês seguinte)
+  async function renovarContratoPago(ct, dtPag) {
+    if (!ct || !ct.recorrente) return;
+    try {
+      var novaIni = ct.data_fim || dtPag;
+      var novaFimD = new Date(novaIni + "T12:00:00"); novaFimD.setDate(novaFimD.getDate() + 30);
+      var novaFim = novaFimD.toISOString().split("T")[0];
+      var diaP = ct.previsao_pagamento ? parseInt(ct.previsao_pagamento.split("-")[2]) : parseInt(dtPag.split("-")[2]);
+      var basePag = ct.previsao_pagamento || dtPag;
+      var nextPag = new Date(basePag + "T12:00:00");
+      nextPag.setMonth(nextPag.getMonth() + 1);
+      nextPag.setDate(Math.min(diaP, new Date(nextPag.getFullYear(), nextPag.getMonth() + 1, 0).getDate()));
+      var novaPP = nextPag.toISOString().split("T")[0];
+      await db.patch("contratos", ct.id, { status: "concluido", renovado_para: 0 });
+      setContratos(function(p){ return p.map(function(cx){ return cx.id===ct.id ? Object.assign({},cx,{status:"concluido"}) : cx; }); });
+      var novoCt = await db.post("contratos", {
+        cliente_id: ct.cliente_id, veiculo_id: ct.veiculo_id,
+        data_inicio: novaIni, data_fim: novaFim,
+        previsao_pagamento: novaPP, valor_total: ct.valor_total,
+        status: "ativo", status_pagamento: "pendente",
+        forma_pagamento: ct.forma_pagamento, recorrente: true,
+        km_franquia: ct.km_franquia, valor_km_excedente: ct.valor_km_excedente,
+        observacoes: "Renovação contrato nº " + numCt(ct.id)
+      });
+      await db.patch("contratos", ct.id, { renovado_para: novoCt.id });
+      setContratos(function(p){ return p.map(function(cx){ return cx.id===ct.id ? Object.assign({},cx,{renovado_para:novoCt.id}) : cx; }).concat([novoCt]); });
+      await criarFaturaPrevista(novoCt);
+      toast("Renovado! Próximo contrato nº " + numCt(novoCt.id) + " criado.");
+    } catch(e) { toast("Erro ao renovar: " + e.message, "error"); }
+  }
   function dias(fm) { if (!fm.data_inicio || !fm.data_fim) return 0; return Math.max(1, Math.ceil((new Date(fm.data_fim) - new Date(fm.data_inicio)) / 86400000)); }
   function calcValor(fm) {
     var v = getVe(fm.veiculo_id); if (!v) return 0;
@@ -14537,6 +14567,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               await db.patch("contratos", c.id, { status_pagamento: "pago", observacoes: obs });
               setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", observacoes: obs }) : x));
               await sincronizarRefFatura(c, dtPag);
+              await renovarContratoPago(c, dtPag);
               toast("✅ Pagamento registrado!");
             }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1060}}, "💰 Receber" )
             , isParcial && React.createElement('button', { className: bCls(Ghost(C.teal)), style: bStyle(Ghost(C.teal)), onClick: () => {
@@ -14551,6 +14582,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               await db.patch("contratos", c.id, { status_pagamento: "pago", observacoes: obs });
               setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", observacoes: obs }) : x));
               await sincronizarRefFatura(c, dtPag);
+              await renovarContratoPago(c, dtPag);
               toast("✅ Pagamento completo!");
             }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1073}}, "✅ Completar pgto"  )
             , isParcial && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
@@ -15952,7 +15984,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 var upd = await db.patch("receitas", r.id, { status: "recebido", data_pagamento: dt });
                 setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
                 // Sincronizar contrato se for ref_fatura
-                if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){} } } }
+                if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){} } if (ct2) await renovarContratoPago(ct2, dt); } }
                 toast("Receita baixada!");
               }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2235}}, "✅ Baixar" )
               , !r._fromContrato && r.status === "recebido" && !isRec && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
@@ -15972,6 +16004,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 var recEx = (receitas||[]).find(function(rx){ return rx.ref_fatura === refKey; });
                 if (recEx) { var upd = await db.patch("receitas", recEx.id, { status: "recebido", data_pagamento: dt }); setReceitas(p => p.map(x => x.id===recEx.id ? Object.assign({},x,upd) : x)); }
                 else { var ct = contratos.find(function(cx){return cx.id==r.contrato_id;}); if (ct) { var nova = await db.post("receitas", { descricao: "Comp. "+fmtComp(mes)+" | "+r.descricao, valor: parseFloat(r.valor||0).toFixed(2), data: dt, data_pagamento: dt, data_vencimento: r.data, status: "recebido", tipo: "locacao", cliente_id: ct.cliente_id, ref_fatura: refKey }); setReceitas(p => p.concat([nova])); } }
+                var ctRec = contratos.find(function(cx){return cx.id==r.contrato_id;});
+                await renovarContratoPago(ctRec, dt);
                 toast("✅ Recebido!");
               }}, "💰 Receber")
               , r._fromContrato && r.status === "recebido" && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
@@ -16553,53 +16587,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             } catch(e) { toast("Erro!"); }
           }
         }
-        // Para contratos recorrentes: concluir atual e criar novo contrato + fatura prevista
+        // Para contratos recorrentes: renovarContratoPago cuida de tudo (concluir + novo + fatura)
         if (modalFat.tipo !== "pagar") { setModalFat(null); return; }
         var ct = fat.contrato;
-        if (ct && ct.recorrente && ct.previsao_pagamento) {
-          try {
-            // Novo período: data_fim do atual + 30 dias
-            var novaIni = ct.data_fim || ct.previsao_pagamento;
-            var novaFimD = new Date(novaIni + "T12:00:00"); novaFimD.setDate(novaFimD.getDate() + 30);
-            var novaFim = novaFimD.toISOString().split("T")[0];
-            // Novo pagamento: mesmo dia, mês seguinte
-            var diaP = parseInt(ct.previsao_pagamento.split("-")[2]);
-            var nextPag = new Date(ct.previsao_pagamento + "T12:00:00");
-            nextPag.setMonth(nextPag.getMonth() + 1);
-            nextPag.setDate(Math.min(diaP, new Date(nextPag.getFullYear(), nextPag.getMonth()+1, 0).getDate()));
-            var novaPP = nextPag.toISOString().split("T")[0];
-            // Concluir contrato atual
-            await db.patch("contratos", ct.id, { status: "concluido", renovado_para: 0 });
-            setContratos(function(p){ return p.map(function(cx){ return cx.id===ct.id ? Object.assign({},cx,{status:"concluido"}) : cx; }); });
-            // Criar novo contrato
-            var novoCt = await db.post("contratos", {
-              cliente_id: ct.cliente_id, veiculo_id: ct.veiculo_id,
-              data_inicio: novaIni, data_fim: novaFim,
-              previsao_pagamento: novaPP, valor_total: ct.valor_total,
-              status: "ativo", status_pagamento: "pendente",
-              forma_pagamento: ct.forma_pagamento, recorrente: true,
-              km_franquia: ct.km_franquia, valor_km_excedente: ct.valor_km_excedente,
-              observacoes: "Renovação contrato nº " + numCt(ct.id)
-            });
-            await db.patch("contratos", ct.id, { renovado_para: novoCt.id });
-            setContratos(function(p){ return p.map(function(cx){ return cx.id===ct.id ? Object.assign({},cx,{renovado_para:novoCt.id}) : cx; }).concat([novoCt]); });
-            // Auto-criar fatura prevista para novo contrato
-            var cl2 = (clientes||[]).find(function(x){return x.id==novoCt.cliente_id;});
-            var ve2 = (veiculos||[]).find(function(x){return x.id==novoCt.veiculo_id;});
-            var mesPP = novaPP.slice(0,7); var refKeyNovo = "fat_"+novoCt.id+"_"+mesPP;
-            try {
-              var novaFat = await db.post("receitas", {
-                descricao: "Fatura | "+(cl2?cl2.nome:"")+" | "+(ve2?ve2.placa:"")+" | Comp. "+fmtComp(mesPP),
-                valor: parseFloat(novoCt.valor_total||0).toFixed(2),
-                data: novaPP, data_vencimento: novaPP,
-                status: "prevista", tipo: "locacao",
-                cliente_id: novoCt.cliente_id, ref_fatura: refKeyNovo
-              });
-              setReceitas(function(p){ return [novaFat].concat(p); });
-            } catch(e3) {}
-            toast("Pago! Novo contrato nº " + numCt(novoCt.id) + " criado.");
-          } catch(e) { toast("Erro ao renovar: " + e.message, "error"); }
-        }
+        if (ct && ct.recorrente) await renovarContratoPago(ct, modalFat.dtInput);
         setModalFat(null);
       }
 

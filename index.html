@@ -14234,7 +14234,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (!c.previsao_pagamento) return;
     var mes = c.previsao_pagamento.slice(0,7);
     var refKey = "fat_" + c.id + "_" + mes;
-    if ((receitas||[]).find(function(r){ return r.ref_fatura === refKey; })) return;
+    if ((receitas||[]).find(function(r){ return r.ref_fatura && (r.ref_fatura === refKey || r.ref_fatura.startsWith("fat_" + c.id + "_")); })) return;
     var cl = getCl(c.cliente_id); var ve = getVe(c.veiculo_id);
     try {
       var nova = await db.post("receitas", {
@@ -15761,7 +15761,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       var m = r.ref_fatura.match(/^fat_(\d+)_/);
       if (m) {
         var ct = contratos.find(c => String(c.id) === m[1]);
-        if (ct && (ct.status_pagamento === "pago" || ct.status === "concluido")) {
+        if (ct && ct.status_pagamento === "pago") {
           return Object.assign({}, r, { status: "recebido", data_pagamento: ct.data_pagamento || r.data_pagamento });
         }
       }
@@ -16572,15 +16572,21 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               toast("Fatura " + num + " emitida!"); setFiltroSt("emitida");
             } catch(e) { toast("Erro ao emitir"); }
           } else {
-            var payload = {
-              descricao: num+" | "+fat.cliente+" | "+fat.placa+" | Comp. "+fmtComp(mesFat),
-              valor: fat.valorFatura.toFixed(2),
-              data: dtHoje, data_emissao: dtHoje, data_vencimento: dtVenc,
-              numero_fatura: num, status: "emitida", tipo: "locacao",
-              cliente_id: fat.contrato.cliente_id, ref_fatura: fat.refKey
-            };
-            try { var r = await db.post("receitas", payload); setReceitas(function(p){return [r].concat(p);}); toast("Fatura " + num + " emitida!"); setFiltroSt("emitida"); }
-            catch(e) { toast("Erro ao emitir"); }
+            // Segurança extra: verificar se já existe receita com esse ref_fatura no estado
+            var recExistente = (receitas||[]).find(function(rx){ return rx.ref_fatura === fat.refKey; });
+            if (recExistente) {
+              try { var u2 = await db.patch("receitas", recExistente.id, { status: "emitida", data_emissao: dtHoje, data_vencimento: dtVenc, numero_fatura: num }); setReceitas(function(p){return p.map(function(r){return r.id===recExistente.id?Object.assign({},r,u2):r;});}); toast("Fatura " + num + " emitida!"); setFiltroSt("emitida"); } catch(e) { toast("Erro ao emitir"); }
+            } else {
+              var payload = {
+                descricao: num+" | "+fat.cliente+" | "+fat.placa+" | Comp. "+fmtComp(mesFat),
+                valor: fat.valorFatura.toFixed(2),
+                data: dtHoje, data_emissao: dtHoje, data_vencimento: dtVenc,
+                numero_fatura: num, status: "emitida", tipo: "locacao",
+                cliente_id: fat.contrato.cliente_id, ref_fatura: fat.refKey
+              };
+              try { var r = await db.post("receitas", payload); setReceitas(function(p){return [r].concat(p);}); toast("Fatura " + num + " emitida!"); setFiltroSt("emitida"); }
+              catch(e) { toast("Erro ao emitir"); }
+            }
           }
         } else {
           var dtPag = modalFat.dtInput;
@@ -18594,54 +18600,12 @@ function App() {
     }
   }, [darkMode]);
 
-  // Auto-geração de faturas previstas para contratos do mês atual
-  // Só roda quando AMBOS contratos e receitas já foram carregados do banco
+  // Auto-geração removida — criarFaturaPrevista é chamada ao criar/renovar cada contrato
+  // O fallback _fromContrato no Financeiro já exibe contratos sem receita vinculada
   useEffect(() => {
     if (!contratos.length || !receitas.length || autoFaturaFeita.current) return;
     autoFaturaFeita.current = true;
-    var hoje2 = new Date().toISOString().split("T")[0];
-    var mesAtualAF = hoje2.slice(0, 7);
-    var anoAF = parseInt(mesAtualAF.split("-")[0]);
-    var mesAFn = parseInt(mesAtualAF.split("-")[1]);
-    var diasNoMesAF = new Date(anoAF, mesAFn, 0).getDate();
-    var inicioMesAF = mesAtualAF + "-01";
-    var fimMesAF = mesAtualAF + "-" + String(diasNoMesAF).padStart(2, "0");
-    var mesSeguinte = mesAFn === 12 ? String(anoAF+1)+"-01" : mesAtualAF.slice(0,4)+"-"+String(mesAFn+1).padStart(2,"0");
-    var dtVencAF = mesSeguinte + "-10";
-    var paraGerar = contratos.filter(function(c) {
-      if (c.status !== "ativo") return false;
-      var mesAlvo = c.previsao_pagamento ? c.previsao_pagamento.slice(0,7)
-        : (c.data_fim ? c.data_fim.slice(0,7) : mesAtualAF);
-      if (mesAlvo !== mesAtualAF) return false;
-      var refKey = "fat_" + c.id + "_" + mesAlvo;
-      return !receitas.some(function(r) { return r.ref_fatura === refKey; });
-    });
-    if (!paraGerar.length) return;
-    (async function() {
-      var criadas = 0;
-      for (var i = 0; i < paraGerar.length; i++) {
-        var c = paraGerar[i];
-        var mesKey = c.previsao_pagamento ? c.previsao_pagamento.slice(0,7) : mesAtualAF;
-        var refKey = "fat_" + c.id + "_" + mesKey;
-        var valorFat = parseFloat(c.valor_total || 0);
-        var dtVencC = c.previsao_pagamento ? c.previsao_pagamento : dtVencAF;
-        var jaPago = c.status_pagamento === "pago" || c.status === "concluido";
-        var payload = {
-          descricao: "Comp. " + fmtComp(mesAtualAF) + " | Contrato nº " + numCt(c.id),
-          valor: valorFat.toFixed(2),
-          data: jaPago ? (c.data_pagamento || hoje2) : hoje2, data_vencimento: dtVencC,
-          status: jaPago ? "recebido" : "prevista", tipo: "locacao",
-          data_pagamento: jaPago ? (c.data_pagamento || hoje2) : null,
-          cliente_id: c.cliente_id, ref_fatura: refKey
-        };
-        try {
-          var nova = await db.post("receitas", payload);
-          setReceitas(function(p) { return p.some(function(r){ return r.ref_fatura===refKey; }) ? p : [nova].concat(p); });
-          criadas++;
-        } catch(e) { /* silencia */ }
-      }
-      if (criadas > 0) toast(criadas + " fatura(s) prevista(s) gerada(s) automaticamente.");
-    })();
+    // Nenhuma ação — geração automática removida para evitar duplicatas
   }, [contratos.length, receitas.length]);
 
   // Limpeza automática de contratos duplicados de renovação automática

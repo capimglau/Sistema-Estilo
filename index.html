@@ -13403,7 +13403,12 @@ function Inicio({ veiculos, clientes, contratos, multas, manutencoes, despesas, 
   const totalFrota = veiculos.length;
   const taxaOcup = totalFrota > 0 ? Math.round((alugados / totalFrota) * 100) : 0;
 
-  const ctsMes = contratos.filter(c => c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === dashMes);
+  const ctsMes = contratos.filter(c => {
+    // Contratos pagos: usa o mês do pagamento real (data_pagamento) se disponível
+    if (c.status_pagamento === "pago" && c.data_pagamento) return c.data_pagamento.slice(0,7) === dashMes;
+    // Demais: usa mês da previsão
+    return c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === dashMes;
+  });
   const recMes = ctsMes.filter(c => c.status_pagamento === "pago").reduce((s,c) => s+parseFloat(c.valor_total||0),0);
   const prevMes = ctsMes.reduce((s,c) => s+parseFloat(c.valor_total||0),0);
   const pendMes = ctsMes.filter(c => c.status_pagamento !== "pago" && c.status_pagamento !== "isento").length;
@@ -14176,27 +14181,45 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   function limparFiltros() { setFilDe(""); setFilAte(""); setFilVeiculo(""); setFilCliente(""); }
   async function remove(id) { if (!confirm("Excluir contrato?")) return; await db.del("contratos", id); setContratos(p => p.filter(c => c.id !== id)); toast("Excluído!"); }
   async function sincronizarRefFatura(c, dtPag) {
-    var mes = (c.previsao_pagamento || c.data_fim || "").slice(0, 7);
-    if (!mes) return;
-    var refKey = "fat_" + c.id + "_" + mes;
-    var recExist = (receitas || []).find(function(r) { return r.ref_fatura === refKey; });
+    // Mês do pagamento real prevalece sobre previsão
+    var mesPag = dtPag ? dtPag.slice(0, 7) : (c.previsao_pagamento || c.data_fim || "").slice(0, 7);
+    if (!mesPag) return;
+    var refKeyNovo = "fat_" + c.id + "_" + mesPag;
+    // Tenta localizar receita existente pela chave do mês de pagamento
+    var recExist = (receitas || []).find(function(r) { return r.ref_fatura === refKeyNovo; });
+    // Se não encontrou, verifica se existe pelo mês da previsão (receita prevista)
+    if (!recExist) {
+      var mesPrev = (c.previsao_pagamento || c.data_fim || "").slice(0, 7);
+      if (mesPrev && mesPrev !== mesPag) {
+        var refKeyPrev = "fat_" + c.id + "_" + mesPrev;
+        recExist = (receitas || []).find(function(r) { return r.ref_fatura === refKeyPrev; });
+        // Se existe com a chave antiga, migra para a nova chave do mês do pagamento
+        if (recExist) {
+          try {
+            var upd = await db.patch("receitas", recExist.id, { status: "recebido", data_pagamento: dtPag, ref_fatura: refKeyNovo });
+            setReceitas(function(p) { return p.map(function(r) { return r.id === recExist.id ? Object.assign({}, r, upd) : r; }); });
+          } catch(e) {}
+          return;
+        }
+      }
+    }
     if (recExist) {
       if (recExist.status !== "recebido") {
         try {
-          var upd = await db.patch("receitas", recExist.id, { status: "recebido", data_pagamento: dtPag });
-          setReceitas(function(p) { return p.map(function(r) { return r.id === recExist.id ? Object.assign({}, r, upd) : r; }); });
+          var upd2 = await db.patch("receitas", recExist.id, { status: "recebido", data_pagamento: dtPag });
+          setReceitas(function(p) { return p.map(function(r) { return r.id === recExist.id ? Object.assign({}, r, upd2) : r; }); });
         } catch(e) {}
       }
     } else {
-      // Não existe receipt → criar como recebido (ex: contratos concluídos não passam pelo auto-fatura)
+      // Não existe receipt → criar como recebido
       try {
         var nova = await db.post("receitas", {
-          descricao: "Comp. " + fmtComp(mes) + " | Contrato nº " + numCt(c.id),
+          descricao: "Comp. " + fmtComp(mesPag) + " | Contrato nº " + numCt(c.id),
           valor: parseFloat(c.valor_total || 0).toFixed(2),
           data: dtPag, data_pagamento: dtPag,
           data_vencimento: c.previsao_pagamento || dtPag,
           status: "recebido", tipo: "locacao",
-          cliente_id: c.cliente_id, ref_fatura: refKey
+          cliente_id: c.cliente_id, ref_fatura: refKeyNovo
         });
         setReceitas(function(p) { return p.concat([nova]); });
       } catch(e) {}
@@ -14506,7 +14529,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             )
             , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1035}}, fmtDate(c.data_inicio), " → "  , fmtDate(c.data_fim))
             , c.previsao_pagamento && React.createElement('div', { style: { fontSize: 12, color: pagAtrasado ? C.red : C.sub, fontWeight: pagAtrasado ? 600 : 400, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1036}}
-              , pagAtrasado ? "⚠ " : "", "Pgto: " , fmtDate(c.previsao_pagamento)
+              , pagAtrasado ? "⚠ " : "", "Prev. pgto: " , fmtDate(c.previsao_pagamento)
+              , isPago && c.data_pagamento && c.data_pagamento !== c.previsao_pagamento && React.createElement('span', { style: { color: C.green, fontWeight: 600, marginLeft: 6 } }, "· Pago: ", fmtDate(c.data_pagamento))
             )
             , isParcial && c.valor_pago && React.createElement('div', { style: { fontSize: 12, color: C.teal, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1039}}, "Pago: "
                , fmtBRL(c.valor_pago), " · Restante: "   , fmtBRL(Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0)))
@@ -14533,8 +14557,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               var dtPag = new Date().toISOString().split("T")[0];
               var obs = c.observacoes ? c.observacoes + "\n" : "";
               obs += "Recebido em " + dtPag + " (" + (c.forma_pagamento || "sem forma") + ")";
-              await db.patch("contratos", c.id, { status_pagamento: "pago", observacoes: obs });
-              setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", observacoes: obs }) : x));
+              await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtPag, observacoes: obs });
+              setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dtPag, observacoes: obs }) : x));
               await sincronizarRefFatura(c, dtPag);
               toast("✅ Pagamento registrado!");
             }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1060}}, "💰 Receber" )
@@ -14547,8 +14571,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               var dtPag = new Date().toISOString().split("T")[0];
               var obs = c.observacoes ? c.observacoes + "\n" : "";
               obs += "Pagamento completo em " + dtPag;
-              await db.patch("contratos", c.id, { status_pagamento: "pago", observacoes: obs });
-              setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", observacoes: obs }) : x));
+              await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtPag, observacoes: obs });
+              setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dtPag, observacoes: obs }) : x));
               await sincronizarRefFatura(c, dtPag);
               toast("✅ Pagamento completo!");
             }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1073}}, "✅ Completar pgto"  )
@@ -14560,10 +14584,15 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1081}}, "↩ Reverter parcial"  )
             , isPago && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
               if (!confirm("Reverter pagamento para 'a receber'?")) return;
-              await db.patch("contratos", c.id, { status_pagamento: "pendente", valor_pago: null });
-              setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pendente", valor_pago: null }) : x));
-              var _mes = (c.previsao_pagamento || c.data_fim || "").slice(0, 7);
-              if (_mes) { var _rk = "fat_"+c.id+"_"+_mes; var _rx = (receitas||[]).find(function(r){return r.ref_fatura===_rk;}); if (_rx && _rx.status==="recebido") { try { var _ru = await db.patch("receitas", _rx.id, { status: "previsto", data_pagamento: null }); setReceitas(p=>p.map(x=>x.id===_rx.id?Object.assign({},x,_ru):x)); } catch(e){} } }
+              await db.patch("contratos", c.id, { status_pagamento: "pendente", valor_pago: null, data_pagamento: null });
+              setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pendente", valor_pago: null, data_pagamento: null }) : x));
+              // Busca receita pelo mês do pagamento real (se existir) ou pelo mês da previsão
+              var _mesPag = c.data_pagamento ? c.data_pagamento.slice(0,7) : null;
+              var _mesPrev = (c.previsao_pagamento || c.data_fim || "").slice(0, 7);
+              var _rx = null;
+              if (_mesPag) { var _rkPag = "fat_"+c.id+"_"+_mesPag; _rx = (receitas||[]).find(function(r){return r.ref_fatura===_rkPag;}); }
+              if (!_rx && _mesPrev) { var _rkPrev = "fat_"+c.id+"_"+_mesPrev; _rx = (receitas||[]).find(function(r){return r.ref_fatura===_rkPrev;}); }
+              if (_rx && _rx.status==="recebido") { try { var _ru = await db.patch("receitas", _rx.id, { status: "prevista", data_pagamento: null }); setReceitas(p=>p.map(x=>x.id===_rx.id?Object.assign({},x,_ru):x)); } catch(e){} }
               toast("↩ Pagamento revertido");
             }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1087}}, "↩ Reverter pgto"  )
             , c.status === "ativo" && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: () => concluir(c), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1093}}, "Encerrar")
@@ -17203,11 +17232,11 @@ function SearchBar({ clientes, contratos, multas, veiculos, setTab, desktop }) {
     });
     (contratos || []).filter(function(c) {
       var cl = (clientes||[]).find(function(x) { return x.id == c.cliente_id; });
-      return ("00000"+c.id).slice(-5).includes(q) || (cl && (cl.nome||"").toLowerCase().includes(q));
+      return String(c.id).includes(q) || (cl && (cl.nome||"").toLowerCase().includes(q));
     }).slice(0,3).forEach(function(c) {
       var cl = (clientes||[]).find(function(x) { return x.id == c.cliente_id; });
       var ve = (veiculos||[]).find(function(x) { return x.id == c.veiculo_id; });
-      results.push({ tipo: "Contrato", icon: "\uD83D\uDCCB", label: "#"+("00000"+c.id).slice(-5)+" · "+(cl&&cl.nome||"—"), sub: (ve&&ve.placa||"")+" · "+c.status, action: function() { setTab("contratos"); } });
+      results.push({ tipo: "Contrato", icon: "\uD83D\uDCCB", label: "nº "+c.id+" · "+(cl&&cl.nome||"—"), sub: (ve&&ve.placa||"")+" · "+c.status, action: function() { setTab("contratos"); } });
     });
     (multas || []).filter(function(c) {
       var cl = (clientes||[]).find(function(x) { return x.id == c.cliente_id; });

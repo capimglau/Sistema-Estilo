@@ -13783,6 +13783,82 @@ function Inicio({ veiculos, clientes, contratos, multas, manutencoes, despesas, 
       );
     })()
 
+    /* ── POR PROPRIETÁRIO ── */
+    , (() => {
+      // Agrupa veículos por proprietário
+      var grupos = {};
+      veiculos.forEach(function(v) {
+        var prop = (v.proprietario || "").trim() || "Sem proprietário";
+        if (!grupos[prop]) grupos[prop] = { veiculos: [], prop: prop };
+        grupos[prop].veiculos.push(v);
+      });
+      var lista = Object.values(grupos);
+      if (lista.length === 0) return null;
+
+      lista.forEach(function(g) {
+        var vIds = new Set(g.veiculos.map(function(v){return v.id;}));
+        // Contratos do mês filtrado
+        var cts = contratos.filter(function(c){ return vIds.has(c.veiculo_id) || vIds.has(Number(c.veiculo_id)); });
+        var ctsMesP = cts.filter(function(c){
+          if (c.status_pagamento==="pago" && c.data_pagamento) return c.data_pagamento.slice(0,7)===dashMes;
+          return c.previsao_pagamento && c.previsao_pagamento.slice(0,7)===dashMes;
+        });
+        g.recebidoMes = ctsMesP.filter(function(c){return c.status_pagamento==="pago";}).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0);
+        g.pendentesMes = ctsMesP.filter(function(c){return c.status_pagamento!=="pago"&&c.status_pagamento!=="isento";}).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0);
+        g.ativosCount = cts.filter(function(c){return c.status==="ativo"&&!c.renovado_para;}).length;
+        g.custoMan = manutencoes.filter(function(m){
+          return vIds.has(m.veiculo_id) || vIds.has(Number(m.veiculo_id));
+        }).filter(function(m){return manMesRefGlobal(m)===dashMes;}).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
+        g.despMes = despesas.filter(function(d){
+          return (vIds.has(d.veiculo_id)||vIds.has(Number(d.veiculo_id))) && !d.manutencao_id && despesaVisivelNoMes(d,dashMes);
+        }).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
+        g.resultado = g.recebidoMes - g.custoMan - g.despMes;
+      });
+
+      lista.sort(function(a,b){return b.recebidoMes-a.recebidoMes;});
+      var maxRec = Math.max.apply(null, lista.map(function(g){return g.recebidoMes||0;}).concat([1]));
+
+      return React.createElement('div', { style: { background: C.card, borderRadius: 16, padding: "14px 16px", border: "1px solid " + C.border } }
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: .5, marginBottom: 12 } }, "Por Proprietário · " + nomeMes)
+        , lista.map(function(g, i) {
+          return React.createElement('div', { key: g.prop, style: { padding: "12px 0", borderBottom: i < lista.length-1 ? "1px solid "+C.border : "none" } }
+            , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 } }
+              , React.createElement('div', null
+                , React.createElement('div', { style: { fontWeight: 600, fontSize: 13 } }, "👤 ", g.prop)
+                , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } },
+                  g.veiculos.length + " veículo(s) · " + g.ativosCount + " contrato(s) ativo(s)"
+                )
+              )
+              , React.createElement('span', { style: { fontSize: 13, fontWeight: 800, color: g.resultado >= 0 ? C.green : C.red } },
+                (g.resultado >= 0 ? "+" : "") + fmtBRL(g.resultado)
+              )
+            )
+            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4 } }
+              , React.createElement('div', { style: { fontSize: 10, color: C.sub, width: 72, flexShrink: 0 } }, "Recebido")
+              , React.createElement('div', { style: { flex: 1, background: C.border, borderRadius: 4, height: 5, overflow: "hidden" } }
+                , React.createElement('div', { style: { height: "100%", borderRadius: 4, background: C.green, width: (g.recebidoMes/maxRec*100)+"%" } })
+              )
+              , React.createElement('div', { style: { fontSize: 11, fontWeight: 600, color: C.green, width: 76, textAlign: "right", flexShrink: 0 } }, fmtBRL(g.recebidoMes))
+            )
+            , g.pendentesMes > 0 && React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4 } }
+              , React.createElement('div', { style: { fontSize: 10, color: C.sub, width: 72, flexShrink: 0 } }, "A receber")
+              , React.createElement('div', { style: { flex: 1, background: C.border, borderRadius: 4, height: 5, overflow: "hidden" } }
+                , React.createElement('div', { style: { height: "100%", borderRadius: 4, background: C.orange, width: (g.pendentesMes/maxRec*100)+"%" } })
+              )
+              , React.createElement('div', { style: { fontSize: 11, fontWeight: 600, color: C.orange, width: 76, textAlign: "right", flexShrink: 0 } }, fmtBRL(g.pendentesMes))
+            )
+            , (g.custoMan + g.despMes) > 0 && React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8 } }
+              , React.createElement('div', { style: { fontSize: 10, color: C.sub, width: 72, flexShrink: 0 } }, "Custos")
+              , React.createElement('div', { style: { flex: 1, background: C.border, borderRadius: 4, height: 5, overflow: "hidden" } }
+                , React.createElement('div', { style: { height: "100%", borderRadius: 4, background: C.red, width: ((g.custoMan+g.despMes)/maxRec*100)+"%" } })
+              )
+              , React.createElement('div', { style: { fontSize: 11, fontWeight: 600, color: C.red, width: 76, textAlign: "right", flexShrink: 0 } }, fmtBRL(g.custoMan+g.despMes))
+            )
+          );
+        })
+      );
+    })()
+
         , (contratosAtrasados.length > 0 || contratosVencendo.length > 0 || faturasAEmitir.length > 0 || cnhVencida.length > 0 || cnhVencendo.length > 0 || contasVencidas.length > 0 || contasVencendo.length > 0 || manutProlongadas.length > 0) && (
       React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 435}}
         , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 436}}, "Central de Alertas"  )
@@ -13892,7 +13968,7 @@ function Frota({ veiculos, setVeiculos, contratos, toast }) {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const SC = { disponivel: C.green, alugado: C.blue, manutencao: C.purple, inativo: C.red };
-  const fil = veiculos.filter(v => ((v.placa || "") + " " + (v.modelo || "") + " " + (v.marca || "")).toLowerCase().includes(search.toLowerCase()));
+  const fil = veiculos.filter(v => ((v.placa || "") + " " + (v.modelo || "") + " " + (v.marca || "") + " " + (v.proprietario || "")).toLowerCase().includes(search.toLowerCase()));
   function F(k, v) { setForm(p => Object.assign({}, p, { [k]: v })); }
   async function save() {
     if (!form.placa || !form.modelo) return toast("Placa e Modelo obrigatorios", "error");
@@ -13921,6 +13997,7 @@ function Frota({ veiculos, setVeiculos, contratos, toast }) {
           , React.createElement('div', { style: { fontSize: 12, color: C.sub, display: "flex", gap: 12, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 522}}
             , v.ano && React.createElement('span', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 523}}, v.ano), v.cor && React.createElement('span', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 523}}, v.cor), v.km && React.createElement('span', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 523}}, Number(v.km).toLocaleString(), " km" )
           )
+          , v.proprietario && React.createElement('div', { style: { fontSize: 12, color: C.blue, fontWeight: 500 } }, "👤 ", v.proprietario)
           , React.createElement('div', { style: { fontWeight: 600, color: C.green, fontSize: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 525}}, fmtBRL(v.valor_diaria), React.createElement('span', { style: { fontWeight: 400, fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 525}}, "/dia"))
           , (() => {
             var hoje2 = new Date().toISOString().split("T")[0];
@@ -13964,6 +14041,7 @@ function Frota({ veiculos, setVeiculos, contratos, toast }) {
           , React.createElement(Lbl, { label: "Status", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, React.createElement('select', { style: FI, value: form.status || "disponivel", onChange: e => F("status", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, React.createElement('option', { value: "disponivel", __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, "Disponivel"), React.createElement('option', { value: "alugado", __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, "Alugado"), React.createElement('option', { value: "manutencao", __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, "Manutencao"), React.createElement('option', { value: "inativo", __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, "Inativo")))
         )
         , React.createElement(Lbl, { label: "Renavam", __self: this, __source: {fileName: _jsxFileName, lineNumber: 567}}, React.createElement('input', { style: FI, value: form.renavam || "", onChange: e => F("renavam", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 567}} ))
+        , React.createElement(Lbl, { label: "Proprietário" }, React.createElement('input', { style: FI, value: form.proprietario || "", onChange: e => F("proprietario", e.target.value), placeholder: "Nome do proprietário do veículo" }))
         , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 568}}
           , React.createElement(Lbl, { label: "Venc. IPVA" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 569}}, React.createElement('input', { style: FI, type: "date", value: form.venc_ipva || "", onChange: e => F("venc_ipva", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 569}} ))
           , React.createElement(Lbl, { label: "Venc. Seguro" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 570}}, React.createElement('input', { style: FI, type: "date", value: form.venc_seguro || "", onChange: e => F("venc_seguro", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 570}} ))
@@ -16870,7 +16948,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2620}}
     , React.createElement('div', { style: { fontSize: 24, fontWeight: 800 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2621}}, "Relatórios")
     , React.createElement('div', { style: { display: "flex", gap: 8, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch", paddingBottom: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2622}}
-      , [["geral","Geral"],["faturas","Faturas"],["veiculos","Por Veículo"],["projecao","Projeção"],["inadimplencia","Inadimplência"]].map(([x,l]) => React.createElement('button', { key: x, onClick: () => setTab(x), className: "lg-pill lg-pill-sm " + (tab === x ? "lg-blue" : "lg-ghost"), style: { fontWeight: 300, flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2623}}, l))
+      , [["geral","Geral"],["faturas","Faturas"],["veiculos","Por Veículo"],["proprietarios","Por Proprietário"],["projecao","Projeção"],["inadimplencia","Inadimplência"]].map(([x,l]) => React.createElement('button', { key: x, onClick: () => setTab(x), className: "lg-pill lg-pill-sm " + (tab === x ? "lg-blue" : "lg-ghost"), style: { fontWeight: 300, flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2623}}, l))
     )
 
     , tab === "geral" && React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2626}}
@@ -16959,6 +17037,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
               , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2716}}
                 , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2717}}
                   , React.createElement('div', { style: { fontWeight: 600, fontSize: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2718}}, x.v.placa, " " , React.createElement('span', { style: { fontWeight: 400, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2718}}, "— " , x.v.marca, " " , x.v.modelo))
+                  , x.v.proprietario && React.createElement('div', { style: { fontSize: 12, color: C.blue, marginTop: 1 } }, "👤 ", x.v.proprietario)
                   , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2719}}, x.totalContratos, " contrato(s) · "   , x.nMultas, " multa(s)" )
                 )
                 , React.createElement('span', { style: Badge(x.lucro >= 0 ? C.green : C.red), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2721}}, x.lucro >= 0 ? "+" : "", fmtBRL(x.lucro))
@@ -16994,6 +17073,122 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
               , x.receitaAtiva > 0 && React.createElement('div', { style: { fontSize: 11, color: C.orange, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2751}}, "+ " , fmtBRL(x.receitaAtiva), " em aberto"  )
             )
           ))
+        )
+      );
+    })()
+
+    , tab === "proprietarios" && (() => {
+      // Agrupa veículos por proprietário
+      var grupos = {};
+      veiculos.forEach(function(v) {
+        var prop = (v.proprietario || "").trim() || "Sem proprietário";
+        if (!grupos[prop]) grupos[prop] = { prop: prop, veiculos: [] };
+        grupos[prop].veiculos.push(v);
+      });
+      var lista = Object.values(grupos);
+      lista.forEach(function(g) {
+        var vIds = new Set(g.veiculos.map(function(v){return v.id;}));
+        var cts = contratos.filter(function(c){return vIds.has(c.veiculo_id)||vIds.has(Number(c.veiculo_id));});
+        g.totalContratos = cts.length;
+        g.ativos = cts.filter(function(c){return c.status==="ativo"&&!c.renovado_para;}).length;
+        g.receita = cts.reduce(function(s,c){
+          if (c.status==="concluido"||c.status_pagamento==="pago") return s+parseFloat(c.valor_total||0);
+          if (c.status_pagamento==="parcial"&&c.valor_pago) return s+parseFloat(c.valor_pago||0);
+          return s;
+        },0);
+        g.emAberto = cts.filter(function(c){return c.status==="ativo"&&!c.renovado_para&&c.status_pagamento!=="pago";}).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0);
+        g.custoMan = manutencoes.filter(function(m){return vIds.has(m.veiculo_id)||vIds.has(Number(m.veiculo_id));}).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
+        g.custoDespesas = (despesas||[]).filter(function(d){return (vIds.has(d.veiculo_id)||vIds.has(Number(d.veiculo_id)))&&!d.manutencao_id;}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
+        g.receitasVinc = (receitas||[]).filter(function(r){return vIds.has(r.veiculo_id)||vIds.has(Number(r.veiculo_id));}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+        g.totalReceita = g.receita + g.receitasVinc;
+        g.totalCusto = g.custoMan + g.custoDespesas;
+        g.lucro = g.totalReceita - g.totalCusto;
+        g.nMultas = multas.filter(function(m){var ct=contratos.find(function(c){return c.id==m.contrato_id;});return ct&&(vIds.has(ct.veiculo_id)||vIds.has(Number(ct.veiculo_id)));}).length;
+      });
+      lista.sort(function(a,b){return b.totalReceita-a.totalReceita;});
+      var maxRec2 = Math.max.apply(null, lista.map(function(g){return g.totalReceita||0;}).concat([1]));
+
+      function imprimirProp() {
+        var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Relatório Por Proprietário</title><style>body{font-family:Arial,sans-serif;max-width:850px;margin:30px auto;font-size:13px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #ddd}th{background:#f5f5f7}.g{color:#34C759;font-weight:700}.r{color:#FF3B30;font-weight:700}@media print{body{margin:0}}</style></head><body>';
+        h += buildHeader(empresa);
+        h += '<h2 style="margin-top:16px">Relatório por Proprietário</h2>';
+        h += '<table><tr><th>Proprietário</th><th>Veículos</th><th>Contratos</th><th>Ativos</th><th>Receita</th><th>Em Aberto</th><th>Custos</th><th>Lucro</th></tr>';
+        lista.forEach(function(g){
+          h += '<tr><td>'+g.prop+'</td><td>'+g.veiculos.length+'</td><td>'+g.totalContratos+'</td><td>'+g.ativos+'</td><td class="g">'+fmtBRL(g.totalReceita)+'</td><td>'+fmtBRL(g.emAberto)+'</td><td class="r">'+fmtBRL(g.totalCusto)+'</td><td class="'+(g.lucro>=0?"g":"r")+'">'+fmtBRL(g.lucro)+'</td></tr>';
+        });
+        h += '</table><scr'+'ipt>window.print();</scr'+'ipt></body></html>';
+        openPdfPage(h);
+      }
+
+      return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 } }
+        , React.createElement('div', { style: { display: "flex", justifyContent: "flex-end", gap: 8 } }
+          , React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: function(){
+            var rows = [["Proprietário","Veículos","Contratos","Ativos","Receita","Em Aberto","Custo Manut.","Custo Despesas","Receitas Avulsas","Lucro","Multas"]];
+            lista.forEach(function(g){rows.push([g.prop,g.veiculos.length,g.totalContratos,g.ativos,g.totalReceita,g.emAberto,g.custoMan,g.custoDespesas,g.receitasVinc,g.lucro,g.nMultas]);});
+            var csv = rows.map(function(r){return r.map(function(x){return '"'+String(x).replace(/"/g,'""')+'"';}).join(",");}).join("\n");
+            var a=document.createElement("a");a.href="data:text/csv;charset=utf-8,\uFEFF"+encodeURIComponent(csv);a.download="proprietarios.csv";a.click();
+          } }, "↓ CSV")
+          , React.createElement('button', { className: bCls(Btn(C.orange)), style: bStyle(Btn(C.orange)), onClick: imprimirProp }, "Imprimir")
+        )
+        , React.createElement('div', { className: "lg-card", style: CARD }
+          , lista.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 } }, "Nenhum veículo cadastrado")
+          , lista.map(function(g, i) {
+            return React.createElement('div', { key: g.prop, style: { padding: "16px 0", borderBottom: i < lista.length-1 ? "1px solid "+C.border : "none" } }
+              , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 } }
+                , React.createElement('div', null
+                  , React.createElement('div', { style: { fontWeight: 700, fontSize: 15 } }, "👤 ", g.prop)
+                  , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 3 } },
+                    g.veiculos.map(function(v){return v.placa;}).join(", ") + " · " + g.totalContratos + " contrato(s) · " + g.nMultas + " multa(s)"
+                  )
+                )
+                , React.createElement('span', { style: Object.assign({}, Badge(g.lucro >= 0 ? C.green : C.red), { fontSize: 14 }) },
+                  (g.lucro >= 0 ? "+" : "") + fmtBRL(g.lucro)
+                )
+              )
+              , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 5 } }
+                , React.createElement('div', { style: { fontSize: 10, color: C.sub, width: 90, flexShrink: 0 } }, "Receita total")
+                , React.createElement('div', { style: { flex: 1, background: C.bg, borderRadius: 4, height: 8, overflow: "hidden" } }
+                  , React.createElement('div', { style: { height: 8, borderRadius: 4, background: C.green, width: (g.totalReceita/maxRec2*100)+"%" } })
+                )
+                , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: C.green, width: 90, textAlign: "right", flexShrink: 0 } }, fmtBRL(g.totalReceita))
+              )
+              , g.emAberto > 0 && React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 5 } }
+                , React.createElement('div', { style: { fontSize: 10, color: C.sub, width: 90, flexShrink: 0 } }, "Em aberto")
+                , React.createElement('div', { style: { flex: 1, background: C.bg, borderRadius: 4, height: 8, overflow: "hidden" } }
+                  , React.createElement('div', { style: { height: 8, borderRadius: 4, background: C.orange, width: (g.emAberto/maxRec2*100)+"%" } })
+                )
+                , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: C.orange, width: 90, textAlign: "right", flexShrink: 0 } }, fmtBRL(g.emAberto))
+              )
+              , g.custoMan > 0 && React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 5 } }
+                , React.createElement('div', { style: { fontSize: 10, color: C.sub, width: 90, flexShrink: 0 } }, "Manutenção")
+                , React.createElement('div', { style: { flex: 1, background: C.bg, borderRadius: 4, height: 8, overflow: "hidden" } }
+                  , React.createElement('div', { style: { height: 8, borderRadius: 4, background: C.purple, width: (g.custoMan/maxRec2*100)+"%" } })
+                )
+                , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: C.purple, width: 90, textAlign: "right", flexShrink: 0 } }, fmtBRL(g.custoMan))
+              )
+              , g.custoDespesas > 0 && React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8 } }
+                , React.createElement('div', { style: { fontSize: 10, color: C.sub, width: 90, flexShrink: 0 } }, "Desp. avulsas")
+                , React.createElement('div', { style: { flex: 1, background: C.bg, borderRadius: 4, height: 8, overflow: "hidden" } }
+                  , React.createElement('div', { style: { height: 8, borderRadius: 4, background: C.red, width: (g.custoDespesas/maxRec2*100)+"%" } })
+                )
+                , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: C.red, width: 90, textAlign: "right", flexShrink: 0 } }, fmtBRL(g.custoDespesas))
+              )
+              , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginTop: 10 } }
+                , React.createElement('div', { style: { background: C.bg, borderRadius: 10, padding: "8px", textAlign: "center" } }
+                  , React.createElement('div', { style: { fontSize: 11, color: C.sub } }, "Veículos")
+                  , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.blue } }, g.veiculos.length)
+                )
+                , React.createElement('div', { style: { background: C.bg, borderRadius: 10, padding: "8px", textAlign: "center" } }
+                  , React.createElement('div', { style: { fontSize: 11, color: C.sub } }, "Ativos")
+                  , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.green } }, g.ativos)
+                )
+                , React.createElement('div', { style: { background: C.bg, borderRadius: 10, padding: "8px", textAlign: "center" } }
+                  , React.createElement('div', { style: { fontSize: 11, color: C.sub } }, "Multas")
+                  , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: g.nMultas > 0 ? C.red : C.sub } }, g.nMultas)
+                )
+              )
+            );
+          })
         )
       );
     })()
@@ -17267,6 +17462,7 @@ function Config({ empresa, setEmpresa, toast }) {
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3018}}), "alter table veiculos add column if not exists venc_licenciamento date;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3019}}), "alter table veiculos add column if not exists venc_revisao date;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3020}}), "alter table veiculos add column if not exists sinistros text;"
+                 , React.createElement('br', {}), "alter table veiculos add column if not exists proprietario text;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3021}}), "alter table clientes add column if not exists rg_url text;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3022}}), "alter table clientes add column if not exists comprovante_url text;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3023}}), "alter table contratos add column if not exists observacoes_encerramento text;"

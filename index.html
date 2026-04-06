@@ -13859,6 +13859,96 @@ function Inicio({ veiculos, clientes, contratos, multas, manutencoes, despesas, 
         );
       })()
     )
+    /* ── EVOLUÇÃO MENSAL ── */
+    , (() => {
+      var meses6 = [];
+      for (var _i = 5; _i >= 0; _i--) {
+        var _d = new Date(dashMes + "-15"); _d.setMonth(_d.getMonth() - _i);
+        meses6.push(_d.toISOString().slice(0, 7));
+      }
+      var dados = meses6.map(function(mes) {
+        var recCtrs = contratos.filter(function(c){ return c.status_pagamento==="pago" && (c.data_pagamento||"").slice(0,7)===mes; }).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0);
+        var recAvul = (receitas||[]).filter(function(r){ return receitaVisivelNoMes(r,mes) && r.status==="recebido" && !r.ref_fatura; }).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+        var recFat  = (receitas||[]).filter(function(r){ return receitaVisivelNoMes(r,mes) && r.status==="recebido" && r.ref_fatura; }).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+        var rec  = recCtrs + recAvul + recFat;
+        var desp = despesas.filter(function(d){ return despesaVisivelNoMes(d,mes) && !d.manutencao_id; }).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
+        var man  = manutencoes.filter(function(m){ return manMesRefGlobal(m)===mes; }).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
+        var lbl  = new Date(mes+"-15").toLocaleString("pt-BR",{month:"short"}).replace(".","").slice(0,3);
+        return { mes:mes, rec:rec, desp:desp, man:man, liq:rec-desp-man, lbl:lbl };
+      });
+
+      var maxVal = Math.max.apply(null, dados.map(function(d){ return Math.max(d.rec, d.desp+d.man, 100); }));
+      var W=300, H=100, padL=6, padR=6, padT=6, nCols=dados.length;
+      var colW = (W-padL-padR)/nCols;
+      var bw1=colW*0.34, bw2=colW*0.22, bw3=colW*0.13, gap=colW*0.05;
+      var yScale = function(v){ return H - padT - (Math.max(0,v)/maxVal)*(H-padT); };
+
+      // Linha de resultado líquido
+      var liqPts = dados.map(function(d,i){
+        var cx = padL + i*colW + colW/2;
+        var liqClamped = Math.max(-maxVal, Math.min(maxVal, d.liq));
+        var zeroY = yScale(0);
+        var y = H - padT - ((liqClamped + maxVal)/(2*maxVal))*(H-padT);
+        return cx + "," + Math.max(padT, Math.min(H, y));
+      }).join(" ");
+
+      return React.createElement('div', { className:"lg-card", style:CARD }
+        , React.createElement('div', { style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:.5,marginBottom:10} }, "Evolução Mensal — últimos 6 meses")
+        , React.createElement('div', { style:{display:"flex",gap:14,marginBottom:10,flexWrap:"wrap"} }
+          , React.createElement('span', { style:{fontSize:11,color:C.green,fontWeight:600,display:"flex",alignItems:"center",gap:4} }, React.createElement('span',{style:{width:10,height:10,borderRadius:3,background:C.green,display:"inline-block"}}), "Receitas")
+          , React.createElement('span', { style:{fontSize:11,color:C.red,fontWeight:600,display:"flex",alignItems:"center",gap:4} }, React.createElement('span',{style:{width:10,height:10,borderRadius:3,background:C.red,display:"inline-block"}}), "Despesas")
+          , React.createElement('span', { style:{fontSize:11,color:C.purple,fontWeight:600,display:"flex",alignItems:"center",gap:4} }, React.createElement('span',{style:{width:10,height:10,borderRadius:3,background:C.purple,display:"inline-block"}}), "Manutenções")
+          , React.createElement('span', { style:{fontSize:11,color:C.blue,fontWeight:600,display:"flex",alignItems:"center",gap:4} }, React.createElement('span',{style:{width:10,height:3,borderRadius:2,background:C.blue,display:"inline-block"}}), "Resultado")
+        )
+        , React.createElement('svg', { viewBox:"0 0 "+W+" "+(H+16), style:{width:"100%",overflow:"visible"} }
+          /* Linhas guia */
+          , [0.25,0.5,0.75,1].map(function(f){
+            var y = padT + (1-f)*(H-padT);
+            return React.createElement('line',{key:f,x1:padL,y1:y,x2:W-padR,y2:y,stroke:"currentColor",strokeOpacity:.08,strokeWidth:.5});
+          })
+          /* Barras */
+          , dados.map(function(d,i){
+            var cx = padL + i*colW + colW/2;
+            var recH = Math.max(1,(d.rec/maxVal)*(H-padT));
+            var despH = Math.max(1,(d.desp/maxVal)*(H-padT));
+            var manH = Math.max(d.man>0?1:0,(d.man/maxVal)*(H-padT));
+            return React.createElement('g',{key:d.mes}
+              , React.createElement('rect',{x:cx-bw1-bw2-bw3-gap*2,y:H-recH,width:bw1,height:recH,fill:C.green,rx:2,opacity:.9})
+              , React.createElement('rect',{x:cx-bw2-bw3-gap,y:H-despH,width:bw2,height:despH,fill:C.red,rx:2,opacity:.85})
+              , React.createElement('rect',{x:cx-bw3,y:H-manH,width:bw3,height:manH,fill:C.purple,rx:2,opacity:.85})
+              , React.createElement('text',{x:cx-bw1/2-gap,y:H+11,textAnchor:"middle",fontSize:7.5,fill:"currentColor",opacity:.5}, d.lbl)
+            );
+          })
+          /* Linha resultado */
+          , React.createElement('polyline',{points:liqPts,fill:"none",stroke:C.blue,strokeWidth:1.5,strokeLinejoin:"round",strokeLinecap:"round",opacity:.9})
+          , dados.map(function(d,i){
+            var cx = padL + i*colW + colW/2;
+            var liqClamped = Math.max(-maxVal, Math.min(maxVal, d.liq));
+            var y = H - padT - ((liqClamped + maxVal)/(2*maxVal))*(H-padT);
+            return React.createElement('circle',{key:d.mes,cx:cx,cy:Math.max(padT,Math.min(H,y)),r:2.5,fill:C.blue,opacity:.95});
+          })
+        )
+        /* Tabela resumo 3 últimos meses */
+        , React.createElement('div', { style:{borderTop:"1px solid "+C.border,marginTop:10,paddingTop:10} }
+          , React.createElement('div', { style:{display:"grid",gridTemplateColumns:"auto 1fr 1fr 1fr 1fr",gap:"4px 8px",fontSize:11,alignItems:"center"} }
+            , React.createElement('span',{style:{color:C.sub,fontWeight:700}},"")
+            , React.createElement('span',{style:{color:C.green,fontWeight:700,textAlign:"right"}},"Rec.")
+            , React.createElement('span',{style:{color:C.red,fontWeight:700,textAlign:"right"}},"Desp.")
+            , React.createElement('span',{style:{color:C.purple,fontWeight:700,textAlign:"right"}},"Man.")
+            , React.createElement('span',{style:{color:C.blue,fontWeight:700,textAlign:"right"}},"Líq.")
+            , dados.slice(-3).map(function(d){
+              return [
+                React.createElement('span',{key:d.mes+"l",style:{color:C.sub,fontWeight:d.mes===dashMes?700:400}}, d.lbl)
+                , React.createElement('span',{key:d.mes+"r",style:{color:C.green,textAlign:"right"}}, fmtBRL(d.rec))
+                , React.createElement('span',{key:d.mes+"d",style:{color:C.red,textAlign:"right"}}, fmtBRL(d.desp))
+                , React.createElement('span',{key:d.mes+"m",style:{color:d.man>0?C.purple:C.sub,textAlign:"right"}}, fmtBRL(d.man))
+                , React.createElement('span',{key:d.mes+"q",style:{color:d.liq>=0?C.green:C.red,fontWeight:600,textAlign:"right"}}, fmtBRL(d.liq))
+              ];
+            })
+          )
+        )
+      );
+    })()
   );
 }
 

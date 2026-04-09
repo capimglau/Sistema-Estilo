@@ -13303,7 +13303,7 @@ function statusEfetivoVeiculo(veiculo, contratos) {
   return temAtivo ? "alugado" : "disponivel";
 }
 
-function Inicio({ veiculos, clientes, contratos, multas, manutencoes, despesas, receitas, contas, setTab }) {
+function Inicio({ veiculos, clientes, contratos, multas, manutencoes, despesas, receitas, contas, reservas, setTab }) {
   const hoje = new Date().toISOString().split("T")[0];
   const mesAtual = new Date().toISOString().slice(0, 7);
   const [dashMes, setDashMes] = React.useState(mesAtual);
@@ -13527,6 +13527,26 @@ function Inicio({ veiculos, clientes, contratos, multas, manutencoes, despesas, 
             , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 427}}, proxQt, " contrato(s)" )
           )
           , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: C.teal }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 429}}, fmtBRL(proxVal))
+        )
+      );
+    })()
+
+    /* ── RESERVAS ATIVAS ── */
+    , (() => {
+      var resAtivas = (reservas||[]).filter(function(r){ return r.status==="pendente"||r.status==="confirmada"; });
+      var resHoje7 = resAtivas.filter(function(r){ return r.data_inicio && r.data_inicio <= str7; });
+      if (resAtivas.length === 0) return null;
+      return React.createElement('div', { onClick:function(){ setTab("reservas"); }, style:{ background:C.card, borderRadius:14, padding:"14px 16px", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", border:"1px solid "+C.border } }
+        , React.createElement('div', null
+          , React.createElement('div', { style:{ fontSize:10, color:C.sub, fontWeight:600, textTransform:"uppercase", letterSpacing:0.5 } }, "Reservas Ativas")
+          , React.createElement('div', { style:{ fontSize:20, fontWeight:700, color:C.purple, marginTop:2 } }, resAtivas.length)
+          , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:1 } },
+            resHoje7.length > 0 ? resHoje7.length + " com retirada em 7 dias" : "nenhuma retirada próxima"
+          )
+        )
+        , React.createElement('div', { style:{ textAlign:"right" } }
+          , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginBottom:4 } }, resAtivas.filter(function(r){return r.status==="confirmada";}).length + " confirmada(s)")
+          , React.createElement('div', { style:{ fontSize:11, color:C.orange } }, resAtivas.filter(function(r){return r.status==="pendente";}).length + " pendente(s)")
         )
       );
     })()
@@ -17429,9 +17449,281 @@ function NavIcon({ id, active }) {
   });
 }
 
+// ── RESERVAS ─────────────────────────────────────────────────────────────────
+function Reservas({ reservas, setReservas, veiculos, clientes, contratos, setContratos, setVeiculos, toast }) {
+  var hoje = new Date().toISOString().split("T")[0];
+  var _m = React.useState(false); var modal = _m[0]; var setModal = _m[1];
+  var _f = React.useState({}); var form = _f[0]; var setForm = _f[1];
+  var _e = React.useState(null); var edit = _e[0]; var setEdit = _e[1];
+  var _l = React.useState(false); var loading = _l[0]; var setLoading = _l[1];
+  var _fi = React.useState("pendente"); var filter = _fi[0]; var setFilter = _fi[1];
+
+  function F(k, v) { setForm(function(p){ return Object.assign({}, p, { [k]: v }); }); }
+  function getCl(id) { return clientes.find(function(c){ return c.id == id; }); }
+  function getVe(id) { return veiculos.find(function(v){ return v.id == id; }); }
+
+  function veicDisponivel(vid, d1, d2, exId) {
+    var ve = getVe(vid);
+    if (!ve || ve.status === "manutencao" || ve.status === "inativo") return false;
+    var ctConflito = contratos.filter(function(c){
+      return c.status === "ativo" && String(c.veiculo_id) === String(vid);
+    }).some(function(c){ return !(c.data_fim < d1 || c.data_inicio > d2); });
+    if (ctConflito) return false;
+    var resConflito = reservas.filter(function(r){
+      return r.id != exId && String(r.veiculo_id) === String(vid) && (r.status === "pendente" || r.status === "confirmada");
+    }).some(function(r){ return !(r.data_fim < d1 || r.data_inicio > d2); });
+    return !resConflito;
+  }
+
+  async function save() {
+    if (!form.cliente_id || !form.veiculo_id || !form.data_inicio || !form.data_fim)
+      return toast("Preencha cliente, veículo e datas", "error");
+    if (form.data_fim < form.data_inicio)
+      return toast("Data de devolução deve ser após a retirada", "error");
+    if (form.data_inicio && form.data_fim && !veicDisponivel(form.veiculo_id, form.data_inicio, form.data_fim, edit)) {
+      if (!confirm("Este veículo pode ter conflito neste período. Continuar mesmo assim?")) return;
+    }
+    setLoading(true);
+    try {
+      var payload = Object.assign({}, form, { status: form.status || "pendente" });
+      if (edit) {
+        var u = await db.patch("reservas", edit, payload);
+        setReservas(function(p){ return p.map(function(r){ return r.id === edit ? Object.assign({}, r, u) : r; }); });
+        toast("Reserva atualizada!");
+      } else {
+        var nova = await db.post("reservas", payload);
+        setReservas(function(p){ return [nova].concat(p); });
+        toast("Reserva criada!");
+      }
+      setModal(false); setForm({}); setEdit(null);
+    } catch(e) { toast("Erro: " + e.message, "error"); }
+    setLoading(false);
+  }
+
+  async function confirmar(r) {
+    try {
+      await db.patch("reservas", r.id, { status: "confirmada" });
+      setReservas(function(p){ return p.map(function(x){ return x.id===r.id ? Object.assign({},x,{status:"confirmada"}) : x; }); });
+      toast("Reserva confirmada!");
+    } catch(e) { toast("Erro", "error"); }
+  }
+
+  async function cancelar(r) {
+    if (!confirm("Cancelar esta reserva?")) return;
+    try {
+      await db.patch("reservas", r.id, { status: "cancelada" });
+      setReservas(function(p){ return p.map(function(x){ return x.id===r.id ? Object.assign({},x,{status:"cancelada"}) : x; }); });
+      toast("Cancelada.");
+    } catch(e) { toast("Erro", "error"); }
+  }
+
+  async function converter(r) {
+    if (!confirm("Converter esta reserva em contrato ativo?")) return;
+    var cl = getCl(r.cliente_id);
+    if (cl && cl.bloqueado) return toast("Cliente bloqueado: " + (cl.motivo_bloqueio || ""), "error");
+    try {
+      var payload = {
+        cliente_id: r.cliente_id, veiculo_id: r.veiculo_id,
+        data_inicio: r.data_inicio, data_fim: r.data_fim,
+        valor_total: r.valor_estimado || 0,
+        status: "ativo", status_pagamento: "pendente",
+        observacoes: "Gerado a partir da Reserva #" + r.id + (r.observacoes ? ". " + r.observacoes : "")
+      };
+      var ct = await db.post("contratos", payload);
+      setContratos(function(p){ return [ct].concat(p); });
+      await db.patch("veiculos", r.veiculo_id, { status: "alugado" });
+      setVeiculos(function(p){ return p.map(function(v){ return v.id==r.veiculo_id ? Object.assign({},v,{status:"alugado"}) : v; }); });
+      await db.patch("reservas", r.id, { status: "convertida", contrato_id: ct.id });
+      setReservas(function(p){ return p.map(function(x){ return x.id===r.id ? Object.assign({},x,{status:"convertida",contrato_id:ct.id}) : x; }); });
+      toast("Contrato nº " + numCt(ct.id) + " criado!");
+    } catch(e) { toast("Erro ao converter: " + e.message, "error"); }
+  }
+
+  async function excluir(id) {
+    if (!confirm("Excluir reserva permanentemente?")) return;
+    try {
+      await db.del("reservas", id);
+      setReservas(function(p){ return p.filter(function(r){ return r.id !== id; }); });
+      toast("Excluída!");
+    } catch(e) { toast("Erro", "error"); }
+  }
+
+  function enviarWpp(r) {
+    var cl = getCl(r.cliente_id); var ve = getVe(r.veiculo_id);
+    if (!cl) return toast("Cliente não encontrado", "error");
+    var txt = "Olá " + (cl.nome||"") + "!\n\n"
+      + (r.status==="confirmada" ? "✅ Sua reserva foi CONFIRMADA!\n\n" : "📋 Reserva registrada:\n\n")
+      + "🚗 " + (ve ? (ve.marca||"")+" "+(ve.modelo||"")+" · "+(ve.placa||"") : "—") + "\n"
+      + "📅 Retirada: " + fmtDate(r.data_inicio) + "\n"
+      + "📅 Devolução: " + fmtDate(r.data_fim) + "\n"
+      + (r.valor_estimado ? "💰 Valor estimado: " + fmtBRL(r.valor_estimado) + "\n" : "")
+      + "\nObrigado pela preferência! 🙏";
+    var tel = (r.telefone_contato || (cl && cl.telefone) || "").replace(/\D/g, "");
+    if (tel && tel.length >= 10) {
+      window.open("https://wa.me/55" + tel + "?text=" + encodeURIComponent(txt), "_blank");
+    } else {
+      window.open("https://wa.me/?text=" + encodeURIComponent(txt), "_blank");
+    }
+  }
+
+  var SC = { pendente: C.orange, confirmada: C.green, cancelada: C.red, convertida: C.blue };
+  var SL = { pendente: "Pendente", confirmada: "Confirmada", cancelada: "Cancelada", convertida: "Convertida" };
+  var filtradas = reservas.filter(function(r){ return filter === "todas" || r.status === filter; });
+  var veicOpts = (form.data_inicio && form.data_fim)
+    ? veiculos.filter(function(v){ return veicDisponivel(v.id, form.data_inicio, form.data_fim, edit) || String(v.id) === String(form.veiculo_id); })
+    : veiculos;
+
+  return React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:14 } }
+    /* Cabeçalho */
+    , React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"center" } }
+      , React.createElement('div', null
+        , React.createElement('div', { style: { fontSize:20, fontWeight:800, letterSpacing:-0.5 } }, "Reservas")
+        , React.createElement('div', { style: { fontSize:13, color:C.sub, marginTop:2 } },
+          reservas.filter(function(r){ return r.status==="pendente"||r.status==="confirmada"; }).length + " ativa(s)"
+        )
+      )
+      , React.createElement('button', { className:"lg-pill lg-blue", onClick:function(){ setForm({}); setEdit(null); setModal(true); } }, "+ Nova Reserva")
+    )
+
+    /* Filtros */
+    , React.createElement('div', { style: { display:"flex", gap:6, flexWrap:"wrap" } }
+      , [["todas","Todas"],["pendente","Pendentes"],["confirmada","Confirmadas"],["cancelada","Canceladas"],["convertida","Convertidas"]].map(function(pair){
+        var s=pair[0], lbl=pair[1];
+        var cnt = s==="todas" ? reservas.length : reservas.filter(function(r){ return r.status===s; }).length;
+        return React.createElement('button', { key:s,
+          className:"lg-pill lg-pill-sm "+(filter===s?"lg-blue":"lg-ghost"),
+          style:{ fontWeight:300, flexShrink:0 }, onClick:function(){ setFilter(s); }
+        }, lbl + " (" + cnt + ")")
+      })
+    )
+
+    /* Lista */
+    , filtradas.length === 0
+      ? React.createElement('div', { className:"lg-card", style:{ padding:"32px 20px", textAlign:"center" } }
+          , React.createElement('div', { style:{ fontSize:36, marginBottom:10 } }, "📋")
+          , React.createElement('div', { style:{ fontSize:15, fontWeight:600 } }, "Nenhuma reserva")
+          , React.createElement('div', { style:{ fontSize:13, color:C.sub, marginTop:4 } },
+            filter==="todas" ? "Crie a primeira reserva com o botão acima." : "Sem reservas nesta categoria."
+          )
+        )
+      : filtradas.map(function(r){
+          var cl = getCl(r.cliente_id); var ve = getVe(r.veiculo_id);
+          var sc = SC[r.status] || C.gray;
+          var nDias = (r.data_inicio && r.data_fim)
+            ? Math.max(1, Math.ceil((new Date(r.data_fim)-new Date(r.data_inicio))/86400000)) : 0;
+          var vencida = (r.status==="pendente"||r.status==="confirmada") && r.data_inicio && r.data_inicio < hoje;
+          return React.createElement('div', { key:r.id, className:"lg-card", style:{ padding:"14px 16px" } }
+            /* Topo do card */
+            , React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 } }
+              , React.createElement('div', null
+                , React.createElement('div', { style:{ fontWeight:700, fontSize:15 } }, (cl&&cl.nome)||"—")
+                , React.createElement('div', { style:{ fontSize:12, color:C.sub, marginTop:2 } },
+                  ve ? (ve.marca||"")+" "+(ve.modelo||"")+" · "+(ve.placa||"") : "—"
+                )
+                , r.telefone_contato && React.createElement('div', { style:{ fontSize:12, color:C.sub } }, "📞 " + r.telefone_contato)
+              )
+              , React.createElement('div', { style:{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 } }
+                , React.createElement('span', { style: Badge(sc) }, SL[r.status]||r.status)
+                , vencida && React.createElement('span', { style: Badge(C.red) }, "Vencida")
+              )
+            )
+            /* Datas e valor */
+            , React.createElement('div', { style:{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:6, padding:"10px 0", borderTop:"1px solid var(--c-border)", borderBottom:"1px solid var(--c-border)", marginBottom:10 } }
+              , React.createElement('div', null
+                , React.createElement('div', { style:{ fontSize:9, color:C.sub, fontWeight:600, textTransform:"uppercase", letterSpacing:.4 } }, "Retirada")
+                , React.createElement('div', { style:{ fontSize:12, fontWeight:600 } }, fmtDate(r.data_inicio))
+              )
+              , React.createElement('div', null
+                , React.createElement('div', { style:{ fontSize:9, color:C.sub, fontWeight:600, textTransform:"uppercase", letterSpacing:.4 } }, "Devolução")
+                , React.createElement('div', { style:{ fontSize:12, fontWeight:600 } }, fmtDate(r.data_fim))
+              )
+              , React.createElement('div', null
+                , React.createElement('div', { style:{ fontSize:9, color:C.sub, fontWeight:600, textTransform:"uppercase", letterSpacing:.4 } }, "Dias")
+                , React.createElement('div', { style:{ fontSize:12, fontWeight:600 } }, nDias||"—")
+              )
+              , React.createElement('div', null
+                , React.createElement('div', { style:{ fontSize:9, color:C.sub, fontWeight:600, textTransform:"uppercase", letterSpacing:.4 } }, "Estimado")
+                , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color: r.valor_estimado > 0 ? C.green : C.sub } },
+                  r.valor_estimado > 0 ? fmtBRL(r.valor_estimado) : "—"
+                )
+              )
+            )
+            /* Observações */
+            , r.observacoes && React.createElement('div', { style:{ fontSize:12, color:C.sub, marginBottom:8, fontStyle:"italic" } }, "💬 " + r.observacoes)
+            /* Contrato vinculado */
+            , r.status==="convertida" && r.contrato_id && React.createElement('div', { style:{ fontSize:12, color:C.blue, fontWeight:600, marginBottom:8 } }, "📋 Contrato nº " + numCt(r.contrato_id))
+            /* Ações */
+            , React.createElement('div', { style:{ display:"flex", gap:6, flexWrap:"wrap" } }
+              , r.status==="pendente" && React.createElement('button', { className:"lg-pill lg-pill-sm lg-green", onClick:function(){ confirmar(r); } }, "✓ Confirmar")
+              , (r.status==="pendente"||r.status==="confirmada") && React.createElement('button', { className:"lg-pill lg-pill-sm lg-blue", onClick:function(){ converter(r); } }, "→ Contrato")
+              , (r.status==="pendente"||r.status==="confirmada") && React.createElement('button', { className:"lg-pill lg-pill-sm lg-ghost", onClick:function(){ setForm(Object.assign({},r)); setEdit(r.id); setModal(true); } }, "Editar")
+              , (r.status==="pendente"||r.status==="confirmada") && React.createElement('button', { className:"lg-pill lg-pill-sm", style:{ background:"rgba(37,211,102,0.15)", color:"#25D366" }, onClick:function(){ enviarWpp(r); } }, "WhatsApp")
+              , (r.status==="pendente"||r.status==="confirmada") && React.createElement('button', { className:"lg-pill lg-pill-sm lg-red", onClick:function(){ cancelar(r); } }, "Cancelar")
+              , (r.status==="cancelada"||r.status==="convertida") && React.createElement('button', { className:"lg-pill lg-pill-sm lg-ghost", style:{ color:C.red }, onClick:function(){ excluir(r.id); } }, "Excluir")
+            )
+          );
+        })
+
+    /* Modal Formulário */
+    , React.createElement(Modal, { open:modal, onClose:function(){ setModal(false); setForm({}); setEdit(null); }, title: edit?"Editar Reserva":"Nova Reserva" }
+      , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:10 } }
+        , React.createElement(Lbl, { label:"Cliente *" }
+          , React.createElement('select', { style:FI, value:form.cliente_id||"", onChange:function(e){ F("cliente_id", e.target.value?parseInt(e.target.value):""); } }
+            , React.createElement('option', { value:"" }, "Selecione...")
+            , clientes.map(function(c){ return React.createElement('option', { key:c.id, value:c.id }, c.nome + (c.bloqueado?" [BLOQUEADO]":"")); })
+          )
+        )
+        , React.createElement('div', { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 } }
+          , React.createElement(Lbl, { label:"Data de Retirada *" }
+            , React.createElement('input', { type:"date", style:FI, value:form.data_inicio||"", onChange:function(e){ F("data_inicio",e.target.value); } })
+          )
+          , React.createElement(Lbl, { label:"Data de Devolução *" }
+            , React.createElement('input', { type:"date", style:FI, value:form.data_fim||"", onChange:function(e){ F("data_fim",e.target.value); } })
+          )
+        )
+        , React.createElement(Lbl, { label:"Veículo *" + (form.data_inicio&&form.data_fim ? " (disponíveis no período)" : "") }
+          , React.createElement('select', { style:FI, value:form.veiculo_id||"", onChange:function(e){ F("veiculo_id", e.target.value?parseInt(e.target.value):""); } }
+            , React.createElement('option', { value:"" }, "Selecione...")
+            , veicOpts.map(function(v){ return React.createElement('option', { key:v.id, value:v.id },
+                (v.marca||"")+" "+(v.modelo||"")+" · "+(v.placa||"")+(v.valor_diaria?" · R$"+parseFloat(v.valor_diaria).toFixed(0)+"/dia":"")
+              ); })
+          )
+        )
+        , React.createElement('div', { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 } }
+          , React.createElement(Lbl, { label:"Valor Estimado (R$)" }
+            , React.createElement('input', { type:"number", step:"0.01", style:FI, value:form.valor_estimado||"", placeholder:"0,00",
+                onChange:function(e){ F("valor_estimado",e.target.value); } })
+          )
+          , React.createElement(Lbl, { label:"Telefone de Contato" }
+            , React.createElement('input', { type:"tel", style:FI, value:form.telefone_contato||"", placeholder:"(11) 99999-9999",
+                onChange:function(e){ F("telefone_contato",e.target.value); } })
+          )
+        )
+        , React.createElement(Lbl, { label:"Status" }
+          , React.createElement('select', { style:FI, value:form.status||"pendente", onChange:function(e){ F("status",e.target.value); } }
+            , React.createElement('option', { value:"pendente" }, "Pendente")
+            , React.createElement('option', { value:"confirmada" }, "Confirmada")
+            , React.createElement('option', { value:"cancelada" }, "Cancelada")
+          )
+        )
+        , React.createElement(Lbl, { label:"Observações" }
+          , React.createElement('textarea', { style:Object.assign({},FI,{resize:"vertical",minHeight:60}), value:form.observacoes||"",
+              onChange:function(e){ F("observacoes",e.target.value); } })
+        )
+        , React.createElement('div', { style:{ display:"flex", gap:8, marginTop:4 } }
+          , React.createElement('button', { className:"lg-pill lg-blue", style:{flex:1}, onClick:save, disabled:loading },
+            loading ? "Salvando..." : edit ? "Salvar Alterações" : "Criar Reserva"
+          )
+          , React.createElement('button', { className:"lg-pill lg-ghost", onClick:function(){ setModal(false); setForm({}); setEdit(null); } }, "Cancelar")
+        )
+      )
+    )
+  );
+}
+
 const TABS = [
   { id: "inicio", label: "Início" }, { id: "cadastro", label: "Cadastro" },
-  { id: "contratos", label: "Contratos" }, { id: "financeiro", label: "Financeiro" },
+  { id: "contratos", label: "Contratos" }, { id: "reservas", label: "Reservas" }, { id: "financeiro", label: "Financeiro" },
   { id: "multas", label: "Multas" }, { id: "manutencao", label: "Manutenção" },
   { id: "relatorios", label: "Relatórios" },
   { id: "calendario", label: "Calendário" }, { id: "simulador", label: "Simulador" }, { id: "config", label: "Config" }
@@ -17448,7 +17740,8 @@ const ICONS = {
   relatorios: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 17V13m4 4V9m4 8v-5"/><\/svg>',
   config:     '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/><\/svg>',
   calendario: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01"/><\/svg>',
-  simulador: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/><\/svg>'
+  simulador:  '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/><\/svg>',
+  reservas:   '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M9 16l2 2 4-4"/><\/svg>'
 };
 
 
@@ -18563,6 +18856,7 @@ function App() {
   const [receitas, setReceitas] = useState([]);
   const [contas, setContas] = useState([]);
   const [usos, setUsos] = useState([]);
+  const [reservas, setReservas] = useState([]);
   const [empresa, setEmpresa] = useState({});
   const [toastState, setToastState] = useState({ msg: "", type: "ok" });
   const autoFaturaFeita = React.useRef(false);
@@ -18586,6 +18880,7 @@ function App() {
     db.get("receitas", "limit=1000").then(d => setReceitas(d || []));
     db.get("contas").then(d => setContas(d || []));
     db.get("usos").then(d => setUsos(d || []));
+    db.get("reservas").then(d => setReservas(d || []));
     db.get("config", "limit=1").then(d => { if (d && d[0]) setEmpresa(d[0]); });
     // Liquid Glass body background
     var isDark = localStorage.getItem("dm") === "1";
@@ -18675,7 +18970,7 @@ function App() {
     })();
   }, [contratos.length]);
 
-  var props = { veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, multas, setMultas, manutencoes, setManutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, usos, setUsos, empresa, toast, setTab };
+  var props = { veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, multas, setMultas, manutencoes, setManutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, usos, setUsos, reservas, setReservas, empresa, toast, setTab };
 
   function page() {
     if (tab === "inicio") return React.createElement(Inicio, { ...props });
@@ -18683,6 +18978,7 @@ function App() {
     if (tab === "frota") return React.createElement(Frota, { ...props });
     if (tab === "clientes") return React.createElement(Clientes, { ...props });
     if (tab === "contratos") return React.createElement(Contratos, { ...props });
+    if (tab === "reservas") return React.createElement(Reservas, { ...props });
     if (tab === "multas") return React.createElement(Multas, { ...props, veiculos: veiculos });
     if (tab === "manutencao") return React.createElement(Manutencao, { ...props });
     if (tab === "financeiro") return React.createElement(Financeiro, { ...props });

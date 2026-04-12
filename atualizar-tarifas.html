@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sincronizar Tarifas – Estilo</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#f0f2f8;margin:0;padding:20px;color:#1a1a2e}
+.card{background:#fff;border-radius:14px;box-shadow:0 2px 16px rgba(0,0,0,.08);padding:20px;max-width:480px;margin:0 auto}
+h2{margin:0 0 4px;color:#1B2B6B;font-size:18px}
+p{color:#6b7280;font-size:13px;margin:0 0 16px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px}
+th{text-align:left;padding:6px 8px;background:#f7f8fc;color:#6b7280;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+td{padding:8px;border-bottom:1px solid #f0f2f8}
+td:last-child{text-align:right}
+.btn{width:100%;padding:14px;background:#1B2B6B;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer}
+.btn:disabled{background:#c5cde8;cursor:not-allowed}
+#log{margin-top:14px;font-size:12px;color:#374151;background:#f9fafb;border-radius:8px;padding:10px;max-height:200px;overflow-y:auto;white-space:pre-wrap}
+.ok{color:#16a34a} .err{color:#ef4444}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>Sincronizar Tarifas da Frota</h2>
+  <p>Atualiza o <b>valor_diaria</b> e <b>valor_mensal</b> de cada veículo no Supabase conforme a tabela abaixo.</p>
+
+  <table>
+    <tr><th>Modelo</th><th>Diária</th><th>Mensal (30d)</th></tr>
+    <tr><td>Kwid</td><td>R$ 110,00</td><td>R$ 2.190,00</td></tr>
+    <tr><td>Polo Track</td><td>R$ 120,00</td><td>R$ 2.500,00</td></tr>
+    <tr><td>Saveiro</td><td>R$ 180,00</td><td>R$ 3.300,00</td></tr>
+    <tr><td>T-Cross</td><td>R$ 190,00</td><td>R$ 3.980,00</td></tr>
+    <tr><td>Spin</td><td>R$ 250,00</td><td>R$ 4.900,00</td></tr>
+  </table>
+
+  <button class="btn" id="btnSync" onclick="syncRates()">Atualizar agora</button>
+  <div id="log"></div>
+</div>
+
+<script>
+const SB_URL = 'https://jsyiriqtzpbuqvjrkwin.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpzeWlyaXF0enBidXF2anJrd2luIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMDEyNjksImV4cCI6MjA4ODU3NzI2OX0.BCeCKcwLGnrRhfaFryeTbbCRoGyt3wRPlZzfsxuV0mM';
+
+const TARIFAS = [
+  { pattern: /kwid/i,     diaria: 110,  mensal: 2190 },
+  { pattern: /polo/i,     diaria: 120,  mensal: 2500 },
+  { pattern: /saveiro/i,  diaria: 180,  mensal: 3300 },
+  { pattern: /t.?cross/i, diaria: 190,  mensal: 3980 },
+  { pattern: /spin/i,     diaria: 250,  mensal: 4900 },
+];
+
+function log(msg, cls) {
+  var el = document.getElementById('log');
+  var line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function syncRates() {
+  var btn = document.getElementById('btnSync');
+  btn.disabled = true;
+  btn.textContent = 'Atualizando...';
+  document.getElementById('log').innerHTML = '';
+
+  var hdrs = {
+    'apikey': SB_KEY,
+    'Authorization': 'Bearer ' + SB_KEY,
+    'Content-Type': 'application/json'
+  };
+
+  log('Buscando veículos...');
+  var r = await fetch(SB_URL + '/rest/v1/veiculos?select=id,marca,modelo,valor_diaria,valor_mensal', { headers: hdrs });
+  if (!r.ok) { log('Erro ao buscar veículos: ' + r.status, 'err'); btn.disabled=false; btn.textContent='Tentar novamente'; return; }
+  var veiculos = await r.json();
+  log('Encontrados: ' + veiculos.length + ' veículo(s)');
+
+  var ok = 0, skip = 0;
+  for (var v of veiculos) {
+    var modelo = (v.marca || '') + ' ' + (v.modelo || '');
+    var tarifa = TARIFAS.find(t => t.pattern.test(modelo));
+    if (!tarifa) { log('⚠ Sem tarifa mapeada: ' + modelo); skip++; continue; }
+    if (v.valor_diaria == tarifa.diaria && v.valor_mensal == tarifa.mensal) {
+      log('✓ Já correto: ' + modelo + ' → R$ ' + tarifa.diaria + '/dia', 'ok'); ok++; continue;
+    }
+    var patch = await fetch(SB_URL + '/rest/v1/veiculos?id=eq.' + v.id, {
+      method: 'PATCH',
+      headers: hdrs,
+      body: JSON.stringify({ valor_diaria: tarifa.diaria, valor_mensal: tarifa.mensal })
+    });
+    if (patch.ok) {
+      log('✅ Atualizado: ' + modelo + ' → R$ ' + tarifa.diaria + '/dia', 'ok'); ok++;
+    } else {
+      log('❌ Erro: ' + modelo + ' (HTTP ' + patch.status + ')', 'err');
+    }
+  }
+
+  log('');
+  log('Concluído: ' + ok + ' atualizados, ' + skip + ' sem mapeamento.');
+  btn.textContent = 'Concluído ✓';
+}
+</script>
+</body>
+</html>

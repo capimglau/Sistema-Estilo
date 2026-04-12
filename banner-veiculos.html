@@ -252,13 +252,6 @@ body {
 
 /* ─── MOBILE ─── */
 @media (max-width: 640px) {
-  /*
-   * Aplica multiply no photo-wrap (não no img) para que a mistura
-   * ocorra contra o gradiente do slide — elimina fundos brancos/cinza
-   * das fotos de produto sem alterar o layout.
-   */
-  .bv-photo-wrap { mix-blend-mode: multiply; }
-
   .bv-name      { font-size: 34px; }
   .bv-prices    { flex-direction: column; gap: 3px; align-items: flex-start; }
   .bv-price-sep { display: none; }
@@ -417,13 +410,37 @@ function categoryOf(marca, modelo) {
   return 'Automóvel';
 }
 
-/* Verifica se a foto existe (evita img quebrada) */
-function imgExists(src, cb) {
-  if (!src) { cb(false); return; }
-  var i = new Image();
-  i.onload  = function() { cb(true); };
-  i.onerror = function() { cb(false); };
-  i.src = src;
+/* Carrega foto com CORS e remove fundo branco/cinza via Canvas */
+function loadPhoto(src, cb) {
+  if (!src) { cb(false, null); return; }
+  var img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload  = function() { cb(true, img); };
+  img.onerror = function() { cb(false, null); };
+  img.src = src;
+}
+
+function stripWhiteBg(img) {
+  try {
+    var cvs = document.createElement('canvas');
+    cvs.width  = img.naturalWidth;
+    cvs.height = img.naturalHeight;
+    var ctx = cvs.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    var d  = ctx.getImageData(0, 0, cvs.width, cvs.height);
+    var px = d.data;
+    var T  = 210; /* limiar: pixels com R,G,B > 210 são "quase brancos" */
+    for (var i = 0; i < px.length; i += 4) {
+      var mn = Math.min(px[i], px[i+1], px[i+2]);
+      if (mn >= T) {
+        px[i+3] = Math.round(px[i+3] * (1 - (mn - T) / (255 - T)));
+      }
+    }
+    ctx.putImageData(d, 0, 0);
+    return cvs.toDataURL('image/png');
+  } catch (e) {
+    return null; /* CORS bloqueou — usa src original */
+  }
 }
 
 /* ── CRIA SLIDE ── */
@@ -591,17 +608,18 @@ function buildBanner(vehicles, empresa) {
   wrap.appendChild(trackEl);
   track = trackEl;
 
-  /* Injeta fotos após render (verifica se imagem existe) */
+  /* Injeta fotos após render — remove fundo branco via Canvas se CORS permitir */
   slides.forEach(function(s) {
     if (!s.foto) return;
-    imgExists(s.foto, function(ok) {
+    loadPhoto(s.foto, function(ok, img) {
       if (!ok) return;
       var wrap2 = document.getElementById(s.photoId);
       if (!wrap2) return;
       wrap2.classList.remove('bv-photo-placeholder');
+      var processedSrc = stripWhiteBg(img) || s.foto;
       wrap2.innerHTML =
         '<div class="bv-photo-fade" style="background:' + s.fadeBg + '"></div>' +
-        '<img class="bv-photo-img" src="' + s.foto + '" alt="" loading="lazy">';
+        '<img class="bv-photo-img" src="' + processedSrc + '" alt="">';
     });
   });
 

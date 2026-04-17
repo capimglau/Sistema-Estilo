@@ -3,6 +3,11 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
+<meta name="theme-color" content="#007AFF"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+<meta name="apple-mobile-web-app-title" content="AutoGest"/>
+<link rel="manifest" href="manifest.json"/>
 <title>AutoGest Pro</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -13007,15 +13012,25 @@ const db = {
       return r.ok ? r.json() : [];
     } catch(e) { console.warn("db.get", t, e); return []; }
   },
+  async _audit(tabela, operacao, registro_id, dados) {
+    try {
+      if (tabela === "audit_log") return;
+      await fetch(SB_URL + "/rest/v1/audit_log", { method: "POST", headers: Object.assign({}, HDR, { Prefer: "return=minimal" }), body: JSON.stringify({ tabela: tabela, operacao: operacao, registro_id: registro_id == null ? null : String(registro_id), dados: dados || null }) });
+    } catch(e) { /* best-effort */ }
+  },
   async post(t, d) {
     const r = await fetch(SB_URL + "/rest/v1/" + t, { method: "POST", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) });
     if (!r.ok) { const e = await r.json(); throw new Error(e.message || "Erro"); }
-    const j = await r.json(); return Array.isArray(j) ? j[0] : j;
+    const j = await r.json(); const rec = Array.isArray(j) ? j[0] : j;
+    this._audit(t, "insert", rec && rec.id, d);
+    return rec;
   },
   async patch(t, id, d) {
     const r = await fetch(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) });
     if (!r.ok) { const e = await r.json(); throw new Error(e.message || "Erro"); }
-    const j = await r.json(); return Array.isArray(j) ? j[0] : j;
+    const j = await r.json(); const rec = Array.isArray(j) ? j[0] : j;
+    this._audit(t, "update", id, d);
+    return rec;
   },
   async del(t, id) {
     const r = await fetch(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "DELETE", headers: Object.assign({}, HDR, { Prefer: "return=representation" }) });
@@ -13024,6 +13039,7 @@ const db = {
     if (Array.isArray(j) && j.length === 0) {
       throw new Error("Nada foi excluído (RLS bloqueou). Rode em Configurações: alter table " + t + " disable row level security;");
     }
+    this._audit(t, "delete", id, null);
   },
   async upload(path, file) {
     const r = await fetch(SB_URL + "/storage/v1/object/documentos/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": file.type, "x-upsert": "true" }, body: file });
@@ -17328,7 +17344,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2620}}
     , React.createElement('div', { className: "pg-title", __self: this, __source: {fileName: _jsxFileName, lineNumber: 2621}}, "Relatórios")
     , React.createElement('div', { style: { display: "flex", gap: 8, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch", paddingBottom: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2622}}
-      , [["geral","Geral"],["faturas","Faturas"],["veiculos","Por Veículo"],["projecao","Projeção"],["inadimplencia","Inadimplência"]].map(([x,l]) => React.createElement('button', { key: x, onClick: () => setTab(x), className: "lg-pill lg-pill-sm " + (tab === x ? "lg-blue" : "lg-ghost"), style: { fontWeight: 300, flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2623}}, l))
+      , [["geral","Geral"],["faturas","Faturas"],["veiculos","Por Veículo"],["projecao","Projeção"],["inadimplencia","Inadimplência"],["ocupacao","Ocupação"],["auditoria","Auditoria"]].map(([x,l]) => React.createElement('button', { key: x, onClick: () => setTab(x), className: "lg-pill lg-pill-sm " + (tab === x ? "lg-blue" : "lg-ghost"), style: { fontWeight: 300, flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2623}}, l))
     )
 
     , tab === "geral" && React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2626}}
@@ -17615,6 +17631,78 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
         )
       );
     })()
+
+    , tab === "ocupacao" && React.createElement(OcupacaoHistorico, { key: "ocup" })
+    , tab === "auditoria" && React.createElement(AuditoriaView, { key: "audit" })
+  );
+}
+function OcupacaoHistorico() {
+  var [dados, setDados] = useState(null);
+  var [erro, setErro] = useState("");
+  useEffect(function() {
+    db.get("ocupacao_historico", "order=dia.desc&limit=60").then(function(d) {
+      if (!d) { setErro("Sem dados"); return; }
+      setDados((d || []).slice().reverse());
+    }).catch(function(e){ setErro("Tabela ocupacao_historico não encontrada. Rode o SQL em Config."); });
+  }, []);
+  if (erro) return React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, { color: C.sub, fontSize: 13 }) }, erro);
+  if (!dados) return React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, { color: C.sub, fontSize: 13 }) }, "Carregando...");
+  if (!dados.length) return React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, { color: C.sub, fontSize: 13 }) }, "Sem histórico. Retornem amanhã para ver tendência (1 snapshot por dia).");
+  var maxTaxa = 100;
+  var ult = dados[dados.length - 1];
+  var mediaTaxa = Math.round(dados.reduce(function(s,d){return s+parseFloat(d.taxa||0);}, 0) / dados.length);
+  return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 } }
+    , React.createElement('div', { style: { display: "flex", gap: 10, flexWrap: "wrap" } }
+      , React.createElement(Stat, { icon: "📊", label: "Taxa hoje", val: (ult.taxa||0) + "%", color: C.blue })
+      , React.createElement(Stat, { icon: "📈", label: "Média " + dados.length + "d", val: mediaTaxa + "%", color: C.teal })
+      , React.createElement(Stat, { icon: "🚗", label: "Frota hoje", val: ult.total, color: C.purple })
+    )
+    , React.createElement('div', { className: "lg-card", style: CARD }
+      , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 14 } }, "Taxa de Ocupação — últimos dias")
+      , dados.map(function(d, i) {
+          var pct = Math.min(100, Math.round(parseFloat(d.taxa||0)));
+          var label = new Date(d.dia + "T12:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+          return React.createElement('div', { key: d.dia, style: { marginBottom: 8, display: "flex", alignItems: "center", gap: 8 } }
+            , React.createElement('div', { style: { fontSize: 11, color: C.sub, width: 60, flexShrink: 0 } }, label)
+            , React.createElement('div', { style: { flex: 1, height: 18, background: "var(--c-border)", borderRadius: 9, overflow: "hidden" } }
+              , React.createElement('div', { style: { height: "100%", width: pct + "%", background: C.blue, transition: "width .3s" } })
+            )
+            , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: C.blue, width: 40, textAlign: "right" } }, pct + "%")
+          );
+        })
+    )
+  );
+}
+function AuditoriaView() {
+  var [dados, setDados] = useState(null);
+  var [erro, setErro] = useState("");
+  var [filtroTab, setFiltroTab] = useState("");
+  useEffect(function() {
+    db.get("audit_log", "order=criado_em.desc&limit=200").then(function(d){ if (!d) { setErro("Sem dados"); return; } setDados(d || []); }).catch(function(){ setErro("Tabela audit_log não encontrada. Rode o SQL em Config."); });
+  }, []);
+  if (erro) return React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, { color: C.sub, fontSize: 13 }) }, erro);
+  if (!dados) return React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, { color: C.sub, fontSize: 13 }) }, "Carregando...");
+  var tabelas = Array.from(new Set(dados.map(function(d){return d.tabela;}))).sort();
+  var fil = filtroTab ? dados.filter(function(d){return d.tabela===filtroTab;}) : dados;
+  var corOp = function(op) { return op === "insert" ? C.green : op === "update" ? C.orange : C.red; };
+  return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 10 } }
+    , React.createElement('div', { style: { display: "flex", gap: 6, flexWrap: "wrap" } }
+      , React.createElement('button', { onClick: function(){setFiltroTab("");}, className: "lg-pill lg-pill-sm " + (filtroTab === "" ? "lg-blue" : "lg-ghost") }, "Todas")
+      , tabelas.map(function(t) { return React.createElement('button', { key: t, onClick: function(){setFiltroTab(t);}, className: "lg-pill lg-pill-sm " + (filtroTab === t ? "lg-blue" : "lg-ghost") }, t); })
+    )
+    , React.createElement('div', { className: "lg-card", style: CARD }
+      , fil.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 20 } }, "Nenhum registro")
+      , fil.slice(0, 100).map(function(d, i) {
+          var dt = d.criado_em ? new Date(d.criado_em).toLocaleString("pt-BR") : "";
+          return React.createElement('div', { key: d.id, style: { padding: "10px 0", borderBottom: i < Math.min(fil.length, 100) - 1 ? "1px solid " + C.border : "none" } }
+            , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } }
+              , React.createElement('div', { style: { fontSize: 13, fontWeight: 600 } }, d.tabela, " · ", React.createElement('span', { style: { color: corOp(d.operacao), textTransform: "uppercase", fontSize: 11 } }, d.operacao), d.registro_id ? " · #" + d.registro_id : "")
+              , React.createElement('div', { style: { fontSize: 11, color: C.sub } }, dt)
+            )
+            , d.dados && React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 4, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 60, overflow: "hidden" } }, JSON.stringify(d.dados).slice(0, 240))
+          );
+        })
+    )
   );
 }
 function Config({ empresa, setEmpresa, toast }) {
@@ -17716,6 +17804,11 @@ function Config({ empresa, setEmpresa, toast }) {
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3009}}), "alter table despesas add column if not exists manutencao_id bigint;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3010}}), "alter table orcamento_pessoal add column if not exists prazo_recorrencia integer;"
                  , React.createElement('br', {}), "alter table orcamento_pessoal add column if not exists recorrencia_origem_id bigint;"
+                 , React.createElement('br', {}), "-- Auditoria e histórico de ocupação (opcional):"
+                 , React.createElement('br', {}), "create table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());"
+                 , React.createElement('br', {}), "alter table audit_log disable row level security;"
+                 , React.createElement('br', {}), "create table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);"
+                 , React.createElement('br', {}), "alter table ocupacao_historico disable row level security;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3011}}), "alter table multas add column if not exists vencimento date;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3012}}), "alter table multas add column if not exists data_pagamento date;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3013}}), "alter table manutencao add column if not exists data_previsao_pagamento date;"
@@ -19260,18 +19353,27 @@ function Tarifas({ veiculos, setVeiculos, toast }) {
       upd(await db.patch("veiculos", v.id, fullPayload));
       toast("Tarifas de " + (v.placa||"") + " atualizadas!"); setEditando(null);
     } catch(e) {
-      try {
-        // Fallback 1: sem colunas KM extras (km_dia, km_mensal podem não existir)
-        var p2 = { valor_diaria: fullPayload.valor_diaria, valor_semanal: fullPayload.valor_semanal, valor_quinzenal: fullPayload.valor_quinzenal, valor_mensal: fullPayload.valor_mensal, km_franquia: fullPayload.km_franquia, valor_km_excedente: fullPayload.valor_km_excedente };
-        upd(await db.patch("veiculos", v.id, p2));
-        toast("Tarifas salvas (execute SQL para habilitar km/dia e km/mês)."); setEditando(null);
-      } catch(e2) {
+      // Fallback granular: patch campo-a-campo, registrando quais faltam.
+      var acc = {};
+      var faltantes = [];
+      var keys = Object.keys(fullPayload);
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
         try {
-          // Fallback 2: só diária (coluna original garantida)
-          upd(await db.patch("veiculos", v.id, { valor_diaria: fullPayload.valor_diaria }));
-          toast("Diária salva. Execute o SQL nas configurações para habilitar as demais colunas.");
-          setEditando(null);
-        } catch(e3) { toast("Erro ao salvar: " + e3.message, "error"); }
+          var one = {}; one[k] = fullPayload[k];
+          var upOne = await db.patch("veiculos", v.id, one);
+          Object.assign(acc, upOne);
+        } catch(ek) {
+          console.warn("tarifa: coluna ausente", k, ek && ek.message);
+          faltantes.push(k);
+        }
+      }
+      if (Object.keys(acc).length) upd(acc);
+      setEditando(null);
+      if (faltantes.length) {
+        toast("Salvo parcial. Faltam colunas no banco: " + faltantes.join(", ") + ". Rode o SQL em Config.", "error");
+      } else {
+        toast("Tarifas salvas!");
       }
     }
     setSalvando(false);
@@ -19541,7 +19643,26 @@ function App() {
     fetch(SB_URL + "/rest/v1/contratos?status=eq.concluido&observacoes=like.Renova%C3%A7%C3%A3o%20autom%C3%A1tica%20contrato%20%23*", {
       method: "DELETE", headers: HDR
     }).catch(function(){});
-    db.get("veiculos").then(d => setVeiculos(d || []));
+    db.get("veiculos").then(d => {
+      setVeiculos(d || []);
+      // Snapshot diário de ocupação (best-effort, não bloqueia UI)
+      try {
+        var hojeIso = new Date().toISOString().slice(0, 10);
+        var lastSnap = localStorage.getItem("ocup_last");
+        if (lastSnap !== hojeIso && d && d.length) {
+          var total = d.length;
+          var alug = d.filter(function(v){ return v.status === "alugado"; }).length;
+          var man = d.filter(function(v){ return v.status === "manutencao"; }).length;
+          var disp = d.filter(function(v){ return v.status === "disponivel"; }).length;
+          var taxa = total > 0 ? Math.round((alug / total) * 100) : 0;
+          fetch(SB_URL + "/rest/v1/ocupacao_historico?on_conflict=dia", {
+            method: "POST",
+            headers: Object.assign({}, HDR, { Prefer: "resolution=merge-duplicates,return=minimal" }),
+            body: JSON.stringify({ dia: hojeIso, total: total, alugados: alug, disponiveis: disp, manutencao: man, taxa: taxa })
+          }).then(function(r){ if (r.ok) localStorage.setItem("ocup_last", hojeIso); }).catch(function(){});
+        }
+      } catch(e) { /* best-effort */ }
+    });
     db.get("clientes").then(d => setClientes(d || []));
     db.get("contratos", "limit=500").then(d => setContratos(d || []));
     db.get("reservas").then(d => setReservas(d || []));

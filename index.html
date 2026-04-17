@@ -14938,8 +14938,10 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       // Remove colunas que podem não existir no schema ainda
       delete payload.auto_infracao_url;
       delete payload.cnh_condutor_url;
-      delete payload.veiculo_id;
-      delete payload.cliente_id;
+      if (form.contrato_id) {
+        delete payload.veiculo_id;
+        delete payload.cliente_id;
+      }
       if (edit) { const u = await db.patch("multas", edit, payload); setMultas(p => p.map(m => m.id === edit ? Object.assign({}, m, u) : m)); toast("Atualizado!"); }
       else { const c = await db.post("multas", payload); setMultas(p => [c].concat(p)); toast("Registrada!"); }
       setModal(false);
@@ -15817,7 +15819,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   var despFiltradas = despesas.filter(d => despesaVisivelNoMes(d, filtroMes)).map(d => {
     if (d.recorrente && (d.data||"").slice(0,7) !== filtroMes) {
       var dia = (d.data || "").slice(8, 10);
-      return Object.assign({}, d, { status: "previsto", data_pagamento: null, data: filtroMes + "-" + dia });
+      var pagouEsteMes = d.data_pagamento && d.data_pagamento.slice(0,7) === filtroMes;
+      return Object.assign({}, d, { status: pagouEsteMes ? d.status : "previsto", data_pagamento: pagouEsteMes ? d.data_pagamento : null, data: filtroMes + "-" + dia });
     }
     return d;
   });
@@ -15833,7 +15836,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     }
     if (r.recorrente && !r.ref_fatura && (r.data||"").slice(0,7) !== filtroMes) {
       var diaR = (r.data || "").slice(8, 10);
-      return Object.assign({}, r, { status: "previsto", data_pagamento: null, data: filtroMes + "-" + diaR });
+      var recebiuEsteMes = r.data_pagamento && r.data_pagamento.slice(0,7) === filtroMes;
+      return Object.assign({}, r, { status: recebiuEsteMes ? r.status : "previsto", data_pagamento: recebiuEsteMes ? r.data_pagamento : null, data: filtroMes + "-" + diaR });
     }
     return r;
   });
@@ -18614,7 +18618,7 @@ function Tarifas({ veiculos, setVeiculos, toast }) {
 
   async function salvar(v) {
     setSalvando(true);
-    var payload = {
+    var fullPayload = {
       valor_diaria:       parseFloat(form.valor_diaria)    || null,
       valor_semanal:      parseFloat(form.valor_semanal)   || null,
       valor_quinzenal:    parseFloat(form.valor_quinzenal) || null,
@@ -18625,11 +18629,20 @@ function Tarifas({ veiculos, setVeiculos, toast }) {
       km_mensal:          parseFloat(form.km_mensal)        || null,
     };
     try {
-      var upd = await db.patch("veiculos", v.id, payload);
+      var upd = await db.patch("veiculos", v.id, fullPayload);
       setVeiculos(function(p){ return p.map(function(x){ return x.id===v.id?Object.assign({},x,upd):x; }); });
       toast("Tarifas de " + (v.placa||"") + " atualizadas!");
       setEditando(null);
-    } catch(e) { toast("Erro ao salvar tarifas", "err"); }
+    } catch(e) {
+      // Fallback: colunas novas (semanal, quinzenal, km_dia, km_mensal) podem não existir no schema ainda
+      try {
+        var basePayload = { valor_diaria: fullPayload.valor_diaria, km_franquia: fullPayload.km_franquia, valor_km_excedente: fullPayload.valor_km_excedente };
+        var upd2 = await db.patch("veiculos", v.id, basePayload);
+        setVeiculos(function(p){ return p.map(function(x){ return x.id===v.id?Object.assign({},x,upd2):x; }); });
+        toast("Diária e franquia salvas. Execute o SQL do aviso para habilitar semanal/quinzenal/mensal.");
+        setEditando(null);
+      } catch(e2) { toast("Erro ao salvar tarifas: " + e2.message, "error"); }
+    }
     setSalvando(false);
   }
 

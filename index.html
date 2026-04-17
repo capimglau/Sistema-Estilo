@@ -13003,13 +13003,19 @@ const SB_URL = "https://jsyiriqtzpbuqvjrkwin.supabase.co";
 const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpzeWlyaXF0enBidXF2anJrd2luIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMDEyNjksImV4cCI6MjA4ODU3NzI2OX0.BCeCKcwLGnrRhfaFryeTbbCRoGyt3wRPlZzfsxuV0mM";
 const HDR = { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": "application/json" };
 
+const cache = {
+  get: function(k) { try { var v = localStorage.getItem("cache_" + k); return v ? JSON.parse(v) : null; } catch(e) { return null; } },
+  set: function(k, v) { try { localStorage.setItem("cache_" + k, JSON.stringify(v)); } catch(e) {} }
+};
+
 const db = {
   async get(t, q) {
     try {
-      var qs = q || "";
-      if (!/(^|&)limit=/.test(qs)) qs = (qs ? qs + "&" : "") + "limit=2000";
-      const r = await fetch(SB_URL + "/rest/v1/" + t + "?order=id.desc&" + qs, { headers: HDR });
-      return r.ok ? r.json() : [];
+      const r = await fetch(SB_URL + "/rest/v1/" + t + "?order=id.desc" + (q ? "&" + q : ""), { headers: HDR });
+      if (!r.ok) return [];
+      var data = await r.json();
+      try { if (!q || /^limit=/.test(q)) cache.set(t, data); } catch(e) {}
+      return data;
     } catch(e) { console.warn("db.get", t, e); return []; }
   },
   async _audit(tabela, operacao, registro_id, dados) {
@@ -17765,16 +17771,29 @@ function AuditoriaView() {
 function Config({ empresa, setEmpresa, toast }) {
   const [form, setForm] = useState(Object.assign({}, empresa));
   const [loading, setLoading] = useState(false);
-  const [configId, setConfigId] = useState(null);
+  const [configId, setConfigId] = useState(empresa && empresa.id ? empresa.id : null);
   const [ok, setOk] = useState(false);
-  async function carregar() { const d = await db.get("config", "limit=1"); if (d && d[0]) { setForm(d[0]); setConfigId(d[0].id); setEmpresa(d[0]); } }
+  const dirtyRef = React.useRef(false);
+  async function carregar() {
+    if (dirtyRef.current) return; // não sobrescreve edições em andamento
+    const d = await db.get("config", "limit=1");
+    if (d && d[0] && !dirtyRef.current) { setForm(d[0]); setConfigId(d[0].id); setEmpresa(d[0]); }
+  }
   useEffect(() => { carregar(); }, []);
-  function F(k, v) { setForm(p => Object.assign({}, p, { [k]: v })); }
+  // Sincroniza quando empresa chega tarde (cold start), só se form ainda intocado
+  useEffect(() => {
+    if (!dirtyRef.current && empresa && empresa.id && empresa.id !== configId) {
+      setForm(Object.assign({}, empresa));
+      setConfigId(empresa.id);
+    }
+  }, [empresa && empresa.id]);
+  function F(k, v) { dirtyRef.current = true; setForm(p => Object.assign({}, p, { [k]: v })); }
   async function save() {
     setLoading(true); setOk(false);
     try {
       var p = { nome: form.nome || "", cnpj: form.cnpj || "", endereco: form.endereco || "", telefone: form.telefone || "", email: form.email || "", cidade: form.cidade || "", estado: form.estado || "", logo_url: form.logo_url || "", clausulas: form.clausulas || "" };
       if (configId) { await db.patch("config", configId, p); } else { var c = await db.post("config", p); if (c && c.id) setConfigId(c.id); }
+      dirtyRef.current = false;
       await carregar(); setOk(true); toast("Salvo com sucesso!");
     } catch(e) { toast("Erro: " + e.message, "error"); }
     setLoading(false);
@@ -19678,17 +19697,18 @@ function Reservas({ reservas, setReservas, toast }) {
 function App() {
   const [logado, setLogado] = useState(false);
   const [tab, setTab] = useState("inicio");
-  const [veiculos, setVeiculos] = useState([]);
-  const [clientes, setClientes] = useState([]);
-  const [contratos, setContratos] = useState([]);
-  const [reservas, setReservas] = useState([]);
-  const [multas, setMultas] = useState([]);
-  const [manutencoes, setManutencoes] = useState([]);
-  const [despesas, setDespesas] = useState([]);
-  const [receitas, setReceitas] = useState([]);
-  const [contas, setContas] = useState([]);
-  const [usos, setUsos] = useState([]);
-  const [empresa, setEmpresa] = useState({});
+  const [veiculos, setVeiculos] = useState(() => cache.get("veiculos") || []);
+  const [clientes, setClientes] = useState(() => cache.get("clientes") || []);
+  const [contratos, setContratos] = useState(() => cache.get("contratos") || []);
+  const [reservas, setReservas] = useState(() => cache.get("reservas") || []);
+  const [multas, setMultas] = useState(() => cache.get("multas") || []);
+  const [manutencoes, setManutencoes] = useState(() => cache.get("manutencao") || []);
+  const [despesas, setDespesas] = useState(() => cache.get("despesas") || []);
+  const [receitas, setReceitas] = useState(() => cache.get("receitas") || []);
+  const [contas, setContas] = useState(() => cache.get("contas") || []);
+  const [usos, setUsos] = useState(() => cache.get("usos") || []);
+  const [empresa, setEmpresa] = useState(() => { var c = cache.get("config"); return (c && c[0]) || {}; });
+  const [bancoAcordando, setBancoAcordando] = useState(false);
   const [toastState, setToastState] = useState({ msg: "", type: "ok" });
   const autoFaturaFeita = React.useRef(false);
   const mobile = useMobile();
@@ -19698,11 +19718,16 @@ function App() {
   function toast(msg, type) { setToastState({ msg: msg, type: type || "ok" }); setTimeout(() => setToastState({ msg: "", type: "ok" }), 3000); }
 
   useEffect(() => {
+    // Indicador de cold start: se 1ª resposta demorar >3s mostra banner "Acordando banco..."
+    var coldTimer = setTimeout(function(){ setBancoAcordando(true); }, 3000);
+    var coldDone = false;
+    function marcarAcordado() { if (!coldDone) { coldDone = true; clearTimeout(coldTimer); setBancoAcordando(false); } }
     // Deleta contratos duplicados de renovação automática DIRETO no banco (sem carregar na memória)
     fetch(SB_URL + "/rest/v1/contratos?status=eq.concluido&observacoes=like.Renova%C3%A7%C3%A3o%20autom%C3%A1tica%20contrato%20%23*", {
       method: "DELETE", headers: HDR
     }).catch(function(){});
     db.get("veiculos").then(d => {
+      marcarAcordado();
       setVeiculos(d || []);
       // Snapshot diário de ocupação (best-effort, não bloqueia UI)
       try {
@@ -19845,6 +19870,7 @@ function App() {
           )
         )
       )
+      , bancoAcordando && React.createElement('div', { style: { position: "fixed", top: 10, left: "50%", transform: "translateX(-50%)", background: "#FFB800", color: "#000", padding: "10px 18px", borderRadius: 12, fontSize: 13, fontWeight: 600, zIndex: 9999, boxShadow: "0 4px 16px rgba(0,0,0,.25)" } }, "⏳ Acordando o banco de dados… (pode levar até 1 min)")
       , React.createElement(Toast, { msg: toastState.msg, type: toastState.type, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3233}} )
     )
   );

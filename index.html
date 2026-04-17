@@ -13255,7 +13255,9 @@ function printContrato(ct, cl, ve, emp) {
   h += '<div class="s"><div class="st">Valor Total</div><div class="vb">' + fmtBRL(ct.valor_total) + '</div></div>';
   if (ct.observacoes) h += '<div class="s"><div class="st">Observacoes</div><div class="cl">' + ct.observacoes + '</div></div>';
   h += '<div class="s"><div class="st">Clausulas</div><div class="cl">' + clausulas.replace(/\n/g, "<br/>") + '</div></div>';
-  h += '<div class="s"><div class="st">Assinaturas</div><div class="ass"><div class="al">' + (emp.nome || "Locadora") + '<br/>Responsavel</div><div class="al">' + (cl.nome || "Locatario") + '<br/>Locatario</div></div></div>';
+  var assLoc = ct.assinatura_locadora ? '<img src="' + ct.assinatura_locadora + '" style="max-height:60px;max-width:100%;display:block;margin:0 auto 4px"/>' : '<div style="height:60px"></div>';
+  var assCli = ct.assinatura_cliente ? '<img src="' + ct.assinatura_cliente + '" style="max-height:60px;max-width:100%;display:block;margin:0 auto 4px"/>' : '<div style="height:60px"></div>';
+  h += '<div class="s"><div class="st">Assinaturas</div><div class="ass"><div class="al">' + assLoc + (emp.nome || "Locadora") + '<br/>Responsavel</div><div class="al">' + assCli + (cl.nome || "Locatario") + '<br/>Locatario</div></div></div>';
   h += '<p style="text-align:center;font-size:10px;color:#aaa">AutoGest Pro - ' + new Date().toLocaleString("pt-BR") + '</p>';
   h += "<scr" + "ipt>window.print();</scr" + "ipt></body></html>";
   openPdfPage(h);
@@ -14275,6 +14277,53 @@ function ExtrasModalBody({ contrato, extrasList, setExtrasList, loading, veiculo
   );
 }
 
+// -- ASSINATURA DIGITAL ----------------------------------------------------─
+function SignaturePad({ value, onChange, label }) {
+  var canvasRef = React.useRef(null);
+  var [drawing, setDrawing] = useState(false);
+  var [vazio, setVazio] = useState(!value);
+  useEffect(function() {
+    var cv = canvasRef.current; if (!cv) return;
+    var ctx = cv.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.strokeStyle = "#111"; ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    if (value) {
+      var img = new Image();
+      img.onload = function() { ctx.drawImage(img, 0, 0, cv.width, cv.height); setVazio(false); };
+      img.src = value;
+    }
+  }, []);
+  function pos(e) {
+    var cv = canvasRef.current; var r = cv.getBoundingClientRect();
+    var t = e.touches && e.touches[0];
+    var x = (t ? t.clientX : e.clientX) - r.left;
+    var y = (t ? t.clientY : e.clientY) - r.top;
+    return { x: x * (cv.width / r.width), y: y * (cv.height / r.height) };
+  }
+  function start(e) { e.preventDefault(); setDrawing(true); var p = pos(e); var ctx = canvasRef.current.getContext("2d"); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+  function move(e) { if (!drawing) return; e.preventDefault(); var p = pos(e); var ctx = canvasRef.current.getContext("2d"); ctx.lineTo(p.x, p.y); ctx.stroke(); setVazio(false); }
+  function end() { if (!drawing) return; setDrawing(false); onChange && onChange(canvasRef.current.toDataURL("image/png")); }
+  function limpar() {
+    var cv = canvasRef.current; var ctx = cv.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+    setVazio(true); onChange && onChange("");
+  }
+  return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 6 } }
+    , label && React.createElement('div', { style: { fontSize: 11, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: .4 } }, label)
+    , React.createElement('canvas', { ref: canvasRef, width: 600, height: 180,
+        style: { width: "100%", height: 180, border: "1px dashed " + C.border, borderRadius: 10, background: "#fff", touchAction: "none", cursor: "crosshair" },
+        onMouseDown: start, onMouseMove: move, onMouseUp: end, onMouseLeave: end,
+        onTouchStart: start, onTouchMove: move, onTouchEnd: end,
+        "aria-label": "Campo de assinatura"
+      })
+    , React.createElement('div', { style: { display: "flex", gap: 6, alignItems: "center" } }
+      , React.createElement('button', { type: "button", onClick: limpar, className: "lg-pill lg-pill-sm lg-ghost", style: { fontSize: 12 } }, "Limpar")
+      , vazio && React.createElement('span', { style: { fontSize: 11, color: C.sub } }, "Desenhe a assinatura com o dedo ou mouse")
+      , !vazio && React.createElement('span', { style: { fontSize: 11, color: C.green } }, "✓ Assinado")
+    )
+  );
+}
+
 // -- CHECKLIST MODAL BODY --------------------------------------------------─
 function CheckListModalBody({ contrato, clientes, veiculos, empresa, onUpdate }) {
   var cl = clientes.find(function(c){ return c.id == contrato.cliente_id; }) || {};
@@ -14298,6 +14347,14 @@ function CheckListModalBody({ contrato, clientes, veiculos, empresa, onUpdate })
         placeholder: "Ex: Arranhão no para-choque, tanque abaixo do nível..."       , __self: this, __source: {fileName: _jsxFileName, lineNumber: 775}} )
     )
     , React.createElement('div', { style: { fontSize:11, color:C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 779}}, "As observações são salvas automaticamente ao digitar."      )
+    , React.createElement('div', { style: { borderTop: "1px solid " + C.border, paddingTop: 10, marginTop: 4 } }
+      , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, marginBottom: 8 } }, "Assinaturas Digitais")
+      , React.createElement(SignaturePad, { label: "Assinatura do Locatário (" + (cl.nome || "") + ")", value: contrato.assinatura_cliente || "", onChange: function(v){ onUpdate("assinatura_cliente", v); } })
+      , React.createElement('div', { style: { height: 10 } })
+      , React.createElement(SignaturePad, { label: "Assinatura da Locadora (" + (empresa && empresa.nome || "") + ")", value: contrato.assinatura_locadora || "", onChange: function(v){ onUpdate("assinatura_locadora", v); } })
+      , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 6 } }, "Rode em Config, uma vez: alter table contratos add column if not exists assinatura_cliente text; alter table contratos add column if not exists assinatura_locadora text;")
+    )
+    , React.createElement('button', { className: bCls(Btn(C.blue)), style: bStyle(Btn(C.blue)), onClick: function(){ printContrato(contrato, cl, ve, empresa); } }, "🖨️ Imprimir Contrato (com assinaturas)")
   );
 }
 
@@ -17809,6 +17866,8 @@ function Config({ empresa, setEmpresa, toast }) {
                  , React.createElement('br', {}), "alter table audit_log disable row level security;"
                  , React.createElement('br', {}), "create table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);"
                  , React.createElement('br', {}), "alter table ocupacao_historico disable row level security;"
+                 , React.createElement('br', {}), "alter table contratos add column if not exists assinatura_cliente text;"
+                 , React.createElement('br', {}), "alter table contratos add column if not exists assinatura_locadora text;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3011}}), "alter table multas add column if not exists vencimento date;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3012}}), "alter table multas add column if not exists data_pagamento date;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3013}}), "alter table manutencao add column if not exists data_previsao_pagamento date;"

@@ -13001,9 +13001,11 @@ const HDR = { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type":
 const db = {
   async get(t, q) {
     try {
-      const r = await fetch(SB_URL + "/rest/v1/" + t + "?order=id.desc" + (q ? "&" + q : ""), { headers: HDR });
+      var qs = q || "";
+      if (!/(^|&)limit=/.test(qs)) qs = (qs ? qs + "&" : "") + "limit=2000";
+      const r = await fetch(SB_URL + "/rest/v1/" + t + "?order=id.desc&" + qs, { headers: HDR });
       return r.ok ? r.json() : [];
-    } catch(e) { return []; }
+    } catch(e) { console.warn("db.get", t, e); return []; }
   },
   async post(t, d) {
     const r = await fetch(SB_URL + "/rest/v1/" + t, { method: "POST", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) });
@@ -13090,6 +13092,13 @@ function receitaVisivelNoMes(r, mes) {
   return false;
 }
 function manMesRefGlobal(m) { return (m.data_previsao_pagamento || m.data_pagamento || m.data_entrada || "").slice(0, 7); }
+function mesDe(d) { return (d || "").slice(0, 7); }
+var STATUS = {
+  PAGO: "pago", RECEBIDO: "recebido", PREVISTO: "previsto", PENDENTE: "pendente",
+  PARCIAL: "parcial", ISENTO: "isento",
+  ATIVO: "ativo", CONCLUIDO: "concluido", CANCELADO: "cancelado",
+  ehQuitado: function(s) { return s === "pago" || s === "recebido"; }
+};
 function MesPicker({ value, onChange, style }) {
   var ano = (value||"").slice(0,4); var mm = (value||"").slice(5,7);
   var anos = ["2023","2024","2025","2026","2027"];
@@ -14345,7 +14354,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           try {
             var upd = await db.patch("receitas", recExist.id, { status: "recebido", data_pagamento: dtPag, ref_fatura: refKeyNovo });
             setReceitas(function(p) { return p.map(function(r) { return r.id === recExist.id ? Object.assign({}, r, upd) : r; }); });
-          } catch(e) {}
+          } catch(e) { console.warn(e); }
           return;
         }
       }
@@ -14355,7 +14364,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         try {
           var upd2 = await db.patch("receitas", recExist.id, { status: "recebido", data_pagamento: dtPag });
           setReceitas(function(p) { return p.map(function(r) { return r.id === recExist.id ? Object.assign({}, r, upd2) : r; }); });
-        } catch(e) {}
+        } catch(e) { console.warn(e); }
       }
     } else {
       // Não existe receipt → criar como recebido
@@ -14369,7 +14378,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           cliente_id: c.cliente_id, ref_fatura: refKeyNovo
         });
         setReceitas(function(p) { return p.concat([nova]); });
-      } catch(e) {}
+      } catch(e) { console.warn(e); }
     }
   }
   const hoje = new Date().toISOString().split("T")[0];
@@ -14391,7 +14400,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         cliente_id: c.cliente_id, ref_fatura: refKey
       });
       setReceitas(function(p){ return [nova].concat(p); });
-    } catch(e) {}
+    } catch(e) { console.warn(e); }
   }
   function dias(fm) { if (!fm.data_inicio || !fm.data_fim) return 0; return Math.max(1, Math.ceil((new Date(fm.data_fim) - new Date(fm.data_inicio)) / 86400000)); }
   function calcValor(fm) {
@@ -14556,13 +14565,19 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       return !!filho;
     });
     if (!toFix.length) return;
-    toFix.forEach(async function(c) {
-      try {
-        await db.patch("contratos", c.id, { status: "concluido" });
-        setContratos(function(p) { return p.map(function(x) { return x.id === c.id ? Object.assign({}, x, { status: "concluido" }) : x; }); });
-      } catch(e) {}
+    var cancelled = false;
+    Promise.all(toFix.map(function(c) {
+      return db.patch("contratos", c.id, { status: "concluido" })
+        .then(function() { return c.id; })
+        .catch(function(e) { console.warn("auto-fix contrato", c.id, e); return null; });
+    })).then(function(ids) {
+      if (cancelled) return;
+      var done = new Set(ids.filter(Boolean));
+      if (!done.size) return;
+      setContratos(function(p) { return p.map(function(x) { return done.has(x.id) ? Object.assign({}, x, { status: "concluido" }) : x; }); });
     });
-  }, [contratos.length]);
+    return function() { cancelled = true; };
+  }, [contratos]);
   // parentOfMap: childId → parentContract
   // 1. renovado_para field  2. observacoes "Renovação contrato #N"  3. date match
   var parentOfMap = React.useMemo(function() {
@@ -14595,11 +14610,14 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (depth === 0) return "nº " + numCt(c.id);
     return "nº " + numCt(cur.id) + "/" + (depth + 1);
   }
-  var fil2 = filtrarContratos(contratos);
-  if (sortCt === "previsao_asc") fil2.sort(function(a,b){return (a.previsao_pagamento||"").localeCompare(b.previsao_pagamento||"");});
-  else if (sortCt === "previsao_desc") fil2.sort(function(a,b){return (b.previsao_pagamento||"").localeCompare(a.previsao_pagamento||"");});
-  else if (sortCt === "valor_desc") fil2.sort(function(a,b){return parseFloat(b.valor_total||0)-parseFloat(a.valor_total||0);});
-  else if (sortCt === "inicio_asc") fil2.sort(function(a,b){return (a.data_inicio||"").localeCompare(b.data_inicio||"");});
+  var fil2 = React.useMemo(function() {
+    var arr = filtrarContratos(contratos).slice();
+    if (sortCt === "previsao_asc") arr.sort(function(a,b){return (a.previsao_pagamento||"").localeCompare(b.previsao_pagamento||"");});
+    else if (sortCt === "previsao_desc") arr.sort(function(a,b){return (b.previsao_pagamento||"").localeCompare(a.previsao_pagamento||"");});
+    else if (sortCt === "valor_desc") arr.sort(function(a,b){return parseFloat(b.valor_total||0)-parseFloat(a.valor_total||0);});
+    else if (sortCt === "inicio_asc") arr.sort(function(a,b){return (a.data_inicio||"").localeCompare(b.data_inicio||"");});
+    return arr;
+  }, [contratos, sortCt, filter, filtroMesCt, filDe, filAte, filVeiculo, filCliente]);
   var fil2Limitado = fil2.slice(0, 150);
   var totalFil = fil2.reduce((s,c) => s + parseFloat(c.valor_total||0), 0);
   return React.createElement('div', { className: "pg-fade", style: { display: "flex", flexDirection: "column", gap: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 952}}
@@ -14768,7 +14786,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               var _rx = null;
               if (_mesPag) { var _rkPag = "fat_"+c.id+"_"+_mesPag; _rx = (receitas||[]).find(function(r){return r.ref_fatura===_rkPag;}); }
               if (!_rx && _mesPrev) { var _rkPrev = "fat_"+c.id+"_"+_mesPrev; _rx = (receitas||[]).find(function(r){return r.ref_fatura===_rkPrev;}); }
-              if (_rx && _rx.status==="recebido") { try { var _ru = await db.patch("receitas", _rx.id, { status: "prevista", data_pagamento: null }); setReceitas(p=>p.map(x=>x.id===_rx.id?Object.assign({},x,_ru):x)); } catch(e){} }
+              if (_rx && _rx.status==="recebido") { try { var _ru = await db.patch("receitas", _rx.id, { status: "prevista", data_pagamento: null }); setReceitas(p=>p.map(x=>x.id===_rx.id?Object.assign({},x,_ru):x)); } catch(e){ console.warn(e); } }
               toast("↩ Pagamento revertido");
             }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1087}}, "↩ Reverter pgto"  )
             , c.status === "ativo" && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: () => concluir(c), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1093}}, "Encerrar")
@@ -15938,7 +15956,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     // Sincronizar contrato se esta receita era o registro de pagamento
     if (rec && rec.ref_fatura && rec.status === "recebido") {
       var m = rec.ref_fatura.match(/^fat_(\d+)_/);
-      if (m) { var ctId = parseInt(m[1]); try { await db.patch("contratos", ctId, { status_pagamento: "pendente", data_pagamento: null }); setContratos(p => p.map(x => x.id===ctId ? Object.assign({},x,{status_pagamento:"pendente",data_pagamento:null}) : x)); } catch(e){} }
+      if (m) { var ctId = parseInt(m[1]); try { await db.patch("contratos", ctId, { status_pagamento: "pendente", data_pagamento: null }); setContratos(p => p.map(x => x.id===ctId ? Object.assign({},x,{status_pagamento:"pendente",data_pagamento:null}) : x)); } catch(e){ console.warn(e); } }
     }
     toast("Excluído!");
   }
@@ -16232,13 +16250,13 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 var upd = await db.patch("receitas", r.id, { status: "recebido", data_pagamento: dt });
                 setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
                 // Sincronizar contrato se for ref_fatura
-                if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){} } } }
+                if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){ console.warn(e); } } } }
                 toast("Receita baixada!");
               }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2235}}, "✅ Baixar" )
               , !r._fromContrato && r.status === "recebido" && !isRec && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
                 var upd = await db.patch("receitas", r.id, { status: "previsto", data_pagamento: null });
                 setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
-                if (r.ref_fatura) { var mE = r.ref_fatura.match(/^fat_(\d+)_/); if (mE) { var ctE = contratos.find(function(c){return String(c.id)===mE[1];}); if (ctE && ctE.status_pagamento === "pago") { try { await db.patch("contratos", ctE.id, { status_pagamento: "pendente", data_pagamento: null }); setContratos(p => p.map(x => x.id==ctE.id ? Object.assign({},x,{status_pagamento:"pendente",data_pagamento:null}) : x)); } catch(e){} } } }
+                if (r.ref_fatura) { var mE = r.ref_fatura.match(/^fat_(\d+)_/); if (mE) { var ctE = contratos.find(function(c){return String(c.id)===mE[1];}); if (ctE && ctE.status_pagamento === "pago") { try { await db.patch("contratos", ctE.id, { status_pagamento: "pendente", data_pagamento: null }); setContratos(p => p.map(x => x.id==ctE.id ? Object.assign({},x,{status_pagamento:"pendente",data_pagamento:null}) : x)); } catch(e){ console.warn(e); } } } }
                 toast("Estornado!");
               }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2242}}, "↩ Estornar" )
               , !r._fromContrato && !isRec && React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => openRec(r), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2247}}, "Editar")
@@ -16328,13 +16346,13 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 if (!dt) return;
                 var upd = await db.patch("despesas", d.id, { status: "pago", data_pagamento: dt });
                 setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
-                if (d.manutencao_id) { try { var um = await db.patch("manutencoes", d.manutencao_id, { status_financeiro: "pago", data_pagamento: dt }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um) : x)); } catch(e){} }
+                if (d.manutencao_id) { try { var um = await db.patch("manutencoes", d.manutencao_id, { status_financeiro: "pago", data_pagamento: dt }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um) : x)); } catch(e){ console.warn(e); } }
                 toast("Despesa baixada!");
               }}, "💸 Baixar" )
               , d.status === "pago" && !isRec && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
                 var upd = await db.patch("despesas", d.id, { status: "previsto", data_pagamento: null });
                 setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
-                if (d.manutencao_id) { try { var um2 = await db.patch("manutencoes", d.manutencao_id, { status_financeiro: "pendente", data_pagamento: null }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um2) : x)); } catch(e){} }
+                if (d.manutencao_id) { try { var um2 = await db.patch("manutencoes", d.manutencao_id, { status_financeiro: "pendente", data_pagamento: null }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um2) : x)); } catch(e){ console.warn(e); } }
                 toast("Estornado!");
               }}, "↩ Estornar" )
               , !isRec && React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => openDesp(d), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2315}}, "Editar")
@@ -17259,6 +17277,31 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     openPdfPage(h);
   }
 
+  function exportarCSV(nome, linhas) {
+    if (!linhas || !linhas.length) return;
+    var cols = Object.keys(linhas[0]);
+    var esc = function(v) { var s = v == null ? "" : String(v); if (/[",;\n]/.test(s)) s = '"' + s.replace(/"/g,'""') + '"'; return s; };
+    var csv = "\ufeff" + cols.join(";") + "\n" + linhas.map(function(r){ return cols.map(function(k){ return esc(r[k]); }).join(";"); }).join("\n");
+    var blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = nome + "_" + new Date().toISOString().slice(0,10) + ".csv"; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  }
+  function csvContratos() {
+    var linhas = contratos.map(function(c) {
+      var cl = clientes.find(function(x){return x.id==c.cliente_id;}) || {};
+      var ve = veiculos.find(function(x){return x.id==c.veiculo_id;}) || {};
+      return { numero: numCt(c.id), cliente: cl.nome || "", veiculo: (ve.placa||"") + " " + (ve.modelo||""), inicio: c.data_inicio||"", fim: c.data_fim||"", valor_total: c.valor_total||0, status: c.status||"", status_pagamento: c.status_pagamento||"", previsao_pagamento: c.previsao_pagamento||"", data_pagamento: c.data_pagamento||"" };
+    });
+    exportarCSV("contratos", linhas);
+  }
+  function csvFaturas() {
+    var linhas = faturasFil.map(function(c) {
+      var cl = clientes.find(function(x){return x.id==c.cliente_id;}) || {};
+      var ve = veiculos.find(function(x){return x.id==c.veiculo_id;}) || {};
+      return { numero: numCt(c.id), cliente: cl.nome||"", veiculo: (ve.placa||"") + " " + (ve.modelo||""), retirada: c.data_inicio||"", devolucao: c.data_fim||"", valor: c.valor_total||0 };
+    });
+    exportarCSV("faturas", linhas);
+  }
   function imprimirFaturas() {
     var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Relatorio de Faturas</title><style>body{font-family:Arial,sans-serif;max-width:850px;margin:30px auto;font-size:13px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #ddd}th{background:#f5f5f7}.tot{font-weight:800;font-size:15px;color:#34C759}@media print{body{margin:0}}</style></head><body>';
     h += buildHeader(empresa);
@@ -17299,7 +17342,10 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
           ))
         )
       )
-      , React.createElement('button', { className: bCls(Btn(C.orange)), style: bStyle(Btn(C.orange)), onClick: imprimirGeral, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2646}}, "Imprimir Relatorio Geral"  )
+      , React.createElement('div', { style: { display: "flex", gap: 8, flexWrap: "wrap" } }
+        , React.createElement('button', { className: bCls(Btn(C.orange)), style: bStyle(Btn(C.orange)), onClick: imprimirGeral }, "Imprimir Relatorio Geral")
+        , React.createElement('button', { className: bCls(Ghost(C.teal)), style: bStyle(Ghost(C.teal)), onClick: csvContratos, "aria-label": "Exportar contratos em CSV" }, "⬇ CSV Contratos")
+      )
     )
 
     , tab === "faturas" && React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 } }
@@ -17326,7 +17372,10 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
           , React.createElement('span', { style: { color: C.green } }, fmtBRL(totalFaturas))
         )
       )
-      , React.createElement('button', { className: bCls(Btn(C.orange)), style: bStyle(Btn(C.orange)), onClick: imprimirFaturas }, "Imprimir Relatório de Faturas")
+      , React.createElement('div', { style: { display: "flex", gap: 8, flexWrap: "wrap" } }
+        , React.createElement('button', { className: bCls(Btn(C.orange)), style: bStyle(Btn(C.orange)), onClick: imprimirFaturas }, "Imprimir Relatório de Faturas")
+        , React.createElement('button', { className: bCls(Ghost(C.teal)), style: bStyle(Ghost(C.teal)), onClick: csvFaturas, "aria-label": "Exportar faturas em CSV" }, "⬇ CSV Faturas")
+      )
     )
 
     , tab === "veiculos" && (() => {
@@ -18004,7 +18053,7 @@ function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, rese
             var showMes=idx===0||(evFil[idx-1].date||"").slice(0,7)!==anoMes;
             var mesLabel="";
             if(showMes&&ev.date){
-              try{ mesLabel=new Date(ev.date+"T12:00:00").toLocaleString("pt-BR",{month:"long",year:"numeric"}); }catch(e){}
+              try{ mesLabel=new Date(ev.date+"T12:00:00").toLocaleString("pt-BR",{month:"long",year:"numeric"}); }catch(e){ console.warn(e); }
             }
             var dotTop=showMes ? 30 : 6;
             return React.createElement(React.Fragment,{key:ev.id}
@@ -19529,7 +19578,7 @@ function App() {
     (async function() {
       var ok = 0;
       for (var i = 0; i < duplicatas.length; i++) {
-        try { await db.del("contratos", duplicatas[i].id); ok++; } catch(e) {}
+        try { await db.del("contratos", duplicatas[i].id); ok++; } catch(e) { console.warn(e); }
       }
       if (ok > 0) {
         setContratos(function(p) { var ids = new Set(duplicatas.map(function(c){return c.id;})); return p.filter(function(c){return !ids.has(c.id);}); });
@@ -19550,7 +19599,7 @@ function App() {
     (async function() {
       var ok = 0;
       for (var i = 0; i < inconsistentes.length; i++) {
-        try { await db.patch("contratos", inconsistentes[i].id, { status: "concluido" }); ok++; } catch(e) {}
+        try { await db.patch("contratos", inconsistentes[i].id, { status: "concluido" }); ok++; } catch(e) { console.warn(e); }
       }
       if (ok > 0) {
         var ids = new Set(inconsistentes.map(function(c){return c.id;}));

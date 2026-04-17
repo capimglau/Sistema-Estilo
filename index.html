@@ -13015,7 +13015,10 @@ const db = {
     if (!r.ok) { const e = await r.json(); throw new Error(e.message || "Erro"); }
     const j = await r.json(); return Array.isArray(j) ? j[0] : j;
   },
-  async del(t, id) { await fetch(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "DELETE", headers: HDR }); },
+  async del(t, id) {
+    const r = await fetch(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "DELETE", headers: HDR });
+    if (!r.ok) { let msg = "Erro ao excluir"; try { const e = await r.json(); msg = e.message || e.hint || msg; } catch(_){} throw new Error(msg); }
+  },
   async upload(path, file) {
     const r = await fetch(SB_URL + "/storage/v1/object/documentos/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": file.type, "x-upsert": "true" }, body: file });
     if (!r.ok) throw new Error("Upload falhou. Verifique o bucket 'documentos' no Supabase Storage.");
@@ -13942,6 +13945,19 @@ function Frota({ veiculos, setVeiculos, contratos, toast }) {
     setLoading(false);
   }
   async function remove(id) { if (!confirm("Excluir?")) return; await db.del("veiculos", id); setVeiculos(p => p.filter(v => v.id !== id)); toast("Excluido!"); }
+  async function renovarDoc(v, campo, nome) {
+    var atual = v[campo] || new Date().toISOString().slice(0,10);
+    var d = new Date(atual); d.setFullYear(d.getFullYear() + 1);
+    var sugestao = d.toISOString().slice(0,10);
+    var nova = prompt("Nova data de vencimento · " + nome + " (" + v.placa + "):", sugestao);
+    if (!nova) return;
+    try {
+      var patch = {}; patch[campo] = nova;
+      var u = await db.patch("veiculos", v.id, patch);
+      setVeiculos(p => p.map(x => x.id === v.id ? Object.assign({}, x, u || patch) : x));
+      toast(nome + " renovado!");
+    } catch(e) { toast("Erro: " + (e.message || ""), "error"); }
+  }
   return React.createElement('div', { className: "pg-fade", style: { display: "flex", flexDirection: "column", gap: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 509}}
     , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 510}}
       , React.createElement('div', { className: "pg-title", __self: this, __source: {fileName: _jsxFileName, lineNumber: 511}}, "Frota")
@@ -13971,14 +13987,23 @@ function Frota({ veiculos, setVeiculos, contratos, toast }) {
             var hoje2 = new Date().toISOString().split("T")[0];
             var str30 = new Date(Date.now() + 30*864e5).toISOString().split("T")[0];
             var docs = [
-              { label: "IPVA", d: v.venc_ipva }, { label: "Seguro", d: v.venc_seguro },
-              { label: "Licenc.", d: v.venc_licenciamento }, { label: "Revisão", d: v.venc_revisao }
+              { label: "IPVA",     nome: "IPVA",          campo: "venc_ipva",          d: v.venc_ipva },
+              { label: "Seguro",   nome: "Seguro",        campo: "venc_seguro",        d: v.venc_seguro },
+              { label: "Licenc.",  nome: "Licenciamento", campo: "venc_licenciamento", d: v.venc_licenciamento },
+              { label: "Revisão",  nome: "Revisão",       campo: "venc_revisao",       d: v.venc_revisao }
             ].filter(x => x.d);
             var vencidos = docs.filter(x => x.d < hoje2);
             var vencendo = docs.filter(x => x.d >= hoje2 && x.d <= str30);
+            var rowBtn = function(cor){ return { background:"transparent", border:"none", color:cor, fontSize:11, fontWeight:600, cursor:"pointer", padding:"0 4px" }; };
+            var linha = function(x, cor, prefix){
+              return React.createElement('div', { key: x.label, style: { fontSize: 11, color: cor, fontWeight: 600, display:"flex", alignItems:"center", gap: 6 } }
+                , React.createElement('span', { style:{ flex:1 } }, prefix + " " + x.label + ": " + fmtDate(x.d))
+                , React.createElement('button', { style: rowBtn(cor), onClick: function(){ renovarDoc(v, x.campo, x.nome); } }, "🔄 Renovar")
+              );
+            };
             return React.createElement(React.Fragment, null
-              , vencidos.map(x => React.createElement('div', { key: x.label, style: { fontSize: 11, color: C.red, fontWeight: 600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 536}}, "⚠ " , x.label, " vencido: "  , fmtDate(x.d)))
-              , vencendo.map(x => React.createElement('div', { key: x.label, style: { fontSize: 11, color: C.orange }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 537}}, "⚠ " , x.label, " vence: "  , fmtDate(x.d)))
+              , vencidos.map(x => linha(x, C.red, "⚠"))
+              , vencendo.map(x => linha(x, C.orange, "⚠"))
             );
           })()
           , v.crv_url && React.createElement('a', { href: v.crv_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 540}}, "CRV/CRLV")
@@ -19316,7 +19341,8 @@ function Reservas({ reservas, setReservas, toast }) {
       await db.patch("reservas", id, { status: novoStatus });
       setReservas(function(p){ return p.map(function(r){ return r.id === id ? Object.assign({}, r, { status: novoStatus }) : r; }); });
       toast(novoStatus === "confirmada" ? "Reserva confirmada!" : novoStatus === "cancelada" ? "Reserva cancelada!" : "Reserva reativada!");
-    } catch(e) { toast("Erro ao atualizar.", "err"); }
+      try { var fresh = await db.get("reservas"); setReservas(fresh || []); } catch(_){}
+    } catch(e) { toast("Erro ao atualizar: " + (e.message || ""), "err"); }
   }
 
   async function excluir(id) {
@@ -19325,7 +19351,8 @@ function Reservas({ reservas, setReservas, toast }) {
       await db.del("reservas", id);
       setReservas(function(p){ return p.filter(function(r){ return r.id !== id; }); });
       toast("Reserva excluída!");
-    } catch(e) { toast("Erro ao excluir.", "err"); }
+      try { var fresh = await db.get("reservas"); setReservas(fresh || []); } catch(_){}
+    } catch(e) { toast("Erro ao excluir: " + (e.message || "verifique permissões no Supabase"), "err"); }
   }
 
   var lista = (reservas || []).filter(function(r) {

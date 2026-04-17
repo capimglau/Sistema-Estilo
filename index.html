@@ -14331,9 +14331,43 @@ function SignaturePad({ value, onChange, label }) {
 }
 
 // -- CHECKLIST MODAL BODY --------------------------------------------------─
+function gerarTokenRand() {
+  var s = "";
+  var arr = new Uint8Array(16);
+  (window.crypto || window.msCrypto).getRandomValues(arr);
+  for (var i = 0; i < arr.length; i++) s += ("0" + arr[i].toString(16)).slice(-2);
+  return s;
+}
+function buildLinkAssinatura(contrato, token) {
+  var base = window.location.origin + window.location.pathname;
+  return base + "#assinar=" + contrato.id + "&tk=" + token;
+}
 function CheckListModalBody({ contrato, clientes, veiculos, empresa, onUpdate }) {
   var cl = clientes.find(function(c){ return c.id == contrato.cliente_id; }) || {};
   var ve = veiculos.find(function(v){ return v.id == contrato.veiculo_id; }) || {};
+  var [tokenCache, setTokenCache] = useState(contrato.token_assinatura || "");
+  async function enviarLink(via) {
+    var token = tokenCache || contrato.token_assinatura;
+    if (!token) {
+      token = gerarTokenRand();
+      try {
+        await db.patch("contratos", contrato.id, { token_assinatura: token });
+        setTokenCache(token);
+      } catch(e) { alert("Rode o SQL do Config (token_assinatura). Detalhe: " + e.message); return; }
+    }
+    var url = buildLinkAssinatura(contrato, token);
+    var msg = "Olá " + (cl.nome||"") + "! Segue o link para assinar seu contrato de locação do veículo " + (ve.modelo||"") + " placa " + (ve.placa||"") + ":\n\n" + url + "\n\nAssine pelo celular mesmo, com o dedo.";
+    if (via === "whats") {
+      var tel = String(cl.telefone||"").replace(/\D/g,"");
+      if (tel && tel.length < 12) tel = "55" + tel;
+      window.open("https://wa.me/" + tel + "?text=" + encodeURIComponent(msg), "_blank");
+    } else if (via === "email") {
+      var to = cl.email || "";
+      window.open("mailto:" + encodeURIComponent(to) + "?subject=" + encodeURIComponent("Assinatura do contrato de locação") + "&body=" + encodeURIComponent(msg), "_blank");
+    } else if (via === "copy") {
+      try { await navigator.clipboard.writeText(url); alert("Link copiado!"); } catch(e) { prompt("Copie o link:", url); }
+    }
+  }
   return React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 761}}
     , React.createElement('div', { style: { background:C.bg, borderRadius:12, padding:"10px 14px", fontSize:12, color:C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 762}}
       , React.createElement('b', { style: { color:"var(--c-text)" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 763}}, cl.nome||"--"), " · "  , ve.placa||"--", " " , ve.modelo||"", " · "  , fmtDate(contrato.data_inicio), " → "  , fmtDate(contrato.data_fim)
@@ -14355,10 +14389,16 @@ function CheckListModalBody({ contrato, clientes, veiculos, empresa, onUpdate })
     , React.createElement('div', { style: { fontSize:11, color:C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 779}}, "As observações são salvas automaticamente ao digitar."      )
     , React.createElement('div', { style: { borderTop: "1px solid " + C.border, paddingTop: 10, marginTop: 4 } }
       , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, marginBottom: 8 } }, "Assinaturas Digitais")
+      , React.createElement('div', { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 } }
+        , React.createElement('button', { type: "button", onClick: function(){ enviarLink("whats"); }, style: Object.assign({}, Btn(C.green), { fontSize: 12, padding: "8px 12px" }) }, "📲 Enviar WhatsApp")
+        , React.createElement('button', { type: "button", onClick: function(){ enviarLink("email"); }, style: Object.assign({}, Btn(C.blue), { fontSize: 12, padding: "8px 12px" }) }, "📧 Enviar E-mail")
+        , React.createElement('button', { type: "button", onClick: function(){ enviarLink("copy"); }, style: Object.assign({}, Btn(), { fontSize: 12, padding: "8px 12px" }) }, "🔗 Copiar link")
+      )
+      , contrato.assinado_em && React.createElement('div', { style: { background: C.green + "22", border: "1px solid " + C.green, color: C.green, borderRadius: 8, padding: "8px 12px", fontSize: 12, marginBottom: 10, fontWeight: 600 } }, "✓ Cliente assinou online em " + fmtDate(String(contrato.assinado_em).slice(0, 10)) + " " + String(contrato.assinado_em).slice(11, 16))
       , React.createElement(SignaturePad, { label: "Assinatura do Locatário (" + (cl.nome || "") + ")", value: contrato.assinatura_cliente || "", onChange: function(v){ onUpdate("assinatura_cliente", v); } })
       , React.createElement('div', { style: { height: 10 } })
       , React.createElement(SignaturePad, { label: "Assinatura da Locadora (" + (empresa && empresa.nome || "") + ")", value: contrato.assinatura_locadora || "", onChange: function(v){ onUpdate("assinatura_locadora", v); } })
-      , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 6 } }, "Rode em Config, uma vez: alter table contratos add column if not exists assinatura_cliente text; alter table contratos add column if not exists assinatura_locadora text;")
+      , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 6 } }, "Rode em Config (1 vez): SQL da seção de assinaturas (inclui token_assinatura, assinado_em)")
     )
     , React.createElement('button', { className: bCls(Btn(C.blue)), style: bStyle(Btn(C.blue)), onClick: function(){ printContrato(contrato, cl, ve, empresa); } }, "🖨️ Imprimir Contrato (com assinaturas)")
   );
@@ -17887,6 +17927,8 @@ function Config({ empresa, setEmpresa, toast }) {
                  , React.createElement('br', {}), "alter table ocupacao_historico disable row level security;"
                  , React.createElement('br', {}), "alter table contratos add column if not exists assinatura_cliente text;"
                  , React.createElement('br', {}), "alter table contratos add column if not exists assinatura_locadora text;"
+                 , React.createElement('br', {}), "alter table contratos add column if not exists token_assinatura text;"
+                 , React.createElement('br', {}), "alter table contratos add column if not exists assinado_em timestamptz;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3011}}), "alter table multas add column if not exists vencimento date;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3012}}), "alter table multas add column if not exists data_pagamento date;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3013}}), "alter table manutencao add column if not exists data_previsao_pagamento date;"
@@ -19694,6 +19736,99 @@ function Reservas({ reservas, setReservas, toast }) {
   );
 }
 
+function AssinarPublico({ contratoId, token }) {
+  var [carregando, setCarregando] = useState(true);
+  var [contrato, setContrato] = useState(null);
+  var [cliente, setCliente] = useState(null);
+  var [veiculo, setVeiculo] = useState(null);
+  var [empresa, setEmpresa] = useState({});
+  var [erro, setErro] = useState("");
+  var [assinatura, setAssinatura] = useState("");
+  var [enviando, setEnviando] = useState(false);
+  var [concluido, setConcluido] = useState(false);
+
+  useEffect(function() {
+    (async function() {
+      try {
+        var r = await fetch(SB_URL + "/rest/v1/contratos?id=eq." + contratoId + "&select=*", { headers: HDR });
+        var arr = await r.json();
+        var c = arr && arr[0];
+        if (!c) { setErro("Contrato não encontrado."); setCarregando(false); return; }
+        if (!c.token_assinatura || c.token_assinatura !== token) { setErro("Link inválido ou expirado."); setCarregando(false); return; }
+        if (c.assinado_em) { setContrato(c); setConcluido(true); setCarregando(false); return; }
+        setContrato(c);
+        var rc = await fetch(SB_URL + "/rest/v1/clientes?id=eq." + c.cliente_id + "&select=*", { headers: HDR });
+        var ac = await rc.json(); setCliente((ac && ac[0]) || {});
+        var rv = await fetch(SB_URL + "/rest/v1/veiculos?id=eq." + c.veiculo_id + "&select=*", { headers: HDR });
+        var av = await rv.json(); setVeiculo((av && av[0]) || {});
+        var re = await fetch(SB_URL + "/rest/v1/config?limit=1", { headers: HDR });
+        var ae = await re.json(); setEmpresa((ae && ae[0]) || {});
+        setCarregando(false);
+      } catch(e) { setErro("Erro ao carregar: " + e.message); setCarregando(false); }
+    })();
+  }, []);
+
+  async function confirmar() {
+    if (!assinatura) { alert("Desenhe sua assinatura antes de confirmar."); return; }
+    setEnviando(true);
+    try {
+      var payload = { assinatura_cliente: assinatura, assinado_em: new Date().toISOString(), token_assinatura: null };
+      var r = await fetch(SB_URL + "/rest/v1/contratos?id=eq." + contratoId + "&token_assinatura=eq." + token, {
+        method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(payload)
+      });
+      if (!r.ok) { setEnviando(false); alert("Falha ao enviar. Link pode ter expirado."); return; }
+      setConcluido(true);
+    } catch(e) { alert("Erro: " + e.message); setEnviando(false); }
+  }
+
+  var wrap = { maxWidth: 560, margin: "20px auto", padding: "0 16px", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" };
+  var card = { background: "#fff", borderRadius: 14, padding: 20, boxShadow: "0 2px 12px rgba(0,0,0,.08)", marginBottom: 14 };
+  if (carregando) return React.createElement('div', { style: wrap }, React.createElement('div', { style: card }, "Carregando contrato…"));
+  if (erro) return React.createElement('div', { style: wrap }, React.createElement('div', { style: Object.assign({}, card, { color: "#C62828" }) }, erro));
+  if (concluido) return React.createElement('div', { style: wrap }
+    , React.createElement('div', { style: Object.assign({}, card, { textAlign: "center" }) }
+      , React.createElement('div', { style: { fontSize: 48 } }, "✅")
+      , React.createElement('div', { style: { fontSize: 18, fontWeight: 700, margin: "10px 0" } }, "Contrato assinado!")
+      , React.createElement('div', { style: { fontSize: 13, color: "#666" } }, "Obrigado. A locadora já recebeu sua assinatura.")
+    )
+  );
+  var valor = parseFloat(contrato.valor_total||0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  return React.createElement('div', { style: wrap }
+    , React.createElement('div', { style: Object.assign({}, card, { textAlign: "center", background: "#007AFF", color: "#fff" }) }
+      , React.createElement('div', { style: { fontSize: 20, fontWeight: 800 } }, empresa.nome || "AutoGest")
+      , React.createElement('div', { style: { fontSize: 12, opacity: .9 } }, "Assinatura de Contrato")
+    )
+    , React.createElement('div', { style: card }
+      , React.createElement('div', { style: { fontSize: 12, color: "#666", marginBottom: 4 } }, "Locatário")
+      , React.createElement('div', { style: { fontWeight: 600, marginBottom: 10 } }, cliente && cliente.nome)
+      , React.createElement('div', { style: { fontSize: 12, color: "#666", marginBottom: 4 } }, "Veículo")
+      , React.createElement('div', { style: { fontWeight: 600, marginBottom: 10 } }, (veiculo && veiculo.modelo ? veiculo.modelo : "") + " · " + (veiculo && veiculo.placa ? veiculo.placa : ""))
+      , React.createElement('div', { style: { display: "flex", gap: 14, marginBottom: 10 } }
+        , React.createElement('div', { style: { flex: 1 } }
+          , React.createElement('div', { style: { fontSize: 12, color: "#666" } }, "Início")
+          , React.createElement('div', { style: { fontWeight: 600 } }, fmtDate(contrato.data_inicio))
+        )
+        , React.createElement('div', { style: { flex: 1 } }
+          , React.createElement('div', { style: { fontSize: 12, color: "#666" } }, "Término")
+          , React.createElement('div', { style: { fontWeight: 600 } }, fmtDate(contrato.data_fim))
+        )
+      )
+      , React.createElement('div', { style: { fontSize: 12, color: "#666" } }, "Valor total")
+      , React.createElement('div', { style: { fontWeight: 700, fontSize: 18, color: "#007AFF" } }, valor)
+    )
+    , empresa.clausulas && React.createElement('div', { style: card }
+      , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, marginBottom: 8 } }, "Cláusulas")
+      , React.createElement('div', { style: { fontSize: 12, whiteSpace: "pre-wrap", lineHeight: 1.6, color: "#333", maxHeight: 200, overflowY: "auto", background: "#F7F7FA", padding: 10, borderRadius: 8 } }, empresa.clausulas)
+    )
+    , React.createElement('div', { style: card }
+      , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, marginBottom: 8 } }, "Sua assinatura")
+      , React.createElement(SignaturePad, { label: "Assine com o dedo", value: assinatura, onChange: setAssinatura })
+      , React.createElement('button', { onClick: confirmar, disabled: enviando, style: { marginTop: 14, width: "100%", padding: "14px", background: enviando ? "#999" : "#30C768", color: "#fff", border: "none", borderRadius: 10, fontSize: 15, fontWeight: 700, cursor: enviando ? "wait" : "pointer" } }, enviando ? "Enviando…" : "✓ Confirmar Assinatura")
+      , React.createElement('div', { style: { fontSize: 11, color: "#666", marginTop: 8, textAlign: "center" } }, "Ao confirmar, você concorda com os termos do contrato acima.")
+    )
+  );
+}
+
 function App() {
   const [logado, setLogado] = useState(false);
   const [tab, setTab] = useState("inicio");
@@ -19843,6 +19978,12 @@ function App() {
     if (tab === "linha_do_tempo") return React.createElement(LinhaDoTempo, { contratos: contratos, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, reservas: reservas, veiculos: veiculos, clientes: clientes });
     return null;
   }
+
+  // Rota pública para cliente assinar via link: #assinar=<id>&tk=<token>
+  var hash = (window.location.hash || "").replace(/^#/, "");
+  var mAss = hash.match(/(?:^|&)assinar=(\d+)/);
+  var mTk = hash.match(/(?:^|&)tk=([a-f0-9]+)/);
+  if (mAss && mTk) return React.createElement(AssinarPublico, { contratoId: mAss[1], token: mTk[1] });
 
   if (!logado) return React.createElement(LoginScreen, { onLogin: () => setLogado(true), __self: this, __source: {fileName: _jsxFileName, lineNumber: 3218}} );
 

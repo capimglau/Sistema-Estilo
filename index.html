@@ -15528,8 +15528,9 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   }
 
   var itensProprios = itens.filter(it => it.mes === filtroMes);
-  var itensRecorrentes = [];
-  var todosVisiveis = itensProprios;
+  var idsBaixados = new Set(itensProprios.filter(it => it.recorrencia_origem_id).map(it => it.recorrencia_origem_id));
+  var itensRecorrentes = itens.filter(it => it.recorrente && it.mes && it.mes < filtroMes && itemVisivelNoMes(it, filtroMes) && !idsBaixados.has(it.id));
+  var todosVisiveis = itensProprios.concat(itensRecorrentes);
 
   // Pró-labore = Saldo Líquido Previsto da locadora do mês selecionado no filtro (estritamente o mês)
   var _mesRef = filtroMes;
@@ -15604,18 +15605,33 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
         )
       )
       , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 8, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1700}}
-        , !isRecorrente && it.status !== "pago" && it.status !== "recebido" && React.createElement('button', { className: bCls(Ghost(it.tipo === "receita" ? C.green : C.red)), style: bStyle(Ghost(it.tipo === "receita" ? C.green : C.red)), onClick: async () => {
+        , (isRecorrente || (it.status !== "pago" && it.status !== "recebido")) && React.createElement('button', { className: bCls(Ghost(it.tipo === "receita" ? C.green : C.red)), style: bStyle(Ghost(it.tipo === "receita" ? C.green : C.red)), onClick: async () => {
           var dt = prompt("Data (" + (it.tipo === "receita" ? "recebimento" : "pagamento") + "):", new Date().toISOString().split("T")[0]);
           if (!dt) return;
           var novoStatus = it.tipo === "receita" ? "recebido" : "pago";
-          var upd = await db.patch("orcamento_pessoal", it.id, { status: novoStatus, data_pagamento: dt });
-          setItens(p => p.map(x => x.id === it.id ? Object.assign({}, x, upd) : x));
-          toast("Baixado!");
+          if (isRecorrente) {
+            var instancia = { descricao: it.descricao, categoria: it.categoria, valor: it.valor, tipo: it.tipo, data: it.data, observacoes: it.observacoes, mes: filtroMes, recorrente: false, recorrencia_origem_id: it.id, status: novoStatus, data_pagamento: dt };
+            try {
+              var c = await db.post("orcamento_pessoal", instancia);
+              setItens(p => [c].concat(p));
+              toast("Baixado!");
+            } catch(e) { toast("Erro: " + e.message + " — execute o SQL nas configurações", "error"); }
+          } else {
+            var upd = await db.patch("orcamento_pessoal", it.id, { status: novoStatus, data_pagamento: dt });
+            setItens(p => p.map(x => x.id === it.id ? Object.assign({}, x, upd) : x));
+            toast("Baixado!");
+          }
         }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1701}}, it.tipo === "receita" ? "✅ Receber" : "💸 Baixar")
         , !isRecorrente && (it.status === "pago" || it.status === "recebido") && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
-          var upd = await db.patch("orcamento_pessoal", it.id, { status: "previsto", data_pagamento: null });
-          setItens(p => p.map(x => x.id === it.id ? Object.assign({}, x, upd) : x));
-          toast("Estornado!");
+          if (it.recorrencia_origem_id) {
+            await db.del("orcamento_pessoal", it.id);
+            setItens(p => p.filter(x => x.id !== it.id));
+            toast("Estornado!");
+          } else {
+            var upd = await db.patch("orcamento_pessoal", it.id, { status: "previsto", data_pagamento: null });
+            setItens(p => p.map(x => x.id === it.id ? Object.assign({}, x, upd) : x));
+            toast("Estornado!");
+          }
         }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1709}}, "↩ Estornar" )
         , !isRecorrente && React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => { setForm(Object.assign({}, it)); setEdit(it.id); setModal(true); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1714}}, "Editar")
         , !isRecorrente && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: () => remove(it.id), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1715}}, "✕")
@@ -17641,6 +17657,7 @@ function Config({ empresa, setEmpresa, toast }) {
                    , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3008}}), "alter table manutencao add column if not exists prazo_recorrencia integer;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3009}}), "alter table despesas add column if not exists manutencao_id bigint;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3010}}), "alter table orcamento_pessoal add column if not exists prazo_recorrencia integer;"
+                 , React.createElement('br', {}), "alter table orcamento_pessoal add column if not exists recorrencia_origem_id bigint;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3011}}), "alter table multas add column if not exists vencimento date;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3012}}), "alter table multas add column if not exists data_pagamento date;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3013}}), "alter table manutencao add column if not exists data_previsao_pagamento date;"

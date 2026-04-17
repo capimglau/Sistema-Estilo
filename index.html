@@ -15182,18 +15182,18 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   function F(k, v) { setForm(p => Object.assign({}, p, { [k]: v })); }
   async function save() {
     if (!form.tipo || !form.valor) return toast("Campos obrigatorios", "error");
+    if (!form.contrato_id && !form.veiculo_id && !form.cliente_id) return toast("Informe contrato ou veículo+cliente avulso", "error");
     setLoading(true);
     try {
-      // Deriva veiculo_id/cliente_id do contrato para filtros confiáveis
-      var ctSave = contratos.find(function(x){ return x.id == form.contrato_id; });
       var payload = Object.assign({}, form);
-      // Remove colunas que podem não existir no schema ainda
       delete payload.auto_infracao_url;
       delete payload.cnh_condutor_url;
-      if (form.contrato_id) {
-        delete payload.veiculo_id;
-        delete payload.cliente_id;
-      }
+      // Normaliza IDs: "" → null (Postgres bigint rejeita string vazia)
+      ["contrato_id","veiculo_id","cliente_id"].forEach(function(k){ if (payload[k] === "" || payload[k] === undefined) payload[k] = null; });
+      // Normaliza datas: "" → null
+      ["data","vencimento","data_pagamento","data_notificacao"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
+      // Normaliza números: "" → null
+      ["valor","valor_cobrado","pontos"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
       if (edit) { const u = await db.patch("multas", edit, payload); setMultas(p => p.map(m => m.id === edit ? Object.assign({}, m, u) : m)); toast("Atualizado!"); }
       else { const c = await db.post("multas", payload); setMultas(p => [c].concat(p)); toast("Registrada!"); }
       setModal(false);
@@ -15662,20 +15662,28 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
   useEffect(() => { db.get("orcamento_pessoal").then(d => { setItens(d || []); setLoading(false); }).catch(() => setLoading(false)); }, []);
 
+  // Mês efetivo do lançamento: prioriza a data da despesa/receita sobre o mês de cadastro.
+  // Assim, uma fixa cadastrada em março com data de abril aparece em abril.
+  function efetivoMes(it) {
+    if (it.data && typeof it.data === "string" && it.data.length >= 7) return it.data.slice(0,7);
+    return it.mes;
+  }
+
   // Filtra itens visíveis no mês selecionado
   function itemVisivelNoMes(it, mes) {
-    if (it.mes === mes) return true; // item do próprio mês
-    if (!it.recorrente || !it.mes || it.mes >= mes) return false; // não recorrente ou futuro
+    var em = efetivoMes(it);
+    if (em === mes) return true; // item do próprio mês (por data ou cadastro)
+    if (!it.recorrente || !em || em >= mes) return false; // não recorrente ou futuro
     if (!it.prazo_recorrencia) return true; // recorrente sem prazo = infinito
-    var inicio = new Date(it.mes + "-01");
+    var inicio = new Date(em + "-01");
     var fim = new Date(mes + "-01");
     var diff = (fim.getFullYear() - inicio.getFullYear()) * 12 + (fim.getMonth() - inicio.getMonth());
     return diff <= parseInt(it.prazo_recorrencia);
   }
 
-  var itensProprios = itens.filter(it => it.mes === filtroMes);
+  var itensProprios = itens.filter(it => efetivoMes(it) === filtroMes);
   var idsBaixados = new Set(itensProprios.filter(it => it.recorrencia_origem_id).map(it => it.recorrencia_origem_id));
-  var itensRecorrentes = itens.filter(it => it.recorrente && it.mes && it.mes < filtroMes && itemVisivelNoMes(it, filtroMes) && !idsBaixados.has(it.id));
+  var itensRecorrentes = itens.filter(it => it.recorrente && efetivoMes(it) && efetivoMes(it) < filtroMes && itemVisivelNoMes(it, filtroMes) && !idsBaixados.has(it.id));
   var todosVisiveis = itensProprios.concat(itensRecorrentes);
 
   // Pró-labore = Saldo Líquido Previsto da locadora do mês selecionado no filtro (estritamente o mês)
@@ -15699,7 +15707,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   var lucroLocadora = _totalPrevisto - _despMes - _manutMes - _multasMes; // Pró-labore = saldo líquido previsto
   var entradasExtras = todosVisiveis.filter(it => it.tipo === "receita").reduce((s,it)=>s+parseFloat(it.valor||0),0);
   var despPessoais = todosVisiveis.filter(it => it.tipo === "despesa").reduce((s,it)=>s+parseFloat(it.valor||0),0);
-  var despPago = todosVisiveis.filter(it => it.tipo === "despesa" && (it.status === "pago" || it.status === "recebido") && it.mes === filtroMes).reduce((s,it)=>s+parseFloat(it.valor||0),0);
+  var despPago = todosVisiveis.filter(it => it.tipo === "despesa" && (it.status === "pago" || it.status === "recebido") && efetivoMes(it) === filtroMes).reduce((s,it)=>s+parseFloat(it.valor||0),0);
   var despRecorrente = itensRecorrentes.filter(it => it.tipo === "despesa").reduce((s,it)=>s+parseFloat(it.valor||0),0);
   var totalReceita = lucroLocadora + entradasExtras;
   var saldo = totalReceita - despPessoais;
@@ -15714,7 +15722,8 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     setSaving(true);
     try {
       var payload = Object.assign({}, form, {
-        mes: filtroMes,
+        // mes ancorado na data da despesa/receita quando informada (para que fixas castradas em mar com data abr apareçam em abr)
+        mes: (form.data && form.data.length >= 7) ? form.data.slice(0,7) : filtroMes,
         recorrente: !!form.recorrente,
         prazo_recorrencia: form.recorrente ? (form.prazo_recorrencia || null) : null
       });
@@ -15727,7 +15736,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   async function remove(id) { if (!confirm("Excluir?")) return; await db.del("orcamento_pessoal", id); setItens(p => p.filter(it => it.id !== id)); toast("Excluido!"); }
 
   function ItemCard({ it, i, total }) {
-    var isRecorrente = it.mes !== filtroMes;
+    var isRecorrente = efetivoMes(it) !== filtroMes;
     return React.createElement('div', { style: { padding: "12px 0", borderBottom: i < total - 1 ? "1px solid " + C.border : "none" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1678}}
       , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1679}}
         , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1680}}
@@ -18307,11 +18316,18 @@ function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, rese
 }
 
 const TABS = [
-  { id: "inicio", label: "Início" }, { id: "cadastro", label: "Cadastro" },
-  { id: "contratos", label: "Contratos" }, { id: "reservas", label: "Reservas" }, { id: "tarifas", label: "Tarifas" }, { id: "financeiro", label: "Financeiro" },
-  { id: "multas", label: "Multas" }, { id: "manutencao", label: "Manutenção" },
+  { id: "inicio", label: "Início" },
+  { id: "reservas", label: "Reservas" },
+  { id: "contratos", label: "Contratos" },
+  { id: "financeiro", label: "Financeiro" },
+  { id: "multas", label: "Multas" },
+  { id: "manutencao", label: "Manutenção" },
+  { id: "cadastro", label: "Cadastro" },
+  { id: "tarifas", label: "Tarifas" },
   { id: "relatorios", label: "Relatórios" },
-  { id: "calendario", label: "Calendário" }, { id: "simulador", label: "Simulador" }, { id: "config", label: "Config" },
+  { id: "calendario", label: "Calendário" },
+  { id: "simulador", label: "Simulador" },
+  { id: "config", label: "Config" },
   { id: "linha_do_tempo", label: "Timeline" }
 ];
 const ICONS = {
@@ -18333,7 +18349,7 @@ const ICONS = {
 };
 
 
-function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, receitas, setTab }) {
+function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, setTab }) {
   var hoje = new Date().toISOString().split("T")[0];
   var now = new Date();
 
@@ -18516,9 +18532,10 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     });
   });
 
-  // RECEITAS operacionais (avulsas)
+  // RECEITAS operacionais (apenas avulsas — as vinculadas a contratos já aparecem como "Pgto Contrato")
   (receitas || []).forEach(function(r) {
     if (!r.data) return;
+    if (r.ref_fatura) return; // evita duplicidade com "Pgto Contrato"
     eventos.push({
       data: r.data, tipo: "receita",
       cor: "#34C759",
@@ -18526,6 +18543,20 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
       titulo: "Receita · " + (r.descricao||"--") + " · " + fmtV(r.valor),
       sub: (r.categoria||"") + (r.forma_pagamento ? " · " + r.forma_pagamento : ""),
       tab: "financeiro"
+    });
+  });
+
+  // RESERVAS — data de retirada (entrada do cliente)
+  (reservas || []).forEach(function(rs) {
+    if (!rs.data_retirada || rs.status === "cancelada") return;
+    var ve = (veiculos||[]).find(function(x){ return x.id==rs.veiculo_id; });
+    eventos.push({
+      data: rs.data_retirada, tipo: "reserva",
+      cor: rs.status === "confirmada" ? "#30C768" : "#FF9500",
+      emoji: "📅",
+      titulo: "Reserva · " + (rs.nome||"--") + (rs.veiculo ? " · " + rs.veiculo : (ve ? " · " + ve.placa : "")),
+      sub: "Retirada " + fmtD(rs.data_retirada) + (rs.data_devolucao ? " → " + fmtD(rs.data_devolucao) : "") + " · " + (rs.status === "confirmada" ? "✓ confirmada" : "pendente"),
+      tab: "reservas"
     });
   });
 
@@ -19974,7 +20005,7 @@ function App() {
     if (tab === "relatorios") return React.createElement(Relatorios, { ...props });
     if (tab === "simulador") return React.createElement(Simulador, { veiculos: veiculos, contratos: contratos, despesas: despesas, manutencoes: manutencoes, multas: multas, receitas: receitas, toast: toast });
     if (tab === "config") return React.createElement(Config, { empresa: empresa, setEmpresa: setEmpresa, toast: toast });
-    if (tab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, setTab: setTab });
+    if (tab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, setTab: setTab });
     if (tab === "linha_do_tempo") return React.createElement(LinhaDoTempo, { contratos: contratos, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, reservas: reservas, veiculos: veiculos, clientes: clientes });
     return null;
   }
@@ -19992,12 +20023,7 @@ function App() {
       , React.createElement('div', { style: { padding: "16px 16px 0" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3222}}, page())
       , React.createElement('nav', { className: "lg-nav", style: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 100, paddingBottom: "calc(env(safe-area-inset-bottom,0px) + 16px)", paddingLeft: 16, paddingRight: 16, display: "flex", alignItems: "flex-end", justifyContent: "center" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3223}}
         , React.createElement('div', { className: "lg-nav-pill", style: { overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none", WebkitOverflowScrolling: "touch" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3224}}
-          , React.createElement('button', { key: TABS[0].id, onClick: () => setTab(TABS[0].id), className: "lg-nav-btn" + (tab === TABS[0].id ? " lg-nav-btn-active" : "") }
-              , React.createElement(NavIcon, { id: TABS[0].id, active: tab === TABS[0].id })
-              , React.createElement('span', { style: { fontSize: 10, fontWeight: tab === TABS[0].id ? 700 : 400, color: tab === TABS[0].id ? C.blue : C.sub, whiteSpace: "nowrap", position: "relative", zIndex: 1, letterSpacing: 0 } }, TABS[0].label)
-            )
-          , React.createElement(SearchBar, { clientes: clientes, contratos: contratos, multas: multas, veiculos: veiculos, setTab: setTab, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3232}})
-          , TABS.slice(1).map(function(t) {
+          , TABS.map(function(t) {
               var nReservasPend = t.id === "reservas" ? (reservas||[]).filter(function(r){return r.status==="pendente";}).length : 0;
               return React.createElement('button', { key: t.id, onClick: function(){setTab(t.id);}, className: "lg-nav-btn" + (tab === t.id ? " lg-nav-btn-active" : ""), style: { position: "relative" } }
                 , React.createElement(NavIcon, { id: t.id, active: tab === t.id })
@@ -20009,6 +20035,7 @@ function App() {
             , React.createElement('span', { style: { fontSize: 20, lineHeight: 1 } }, darkMode ? "☀️" : "🌙")
             , React.createElement('span', { style: { fontSize: 10, color: C.sub, whiteSpace: "nowrap", position: "relative", zIndex: 1 } }, darkMode ? "Claro" : "Escuro")
           )
+          , React.createElement(SearchBar, { clientes: clientes, contratos: contratos, multas: multas, veiculos: veiculos, setTab: setTab, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3232}})
         )
       )
       , bancoAcordando && React.createElement('div', { style: { position: "fixed", top: 10, left: "50%", transform: "translateX(-50%)", background: "#FFB800", color: "#000", padding: "10px 18px", borderRadius: 12, fontSize: 13, fontWeight: 600, zIndex: 9999, boxShadow: "0 4px 16px rgba(0,0,0,.25)" } }, "⏳ Acordando o banco de dados… (pode levar até 1 min)")

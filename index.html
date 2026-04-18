@@ -13643,95 +13643,99 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       );
     })()
 
-    /* Linha 2: Despesas Previstas | Saldo Previsto */
+    /* 7/15/30 dias */
+    , (function(){
+      var hojeD = new Date(); hojeD.setHours(0,0,0,0);
+      function dentroDias(dataStr, dias) {
+        if (!dataStr) return false;
+        var d = new Date(dataStr + "T00:00:00");
+        var diff = (d - hojeD) / 86400000;
+        return diff >= 0 && diff <= dias;
+      }
+      function calcJanela(dias) {
+        var entradas = 0, saidas = 0;
+        (contratos||[]).forEach(function(c){ if (c.status === "cancelado") return; if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return; if (!dentroDias(c.previsao_pagamento, dias)) return; var sld = c.status_pagamento === "parcial" ? Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0)) : parseFloat(c.valor_total||0); entradas += sld; });
+        (receitas||[]).forEach(function(r){ if (r.ref_fatura || r.status === "recebido") return; if (!dentroDias(r.data, dias)) return; entradas += parseFloat(r.valor||0); });
+        (despesas||[]).forEach(function(d){ if (d.manutencao_id || d.status === "pago") return; if (!dentroDias(d.data, dias)) return; saidas += parseFloat(d.valor||0); });
+        (contas||[]).forEach(function(c){ if (c.status === "pago" || c.status === "cancelado") return; if (!dentroDias(c.vencimento, dias)) return; saidas += parseFloat(c.valor||0); });
+        (manutencoes||[]).forEach(function(m){ if (m.status_financeiro === "pago") return; var dt = m.data_previsao_pagamento || m.data_pagamento; if (!dentroDias(dt, dias)) return; saidas += parseFloat(m.custo||0); });
+        (multas||[]).forEach(function(mu){ if (mu.status === "pago") return; if (!dentroDias(mu.vencimento || mu.data, dias)) return; saidas += parseFloat(mu.valor||0); });
+        return { entradas: entradas, saidas: saidas, saldo: entradas - saidas };
+      }
+      var j7 = calcJanela(7), j15 = calcJanela(15), j30 = calcJanela(30);
+      if (j7.entradas + j7.saidas + j15.entradas + j15.saidas + j30.entradas + j30.saidas === 0) return null;
+      return React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 } }
+        , [["7 dias", j7], ["15 dias", j15], ["30 dias", j30]].map(function(pair){
+            var label = pair[0], j = pair[1];
+            return React.createElement('div', { key: label, onClick: function(){ setTab("financeiro"); }, style: { background: C.card, borderRadius: 12, padding: "12px 10px", border: "1px solid "+C.border, cursor: "pointer", display: "flex", flexDirection: "column", gap: 4 } }
+              , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 } }, "Próx. " + label)
+              , React.createElement('div', { style: { fontSize: 11, color: C.green, fontWeight: 600 } }, "↑ " + fmtBRL(j.entradas))
+              , React.createElement('div', { style: { fontSize: 11, color: C.red, fontWeight: 600 } }, "↓ " + fmtBRL(j.saidas))
+              , React.createElement('div', { style: { fontSize: 13, fontWeight: 800, color: j.saldo >= 0 ? C.green : C.red, marginTop: 2 } }, fmtBRL(j.saldo))
+            );
+          })
+      );
+    })()
+
+    /* Despesas Previstas | Despesas Pagas */
     , (() => {
-      var despPrevL2 = despesas.filter(d => despesaVisivelNoMes(d, dashMes) && !d.manutencao_id).reduce((s,d)=>s+parseFloat(d.valor||0),0);
-      var manPrevL2  = manutencoes.filter(m => manMesRefGlobal(m) === dashMes).reduce((s,m)=>s+parseFloat(m.custo||0),0);
-      var saldoPrev  = prevMes - despPrevL2 - manPrevL2;
+      var despPrev = despesas.filter(d => despesaVisivelNoMes(d, dashMes) && !d.manutencao_id).reduce((s,d)=>s+parseFloat(d.valor||0),0);
+      var despPagas = despesas.filter(d => despesaVisivelNoMes(d, dashMes) && !d.manutencao_id && d.status === "pago").reduce((s,d)=>s+parseFloat(d.valor||0),0);
       return (
         React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }
           , React.createElement('div', { onClick: () => setTab("financeiro"), style: { background: C.card, borderRadius: 14, padding: "14px", cursor: "pointer", border: "1px solid " + C.border } }
             , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Desp. Previstas")
-            , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: despPrevL2 > 0 ? C.red : "var(--c-text)", marginTop: 4 } }, fmtBRL(despPrevL2))
+            , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: despPrev > 0 ? C.red : "var(--c-text)", marginTop: 4 } }, fmtBRL(despPrev))
             , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "no mês")
           )
-          , React.createElement('div', { onClick: () => setTab("financeiro"), style: { background: saldoPrev>=0?"linear-gradient(135deg,rgba(52,199,89,0.10),rgba(52,199,89,0.04))":"linear-gradient(135deg,rgba(255,59,48,0.10),rgba(255,59,48,0.04))", borderRadius: 14, padding: "14px", cursor: "pointer", border: "1.5px solid "+(saldoPrev>=0?C.green:C.red)+"44" } }
-            , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Saldo Previsto")
-            , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: saldoPrev>=0?C.green:C.red, marginTop: 4 } }, fmtBRL(saldoPrev))
-            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "receitas − despesas")
-          )
-        )
-      );
-    })()
-
-    /* Linha 3: Despesas Pagas | Saldo Líquido */
-    , (() => {
-      var despPagas = despesas.filter(d => despesaVisivelNoMes(d, dashMes) && !d.manutencao_id && d.status === "pago").reduce((s,d)=>s+parseFloat(d.valor||0),0);
-      var recFatDash = (receitas||[]).filter(r => receitaVisivelNoMes(r, dashMes) && r.status === "recebido" && !r.ref_fatura).reduce((s,r)=>s+parseFloat(r.valor||0),0);
-      var saldoLiq = recMes + recFatDash - despPagas;
-      return (
-        React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }
           , React.createElement('div', { onClick: () => setTab("financeiro"), style: { background: C.card, borderRadius: 14, padding: "14px", cursor: "pointer", border: "1px solid " + C.border } }
             , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Desp. Pagas")
             , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: despPagas > 0 ? C.red : C.sub, marginTop: 4 } }, fmtBRL(despPagas))
             , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "realizado no mês")
           )
-          , React.createElement('div', { onClick: () => setTab("financeiro"), style: { background: saldoLiq>=0?"linear-gradient(135deg,rgba(52,199,89,0.12),rgba(52,199,89,0.04))":"linear-gradient(135deg,rgba(255,59,48,0.12),rgba(255,59,48,0.04))", borderRadius: 14, padding: "14px", cursor: "pointer", border: "1.5px solid "+(saldoLiq>=0?C.green:C.red)+"44" } }
-            , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Saldo Líquido")
-            , React.createElement('div', { style: { fontSize: 20, fontWeight: 800, color: saldoLiq>=0?C.green:C.red, marginTop: 4 } }, fmtBRL(saldoLiq))
-            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "recebido − pago")
-          )
         )
       );
     })()
 
-    /* Linha 4: Próx. Mês */
+    /* Manutenção Prevista | Manutenção Paga */
     , (() => {
-      var proxVal = contratos.filter(c => c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === mesSeguinte).reduce((s,c)=>s+parseFloat(c.valor_total||0),0);
-      var proxQt = contratos.filter(c => c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === mesSeguinte).length;
+      var manPrev = manutencoes.filter(m => manMesRefGlobal(m) === dashMes).reduce((s,m)=>s+parseFloat(m.custo||0),0);
+      var manPaga = manutencoes.filter(m => manMesRefGlobal(m) === dashMes && m.status_financeiro === "pago").reduce((s,m)=>s+parseFloat(m.custo||0),0);
       return (
-        React.createElement('div', { onClick: () => setTab("contratos"), style: { background: C.card, borderRadius: 14, padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", border: "1px solid " + C.border }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 424}}
-          , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 425}}
-            , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 426}}, "Previsão Próximo Mês" )
-            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 427}}, proxQt, " contrato(s)" )
+        React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }
+          , React.createElement('div', { onClick: () => setTab("manutencao"), style: { background: C.card, borderRadius: 14, padding: "14px", cursor: "pointer", border: "1px solid " + C.border } }
+            , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Manut. Prevista")
+            , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: manPrev > 0 ? C.orange : C.sub, marginTop: 4 } }, fmtBRL(manPrev))
+            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "custo no mês")
           )
-          , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: C.teal }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 429}}, fmtBRL(proxVal))
+          , React.createElement('div', { onClick: () => setTab("manutencao"), style: { background: C.card, borderRadius: 14, padding: "14px", cursor: "pointer", border: "1px solid " + C.border } }
+            , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Manut. Paga")
+            , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: manPaga > 0 ? C.orange : C.sub, marginTop: 4 } }, fmtBRL(manPaga))
+            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "pago no mês")
+          )
         )
       );
     })()
 
-        , (function(){
-          var hojeD = new Date(); hojeD.setHours(0,0,0,0);
-          function dentroDias(dataStr, dias) {
-            if (!dataStr) return false;
-            var d = new Date(dataStr + "T00:00:00");
-            var diff = (d - hojeD) / 86400000;
-            return diff >= 0 && diff <= dias;
-          }
-          function calcJanela(dias) {
-            var entradas = 0, saidas = 0;
-            (contratos||[]).forEach(function(c){ if (c.status === "cancelado") return; if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return; if (!dentroDias(c.previsao_pagamento, dias)) return; var sld = c.status_pagamento === "parcial" ? Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0)) : parseFloat(c.valor_total||0); entradas += sld; });
-            (receitas||[]).forEach(function(r){ if (r.ref_fatura || r.status === "recebido") return; if (!dentroDias(r.data, dias)) return; entradas += parseFloat(r.valor||0); });
-            (despesas||[]).forEach(function(d){ if (d.manutencao_id || d.status === "pago") return; if (!dentroDias(d.data, dias)) return; saidas += parseFloat(d.valor||0); });
-            (contas||[]).forEach(function(c){ if (c.status === "pago" || c.status === "cancelado") return; if (!dentroDias(c.vencimento, dias)) return; saidas += parseFloat(c.valor||0); });
-            (manutencoes||[]).forEach(function(m){ if (m.status_financeiro === "pago") return; var dt = m.data_previsao_pagamento || m.data_pagamento; if (!dentroDias(dt, dias)) return; saidas += parseFloat(m.custo||0); });
-            (multas||[]).forEach(function(mu){ if (mu.status === "pago") return; if (!dentroDias(mu.vencimento || mu.data, dias)) return; saidas += parseFloat(mu.valor||0); });
-            return { entradas: entradas, saidas: saidas, saldo: entradas - saidas };
-          }
-          var j7 = calcJanela(7), j15 = calcJanela(15), j30 = calcJanela(30);
-          if (j7.entradas + j7.saidas + j15.entradas + j15.saidas + j30.entradas + j30.saidas === 0) return null;
-          return React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 } }
-            , [["7 dias", j7], ["15 dias", j15], ["30 dias", j30]].map(function(pair){
-                var label = pair[0], j = pair[1];
-                return React.createElement('div', { key: label, onClick: function(){ setTab("financeiro"); }, style: { background: C.card, borderRadius: 12, padding: "12px 10px", border: "1px solid "+C.border, cursor: "pointer", display: "flex", flexDirection: "column", gap: 4 } }
-                  , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 } }, "Próx. " + label)
-                  , React.createElement('div', { style: { fontSize: 11, color: C.green, fontWeight: 600 } }, "↑ " + fmtBRL(j.entradas))
-                  , React.createElement('div', { style: { fontSize: 11, color: C.red, fontWeight: 600 } }, "↓ " + fmtBRL(j.saidas))
-                  , React.createElement('div', { style: { fontSize: 13, fontWeight: 800, color: j.saldo >= 0 ? C.green : C.red, marginTop: 2 } }, fmtBRL(j.saldo))
-                );
-              })
-          );
-        })()
+    /* Multas Previstas | Multas Pagas */
+    , (() => {
+      var multasPrev = (multas||[]).filter(m => (m.vencimento || m.data || "").slice(0,7) === dashMes).reduce((s,m)=>s+parseFloat(m.valor||0),0);
+      var multasPag = (multas||[]).filter(m => (m.vencimento || m.data || "").slice(0,7) === dashMes && m.status === "pago").reduce((s,m)=>s+parseFloat(m.valor||0),0);
+      return (
+        React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }
+          , React.createElement('div', { onClick: () => setTab("multas"), style: { background: C.card, borderRadius: 14, padding: "14px", cursor: "pointer", border: "1px solid " + C.border } }
+            , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Multas Previstas")
+            , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: multasPrev > 0 ? C.red : C.sub, marginTop: 4 } }, fmtBRL(multasPrev))
+            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "no mês")
+          )
+          , React.createElement('div', { onClick: () => setTab("multas"), style: { background: C.card, borderRadius: 14, padding: "14px", cursor: "pointer", border: "1px solid " + C.border } }
+            , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Multas Pagas")
+            , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: multasPag > 0 ? C.red : C.sub, marginTop: 4 } }, fmtBRL(multasPag))
+            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "pago no mês")
+          )
+        )
+      );
+    })()
 
         , (contratosAtrasados.length > 0 || contratosVencendo.length > 0 || faturasAEmitir.length > 0 || cnhVencida.length > 0 || cnhVencendo.length > 0 || contasVencidas.length > 0 || contasVencendo.length > 0 || manutProlongadas.length > 0 || despesasVencidas.length > 0 || despesasVencendo.length > 0 || receitasAtrasadas.length > 0 || receitasVencendo.length > 0 || reservasPendentes.length > 0 || reservasHoje.length > 0) && (
       React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 435}}

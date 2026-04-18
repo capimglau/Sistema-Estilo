@@ -16684,13 +16684,13 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 if (!dt) return;
                 var upd = await db.patch("despesas", d.id, { status: "pago", data_pagamento: dt });
                 setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
-                if (d.manutencao_id) { try { var um = await db.patch("manutencoes", d.manutencao_id, { status_financeiro: "pago", data_pagamento: dt }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um) : x)); } catch(e){ console.warn(e); } }
+                if (d.manutencao_id) { try { var um = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pago", data_pagamento: dt }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um) : x)); } catch(e){ console.warn(e); } }
                 toast("Despesa baixada!");
               }}, "💸 Baixar" )
               , d.status === "pago" && !isRec && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
                 var upd = await db.patch("despesas", d.id, { status: "previsto", data_pagamento: null });
                 setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
-                if (d.manutencao_id) { try { var um2 = await db.patch("manutencoes", d.manutencao_id, { status_financeiro: "pendente", data_pagamento: null }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um2) : x)); } catch(e){ console.warn(e); } }
+                if (d.manutencao_id) { try { var um2 = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pendente", data_pagamento: null }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um2) : x)); } catch(e){ console.warn(e); } }
                 toast("Estornado!");
               }}, "↩ Estornar" )
               , !isRec && React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => openDesp(d), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2315}}, "Editar")
@@ -17214,8 +17214,12 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         )
         , (function() {
           var pendDesp = totalDespPrevista - totalDespPaga;
-          var pendManut = totalManutPrevista - totalManutPaga;
-          var pendMultas = totalMultasVenc - totalMultasPagas;
+          // Multas — separação cliente/órgão
+          var multasAReceber = multasMesConc.filter(function(m){ return m.cobrado_cliente === "pendente"; }).reduce(function(s,m){ return s+parseFloat(m.valor_cobrado||m.valor||0); }, 0);
+          var multasRecebido = multasMesConc.filter(function(m){ return m.cobrado_cliente === "pago"; }).reduce(function(s,m){ return s+parseFloat(m.valor_cobrado||m.valor||0); }, 0);
+          var multasAPagar = multasMesConc.filter(function(m){ return m.status !== "pago"; }).reduce(function(s,m){ return s+parseFloat(m.valor||0); }, 0);
+          // Manutenção
+          var manutAPagar = manutMesConc.filter(function(m){ return m.status_financeiro !== "pago"; }).reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);
           function Row(items) {
             return React.createElement('div', { style: { display:"flex", gap:10 } },
               items.map(function(b, i) {
@@ -17227,6 +17231,22 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               })
             );
           }
+          function linha(lbl, valor, cor, bold) {
+            return React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:8, padding:"4px 0" } }
+              , React.createElement('span', { style: { fontSize:11, color:C.sub, fontWeight:600 } }, lbl)
+              , React.createElement('span', { style: { fontSize: bold?15:13, fontWeight: bold?800:700, color:cor, whiteSpace:"nowrap" } }, fmtBRL(valor))
+            );
+          }
+          function Breakdown(titulo, icone, corTitulo, linhas) {
+            return React.createElement('div', { className: CARD_CLS, style: Object.assign({},CARD,{flex:1}) }
+              , React.createElement('div', { style: { fontSize:11, color:corTitulo, textTransform:"uppercase", fontWeight:800, marginBottom:8, letterSpacing:0.5, display:"flex", alignItems:"center", gap:6 } }, icone + " " + titulo)
+              , linhas.map(function(l, i) {
+                  return React.createElement('div', { key: i, style: i<linhas.length-1 ? { borderBottom:"1px solid "+C.border } : null }
+                    , linha(l.label, l.val, l.cor, l.bold)
+                  );
+                })
+            );
+          }
           return React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:10 } },
             Row([
               { label:"📥 Previsto Receber",  val:totalPrevisto,     cor:C.blue,    sub:ctsMesConc.length+" contratos" },
@@ -17236,13 +17256,15 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               { label:"📤 Despesas Previstas", val:totalDespPrevista, cor:C.red,     sub:despMesConc.length+" lançamento(s)" },
               { label:"✅ Despesas Pagas",      val:totalDespPaga,     cor:C.orange,  sub:pendDesp>0?"falta "+fmtBRL(pendDesp):"todas pagas" }
             ]),
-            Row([
-              { label:"🔧 Manutenção Prevista",val:totalManutPrevista,cor:"#AF52DE", sub:manutMesConc.length+" serviço(s)" },
-              { label:"✅ Manutenção Paga",     val:totalManutPaga,    cor:"#5856D6", sub:pendManut>0?"falta "+fmtBRL(pendManut):"todas pagas" }
+            Breakdown("Manutenção", "🔧", "#AF52DE", [
+              { label:"Prevista",  val:totalManutPrevista, cor:"#AF52DE", bold:true },
+              { label:"A Pagar",   val:manutAPagar,        cor:C.orange },
+              { label:"Paga",      val:totalManutPaga,     cor:C.green }
             ]),
-            Row([
-              { label:"⚠️ Multas do Mês",       val:totalMultasVenc,   cor:C.red,     sub:"custo líquido: "+fmtBRL(totalMultasCustoLiquido) },
-              { label:"✅ Multas Pagas",         val:totalMultasPagas,  cor:C.green,   sub:pendMultas>0?"falta "+fmtBRL(pendMultas):"todas pagas" }
+            Breakdown("Multas", "⚠️", C.red, [
+              { label:"A Receber (cliente)",  val:multasAReceber, cor:C.blue },
+              { label:"A Pagar (órgão)",      val:multasAPagar,   cor:C.red, bold:true },
+              { label:"Recebido (cliente)",   val:multasRecebido, cor:C.green }
             ]),
             React.createElement('div', { style: { display:"flex", gap:10 } },
               React.createElement('div', { className: CARD_CLS, style: Object.assign({},CARD,{flex:1, background: saldoConf>=0?"linear-gradient(135deg,rgba(52,199,89,0.12),rgba(52,199,89,0.04))":"linear-gradient(135deg,rgba(255,59,48,0.12),rgba(255,59,48,0.04))", border:"1.5px solid "+(saldoConf>=0?C.green:C.red)+"44"}) },
@@ -17256,80 +17278,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 React.createElement('div', { style: { fontSize:10, color:C.sub, marginTop:3 } }, "receitas previstas − desp. − manut. − multas líq.")
               )
             )
-          );
-        })()
-
-        /* ── GRÁFICO 1: Receitas vs Despesas ── */
-        , (function() {
-          var barras = [
-            { label:"Rec. Prevista",  val:totalPrevisto,     cor:C.blue   },
-            { label:"Rec. Recebida",  val:totalConfirmado,   cor:C.green  },
-            { label:"Desp. Prevista", val:totalDespPrevista+totalManutPrevista, cor:"rgba(255,59,48,0.55)" },
-            { label:"Desp. Paga",     val:totalDespPaga+totalManutPaga,         cor:C.red    },
-          ];
-          var maxVal = Math.max.apply(null, barras.map(function(b){return b.val;})) || 1;
-          return React.createElement('div', { className:"lg-card", style:CARD },
-            React.createElement('div', { style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:"uppercase",marginBottom:12,letterSpacing:.5} }, "📊 Receitas vs Despesas"),
-            React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:10} },
-              barras.map(function(b,i){
-                var pct = Math.round(b.val/maxVal*100);
-                return React.createElement('div', {key:i},
-                  React.createElement('div', {style:{display:"flex",justifyContent:"space-between",fontSize:11,color:C.sub,marginBottom:4}},
-                    React.createElement('span',null,b.label),
-                    React.createElement('span',{style:{fontWeight:700,color:b.cor}},fmtBRL(b.val))
-                  ),
-                  React.createElement('div',{style:{background:C.border+"50",borderRadius:6,height:10,overflow:"hidden"}},
-                    React.createElement('div',{style:{height:"100%",borderRadius:6,width:pct+"%",background:b.cor,transition:"width .5s ease"}})
-                  )
-                );
-              })
-            ),
-            React.createElement('div',{style:{display:"flex",justifyContent:"space-between",marginTop:14,paddingTop:10,borderTop:"0.5px solid "+C.border}},
-              React.createElement('div',{style:{fontSize:11,color:C.sub}},"Saldo Líquido"),
-              React.createElement('div',{style:{fontSize:15,fontWeight:800,color:saldoConf>=0?C.green:C.red}},fmtBRL(saldoConf))
-            )
-          );
-        })()
-
-        /* ── GRÁFICO 2: Distribuição de Saídas ── */
-        , (function() {
-          var segs = [
-            { label:"Despesas",   val:totalDespPrevista,          cor:C.red       },
-            { label:"Manutenção", val:totalManutPrevista,         cor:"#AF52DE"   },
-            { label:"Multas",     val:totalMultasCustoLiquido,    cor:C.orange    },
-          ].filter(function(s){return s.val>0;});
-          var total = segs.reduce(function(s,x){return s+x.val;},0)||1;
-          var cx=50,cy=50,r=38,ri=22,ang=-Math.PI/2;
-          var paths = segs.map(function(s){
-            var frac=s.val/total, a=frac*2*Math.PI;
-            var x1=cx+r*Math.cos(ang),y1=cy+r*Math.sin(ang);
-            ang+=a;
-            var x2=cx+r*Math.cos(ang),y2=cy+r*Math.sin(ang);
-            var large=a>Math.PI?1:0;
-            return {d:"M "+cx+" "+cy+" L "+x1.toFixed(2)+" "+y1.toFixed(2)+" A "+r+" "+r+" 0 "+large+" 1 "+x2.toFixed(2)+" "+y2.toFixed(2)+" Z",cor:s.cor,label:s.label,val:s.val,pct:Math.round(frac*100)};
-          });
-          return React.createElement('div',{className:"lg-card",style:CARD},
-            React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:"uppercase",marginBottom:12,letterSpacing:.5}},"📉 Distribuição de Saídas"),
-            segs.length===0
-              ? React.createElement('div',{style:{color:C.sub,fontSize:13,textAlign:"center",padding:12}},"Sem saídas registradas neste mês")
-              : React.createElement('div',{style:{display:"flex",gap:20,alignItems:"center"}},
-                  React.createElement('svg',{viewBox:"0 0 100 100",style:{width:100,height:100,flexShrink:0}},
-                    paths.map(function(p,i){return React.createElement('path',{key:i,d:p.d,fill:p.cor,opacity:.88});}),
-                    React.createElement('circle',{cx:50,cy:50,r:ri,fill:"var(--c-card)"}),
-                    React.createElement('text',{x:50,y:53,textAnchor:"middle",fontSize:9,fontWeight:700,fill:"var(--c-sub)"},"Saídas")
-                  ),
-                  React.createElement('div',{style:{display:"flex",flexDirection:"column",gap:8,flex:1}},
-                    paths.map(function(p,i){
-                      return React.createElement('div',{key:i,style:{display:"flex",alignItems:"center",gap:8}},
-                        React.createElement('div',{style:{width:10,height:10,borderRadius:3,background:p.cor,flexShrink:0}}),
-                        React.createElement('div',{style:{flex:1}},
-                          React.createElement('div',{style:{fontSize:11,color:C.sub}},p.label),
-                          React.createElement('div',{style:{fontSize:12,fontWeight:700,color:p.cor}},fmtBRL(p.val)+" · "+p.pct+"%")
-                        )
-                      );
-                    })
-                  )
-                )
           );
         })()
 

@@ -13633,6 +13633,39 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       );
     })()
 
+        , (function(){
+          var hojeD = new Date(); hojeD.setHours(0,0,0,0);
+          function dentroDias(dataStr, dias) {
+            if (!dataStr) return false;
+            var d = new Date(dataStr + "T00:00:00");
+            var diff = (d - hojeD) / 86400000;
+            return diff >= 0 && diff <= dias;
+          }
+          function calcJanela(dias) {
+            var entradas = 0, saidas = 0;
+            (contratos||[]).forEach(function(c){ if (c.status === "cancelado") return; if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return; if (!dentroDias(c.previsao_pagamento, dias)) return; var sld = c.status_pagamento === "parcial" ? Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0)) : parseFloat(c.valor_total||0); entradas += sld; });
+            (receitas||[]).forEach(function(r){ if (r.ref_fatura || r.status === "recebido") return; if (!dentroDias(r.data, dias)) return; entradas += parseFloat(r.valor||0); });
+            (despesas||[]).forEach(function(d){ if (d.manutencao_id || d.status === "pago") return; if (!dentroDias(d.data, dias)) return; saidas += parseFloat(d.valor||0); });
+            (contas||[]).forEach(function(c){ if (c.status === "pago" || c.status === "cancelado") return; if (!dentroDias(c.vencimento, dias)) return; saidas += parseFloat(c.valor||0); });
+            (manutencoes||[]).forEach(function(m){ if (m.status_financeiro === "pago") return; var dt = m.data_previsao_pagamento || m.data_pagamento; if (!dentroDias(dt, dias)) return; saidas += parseFloat(m.custo||0); });
+            (multas||[]).forEach(function(mu){ if (mu.status === "pago") return; if (!dentroDias(mu.vencimento || mu.data, dias)) return; saidas += parseFloat(mu.valor||0); });
+            return { entradas: entradas, saidas: saidas, saldo: entradas - saidas };
+          }
+          var j7 = calcJanela(7), j15 = calcJanela(15), j30 = calcJanela(30);
+          if (j7.entradas + j7.saidas + j15.entradas + j15.saidas + j30.entradas + j30.saidas === 0) return null;
+          return React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 } }
+            , [["7 dias", j7], ["15 dias", j15], ["30 dias", j30]].map(function(pair){
+                var label = pair[0], j = pair[1];
+                return React.createElement('div', { key: label, onClick: function(){ setTab("financeiro"); }, style: { background: C.card, borderRadius: 12, padding: "12px 10px", border: "1px solid "+C.border, cursor: "pointer", display: "flex", flexDirection: "column", gap: 4 } }
+                  , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 } }, "Próx. " + label)
+                  , React.createElement('div', { style: { fontSize: 11, color: C.green, fontWeight: 600 } }, "↑ " + fmtBRL(j.entradas))
+                  , React.createElement('div', { style: { fontSize: 11, color: C.red, fontWeight: 600 } }, "↓ " + fmtBRL(j.saidas))
+                  , React.createElement('div', { style: { fontSize: 13, fontWeight: 800, color: j.saldo >= 0 ? C.green : C.red, marginTop: 2 } }, (j.saldo >= 0 ? "+" : "") + fmtBRL(j.saldo))
+                );
+              })
+          );
+        })()
+
         , (contratosAtrasados.length > 0 || contratosVencendo.length > 0 || faturasAEmitir.length > 0 || cnhVencida.length > 0 || cnhVencendo.length > 0 || contasVencidas.length > 0 || contasVencendo.length > 0 || manutProlongadas.length > 0 || despesasVencidas.length > 0 || despesasVencendo.length > 0 || receitasAtrasadas.length > 0 || receitasVencendo.length > 0 || reservasPendentes.length > 0 || reservasHoje.length > 0) && (
       React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 435}}
         , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 436}}, "Central de Alertas"  )
@@ -16050,6 +16083,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("resumo");
   const [filtroMes, setFiltroMes] = useState(new Date().toISOString().slice(0, 7));
+  const [budgetsState, setBudgetsState] = useState(function(){ try { return JSON.parse(localStorage.getItem("ag_budgets_v1") || "{}"); } catch(e) { return {}; } });
   const [modalFat, setModalFat] = useState(null); // { tipo:"emitir"|"pagar", fat:{...}, dtInput:"" }
   const [filtroStatusFat, setFiltroStatusFat] = useState("todas");
   const [sortRec, setSortRec] = useState("data_asc");
@@ -16057,7 +16091,26 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   const [fluxoView, setFluxoView] = useState("dia");
   const [fluxoSort, setFluxoSort] = useState("desc");
   const [fluxoEscopo, setFluxoEscopo] = useState("mes");
-  function F(k, v) { setForm(p => Object.assign({}, p, { [k]: v })); }
+  function F(k, v) {
+    setForm(function(p) {
+      var np = Object.assign({}, p, { [k]: v });
+      // Auto-categorização: se usuário digita descrição e não escolheu categoria manual
+      if (k === "descricao" && v && (!p._catManual)) {
+        try {
+          var rules = JSON.parse(localStorage.getItem("ag_autocat_v1") || "[]");
+          var lower = String(v).toLowerCase();
+          for (var i = 0; i < rules.length; i++) {
+            if (rules[i].kw && lower.indexOf(String(rules[i].kw).toLowerCase()) >= 0) {
+              np.categoria = rules[i].cat;
+              break;
+            }
+          }
+        } catch(e) {}
+      }
+      if (k === "categoria") np._catManual = true;
+      return np;
+    });
+  }
 
   const hoje = new Date().toISOString().split("T")[0];
 
@@ -16252,8 +16305,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   return React.createElement('div', { className: "pg-fade", style: { display: "flex", flexDirection: "column", gap: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2106}}
     , React.createElement('div', { className: "pg-title", __self: this, __source: {fileName: _jsxFileName, lineNumber: 2107}}, "Financeiro")
     , React.createElement('div', { style: { display: "flex", gap: 8, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch", paddingBottom: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2108}}
-      , [["resumo","📊"],["receitas","💰"],["despesas","📉"],["fluxo","📈"],["conciliacao","🏦"],["contas_rec","🔁"],["faturas","🧾"],["pessoal","🏠"]].map(([x, ic]) =>
-        React.createElement('button', { key: x, onClick: () => setTab(x), className: "lg-pill lg-pill-sm " + (tab === x ? "lg-blue" : "lg-ghost"), style: { fontWeight: 300, textTransform: "capitalize", flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2110}}, ic, " " , x === "pessoal" ? "Orç. Pessoal" : x === "conciliacao" ? "Conciliação" : x === "contas_rec" ? "Fixas" : x === "faturas" ? "Faturas" : x)
+      , [["resumo","📊"],["receitas","💰"],["despesas","📉"],["fluxo","📈"],["analise","🧠"],["conciliacao","🏦"],["contas_rec","🔁"],["faturas","🧾"],["pessoal","🏠"]].map(([x, ic]) =>
+        React.createElement('button', { key: x, onClick: () => setTab(x), className: "lg-pill lg-pill-sm " + (tab === x ? "lg-blue" : "lg-ghost"), style: { fontWeight: 300, textTransform: "capitalize", flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2110}}, ic, " " , x === "pessoal" ? "Orç. Pessoal" : x === "conciliacao" ? "Conciliação" : x === "contas_rec" ? "Fixas" : x === "faturas" ? "Faturas" : x === "analise" ? "Análise" : x)
       )
     )
 
@@ -16750,6 +16803,207 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             , React.createElement('div', { style: { position:"absolute", left: 10, top: 12, bottom: 12, width: 1, background:"linear-gradient(180deg, var(--c-border), transparent 95%)" } })
             , serie.map(view === "mes" ? nodoMensal : nodoDiario)
           )
+        )
+      );
+    })()
+
+    , tab === "analise" && (function(){
+      var hoje = new Date();
+      var mesAtual = hoje.toISOString().slice(0,7);
+      var anoAtual = hoje.getFullYear();
+      // ===== Fluxo de caixa projetado 12 meses =====
+      var meses12 = [];
+      for (var mi = 0; mi < 12; mi++) {
+        var dp = new Date(hoje.getFullYear(), hoje.getMonth() + mi, 1);
+        meses12.push(dp.getFullYear() + "-" + String(dp.getMonth()+1).padStart(2,"0"));
+      }
+      var fluxo12 = meses12.map(function(m) {
+        var ctsM = (contratos||[]).filter(function(c){ if (c.status === "cancelado") return false; var ref = c.previsao_pagamento || c.data_fim || ""; return ref.slice(0,7) === m; });
+        var recCt = ctsM.reduce(function(s,c){ if (c.status_pagamento==="pago"||c.status_pagamento==="isento") return s+parseFloat(c.valor_total||0); if (c.status_pagamento==="parcial") return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)); return s+parseFloat(c.valor_total||0); },0);
+        var recAv = (receitas||[]).filter(function(r){ return !r.ref_fatura && receitaVisivelNoMes(r, m); }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
+        var despAv = (despesas||[]).filter(function(d){ return !d.manutencao_id && despesaVisivelNoMes(d, m); }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
+        var manM = (manutencoes||[]).filter(function(mn){ var dt = mn.data_previsao_pagamento || mn.data_pagamento || mn.data_entrada || ""; return dt.slice(0,7) === m; }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
+        var multM = (multas||[]).filter(function(mu){ return (mu.vencimento||mu.data||"").slice(0,7) === m; }).reduce(function(s,mu){ var v = parseFloat(mu.valor||0); var cob = (mu.cobrado_cliente==="pago"||mu.cobrado_cliente==="pendente") ? parseFloat(mu.valor_cobrado||mu.valor||0) : 0; return s+Math.max(0,v-cob); },0);
+        var inflow = recCt + recAv;
+        var outflow = despAv + manM + multM;
+        return { mes: m, inflow: inflow, outflow: outflow, saldo: inflow - outflow };
+      });
+      var saldoAcc = 0;
+      fluxo12.forEach(function(f){ saldoAcc += f.saldo; f.acc = saldoAcc; });
+      var maxAcc = Math.max.apply(null, fluxo12.map(function(f){ return Math.abs(f.acc); }).concat([1]));
+      var maxFlow = Math.max.apply(null, fluxo12.map(function(f){ return Math.max(f.inflow, f.outflow); }).concat([1]));
+
+      // ===== DRE mensal do ano atual =====
+      var dreMeses = [];
+      for (var mm = 0; mm < 12; mm++) {
+        var mStr = anoAtual + "-" + String(mm+1).padStart(2,"0");
+        var ctsMesDre = (contratos||[]).filter(function(c){ var ref = c.previsao_pagamento || c.data_fim || ""; return ref.slice(0,7) === mStr && (c.status_pagamento==="pago"||c.status_pagamento==="isento"); });
+        var receitaBruta = ctsMesDre.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0) + (receitas||[]).filter(function(r){ return !r.ref_fatura && r.status==="recebido" && (r.data_pagamento||"").slice(0,7)===mStr; }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
+        var custosDir = (manutencoes||[]).filter(function(mn){ return (mn.data_pagamento||"").slice(0,7)===mStr && mn.status_financeiro==="pago"; }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
+        var despFixas = (despesas||[]).filter(function(d){ return !d.manutencao_id && d.status==="pago" && (d.data_pagamento||"").slice(0,7)===mStr; }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
+        var multasDre = (multas||[]).filter(function(mu){ return mu.status==="pago" && (mu.data_pagamento||"").slice(0,7)===mStr; }).reduce(function(s,mu){ var v = parseFloat(mu.valor||0); var cob = mu.cobrado_cliente==="pago"?parseFloat(mu.valor_cobrado||0):0; return s+Math.max(0,v-cob); },0);
+        var lucro = receitaBruta - custosDir - despFixas - multasDre;
+        dreMeses.push({ mes: mStr, receitaBruta: receitaBruta, custosDir: custosDir, despFixas: despFixas, multas: multasDre, lucro: lucro });
+      }
+      var totalDre = dreMeses.reduce(function(a,d){ return { receitaBruta:a.receitaBruta+d.receitaBruta, custosDir:a.custosDir+d.custosDir, despFixas:a.despFixas+d.despFixas, multas:a.multas+d.multas, lucro:a.lucro+d.lucro }; }, { receitaBruta:0, custosDir:0, despFixas:0, multas:0, lucro:0 });
+
+      // ===== Orçamento vs Realizado por categoria =====
+      var BUD_KEY = "ag_budgets_v1";
+      var budgets = budgetsState || {};
+      var gastoPorCat = {};
+      (despesas||[]).filter(function(d){ return !d.manutencao_id && (d.data_pagamento||d.data||"").slice(0,7) === mesAtual; }).forEach(function(d){ var c = d.categoria || "Outros"; gastoPorCat[c] = (gastoPorCat[c]||0) + parseFloat(d.valor||0); });
+      var catsBud = CATS_DESP.slice().sort(function(a,b){ return (gastoPorCat[b]||0) - (gastoPorCat[a]||0); });
+
+      // ===== Lucratividade por Cliente =====
+      var lucroCli = (clientes||[]).map(function(cl) {
+        var cts = (contratos||[]).filter(function(c){ return c.cliente_id == cl.id; });
+        var recCl = cts.reduce(function(s,c){ if (c.status_pagamento==="pago") return s+parseFloat(c.valor_total||0); if (c.status_pagamento==="parcial") return s+parseFloat(c.valor_pago||0); return s; },0);
+        var vIds = Array.from(new Set(cts.map(function(c){ return c.veiculo_id; })));
+        var custoMan = (manutencoes||[]).filter(function(mn){ return vIds.indexOf(mn.veiculo_id) >= 0; }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
+        var mults = (multas||[]).filter(function(mu){ return mu.cliente_id == cl.id; }).reduce(function(s,mu){ var v=parseFloat(mu.valor||0); var cob = mu.cobrado_cliente==="pago"?parseFloat(mu.valor_cobrado||0):0; return s+Math.max(0, v-cob); },0);
+        var custoAloc = cts.length && vIds.length ? custoMan * (cts.length / Math.max(1, (contratos||[]).filter(function(c){ return vIds.indexOf(c.veiculo_id) >= 0; }).length)) : 0;
+        var lucro = recCl - custoAloc - mults;
+        return { cl: cl, receita: recCl, custo: custoAloc, multas: mults, lucro: lucro, nCts: cts.length };
+      }).filter(function(x){ return x.receita > 0 || x.nCts > 0; }).sort(function(a,b){ return b.lucro - a.lucro; });
+
+      // ===== Import CSV: handler via ref via inline state =====
+      function importHandler(e){
+        var f = e.target.files && e.target.files[0]; if (!f) return;
+        var rd = new FileReader();
+        rd.onload = function(ev){
+          try {
+            var txt = ev.target.result || "";
+            var lines = txt.split(/\r?\n/).filter(function(l){ return l.trim(); });
+            if (lines.length < 2) { toast("Arquivo vazio", "error"); return; }
+            var sep = lines[0].indexOf(";") >= 0 ? ";" : ",";
+            var head = lines[0].split(sep).map(function(x){ return x.toLowerCase().replace(/["']/g,"").trim(); });
+            var iData = head.findIndex(function(h){ return /data|date/.test(h); });
+            var iDesc = head.findIndex(function(h){ return /desc|hist|memo/.test(h); });
+            var iVal = head.findIndex(function(h){ return /valor|amount|value/.test(h); });
+            if (iData < 0 || iVal < 0) { toast("CSV sem colunas data/valor reconhecíveis", "error"); return; }
+            var reg = lines.slice(1).map(function(l){ var c = l.split(sep); var v = parseFloat((c[iVal]||"0").replace(/["']/g,"").replace(/\./g,"").replace(",",".")); var dt = (c[iData]||"").replace(/["']/g,"").trim(); if (/^\d{2}\/\d{2}\/\d{4}$/.test(dt)) { var p = dt.split("/"); dt = p[2]+"-"+p[1]+"-"+p[0]; } return { data: dt, descricao: (c[iDesc]||"").replace(/["']/g,"").trim(), valor: v }; }).filter(function(x){ return x.data && !isNaN(x.valor); });
+            toast(reg.length + " lançamentos importados — reveja manualmente em Despesas/Receitas");
+            alert("Importação (pré-visualização):\n\n" + reg.slice(0,10).map(function(r){ return fmtDate(r.data) + " · " + r.descricao + " · " + fmtBRL(r.valor); }).join("\n") + (reg.length>10?"\n\n... e mais "+(reg.length-10):""));
+          } catch(er) { toast("Erro ao processar CSV", "error"); }
+        };
+        rd.readAsText(f);
+        e.target.value = "";
+      }
+
+      return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } }
+        // Fluxo 12m
+        , React.createElement('div', { className: "lg-card", style: CARD }
+          , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 10 } }, "Fluxo de Caixa — 12 meses")
+          , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginBottom: 14 } }, "Saldo mensal (entrada − saída) e saldo acumulado projetado")
+          , (function(){
+              var W = 100, H = 40;
+              var pts = fluxo12.map(function(f,i){ var x = (i/(fluxo12.length-1||1))*W; var y = H/2 - (f.acc/maxAcc)*(H/2-4); return x+","+y; }).join(" ");
+              var zeroY = H/2;
+              return React.createElement('svg', { viewBox: "0 0 "+W+" "+H, preserveAspectRatio: "none", style: { width: "100%", height: 140, marginBottom: 8 } }
+                , React.createElement('line', { x1: 0, x2: W, y1: zeroY, y2: zeroY, stroke: "var(--c-border)", strokeWidth: 0.3 })
+                , React.createElement('polyline', { points: pts, fill: "none", stroke: C.blue, strokeWidth: 0.6, strokeLinejoin: "round", strokeLinecap: "round" })
+                , fluxo12.map(function(f,i){ var x = (i/(fluxo12.length-1||1))*W; var y = H/2 - (f.acc/maxAcc)*(H/2-4); return React.createElement('circle', { key: i, cx: x, cy: y, r: 0.8, fill: f.acc>=0 ? C.green : C.red }); })
+              );
+            })()
+          , React.createElement('div', { style: { overflowX: "auto", marginTop: 6 } }
+            , React.createElement('table', { style: { width: "100%", fontSize: 12, borderCollapse: "collapse", minWidth: 600 } }
+              , React.createElement('thead', null
+                , React.createElement('tr', { style: { color: C.sub, fontSize: 11 } }
+                  , React.createElement('th', { style: { textAlign: "left", padding: "6px 4px" } }, "Mês")
+                  , React.createElement('th', { style: { textAlign: "right", padding: "6px 4px" } }, "Entradas")
+                  , React.createElement('th', { style: { textAlign: "right", padding: "6px 4px" } }, "Saídas")
+                  , React.createElement('th', { style: { textAlign: "right", padding: "6px 4px" } }, "Saldo")
+                  , React.createElement('th', { style: { textAlign: "right", padding: "6px 4px" } }, "Acumulado")
+                )
+              )
+              , React.createElement('tbody', null
+                , fluxo12.map(function(f,i){
+                    var nomeM = new Date(f.mes+"-15").toLocaleString("pt-BR",{month:"short",year:"2-digit"}).toUpperCase();
+                    return React.createElement('tr', { key: f.mes, style: { borderTop: "1px solid "+C.border } }
+                      , React.createElement('td', { style: { padding: "6px 4px", fontWeight: 600 } }, nomeM)
+                      , React.createElement('td', { style: { padding: "6px 4px", textAlign: "right", color: C.green } }, fmtBRL(f.inflow))
+                      , React.createElement('td', { style: { padding: "6px 4px", textAlign: "right", color: C.red } }, fmtBRL(f.outflow))
+                      , React.createElement('td', { style: { padding: "6px 4px", textAlign: "right", fontWeight: 700, color: f.saldo>=0 ? C.green : C.red } }, fmtBRL(f.saldo))
+                      , React.createElement('td', { style: { padding: "6px 4px", textAlign: "right", fontWeight: 800, color: f.acc>=0 ? C.blue : C.red } }, fmtBRL(f.acc))
+                    );
+                  })
+              )
+            )
+          )
+        )
+        // DRE
+        , React.createElement('div', { className: "lg-card", style: CARD }
+          , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 10 } }, "DRE — " + anoAtual)
+          , React.createElement('div', { style: { overflowX: "auto" } }
+            , React.createElement('table', { style: { width: "100%", fontSize: 12, borderCollapse: "collapse", minWidth: 700 } }
+              , React.createElement('thead', null
+                , React.createElement('tr', { style: { color: C.sub, fontSize: 11 } }
+                  , React.createElement('th', { style: { textAlign: "left", padding: "6px 4px" } }, "Linha")
+                  , dreMeses.map(function(d){ return React.createElement('th', { key: d.mes, style: { textAlign: "right", padding: "6px 4px" } }, d.mes.slice(5)); })
+                  , React.createElement('th', { style: { textAlign: "right", padding: "6px 4px", color: C.blue } }, "Total")
+                )
+              )
+              , React.createElement('tbody', null
+                , [
+                  ["Receita Bruta", dreMeses.map(function(d){ return d.receitaBruta; }), totalDre.receitaBruta, C.green],
+                  ["(−) Custos Diretos / Manutenção", dreMeses.map(function(d){ return d.custosDir; }), totalDre.custosDir, C.purple],
+                  ["(−) Despesas Fixas", dreMeses.map(function(d){ return d.despFixas; }), totalDre.despFixas, C.red],
+                  ["(−) Multas", dreMeses.map(function(d){ return d.multas; }), totalDre.multas, C.orange],
+                  ["= Resultado Líquido", dreMeses.map(function(d){ return d.lucro; }), totalDre.lucro, totalDre.lucro>=0?C.green:C.red],
+                ].map(function(row, i){
+                  return React.createElement('tr', { key: i, style: { borderTop: "1px solid "+C.border, fontWeight: i===4?800:400 } }
+                    , React.createElement('td', { style: { padding: "6px 4px" } }, row[0])
+                    , row[1].map(function(v, j){ return React.createElement('td', { key: j, style: { padding: "6px 4px", textAlign: "right", color: v?row[3]:C.sub } }, v?fmtBRL(v):"—"); })
+                    , React.createElement('td', { style: { padding: "6px 4px", textAlign: "right", fontWeight: 800, color: row[3] } }, fmtBRL(row[2]))
+                  );
+                })
+              )
+            )
+          )
+        )
+        // Orçamento vs Realizado
+        , React.createElement('div', { className: "lg-card", style: CARD }
+          , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } }
+            , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase" } }, "Orçamento vs. Realizado — " + mesAtual)
+            , React.createElement('button', { className: "lg-pill lg-ghost", style: { fontSize: 11 }, onClick: function(){ if (confirm("Limpar todos os tetos por categoria?")) { localStorage.removeItem(BUD_KEY); setBudgetsState({}); toast("Tetos removidos"); } } }, "Limpar tetos")
+          )
+          , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginBottom: 12 } }, "Defina um teto mensal por categoria. Alertas quando ≥ 80%.")
+          , catsBud.slice(0, 12).map(function(cat) {
+              var gasto = gastoPorCat[cat] || 0;
+              var teto = parseFloat(budgets[cat] || 0);
+              var pct = teto > 0 ? Math.min(150, (gasto / teto) * 100) : 0;
+              var cor = pct >= 100 ? C.red : pct >= 80 ? C.orange : C.green;
+              return React.createElement('div', { key: cat, style: { marginBottom: 12 } }
+                , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } }
+                  , React.createElement('div', { style: { fontSize: 13, fontWeight: 600, flex: 1, minWidth: 0 } }, cat)
+                  , React.createElement('input', { style: Object.assign({}, FI, { width: 110, fontSize: 12, padding: "4px 8px" }), type: "number", step: "0.01", placeholder: "teto R$", value: budgets[cat] || "", onChange: function(e){ var nb = Object.assign({}, budgets, { [cat]: e.target.value }); localStorage.setItem(BUD_KEY, JSON.stringify(nb)); setBudgetsState(nb); } })
+                  , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: cor, width: 120, textAlign: "right" } }, fmtBRL(gasto) + (teto > 0 ? " / " + fmtBRL(teto) : ""))
+                )
+                , teto > 0 && React.createElement('div', { style: { marginTop: 4, background: C.bg, borderRadius: 4, height: 6, overflow: "hidden" } }
+                  , React.createElement('div', { style: { height: 6, width: Math.min(100,pct)+"%", background: cor, transition: "width .3s" } })
+                )
+              );
+            })
+        )
+        // Lucratividade por Cliente
+        , React.createElement('div', { className: "lg-card", style: CARD }
+          , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 10 } }, "Lucratividade por Cliente")
+          , lucroCli.length === 0 && React.createElement('div', { style: { color: C.sub, fontSize: 13, padding: 20, textAlign: "center" } }, "Sem dados suficientes")
+          , lucroCli.slice(0, 15).map(function(x, i) {
+              return React.createElement('div', { key: x.cl.id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: i < Math.min(lucroCli.length,15)-1 ? "1px solid "+C.border : "none" } }
+                , React.createElement('div', { style: { flex: 1, minWidth: 0 } }
+                  , React.createElement('div', { style: { fontWeight: 600, fontSize: 13 } }, x.cl.nome || "—")
+                  , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, x.nCts + " contrato(s) · Receita " + fmtBRL(x.receita) + (x.multas > 0 ? " · Multas não cobradas " + fmtBRL(x.multas) : ""))
+                )
+                , React.createElement('div', { style: { fontWeight: 800, color: x.lucro >= 0 ? C.green : C.red, fontSize: 14 } }, (x.lucro>=0?"+":"") + fmtBRL(x.lucro))
+              );
+            })
+        )
+        // Import CSV
+        , React.createElement('div', { className: "lg-card", style: CARD }
+          , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 8 } }, "Importar Extrato (CSV)")
+          , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginBottom: 10 } }, "Formato aceito: colunas com data (YYYY-MM-DD ou DD/MM/AAAA), descrição e valor. Separador , ou ;")
+          , React.createElement('input', { type: "file", accept: ".csv,text/csv", onChange: importHandler, style: Object.assign({}, FI, { cursor: "pointer" }) })
         )
       );
     })()
@@ -17558,7 +17812,19 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
         var nMultas = multas.filter(m => { var ct = contratos.find(c => c.id == m.contrato_id); return ct && ct.veiculo_id == v.id; }).length;
         var totalContratos = cts.length;
         var lucro = receita - custo;
-        return { v, receita, receitaContratos, receitasVinc, receitaAtiva, custo, custoMan, custoDespesas, lucro, totalContratos, nMultas };
+        // KPIs: dias rodados (soma da duração de contratos concluídos/ativos), ROI, payback, lucro/dia
+        var diasRodados = cts.reduce(function(s,c){
+          if (!c.data_inicio) return s;
+          var ini = new Date(c.data_inicio);
+          var fim = c.status === "concluido" && c.data_fim ? new Date(c.data_fim) : new Date();
+          var d = Math.max(0, Math.floor((fim - ini) / 86400000));
+          return s + d;
+        }, 0);
+        var lucroDia = diasRodados > 0 ? lucro / diasRodados : 0;
+        var valorAquis = parseFloat(v.valor_compra || v.valor_aquisicao || 0);
+        var roi = valorAquis > 0 ? (lucro / valorAquis) * 100 : null;
+        var paybackDias = (valorAquis > 0 && lucroDia > 0) ? Math.ceil(valorAquis / lucroDia) : null;
+        return { v, receita, receitaContratos, receitasVinc, receitaAtiva, custo, custoMan, custoDespesas, lucro, totalContratos, nMultas, diasRodados, lucroDia, roi, paybackDias, valorAquis };
       }).sort(function(a, b) {
         if (sortVei === "lucro_desc") return b.lucro - a.lucro;
         if (sortVei === "lucro_asc") return a.lucro - b.lucro;
@@ -17626,6 +17892,12 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
                 , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: C.teal, width: 80, textAlign: "right", flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2749}}, fmtBRL(x.receitasVinc))
               )
               , x.receitaAtiva > 0 && React.createElement('div', { style: { fontSize: 11, color: C.orange, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2751}}, "+ " , fmtBRL(x.receitaAtiva), " em aberto"  )
+              , React.createElement('div', { style: { display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 } }
+                , x.diasRodados > 0 && React.createElement('span', { style: { fontSize: 10, background: C.bg, color: C.sub, borderRadius: 6, padding: "3px 7px", fontWeight: 600 } }, "📆 " + x.diasRodados + " d rodados")
+                , x.lucroDia !== 0 && React.createElement('span', { style: { fontSize: 10, background: (x.lucroDia >= 0 ? C.green : C.red) + "18", color: x.lucroDia >= 0 ? C.green : C.red, borderRadius: 6, padding: "3px 7px", fontWeight: 700 } }, "💵 " + fmtBRL(x.lucroDia) + "/dia")
+                , x.roi !== null && React.createElement('span', { style: { fontSize: 10, background: (x.roi >= 0 ? C.blue : C.red) + "18", color: x.roi >= 0 ? C.blue : C.red, borderRadius: 6, padding: "3px 7px", fontWeight: 700 } }, "📈 ROI " + x.roi.toFixed(1) + "%")
+                , x.paybackDias && React.createElement('span', { style: { fontSize: 10, background: C.purple + "18", color: C.purple, borderRadius: 6, padding: "3px 7px", fontWeight: 700 } }, "⏳ Payback " + x.paybackDias + " d")
+              )
             )
           ))
         )
@@ -17726,16 +17998,25 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
 
     , tab === "inadimplencia" && (() => {
       var hoje2 = new Date().toISOString().split("T")[0];
+      var _prefs = {};
+      try { _prefs = JSON.parse(localStorage.getItem("ag_prefs_v1") || "{}"); } catch(e) {}
+      var juroMes = parseFloat(_prefs.juroAtraso || 0); // % ao mês
+      var multaPct = parseFloat(_prefs.multaAtraso || 0); // % fixa
+      var minAtraso = parseInt(_prefs.diasInadim || 1);
       var inadim = contratos.filter(function(c) {
         if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false;
         if (!c.previsao_pagamento || c.previsao_pagamento >= hoje2) return false;
-        return true;
+        var diasAt = Math.floor((new Date(hoje2) - new Date(c.previsao_pagamento)) / 86400000);
+        return diasAt >= minAtraso;
       }).map(function(c) {
         var cl = clientes.find(function(x) { return x.id == c.cliente_id; }) || {};
         var ve = veiculos.find(function(x) { return x.id == c.veiculo_id; }) || {};
         var diasAtraso = Math.floor((new Date(hoje2) - new Date(c.previsao_pagamento)) / 86400000);
         var saldo = c.status_pagamento === "parcial" ? Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0)) : parseFloat(c.valor_total||0);
-        return { c, cl, ve, diasAtraso, saldo };
+        var multaCalc = saldo * (multaPct / 100);
+        var jurosCalc = saldo * (juroMes / 100) * (diasAtraso / 30);
+        var totalCorrigido = saldo + multaCalc + jurosCalc;
+        return { c, cl, ve, diasAtraso, saldo, multaCalc: multaCalc, jurosCalc: jurosCalc, totalCorrigido: totalCorrigido };
       }).sort(function(a,b) {
         if (sortInad === "dias_asc") return a.diasAtraso - b.diasAtraso;
         if (sortInad === "saldo_desc") return b.saldo - a.saldo;
@@ -17791,6 +18072,11 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
                 , React.createElement('div', { style: { textAlign:"right", flexShrink:0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2901}}
                   , React.createElement('div', { style: { fontWeight:800, fontSize:16, color:C.red }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2902}}, fmtBRL(x.saldo))
                   , React.createElement('div', { style: { fontSize:11, color:C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2903}}, "venc. " , fmtDate(x.c.previsao_pagamento))
+                  , (x.multaCalc > 0 || x.jurosCalc > 0) && React.createElement('div', { style: { fontSize: 10, color: C.sub, marginTop: 4, lineHeight: 1.4 } }
+                    , x.multaCalc > 0 && React.createElement('div', null, "Multa " + multaPct + "% · " + fmtBRL(x.multaCalc))
+                    , x.jurosCalc > 0 && React.createElement('div', null, "Juros " + juroMes + "%/m · " + fmtBRL(x.jurosCalc))
+                    , React.createElement('div', { style: { fontWeight: 800, color: C.red, fontSize: 12, marginTop: 2 } }, "Total: " + fmtBRL(x.totalCorrigido))
+                  )
                 )
               )
             );
@@ -18023,6 +18309,29 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark }) {
         )
       )
     )
+
+    , (function(){
+        var AC_KEY = "ag_autocat_v1";
+        var loadRules = function() { try { return JSON.parse(localStorage.getItem(AC_KEY) || "[]"); } catch(e) { return []; } };
+        var cats = ["Combustivel","Limpeza","Impostos","Salarios","Aluguel","Manutenção","Marketing","Seguros","Financiamento","Juros","Multas","Cartao de Credito","Conta de Luz","Conta de Agua","Internet","Telefone","Contabilidade","Juridico","Estacionamento","Pedagio","Lavagem","Funilaria","Pneus","IPVA","Licenciamento","Emplacamento","Prejuizo","Outros"];
+        var saveRules = function(rs) { localStorage.setItem(AC_KEY, JSON.stringify(rs)); setPrefs(function(p){ return Object.assign({}, p); }); };
+        var rules = loadRules();
+        return React.createElement('div', { className: "lg-card", style: CARD }
+          , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 10 } }, "Auto-categorização de Despesas")
+          , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginBottom: 12 } }, "Quando o usuário digitar a descrição, a categoria será sugerida automaticamente ao bater com a palavra-chave.")
+          , rules.length === 0 && React.createElement('div', { style: { color: C.sub, fontSize: 12, fontStyle: "italic", marginBottom: 10 } }, "Nenhuma regra cadastrada ainda.")
+          , rules.map(function(r, i) {
+              return React.createElement('div', { key: i, style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 8 } }
+                , React.createElement('input', { style: Object.assign({}, FI, { flex: 2 }), placeholder: "palavra-chave (ex: posto)", value: r.kw, onChange: function(e){ var rs = loadRules(); rs[i] = Object.assign({}, rs[i], { kw: e.target.value }); saveRules(rs); } })
+                , React.createElement('select', { style: Object.assign({}, FI, { flex: 2, cursor: "pointer" }), value: r.cat, onChange: function(e){ var rs = loadRules(); rs[i] = Object.assign({}, rs[i], { cat: e.target.value }); saveRules(rs); } }
+                  , cats.map(function(c){ return React.createElement('option', { key: c, value: c }, c); })
+                )
+                , React.createElement('button', { className: "lg-pill lg-ghost", style: { fontSize: 14, padding: "6px 10px", color: C.red }, onClick: function(){ var rs = loadRules(); rs.splice(i, 1); saveRules(rs); } }, "×")
+              );
+            })
+          , React.createElement('button', { className: "lg-pill lg-ghost", style: { fontSize: 13, marginTop: 4 }, onClick: function(){ var rs = loadRules(); rs.push({ kw: "", cat: "Outros" }); saveRules(rs); } }, "+ Nova regra")
+        );
+      })()
 
     , React.createElement('div', { className: "lg-card", style: CARD }
       , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 10 } }, "Dados e Armazenamento")

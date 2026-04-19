@@ -30,12 +30,12 @@ Deno.serve(async (req) => {
   const { action, item_id, from, to } = body;
 
   try {
-    // connect_token doesn't need an apiKey — uses clientId+secret directly
     if (action === "connect_token") {
+      const apiKey = await getApiKey();
       const res = await fetch(`${PLUGGY_BASE}/connect_token`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientId: PLUGGY_CLIENT_ID, clientSecret: PLUGGY_CLIENT_SECRET }),
+        headers: { "Content-Type": "application/json", "X-API-KEY": apiKey },
+        body: JSON.stringify({}),
       });
       const data = await res.json();
       return new Response(JSON.stringify(data), {

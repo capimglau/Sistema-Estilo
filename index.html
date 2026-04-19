@@ -13001,6 +13001,7 @@ react-dom/cjs/react-dom-client.production.js:
 
 window.ReactDOM=module.exports;
 })();</script>
+<script src="https://cdn.pluggy.ai/pluggy-connect/v2/pluggy-connect.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -16523,6 +16524,119 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     highlightTimer.current = setTimeout(function() { setHighlightDespId(null); }, 3000);
     if (setFinDeepLink) setFinDeepLink(null);
   }, [finDeepLink]);
+
+  // Open Finance state
+  const [ofItemId, setOfItemId] = useState(function(){ return localStorage.getItem("ag_pluggy_item_id") || null; });
+  const [ofLoading, setOfLoading] = useState(false);
+  const [ofSyncing, setOfSyncing] = useState(false);
+  const [ofLastSync, setOfLastSync] = useState(function(){ return localStorage.getItem("ag_pluggy_last_sync") || null; });
+  const [bankTxs, setBankTxs] = useState([]);
+  const [bankTxsLoaded, setBankTxsLoaded] = useState(false);
+
+  async function ofCallProxy(body) {
+    var res = await fetch(SB_URL + "/functions/v1/pluggy-proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + SB_KEY },
+      body: JSON.stringify(body),
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Proxy error");
+    return data;
+  }
+
+  async function connectBank() {
+    setOfLoading(true);
+    try {
+      var data = await ofCallProxy({ action: "connect_token" });
+      var token = data.accessToken;
+      if (!token) throw new Error("Token não recebido: " + JSON.stringify(data));
+      var pluggyConnect = new PluggyConnect({
+        connectToken: token,
+        onSuccess: async function(itemData) {
+          var id = itemData.item ? itemData.item.id : itemData.id;
+          localStorage.setItem("ag_pluggy_item_id", id);
+          setOfItemId(id);
+          toast("✅ Banco conectado! Sincronizando...");
+          await syncBank(id);
+        },
+        onError: function(err) {
+          toast("Erro ao conectar: " + (err.message || JSON.stringify(err)), "error");
+        },
+        onClose: function() {},
+      });
+      pluggyConnect.init();
+    } catch(e) {
+      toast("Erro: " + e.message, "error");
+    } finally {
+      setOfLoading(false);
+    }
+  }
+
+  async function syncBank(itemId) {
+    var id = itemId || ofItemId;
+    if (!id) return toast("Nenhum banco conectado", "error");
+    setOfSyncing(true);
+    try {
+      var data = await ofCallProxy({ action: "sync", item_id: id });
+      var now = new Date().toISOString();
+      localStorage.setItem("ag_pluggy_last_sync", now);
+      setOfLastSync(now);
+      toast("✅ " + (data.count || 0) + " transações sincronizadas!");
+      await loadBankTxs();
+    } catch(e) {
+      toast("Erro na sincronização: " + e.message, "error");
+    } finally {
+      setOfSyncing(false);
+    }
+  }
+
+  async function loadBankTxs() {
+    try {
+      var res = await fetch(SB_URL + "/rest/v1/bank_transactions?select=*&order=date.desc&limit=200", {
+        headers: { ...HDR },
+      });
+      var data = await res.json();
+      if (Array.isArray(data)) setBankTxs(data);
+    } catch(e) { console.warn("loadBankTxs:", e); }
+    setBankTxsLoaded(true);
+  }
+
+  async function autoReconcile() {
+    var unmatched = bankTxs.filter(function(t){ return t.status === "unmatched"; });
+    var matched = 0;
+    for (var tx of unmatched) {
+      var amt = parseFloat(tx.amount || 0);
+      var dt = tx.date || "";
+      var dtFrom = new Date(dt + "T00:00:00"); dtFrom.setDate(dtFrom.getDate() - 3);
+      var dtTo = new Date(dt + "T00:00:00"); dtTo.setDate(dtTo.getDate() + 3);
+      var isCredit = (tx.type || "").toUpperCase() === "CREDIT";
+      var mType = null, mId = null;
+      if (isCredit) {
+        var r = (receitas || []).find(function(r){ return Math.abs(parseFloat(r.valor||0) - amt) < 0.05 && r.data >= dtFrom.toISOString().split("T")[0] && r.data <= dtTo.toISOString().split("T")[0]; });
+        if (!r) { var c = (contratos || []).find(function(c){ return Math.abs(parseFloat(c.valor_total||0) - amt) < 0.05 && c.previsao_pagamento >= dtFrom.toISOString().split("T")[0] && c.previsao_pagamento <= dtTo.toISOString().split("T")[0]; }); if (c) { mType = "contrato"; mId = c.id; } }
+        else { mType = "receita"; mId = r.id; }
+      } else {
+        var d = (despesas || []).find(function(d){ return Math.abs(parseFloat(d.valor||0) - amt) < 0.05 && d.data >= dtFrom.toISOString().split("T")[0] && d.data <= dtTo.toISOString().split("T")[0]; });
+        if (d) { mType = "despesa"; mId = d.id; }
+      }
+      if (mType && mId) {
+        try {
+          await fetch(SB_URL + "/rest/v1/bank_transactions?id=eq." + tx.id, {
+            method: "PATCH", headers: { ...HDR, "Prefer": "return=minimal" },
+            body: JSON.stringify({ matched_type: mType, matched_id: mId, status: "matched" }),
+          });
+          setBankTxs(function(p){ return p.map(function(t){ return t.id === tx.id ? Object.assign({}, t, { matched_type: mType, matched_id: mId, status: "matched" }) : t; }); });
+          matched++;
+        } catch(e) { console.warn(e); }
+      }
+    }
+    toast("✅ " + matched + " transações conciliadas automaticamente!");
+  }
+
+  useEffect(function() {
+    if (tab === "openfinance" && !bankTxsLoaded) loadBankTxs();
+  }, [tab]);
+
   const [filtroMes, setFiltroMes] = useState(new Date().toISOString().slice(0, 7));
   const [budgetsState, setBudgetsState] = useState(function(){ try { return JSON.parse(localStorage.getItem("ag_budgets_v1") || "{}"); } catch(e) { return {}; } });
   const [modalFat, setModalFat] = useState(null); // { tipo:"emitir"|"pagar", fat:{...}, dtInput:"" }
@@ -16759,6 +16873,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         , React.createElement('option', { value: "contas_rec" }, "🔁 Fixas")
         , React.createElement('option', { value: "faturas" }, "🧾 Faturas")
         , React.createElement('option', { value: "pessoal" }, "🏠 Orç. Pessoal")
+        , React.createElement('option', { value: "openfinance" }, "🔗 Open Finance")
       )
       , React.createElement(MesPicker, { value: filtroMes, onChange: setFiltroMes })
     )
@@ -17931,6 +18046,86 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
     , tab === "pessoal" && React.createElement(OrcamentoPessoal, { contratos: contratos, despesas: despesas, receitas: receitas, manutencoes: manutencoes, multas: multas, toast: toast, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2512}} )
 
+    , tab === "openfinance" && React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } }
+      /* Status da conexão */
+      , React.createElement('div', { style: { background: C.card, borderRadius: 16, padding: "18px 16px", border: "1px solid " + C.border } }
+        , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } }
+          , React.createElement('div', null
+            , React.createElement('div', { style: { fontWeight: 700, fontSize: 15 } }, "🔗 Open Finance · C6 Bank")
+            , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 3 } }, ofItemId ? "Conectado · ID: " + ofItemId.slice(0, 8) + "..." : "Não conectado")
+            , ofLastSync && React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "Última sync: " + new Date(ofLastSync).toLocaleString("pt-BR"))
+          )
+          , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" } }
+            , React.createElement('button', {
+                style: { background: C.blue, color: "#fff", border: "none", borderRadius: 10, padding: "8px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer", opacity: ofLoading ? 0.6 : 1 },
+                onClick: connectBank,
+                disabled: ofLoading,
+              }, ofLoading ? "Abrindo..." : (ofItemId ? "↻ Reconectar" : "Conectar banco"))
+            , ofItemId && React.createElement('button', {
+                style: { background: C.green, color: "#fff", border: "none", borderRadius: 10, padding: "8px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer", opacity: ofSyncing ? 0.6 : 1 },
+                onClick: function(){ syncBank(); },
+                disabled: ofSyncing,
+              }, ofSyncing ? "Sincronizando..." : "⟳ Sincronizar")
+          )
+        )
+        , ofItemId && bankTxs.length > 0 && React.createElement('div', { style: { marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" } }
+          , React.createElement('div', { style: { background: C.green + "20", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600, color: C.green } }, bankTxs.filter(function(t){ return t.status === "matched"; }).length + " conciliadas")
+          , React.createElement('div', { style: { background: C.orange + "20", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600, color: C.orange } }, bankTxs.filter(function(t){ return t.status === "unmatched"; }).length + " pendentes")
+          , React.createElement('div', { style: { background: C.sub + "20", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600, color: C.sub } }, bankTxs.filter(function(t){ return t.status === "ignored"; }).length + " ignoradas")
+        )
+      )
+
+      /* Botão de conciliação automática */
+      , ofItemId && bankTxs.filter(function(t){ return t.status === "unmatched"; }).length > 0 && React.createElement('button', {
+          style: { background: C.teal, color: "#fff", border: "none", borderRadius: 12, padding: "12px", fontWeight: 700, fontSize: 14, cursor: "pointer", width: "100%" },
+          onClick: autoReconcile,
+        }, "⚡ Conciliar automaticamente (" + bankTxs.filter(function(t){ return t.status === "unmatched"; }).length + " pendentes)")
+
+      /* Lista de transações */
+      , ofItemId && React.createElement('div', { style: { background: C.card, borderRadius: 16, border: "1px solid " + C.border, overflow: "hidden" } }
+        , React.createElement('div', { style: { padding: "14px 16px", borderBottom: "1px solid " + C.border, fontWeight: 700, fontSize: 14 } }, "Transações bancárias")
+        , !bankTxsLoaded && React.createElement('div', { style: { padding: 24, textAlign: "center", color: C.sub } }, "Carregando...")
+        , bankTxsLoaded && bankTxs.length === 0 && React.createElement('div', { style: { padding: 24, textAlign: "center", color: C.sub } }, "Nenhuma transação. Clique em Sincronizar.")
+        , bankTxs.map(function(tx, i) {
+          var isCredit = (tx.type || "").toUpperCase() === "CREDIT";
+          var isMatched = tx.status === "matched";
+          var isIgnored = tx.status === "ignored";
+          return React.createElement('div', {
+            key: tx.id || tx.external_id,
+            style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: i < bankTxs.length - 1 ? "1px solid " + C.border : "none", background: isMatched ? C.green + "08" : isIgnored ? C.sub + "08" : "transparent" }
+          }
+            , React.createElement('div', { style: { flex: 1, minWidth: 0 } }
+              , React.createElement('div', { style: { fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, tx.description || "--")
+              , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, fmtDate(tx.date) + (tx.account_name ? " · " + tx.account_name : "") + (tx.category ? " · " + tx.category : ""))
+              , isMatched && React.createElement('div', { style: { fontSize: 10, color: C.green, fontWeight: 600, marginTop: 2 } }, "✓ Conciliada · " + tx.matched_type)
+            )
+            , React.createElement('div', { style: { textAlign: "right", flexShrink: 0, marginLeft: 10 } }
+              , React.createElement('div', { style: { fontWeight: 800, fontSize: 13, color: isCredit ? C.green : C.red } }, (isCredit ? "+" : "-") + fmtBRL(tx.amount))
+              , !isIgnored && !isMatched && React.createElement('button', {
+                  style: { fontSize: 10, color: C.sub, background: "transparent", border: "none", cursor: "pointer", marginTop: 4, padding: 0 },
+                  onClick: async function() {
+                    await fetch(SB_URL + "/rest/v1/bank_transactions?id=eq." + tx.id, {
+                      method: "PATCH", headers: { ...HDR, "Prefer": "return=minimal" },
+                      body: JSON.stringify({ status: "ignored" }),
+                    });
+                    setBankTxs(function(p){ return p.map(function(t){ return t.id === tx.id ? Object.assign({}, t, { status: "ignored" }) : t; }); });
+                  }
+                }, "Ignorar")
+            )
+          );
+        })
+      )
+
+      /* SQL helper */
+      , !ofItemId && React.createElement('div', { style: { background: C.orange + "12", borderRadius: 12, padding: "14px 16px", border: "1px solid " + C.orange + "30", fontSize: 12, color: C.sub } }
+        , React.createElement('div', { style: { fontWeight: 700, color: C.orange, marginBottom: 6 } }, "⚠ Tabela necessária")
+        , React.createElement('div', null, "Antes de conectar, crie a tabela no Supabase > SQL Editor:")
+        , React.createElement('pre', { style: { background: "#0001", borderRadius: 8, padding: "10px 12px", fontSize: 11, marginTop: 8, overflowX: "auto", whiteSpace: "pre-wrap" } },
+          "CREATE TABLE bank_transactions (\n  id BIGSERIAL PRIMARY KEY,\n  external_id TEXT UNIQUE NOT NULL,\n  account_id TEXT,\n  account_name TEXT,\n  date DATE,\n  amount NUMERIC,\n  description TEXT,\n  type TEXT,\n  category TEXT,\n  balance_after NUMERIC,\n  matched_type TEXT,\n  matched_id BIGINT,\n  status TEXT DEFAULT 'unmatched',\n  created_at TIMESTAMPTZ DEFAULT NOW()\n);\n\nALTER TABLE bank_transactions ENABLE ROW LEVEL SECURITY;\nCREATE POLICY \"all\" ON bank_transactions FOR ALL USING (true) WITH CHECK (true);"
+        )
+      )
+    )
+
     , React.createElement(Modal, { open: modal, onClose: () => setModal(false), title: modalTipo === "despesa" ? (edit ? "Editar Despesa" : "Nova Despesa") : (edit ? "Editar Receita" : "Nova Receita"), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2514}}
       , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2515}}
         , modalTipo === "despesa" && React.createElement(React.Fragment, null
@@ -18820,6 +19015,12 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark }) {
                  , React.createElement('br', {}), "alter table veiculos add column if not exists valor_km_excedente numeric;"
                  , React.createElement('br', {}), "alter table veiculos add column if not exists km_dia numeric;"
                  , React.createElement('br', {}), "alter table veiculos add column if not exists km_mensal numeric;"
+                 , React.createElement('br', {}), "-- Open Finance (bank_transactions):"
+                 , React.createElement('br', {}), "create table if not exists bank_transactions (id bigserial primary key, external_id text unique not null, account_id text, account_name text, date date, amount numeric, description text, type text, category text, balance_after numeric, matched_type text, matched_id bigint, status text default 'unmatched', created_at timestamptz default now());"
+                 , React.createElement('br', {}), "alter table bank_transactions enable row level security;"
+                 , React.createElement('br', {}), "create policy \"all\" on bank_transactions for all using (true) with check (true);"
+                 , React.createElement('br', {}), "grant all on bank_transactions to anon;"
+                 , React.createElement('br', {}), "grant usage, select on sequence bank_transactions_id_seq to anon;"
 
       )
     )

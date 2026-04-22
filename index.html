@@ -13560,27 +13560,36 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     if (c.renovado_para) renovadosIds.add(c.id);
     if (c.status === "cancelado") renovadosIds.add(c.id);
   });
-  const contratosAtrasados = contratos.filter(c => c.status === "ativo" && !c.renovado_para && c.status_pagamento !== "pago" && c.status_pagamento !== "isento" && c.previsao_pagamento && c.previsao_pagamento < hoje);
+  const contratosAtrasados = contratos.filter(c => {
+    if (c.status === "cancelado") return false;
+    if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false;
+    if (!c.previsao_pagamento || c.previsao_pagamento >= hoje) return false;
+    return true; // ativo, concluido ou qualquer status — se não pagou e venceu, alerta
+  });
   const contratosVencendo = contratos.filter(c => c.status === "ativo" && c.data_fim && c.data_fim >= hoje && c.data_fim <= str7 && !renovadosIds.has(c.id));
 
   const cnhVencida = clientes.filter(c => c.vencimento_cnh && c.vencimento_cnh < hoje);
   const cnhVencendo = clientes.filter(c => c.vencimento_cnh && c.vencimento_cnh >= hoje && c.vencimento_cnh <= str30);
   const multasPend = multas.filter(m => m.status === "pendente");
-  const contasVencidas = (contas || []).filter(c => c.status === "pendente" && c.vencimento && c.vencimento < hoje);
-  const contasVencendo = (contas || []).filter(c => c.status === "pendente" && c.vencimento && c.vencimento >= hoje && c.vencimento <= str3);
+  const contasVencidas = (contas || []).filter(c => c.status !== "pago" && c.status !== "cancelado" && c.vencimento && c.vencimento < hoje);
+  const contasVencendo = (contas || []).filter(c => c.status !== "pago" && c.status !== "cancelado" && c.vencimento && c.vencimento >= hoje && c.vencimento <= str3);
   const manutProlongadas = manutencoes.filter(m => m.status === "em_andamento" && m.data_saida && m.data_saida < hoje);
+  const manutPendPagto = manutencoes.filter(m => {
+    if (m.status_financeiro === "pago" || !!m.data_pagamento) return false;
+    var dt = m.data_previsao_pagamento || m.data_entrada || "";
+    return dt && dt < hoje;
+  });
   function _dataRefDesp(d) { return (d.recorrente && (d.data||"").slice(0,7) < mesAtual) ? (mesAtual + "-" + (d.data||"").slice(8,10)) : (d.data||""); }
   function _dataRefRec(r) { return (r.recorrente && (r.data||"").slice(0,7) < mesAtual) ? (mesAtual + "-" + (r.data||"").slice(8,10)) : (r.data||""); }
-  const despesasVencidas = (despesas || []).filter(d => { if (d.status === "pago") return false; var dr = _dataRefDesp(d); return dr && dr < hoje; });
-  const despesasVencendo = (despesas || []).filter(d => { if (d.status === "pago") return false; var dr = _dataRefDesp(d); return dr && dr >= hoje && dr <= str3; });
+  const despesasVencidas = (despesas || []).filter(d => { if (d.status === "pago" || !!d.data_pagamento) return false; var dr = _dataRefDesp(d); return dr && dr < hoje; });
+  const despesasVencendo = (despesas || []).filter(d => { if (d.status === "pago" || !!d.data_pagamento) return false; var dr = _dataRefDesp(d); return dr && dr >= hoje && dr <= str3; });
   const receitasAtrasadas = (receitas || []).filter(r => { if (r.ref_fatura || r.status === "recebido") return false; var dr = _dataRefRec(r); return dr && dr < hoje; });
   const receitasVencendo = (receitas || []).filter(r => { if (r.ref_fatura || r.status === "recebido") return false; var dr = _dataRefRec(r); return dr && dr >= hoje && dr <= str3; });
   // Faturas vencidas/vencendo — baseado em previsao_pagamento do contrato
   var _str5 = new Date(Date.now() + 5*864e5).toISOString().split("T")[0];
   var faturasVencidas = (contratos || []).filter(c => {
-    if (c.status !== "ativo") return false;
+    if (c.status === "cancelado") return false;
     if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false;
-    if (c.renovado_para) return false;
     if (!c.previsao_pagamento || c.previsao_pagamento >= hoje) return false;
     var mesKey = c.previsao_pagamento.slice(0,7);
     var refKey = "fat_" + c.id + "_" + mesKey;
@@ -13588,9 +13597,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     return !paga;
   });
   var faturasVencendo = (contratos || []).filter(c => {
-    if (c.status !== "ativo") return false;
+    if (c.status === "cancelado") return false;
     if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false;
-    if (c.renovado_para) return false;
     if (!c.previsao_pagamento || c.previsao_pagamento < hoje || c.previsao_pagamento > _str5) return false;
     var mesKey = c.previsao_pagamento.slice(0,7);
     var refKey = "fat_" + c.id + "_" + mesKey;
@@ -13615,39 +13623,46 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
   const reservasPendentes = (reservas||[]).filter(function(r){ return r.status === "pendente"; });
   const reservasHoje = (reservas||[]).filter(function(r){ return r.status !== "cancelada" && r.data_retirada === hoje; });
   const reservasProximas = (reservas||[]).filter(function(r){ return r.status === "confirmada" && r.data_retirada > hoje && r.data_retirada <= str7res; });
-  // Contratos vencidos que não tiveram baixa (data_fim < hoje, status ativo, pagamento pendente)
+  // Contratos vencidos sem baixa (data_fim < hoje, status ativo, pagamento pendente)
   const contratosVencidosSemBaixa = contratos.filter(c => c.status === "ativo" && c.data_fim && c.data_fim < hoje && c.status_pagamento !== "pago" && c.status_pagamento !== "isento" && !c.renovado_para);
   // Contratos vencendo hoje
   const contratosVencendoHoje = contratos.filter(c => c.status === "ativo" && c.data_fim && c.data_fim === hoje && !c.renovado_para);
   // Despesas a pagar hoje
-  const despesasHoje = (despesas||[]).filter(d => { if (d.status === "pago") return false; var dr = _dataRefDesp(d); return dr && dr === hoje; });
-  const totalAlertas = contratosAtrasados.length + contratosVencidosSemBaixa.length + cnhVencida.length + contasVencidas.length + manutProlongadas.length + docsVencidos.length + docsCriticos.length + faturasVencidas.length + despesasVencidas.length + receitasAtrasadas.length + reservasPendentes.length + reservasHoje.length;
+  const despesasHoje = (despesas||[]).filter(d => { if (d.status === "pago" || !!d.data_pagamento) return false; var dr = _dataRefDesp(d); return dr && dr === hoje; });
+  // Multas vencidas não pagas
+  const multasVencidasAlerta = (multas||[]).filter(m => m.status !== "pago" && m.status !== "cancelada" && m.status !== "cancelado" && (m.vencimento||m.data||"") < hoje);
+  // Multas vencendo em 3 dias
+  const multasVencendoAlerta = (multas||[]).filter(m => { var dt = m.vencimento||m.data||""; return m.status !== "pago" && m.status !== "cancelada" && m.status !== "cancelado" && dt >= hoje && dt <= str3; });
 
   var alertaGroups = [
-    { cor: C.red,    icon: "📅", titulo: "Reservas para hoje (" + reservasHoje.length + ")",                       items: reservasHoje.map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · " + (r.hora_retirada||"") + " · " + (r.status==="pendente"?"⚠️ Não confirmada":"✓ Confirmada"); }), tab: "reservas" },
-    { cor: C.orange, icon: "📅", titulo: "Reservas pendentes de confirmação (" + reservasPendentes.length + ")",   items: reservasPendentes.slice(0,5).map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · Retirada: " + fmtDate(r.data_retirada); }), tab: "reservas" },
-    { cor: C.blue,   icon: "📅", titulo: "Reservas confirmadas próximas (" + reservasProximas.length + ")",        items: reservasProximas.slice(0,5).map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · " + fmtDate(r.data_retirada) + (r.hora_retirada?" "+r.hora_retirada:""); }), tab: "reservas" },
-    { cor: C.red,    icon: "🚨", titulo: "Pagamentos atrasados (" + contratosAtrasados.length + ")",               items: contratosAtrasados.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--") + " · " + fmtDate(c.previsao_pagamento); }), sub: "Total: " + fmtBRL(contratosAtrasados.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)), tab: "contratos" },
-    { cor: C.orange, icon: "⏰", titulo: "Contratos vencendo em 7 dias (" + contratosVencendo.length + ")",        items: contratosVencendo.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--") + " · ate " + fmtDate(c.data_fim); }), tab: "contratos" },
-    { cor: C.red,    icon: "🪪",  titulo: "CNH vencida (" + cnhVencida.length + ")",                               items: cnhVencida.map(function(c){ return c.nome + " · " + fmtDate(c.vencimento_cnh); }), tab: "clientes" },
-    { cor: C.orange, icon: "🪪",  titulo: "CNH vencendo em 30 dias (" + cnhVencendo.length + ")",                  items: cnhVencendo.map(function(c){ return c.nome + " · " + fmtDate(c.vencimento_cnh); }), tab: "clientes" },
-    { cor: C.red,    icon: "💸", titulo: "Contas vencidas (" + contasVencidas.length + ")",                        items: contasVencidas.map(function(c){ return c.descricao + " · " + fmtBRL(c.valor) + " · " + fmtDate(c.vencimento); }), sub: "Total: " + fmtBRL(contasVencidas.reduce(function(s,c){return s+parseFloat(c.valor||0);},0)), tab: "financeiro" },
-    { cor: C.orange, icon: "💰", titulo: "Contas vencendo em 3 dias (" + contasVencendo.length + ")",              items: contasVencendo.map(function(c){ return c.descricao + " · " + fmtBRL(c.valor) + " · " + fmtDate(c.vencimento); }), tab: "financeiro" },
-    { cor: C.red,    icon: "🧾", titulo: "Faturas vencidas (" + faturasVencidas.length + ")",                      items: faturasVencidas.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · venc. " + fmtDate(c.previsao_pagamento); }), tab: "financeiro" },
-    { cor: C.orange, icon: "🧾", titulo: "Faturas vencendo em 5 dias (" + faturasVencendo.length + ")",            items: faturasVencendo.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · venc. " + fmtDate(c.previsao_pagamento); }), tab: "financeiro" },
-    { cor: C.blue,   icon: "📤", titulo: "Faturas a emitir — venc. em 20 dias (" + faturasAEmitir.length + ")",   items: faturasAEmitir.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · " + fmtBRL(c.valor_total) + " · venc. " + fmtDate(c.previsao_pagamento); }), tab: "financeiro" },
-    { cor: C.purple, icon: "🔧", titulo: "Manutenções com prazo vencido (" + manutProlongadas.length + ")",       items: manutProlongadas.map(function(m){ var ve = veiculos.find(function(v){return v.id==m.veiculo_id;}); return (ve&&ve.placa||"--") + " · " + m.tipo + " · " + fmtDate(m.data_saida); }), tab: "manutencao" },
-    { cor: C.red,    icon: "📄", titulo: "Documentos vencidos (" + docsVencidos.length + ")",                      items: docsVencidos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]<hoje;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
-    { cor: C.red,    icon: "⚠️", titulo: "Documentos vencendo em 7 dias (" + docsCriticos.length + ")",           items: docsCriticos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]>=hoje&&p[1]<=str7doc;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
-    { cor: C.orange, icon: "📄", titulo: "Documentos vencendo em 30 dias (" + docsVencendo.length + ")",           items: docsVencendo.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]>str7doc&&p[1]<=str30doc;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
-    { cor: C.red,    icon: "📤", titulo: "Despesas vencidas (" + despesasVencidas.length + ")",                    items: despesasVencidas.map(function(d){ return (d.manutencao_id ? "🔧 " : "") + d.descricao + " · " + fmtBRL(d.valor) + " · " + fmtDate(_dataRefDesp(d)); }), sub: "Total: " + fmtBRL(despesasVencidas.reduce(function(s,d){return s+parseFloat(d.valor||0);},0)), tab: "financeiro" },
-    { cor: C.orange, icon: "📤", titulo: "Despesas vencendo em 3 dias (" + despesasVencendo.length + ")",          items: despesasVencendo.map(function(d){ return (d.manutencao_id ? "🔧 " : "") + d.descricao + " · " + fmtBRL(d.valor) + " · " + fmtDate(_dataRefDesp(d)); }), tab: "financeiro" },
-    { cor: C.red,    icon: "💰", titulo: "Receitas atrasadas (" + receitasAtrasadas.length + ")",                  items: receitasAtrasadas.map(function(r){ return r.descricao + " · " + fmtBRL(r.valor) + " · " + fmtDate(_dataRefRec(r)); }), sub: "Total: " + fmtBRL(receitasAtrasadas.reduce(function(s,r){return s+parseFloat(r.valor||0);},0)), tab: "financeiro" },
-    { cor: C.orange, icon: "💰", titulo: "Receitas vencendo em 3 dias (" + receitasVencendo.length + ")",          items: receitasVencendo.map(function(r){ return r.descricao + " · " + fmtBRL(r.valor) + " · " + fmtDate(_dataRefRec(r)); }), tab: "financeiro" },
+    { cor: C.red,    icon: "📅", titulo: "Reservas para hoje (" + reservasHoje.length + ")",                         items: reservasHoje.map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · " + (r.hora_retirada||"") + " · " + (r.status==="pendente"?"⚠️ Não confirmada":"✓ Confirmada"); }), tab: "reservas" },
+    { cor: C.orange, icon: "📅", titulo: "Reservas pendentes de confirmação (" + reservasPendentes.length + ")",     items: reservasPendentes.slice(0,5).map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · Retirada: " + fmtDate(r.data_retirada); }), tab: "reservas" },
+    { cor: C.blue,   icon: "📅", titulo: "Reservas confirmadas próximas (" + reservasProximas.length + ")",          items: reservasProximas.slice(0,5).map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · " + fmtDate(r.data_retirada) + (r.hora_retirada?" "+r.hora_retirada:""); }), tab: "reservas" },
+    { cor: C.red,    icon: "🚨", titulo: "Contratos com pagamento atrasado (" + contratosAtrasados.length + ")",     items: contratosAtrasados.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); var ve = veiculos.find(function(x){return x.id==c.veiculo_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + " · venc. " + fmtDate(c.previsao_pagamento) + " · " + fmtBRL(c.valor_total); }), sub: "Total: " + fmtBRL(contratosAtrasados.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)), tab: "contratos" },
     { cor: C.red,    icon: "📋", titulo: "Contratos vencidos sem baixa (" + contratosVencidosSemBaixa.length + ")",  items: contratosVencidosSemBaixa.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--") + " · venceu " + fmtDate(c.data_fim); }), sub: "⚠️ Dê baixa nas receitas!", tab: "contratos" },
     { cor: C.red,    icon: "📋", titulo: "Contratos vencendo hoje (" + contratosVencendoHoje.length + ")",           items: contratosVencendoHoje.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--"); }), tab: "contratos" },
-    { cor: C.red,    icon: "💸", titulo: "Despesas a pagar hoje (" + despesasHoje.length + ")",                     items: despesasHoje.map(function(d){ return d.descricao + " · " + fmtBRL(d.valor); }), tab: "financeiro" },
+    { cor: C.orange, icon: "⏰", titulo: "Contratos vencendo em 7 dias (" + contratosVencendo.length + ")",          items: contratosVencendo.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--") + " · até " + fmtDate(c.data_fim); }), tab: "contratos" },
+    { cor: C.red,    icon: "🪪",  titulo: "CNH vencida (" + cnhVencida.length + ")",                                 items: cnhVencida.map(function(c){ return c.nome + " · venceu " + fmtDate(c.vencimento_cnh); }), tab: "clientes" },
+    { cor: C.orange, icon: "🪪",  titulo: "CNH vencendo em 30 dias (" + cnhVencendo.length + ")",                    items: cnhVencendo.map(function(c){ return c.nome + " · vence " + fmtDate(c.vencimento_cnh); }), tab: "clientes" },
+    { cor: C.red,    icon: "💸", titulo: "Contas vencidas (" + contasVencidas.length + ")",                          items: contasVencidas.map(function(c){ return c.descricao + " · " + fmtBRL(c.valor) + " · " + fmtDate(c.vencimento); }), sub: "Total: " + fmtBRL(contasVencidas.reduce(function(s,c){return s+parseFloat(c.valor||0);},0)), tab: "financeiro" },
+    { cor: C.orange, icon: "💸", titulo: "Contas vencendo em 3 dias (" + contasVencendo.length + ")",                items: contasVencendo.map(function(c){ return c.descricao + " · " + fmtBRL(c.valor) + " · " + fmtDate(c.vencimento); }), tab: "financeiro" },
+    { cor: C.red,    icon: "🧾", titulo: "Faturas vencidas (" + faturasVencidas.length + ")",                        items: faturasVencidas.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · venc. " + fmtDate(c.previsao_pagamento) + " · " + fmtBRL(c.valor_total); }), sub: "Total: " + fmtBRL(faturasVencidas.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)), tab: "financeiro" },
+    { cor: C.orange, icon: "🧾", titulo: "Faturas vencendo em 5 dias (" + faturasVencendo.length + ")",              items: faturasVencendo.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · venc. " + fmtDate(c.previsao_pagamento); }), tab: "financeiro" },
+    { cor: C.blue,   icon: "📤", titulo: "Faturas a emitir — venc. em 20 dias (" + faturasAEmitir.length + ")",     items: faturasAEmitir.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · " + fmtBRL(c.valor_total) + " · venc. " + fmtDate(c.previsao_pagamento); }), tab: "financeiro" },
+    { cor: C.red,    icon: "💸", titulo: "Despesas a pagar hoje (" + despesasHoje.length + ")",                      items: despesasHoje.map(function(d){ return d.descricao + " · " + fmtBRL(d.valor); }), tab: "financeiro" },
+    { cor: C.red,    icon: "📤", titulo: "Despesas vencidas (" + despesasVencidas.length + ")",                      items: despesasVencidas.map(function(d){ return (d.manutencao_id ? "🔧 " : "") + d.descricao + " · " + fmtBRL(d.valor) + " · " + fmtDate(_dataRefDesp(d)); }), sub: "Total: " + fmtBRL(despesasVencidas.reduce(function(s,d){return s+parseFloat(d.valor||0);},0)), tab: "financeiro" },
+    { cor: C.orange, icon: "📤", titulo: "Despesas vencendo em 3 dias (" + despesasVencendo.length + ")",            items: despesasVencendo.map(function(d){ return (d.manutencao_id ? "🔧 " : "") + d.descricao + " · " + fmtBRL(d.valor) + " · " + fmtDate(_dataRefDesp(d)); }), tab: "financeiro" },
+    { cor: C.red,    icon: "💰", titulo: "Receitas atrasadas (" + receitasAtrasadas.length + ")",                    items: receitasAtrasadas.map(function(r){ return r.descricao + " · " + fmtBRL(r.valor) + " · " + fmtDate(_dataRefRec(r)); }), sub: "Total: " + fmtBRL(receitasAtrasadas.reduce(function(s,r){return s+parseFloat(r.valor||0);},0)), tab: "financeiro" },
+    { cor: C.orange, icon: "💰", titulo: "Receitas vencendo em 3 dias (" + receitasVencendo.length + ")",            items: receitasVencendo.map(function(r){ return r.descricao + " · " + fmtBRL(r.valor) + " · " + fmtDate(_dataRefRec(r)); }), tab: "financeiro" },
+    { cor: C.red,    icon: "⚠️", titulo: "Multas vencidas não pagas (" + multasVencidasAlerta.length + ")",          items: multasVencidasAlerta.slice(0,5).map(function(m){ var ct = m.contrato_id ? contratos.find(function(x){return x.id==m.contrato_id;}) : null; var cl = ct ? clientes.find(function(x){return x.id==ct.cliente_id;}) : clientes.find(function(x){return x.id==m.cliente_id;}); return (cl&&cl.nome||"–") + " · " + (m.tipo||"Multa") + " · " + fmtBRL(m.valor) + " · venc. " + fmtDate(m.vencimento||m.data); }), sub: "Total: " + fmtBRL(multasVencidasAlerta.reduce(function(s,m){return s+parseFloat(m.valor||0);},0)), tab: "multas" },
+    { cor: C.orange, icon: "⚠️", titulo: "Multas vencendo em 3 dias (" + multasVencendoAlerta.length + ")",          items: multasVencendoAlerta.map(function(m){ return (m.tipo||"Multa") + " · " + fmtBRL(m.valor) + " · " + fmtDate(m.vencimento||m.data); }), tab: "multas" },
+    { cor: C.purple, icon: "🔧", titulo: "Manutenções com prazo vencido (" + manutProlongadas.length + ")",          items: manutProlongadas.map(function(m){ var ve = veiculos.find(function(v){return v.id==m.veiculo_id;}); return (ve&&ve.placa||"--") + " · " + m.tipo + " · " + fmtDate(m.data_saida); }), tab: "manutencao" },
+    { cor: C.orange, icon: "🔧", titulo: "Manutenções com pagamento em atraso (" + manutPendPagto.length + ")",      items: manutPendPagto.map(function(m){ var ve = veiculos.find(function(v){return v.id==m.veiculo_id;}); return (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção") + " · " + fmtBRL(m.custo) + " · " + fmtDate(m.data_previsao_pagamento||m.data_entrada); }), sub: "Total: " + fmtBRL(manutPendPagto.reduce(function(s,m){return s+parseFloat(m.custo||0);},0)), tab: "manutencao" },
+    { cor: C.red,    icon: "📄", titulo: "Documentos vencidos (" + docsVencidos.length + ")",                        items: docsVencidos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]<hoje;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
+    { cor: C.red,    icon: "⚠️", titulo: "Documentos vencendo em 7 dias (" + docsCriticos.length + ")",              items: docsCriticos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]>=hoje&&p[1]<=str7doc;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
+    { cor: C.orange, icon: "📄", titulo: "Documentos vencendo em 30 dias (" + docsVencendo.length + ")",             items: docsVencendo.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]>str7doc&&p[1]<=str30doc;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
   ];
+  const totalAlertas = alertaGroups.filter(function(g){ return g.items && g.items.length > 0; }).length;
 
   return React.createElement('div', { className: "inicio-fade-top", style: { display: "flex", flexDirection: "column", gap: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 339}}
 
@@ -14228,8 +14243,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             React.createElement('span', { style:{ fontWeight:800, color:C.blue, fontSize:14 } }, fmtBRL(totalMesSel))
           ),
           React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:10, color:C.sub, marginTop:4 } },
-            React.createElement('span', null, "Total 6 meses:"),
-            React.createElement('span', { style:{ fontWeight:700, color:C.sub } }, fmtBRL(catData.reduce(function(s,v){ return s+v; },0)))
+            React.createElement('span', null, "Média mensal:"),
+            React.createElement('span', { style:{ fontWeight:700, color:C.sub } }, fmtBRL(catData.reduce(function(s,v){ return s+v; },0) / catData.length))
           )
         )
       );

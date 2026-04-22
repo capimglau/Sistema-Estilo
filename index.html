@@ -13101,6 +13101,7 @@ function Badge(c) {
 function numCt(id) { return String(id); }
 function fmtComp(d) { if (!d) return ""; return d.slice(5,7) + "/" + d.slice(2,4); }
 function fmtBRL(v) { if (v === null || v === undefined || v === "") return "--"; return "R$ " + parseFloat(v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 }); }
+function fmtBRLint(v) { if (v === null || v === undefined || v === "") return "--"; return "R$ " + Math.round(parseFloat(v || 0)).toLocaleString("pt-BR"); }
 function AlertBox({ cor, icon, titulo, items, sub, tab, setTab }) {
   if (!items || items.length === 0) return null;
   return React.createElement('div', { onClick: function(){ tab && setTab && setTab(tab); }, style: { background: cor + "0D", border: "1px solid " + cor + "40", borderRadius: 14, padding: "12px 16px", cursor: tab ? "pointer" : "default" } },
@@ -13122,6 +13123,18 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab }) {
   var wCode = _wCodeState[0]; var setWCode = _wCodeState[1];
   var _expState = React.useState(false);
   var expanded = _expState[0]; var setExpanded = _expState[1];
+  // Badge não-lidos
+  var _lidos = React.useState(false);
+  var lido = _lidos[0]; var setLido = _lidos[1];
+  // Filtro por categoria (tab do alerta)
+  var _catState = React.useState("todos");
+  var catFiltro = _catState[0]; var setCatFiltro = _catState[1];
+  // Grupos expandidos individualmente
+  var _grpExpState = React.useState({});
+  var grpExp = _grpExpState[0]; var setGrpExp = _grpExpState[1];
+  // Swipe vertical
+  var swipeRef = React.useRef(null);
+  var swipeStart = React.useRef(null);
   React.useEffect(function() {
     fetch("https://wttr.in/Praia+Grande,SP?format=j1")
       .then(function(r){ return r.json(); })
@@ -13129,7 +13142,6 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab }) {
         if (d && d.current_condition && d.current_condition[0]) {
           var cc = d.current_condition[0];
           setTemp(parseInt(cc.temp_C, 10));
-          // map wmo weather code from wttr
           var code = parseInt(cc.weatherCode, 10);
           var wmo = code <= 113 ? 0 : code <= 116 ? 1 : code <= 119 ? 2 : code <= 122 ? 3 : code <= 260 ? 45 : code <= 296 ? 61 : code <= 314 ? 63 : code <= 395 ? 71 : 95;
           setWCode(wmo);
@@ -13137,11 +13149,28 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab }) {
       })
       .catch(function(){});
   }, []);
+  // Swipe handlers
+  function onTouchStart(e) { swipeStart.current = e.touches[0].clientY; }
+  function onTouchEnd(e) {
+    if (swipeStart.current === null) return;
+    var dy = swipeStart.current - e.changedTouches[0].clientY;
+    swipeStart.current = null;
+    if (dy > 30) { setExpanded(true); setLido(false); }  // arrasta pra cima → abre
+    else if (dy < -30) { setExpanded(false); }           // arrasta pra baixo → fecha
+  }
   var wEmoji = wCode === null ? "" : wCode === 0 ? "☀️" : wCode <= 2 ? "⛅" : wCode <= 3 ? "☁️" : wCode <= 48 ? "🌫️" : wCode <= 67 ? "🌧️" : wCode <= 77 ? "🌨️" : wCode <= 82 ? "🌦️" : "⛈️";
-  var nAlertas = alertas || 0;
+  // Deriva grupos internamente para dupla proteção
+  var groups = (alertaGroups || []).filter(function(g){ return g.items && g.items.length > 0; });
+  var nAlertas = groups.length;
   var alertColor = nAlertas > 5 ? C.red : C.orange;
-  var groups = alertaGroups || [];
-  return React.createElement('div', { style:{ background:"linear-gradient(160deg,rgba(180,180,190,0.22) 0%,rgba(230,230,235,0.12) 50%,rgba(255,255,255,0) 100%)", borderRadius:14, border:"1px solid "+C.border, backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)", overflow:"hidden" } },
+  // Categorias únicas para chips
+  var cats = ["todos"];
+  groups.forEach(function(g){ if (g.tab && cats.indexOf(g.tab) < 0) cats.push(g.tab); });
+  var catLabels = { todos:"Todos", reservas:"Reservas", contratos:"Contratos", financeiro:"Financeiro", clientes:"Clientes", multas:"Multas", manutencao:"Manutenção", frota:"Frota" };
+  var groupsFil = catFiltro === "todos" ? groups : groups.filter(function(g){ return g.tab === catFiltro; });
+  return React.createElement('div', { ref: swipeRef, onTouchStart: onTouchStart, onTouchEnd: onTouchEnd,
+    style:{ background:"linear-gradient(160deg,rgba(180,180,190,0.22) 0%,rgba(230,230,235,0.12) 50%,rgba(255,255,255,0) 100%)", borderRadius:14, border:"1px solid "+C.border, backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)", overflow:"hidden" } },
+    // Header
     React.createElement('div', { style:{ padding:"10px 14px" } },
       React.createElement('div', { style:{ display:"flex", alignItems:"center", justifyContent:"space-between" } },
         React.createElement('div', { onClick: function(){ setTab("calendario"); }, style:{ display:"flex", alignItems:"center", gap:6, cursor:"pointer", flex:1 } },
@@ -13149,8 +13178,17 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab }) {
           React.createElement('span', { style:{ fontSize:17, fontWeight:700, color:"var(--c-text)", letterSpacing:-0.5 } }, temp !== null ? temp+"°C" : "—")
         ),
         nAlertas > 0
-          ? React.createElement('div', { onClick: function(){ setExpanded(function(v){ return !v; }); }, style:{ cursor:"pointer", textAlign:"right", userSelect:"none", display:"flex", alignItems:"center", gap:6 } },
+          ? React.createElement('div', { onClick: function(){
+                var next = !expanded;
+                setExpanded(next);
+                if (next) setLido(true); // ao abrir marca lidos
+              }, style:{ cursor:"pointer", textAlign:"right", userSelect:"none", display:"flex", alignItems:"center", gap:6 } },
               React.createElement('div', { style:{ fontSize:13, fontWeight:600, color:alertColor } }, nAlertas + (nAlertas === 1 ? " alerta" : " alertas")),
+              // Sino com badge
+              React.createElement('div', { style:{ position:"relative", fontSize:18, lineHeight:1 } },
+                "🔔",
+                !lido && React.createElement('span', { style:{ position:"absolute", top:-3, right:-3, background:"#FF3B30", color:"#fff", borderRadius:10, fontSize:8, fontWeight:800, minWidth:14, height:14, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 2px", lineHeight:1 } }, nAlertas > 9 ? "9+" : nAlertas)
+              ),
               React.createElement('div', { style:{ fontSize:11, color:alertColor, background:alertColor+"18", borderRadius:6, padding:"2px 7px", fontWeight:700, transition:"transform .2s", transform: expanded ? "rotate(180deg)" : "rotate(0deg)" } }, "▼")
             )
           : React.createElement('div', { style:{ textAlign:"right" } },
@@ -13159,10 +13197,47 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab }) {
       ),
       React.createElement('div', { onClick: function(){ setTab("calendario"); }, style:{ fontSize:10, color:C.sub, marginTop:5, cursor:"pointer" } }, "Praia Grande - SP  •  " + diaNome + ", " + dataStr)
     ),
-    expanded && nAlertas > 0 && React.createElement('div', { style:{ borderTop:"1px solid "+C.border, padding:"12px 14px", display:"flex", flexDirection:"column", gap:8 } },
-      React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 } }, "Central de Alertas"),
-      groups.filter(function(g){ return g.items && g.items.length > 0; }).map(function(g, i) {
-        return React.createElement(AlertBox, { key: i, cor: g.cor, icon: g.icon, titulo: g.titulo, items: g.items, sub: g.sub, tab: g.tab, setTab: setTab });
+    // Painel expandido
+    expanded && nAlertas > 0 && React.createElement('div', { style:{ borderTop:"1px solid "+C.border, padding:"12px 14px", display:"flex", flexDirection:"column", gap:10 } },
+      // Header da central
+      React.createElement('div', { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:2 } },
+        React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Central de Alertas"),
+        React.createElement('button', { onClick: function(){ setLido(true); }, style:{ border:"none", background:"transparent", fontSize:11, color:C.blue, cursor:"pointer", fontWeight:600, padding:"2px 0" } }, "✓ Marcar lidos")
+      ),
+      // Chips de filtro roláveis
+      React.createElement('div', { style:{ display:"flex", gap:6, overflowX:"auto", paddingBottom:4, scrollbarWidth:"none", WebkitOverflowScrolling:"touch" } },
+        cats.map(function(cat){
+          var active = catFiltro === cat;
+          var cnt = cat === "todos" ? groups.length : groups.filter(function(g){ return g.tab === cat; }).length;
+          return React.createElement('button', { key:cat, onClick:function(){ setCatFiltro(cat); }, style:{ border:"none", flexShrink:0, borderRadius:980, padding:"5px 12px", fontSize:11, fontWeight: active ? 700 : 400, cursor:"pointer", background: active ? C.blue+"22" : "rgba(120,120,128,0.12)", color: active ? C.blue : "var(--c-sub)", whiteSpace:"nowrap" } },
+            (catLabels[cat] || cat) + (cnt > 0 ? " " + cnt : "")
+          );
+        })
+      ),
+      // Grupos expansíveis
+      groupsFil.map(function(g, i) {
+        var gKey = g.tab + "_" + i;
+        var isOpen = grpExp[gKey] !== false; // default aberto
+        return React.createElement('div', { key:i, style:{ background:g.cor+"0D", border:"1px solid "+g.cor+"40", borderRadius:14, overflow:"hidden" } },
+          // Cabeçalho do grupo
+          React.createElement('div', { onClick:function(){ setGrpExp(function(p){ var n=Object.assign({},p); n[gKey]=!isOpen; return n; }); if(g.tab && setTab) {}; }, style:{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", cursor:"pointer" } },
+            React.createElement('div', { style:{ display:"flex", alignItems:"center", gap:6 } },
+              React.createElement('span', null, g.icon),
+              React.createElement('span', { style:{ fontWeight:700, color:g.cor, fontSize:13 } }, g.titulo)
+            ),
+            React.createElement('div', { style:{ display:"flex", alignItems:"center", gap:6 } },
+              g.tab && React.createElement('span', { onClick:function(e){ e.stopPropagation(); setTab(g.tab); }, style:{ fontSize:11, color:g.cor, opacity:0.7 } }, "Ver →"),
+              React.createElement('span', { style:{ fontSize:10, color:g.cor, background:g.cor+"18", borderRadius:6, padding:"2px 6px", fontWeight:700, transition:"transform .2s", transform:isOpen?"rotate(180deg)":"rotate(0deg)" } }, "▼")
+            )
+          ),
+          // Itens do grupo
+          isOpen && React.createElement('div', { style:{ borderTop:"1px solid "+g.cor+"25", padding:"6px 14px 10px" } },
+            g.items.map(function(it, j){
+              return React.createElement('div', { key:j, style:{ fontSize:12, color:"var(--c-text)", paddingTop:5, borderTop: j>0?"1px solid "+g.cor+"20":"none", marginTop: j>0?5:0 } }, it);
+            }),
+            g.sub && React.createElement('div', { style:{ fontSize:11, color:g.cor, marginTop:6, fontWeight:600 } }, g.sub)
+          )
+        );
       })
     )
   );
@@ -16805,6 +16880,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   const [filtroStatusFat, setFiltroStatusFat] = useState("todas");
   const [sortRec, setSortRec] = useState("pendentes");
   const [sortDesp, setSortDesp] = useState("pendentes");
+  const [filtroCatRec, setFiltroCatRec] = useState("");
+  const [filtroCatDesp, setFiltroCatDesp] = useState("");
   const [fluxoView, setFluxoView] = useState("dia");
   const [fluxoSort, setFluxoSort] = useState("desc");
   const [fluxoEscopo, setFluxoEscopo] = useState("mes");
@@ -16959,11 +17036,19 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   else if (sortRec === "data_asc") recFiltradas.sort(function(a,b){return (a.data||"").localeCompare(b.data||"");});
   else if (sortRec === "data_desc") recFiltradas.sort(function(a,b){return (b.data||"").localeCompare(a.data||"");});
   else if (sortRec === "valor_desc") recFiltradas.sort(function(a,b){return parseFloat(b.valor||0)-parseFloat(a.valor||0);});
+  // Filtro por categoria — receitas
+  var catsRec = [];
+  recFiltradas.forEach(function(r){ var c = r.categoria||""; if (c && catsRec.indexOf(c) < 0) catsRec.push(c); });
+  var recExibidas = filtroCatRec ? recFiltradas.filter(function(r){ return (r.categoria||"") === filtroCatRec; }) : recFiltradas;
 
   if (sortDesp === "pendentes") despFiltradas.sort(function(a,b){ var p = _pendDesp(a) - _pendDesp(b); return p !== 0 ? p : (a.data||"").localeCompare(b.data||""); });
   else if (sortDesp === "data_asc") despFiltradas.sort(function(a,b){return (a.data||"").localeCompare(b.data||"");});
   else if (sortDesp === "data_desc") despFiltradas.sort(function(a,b){return (b.data||"").localeCompare(a.data||"");});
   else if (sortDesp === "valor_desc") despFiltradas.sort(function(a,b){return parseFloat(b.valor||0)-parseFloat(a.valor||0);});
+  // Filtro por categoria — despesas
+  var catsDesp = [];
+  despFiltradas.forEach(function(d){ var c = d.categoria||""; if (c && catsDesp.indexOf(c) < 0) catsDesp.push(c); });
+  var despExibidas = filtroCatDesp ? despFiltradas.filter(function(d){ return (d.categoria||"") === filtroCatDesp; }) : despFiltradas;
 
   // Fluxo de caixa por mês
   var desByMes = {}; despesas.filter(d => !d.manutencao_id).forEach(function(d) { var mes = (d.data || "").slice(0, 7); if (mes) { if (!desByMes[mes]) desByMes[mes] = 0; desByMes[mes] += parseFloat(d.valor || 0); } });
@@ -17069,22 +17154,27 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           , React.createElement('button', { className: bCls(Btn(C.green)), style: bStyle(Btn(C.green)), onClick: () => openRec(null), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2199}}, "+ Receita" )
         )
       )
+      /* Chips filtro categoria receitas */
+      , catsRec.length > 0 && React.createElement('div', { style: { display: "flex", gap: 6, overflowX: "auto", paddingBottom: 2, scrollbarWidth: "none", WebkitOverflowScrolling: "touch" } }
+        , React.createElement('button', { onClick: function(){ setFiltroCatRec(""); }, style: { border:"none", flexShrink:0, borderRadius:980, padding:"4px 11px", fontSize:11, fontWeight: filtroCatRec==="" ? 700 : 400, cursor:"pointer", background: filtroCatRec==="" ? C.green+"22" : "rgba(120,120,128,0.12)", color: filtroCatRec==="" ? C.green : "var(--c-sub)", whiteSpace:"nowrap" } }, "Todas")
+        , catsRec.map(function(cat){ return React.createElement('button', { key:cat, onClick:function(){ setFiltroCatRec(cat); }, style: { border:"none", flexShrink:0, borderRadius:980, padding:"4px 11px", fontSize:11, fontWeight: filtroCatRec===cat ? 700 : 400, cursor:"pointer", background: filtroCatRec===cat ? C.green+"22" : "rgba(120,120,128,0.12)", color: filtroCatRec===cat ? C.green : "var(--c-sub)", whiteSpace:"nowrap" } }, cat); })
+      )
       /* Totalizadores */
       , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2203}}
         , React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2204}}
           , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2205}}, "Previsto")
-          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.blue, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2206}}, fmtBRL(recFiltradas.reduce((s,r)=>s+parseFloat(r.valor||0),0)))
+          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.blue, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2206}}, fmtBRL(recExibidas.reduce((s,r)=>s+parseFloat(r.valor||0),0)))
         )
         , React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2208}}
           , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2209}}, "Recebido")
-          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.green, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2210}}, fmtBRL(recFiltradas.filter(r=>r.status==="recebido").reduce((s,r)=>s+parseFloat(r.valor||0),0)))
+          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.green, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2210}}, fmtBRL(recExibidas.filter(r=>r.status==="recebido").reduce((s,r)=>s+parseFloat(r.valor||0),0)))
         )
       )
       , React.createElement('div', { className: "lg-card", style: CARD, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2213}}
-        , recFiltradas.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2214}}, "Nenhuma receita neste período"   )
-        , recFiltradas.map((r, i) => {
+        , recExibidas.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2214}}, "Nenhuma receita neste período"   )
+        , recExibidas.map((r, i) => {
           var isRec = !r.ref_fatura && (r.data||"").slice(0,7) !== filtroMes && r.recorrente;
-          return React.createElement('div', { key: r.id, style: { padding: "12px 0", borderBottom: i < recFiltradas.length - 1 ? "1px solid " + C.border : "none" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2217}}
+          return React.createElement('div', { key: r.id, style: { padding: "12px 0", borderBottom: i < recExibidas.length - 1 ? "1px solid " + C.border : "none" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2217}}
             , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2218}}
               , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2219}}
                 , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2220}}
@@ -17161,23 +17251,28 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           , React.createElement('button', { className: bCls(Btn(C.red)), style: bStyle(Btn(C.red)), onClick: () => openDesp(null), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2266}}, "+ Despesa" )
         )
       )
+      /* Chips filtro categoria despesas */
+      , catsDesp.length > 0 && React.createElement('div', { style: { display: "flex", gap: 6, overflowX: "auto", paddingBottom: 2, scrollbarWidth: "none", WebkitOverflowScrolling: "touch" } }
+        , React.createElement('button', { onClick: function(){ setFiltroCatDesp(""); }, style: { border:"none", flexShrink:0, borderRadius:980, padding:"4px 11px", fontSize:11, fontWeight: filtroCatDesp==="" ? 700 : 400, cursor:"pointer", background: filtroCatDesp==="" ? C.orange+"22" : "rgba(120,120,128,0.12)", color: filtroCatDesp==="" ? C.orange : "var(--c-sub)", whiteSpace:"nowrap" } }, "Todas")
+        , catsDesp.map(function(cat){ return React.createElement('button', { key:cat, onClick:function(){ setFiltroCatDesp(cat); }, style: { border:"none", flexShrink:0, borderRadius:980, padding:"4px 11px", fontSize:11, fontWeight: filtroCatDesp===cat ? 700 : 400, cursor:"pointer", background: filtroCatDesp===cat ? C.orange+"22" : "rgba(120,120,128,0.12)", color: filtroCatDesp===cat ? C.orange : "var(--c-sub)", whiteSpace:"nowrap" } }, cat); })
+      )
       /* Totalizadores */
       , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2270}}
         , React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2271}}
           , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2272}}, "Previsto")
-          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.orange, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2273}}, fmtBRL(despFiltradas.reduce((s,d)=>s+parseFloat(d.valor||0),0)))
+          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.orange, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2273}}, fmtBRL(despExibidas.reduce((s,d)=>s+parseFloat(d.valor||0),0)))
         )
         , React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2275}}
           , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2276}}, "Pago")
-          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.red, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2277}}, fmtBRL(despFiltradas.filter(d=>d.status==="pago").reduce((s,d)=>s+parseFloat(d.valor||0),0)))
+          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.red, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2277}}, fmtBRL(despExibidas.filter(d=>d.status==="pago").reduce((s,d)=>s+parseFloat(d.valor||0),0)))
         )
       )
       , React.createElement('div', { className: "lg-card", style: CARD, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2280}}
-        , despFiltradas.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2281}}, "Nenhuma despesa neste período"   )
-        , despFiltradas.map((d, i) => {
+        , despExibidas.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2281}}, "Nenhuma despesa neste período"   )
+        , despExibidas.map((d, i) => {
           var isRec = (d.data||"").slice(0,7) !== filtroMes && d.recorrente;
           var isHighlight = d.id === highlightDespId;
-          return React.createElement('div', { key: d.id, ref: isHighlight ? function(el){ if(el) el.scrollIntoView({behavior:"smooth",block:"center"}); } : null, style: { padding: "12px 0", borderBottom: i < despFiltradas.length - 1 ? "1px solid " + C.border : "none", background: isHighlight ? C.red + "15" : "transparent", borderRadius: isHighlight ? 8 : 0, transition: "background 0.5s" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2284}}
+          return React.createElement('div', { key: d.id, ref: isHighlight ? function(el){ if(el) el.scrollIntoView({behavior:"smooth",block:"center"}); } : null, style: { padding: "12px 0", borderBottom: i < despExibidas.length - 1 ? "1px solid " + C.border : "none", background: isHighlight ? C.red + "15" : "transparent", borderRadius: isHighlight ? 8 : 0, transition: "background 0.5s" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2284}}
             , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2285}}
               , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2286}}
                 , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2287}}
@@ -17349,10 +17444,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               , React.createElement('div', { style: { display:"flex", alignItems:"baseline", gap: 8, flexWrap:"wrap" } }
                 , React.createElement('div', { style: { fontSize: 13, fontWeight: 500, color: P.ink, letterSpacing:"-0.01em" } }, fmtDia(row.key))
                 , isToday && React.createElement('span', { style: { fontSize: 9, fontWeight: 500, padding:"2px 7px", borderRadius: 999, background: tint(P.blue, "22"), color: P.blue, letterSpacing:"0.05em", textTransform:"uppercase" } }, "hoje")
-                , React.createElement('span', { style: { fontSize: 10, fontWeight: 400, color: P.sub } }, "Acumulado ", fmtBRL(row.acc))
+                , React.createElement('span', { style: { fontSize: 10, fontWeight: 400, color: P.sub } }, "Acumulado ", fmtBRLint(row.acc))
               )
               , React.createElement('div', { style: { textAlign:"right" } }
-                , React.createElement('div', { style: { fontSize: 14, fontWeight: 500, color: dotColor, letterSpacing:"-0.01em" } }, (pos ? "+ " : "− ") + fmtBRL(Math.abs(row.saldo)))
+                , React.createElement('div', { style: { fontSize: 14, fontWeight: 500, color: dotColor, letterSpacing:"-0.01em" } }, fmtBRLint(Math.abs(row.saldo)))
               )
             )
             , sortedEv.length > 0 && React.createElement('div', { style: { display:"flex", flexDirection:"column" } }
@@ -17366,7 +17461,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                     , React.createElement('div', { style: { fontSize: 12, fontWeight: 400, color: P.ink, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" } }, e.label)
                     , React.createElement('div', { style: { fontSize: 10, fontWeight: 400, color: P.sub, marginTop: 1 } }, (e.cat || KIND_LBL[e.kind]) + " · " + e.status)
                   )
-                  , React.createElement('div', { style: { fontSize: 12, fontWeight: 500, color: c, letterSpacing:"-0.01em", flexShrink: 0 } }, sign + fmtBRL(e.val))
+                  , React.createElement('div', { style: { fontSize: 12, fontWeight: 500, color: c, letterSpacing:"-0.01em", flexShrink: 0 } }, fmtBRLint(e.val))
                 );
               })
             )
@@ -17390,10 +17485,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             , React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"baseline", gap: 10, marginBottom: 10 } }
               , React.createElement('div', {}
                 , React.createElement('div', { style: { fontSize: 13, fontWeight: 500, color: P.ink, letterSpacing:"-0.01em" } }, fmtMes(row.key))
-                , React.createElement('div', { style: { fontSize: 10, fontWeight: 400, color: P.sub, marginTop: 2 } }, "Acumulado ", fmtBRL(row.acc))
+                , React.createElement('div', { style: { fontSize: 10, fontWeight: 400, color: P.sub, marginTop: 2 } }, "Acumulado ", fmtBRLint(row.acc))
               )
               , React.createElement('div', { style: { textAlign:"right" } }
-                , React.createElement('div', { style: { fontSize: 15, fontWeight: 500, color: dotColor, letterSpacing:"-0.01em" } }, (pos ? "+ " : "− ") + fmtBRL(Math.abs(row.saldo)))
+                , React.createElement('div', { style: { fontSize: 15, fontWeight: 500, color: dotColor, letterSpacing:"-0.01em" } }, fmtBRLint(Math.abs(row.saldo)))
                 , React.createElement('div', { style: { fontSize: 9, fontWeight: 500, color: P.sub, marginTop: 2, textTransform:"uppercase", letterSpacing:"0.08em" } }, "Saldo do mês")
               )
             )
@@ -17442,7 +17537,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             ].map(function(k, i){
               return React.createElement('div', { key: i, style: { borderRadius: 14, padding: "11px 13px", background: tint(k.c, "14"), border: "0.5px solid " + tint(k.c, "33") } }
                 , React.createElement('div', { style: { fontSize: 10, fontWeight: 500, letterSpacing:"0.05em", color: P.sub, textTransform:"uppercase" } }, k.lbl)
-                , React.createElement('div', { style: { fontSize: 16, fontWeight: 400, color: k.c, marginTop: 4, letterSpacing:"-0.01em" } }, fmtBRL(k.val))
+                , React.createElement('div', { style: { fontSize: 16, fontWeight: 400, color: k.c, marginTop: 4, letterSpacing:"-0.01em" } }, fmtBRLint(k.val))
               );
             })
           )
@@ -21529,6 +21624,38 @@ class ErrBoundary extends React.Component {
   }
 }
 window.ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ErrBoundary, null, React.createElement(App, {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3252}} )));
+
+// PWA Safari swipe-back — indicador visual na borda esquerda (≤28px)
+(function(){
+  var ind = document.createElement("div");
+  ind.style.cssText = "position:fixed;top:50%;left:0;transform:translateY(-50%) translateX(-100%);width:4px;height:60px;background:rgba(0,122,255,0.7);borderRadius:0 4px 4px 0;zIndex:99999;transition:transform 0.15s ease,opacity 0.15s ease;opacity:0;pointerEvents:none;";
+  document.body.appendChild(ind);
+  var startX = null, startY = null, active = false;
+  document.addEventListener("touchstart", function(e){
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    active = startX <= 28;
+  }, { passive: true });
+  document.addEventListener("touchmove", function(e){
+    if (!active || !startX) return;
+    var dx = e.touches[0].clientX - startX;
+    var dy = Math.abs(e.touches[0].clientY - startY);
+    if (dy > 40) { active = false; ind.style.opacity = "0"; ind.style.transform = "translateY(-50%) translateX(-100%)"; return; }
+    if (dx > 0) {
+      var prog = Math.min(dx / 80, 1);
+      ind.style.opacity = String(prog * 0.9);
+      ind.style.transform = "translateY(-50%) translateX(" + (prog * 8 - 4) + "px)";
+    }
+  }, { passive: true });
+  document.addEventListener("touchend", function(e){
+    if (!active || !startX) return;
+    var dx = e.changedTouches[0].clientX - startX;
+    active = false; startX = null;
+    ind.style.opacity = "0";
+    ind.style.transform = "translateY(-50%) translateX(-100%)";
+    if (dx > 60) { try { window.history.back(); } catch(e2){} }
+  }, { passive: true });
+})();
 
 </script>
 </body>

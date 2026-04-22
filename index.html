@@ -13101,12 +13101,31 @@ function Badge(c) {
 function numCt(id) { return String(id); }
 function fmtComp(d) { if (!d) return ""; return d.slice(5,7) + "/" + d.slice(2,4); }
 function fmtBRL(v) { if (v === null || v === undefined || v === "") return "--"; return "R$ " + parseFloat(v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 }); }
-function AlertBox({ cor, icon, titulo, items, sub, tab, setTab }) {
+function AlertBox({ cor, icon, titulo, items, sub, tab, setTab, onQuickAction, quickActionLabel }) {
+  var _exp = React.useState(false); var expItem = _exp[0]; var setExpItem = _exp[1];
   if (!items || items.length === 0) return null;
-  return React.createElement('div', { onClick: function(){ tab && setTab && setTab(tab); }, style: { background: cor + "0D", border: "1px solid " + cor + "40", borderRadius: 14, padding: "12px 16px", cursor: tab ? "pointer" : "default" } },
-    React.createElement('div', { style: { fontWeight: 700, color: cor, fontSize: 14, marginBottom: items.length > 1 ? 8 : 0, display: "flex", justifyContent: "space-between", alignItems: "center" } }, icon + " " + titulo, tab && React.createElement('span', { style: { fontSize: 12, opacity: 0.7 } }, "Ver →")),
-    items.map(function(it, i) { return React.createElement('div', { key: i, style: { fontSize: 13, color: "var(--c-text)", paddingTop: 4, borderTop: i > 0 ? "1px solid " + cor + "30" : "none", marginTop: i > 0 ? 4 : 0 } }, it); }),
-    sub && React.createElement('div', { style: { fontSize: 12, color: cor, marginTop: 6, fontWeight: 600 } }, sub)
+  var showExpand = items.length > 1;
+  return React.createElement('div', { style: { background: cor + "0D", border: "1px solid " + cor + "40", borderRadius: 14, overflow:"hidden" } },
+    React.createElement('div', { onClick: function(){ showExpand ? setExpItem(function(v){ return !v; }) : (tab && setTab && setTab(tab)); }, style: { padding:"12px 16px", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" } },
+      React.createElement('div', { style: { display:"flex", alignItems:"center", gap:8, flex:1, minWidth:0 } },
+        React.createElement('span', { style:{ fontSize:16, flexShrink:0 } }, icon),
+        React.createElement('span', { style:{ fontWeight:700, color:cor, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, titulo)
+      ),
+      React.createElement('div', { style:{ display:"flex", alignItems:"center", gap:6, flexShrink:0 } },
+        tab && !showExpand && React.createElement('span', { style:{ fontSize:12, opacity:0.7, color:cor } }, "Ver →"),
+        showExpand && React.createElement('span', { style:{ fontSize:11, color:cor, background:cor+"18", borderRadius:6, padding:"2px 7px", fontWeight:700, transition:"transform .2s", transform: expItem ? "rotate(180deg)" : "rotate(0deg)", display:"inline-block" } }, "▼")
+      )
+    ),
+    expItem && React.createElement('div', { style:{ borderTop:"1px solid "+cor+"30", display:"flex", flexDirection:"column" } },
+      items.map(function(it, i) {
+        return React.createElement('div', { key: i, onClick: function(){ tab && setTab && setTab(tab); }, style: { fontSize:12, color:"var(--c-text)", padding:"9px 16px", borderTop: i>0?"1px solid "+cor+"20":"none", display:"flex", justifyContent:"space-between", alignItems:"center", cursor: tab?"pointer":"default", gap:8 } },
+          React.createElement('span', { style:{ flex:1, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, it),
+          tab && React.createElement('span', { style:{ fontSize:11, color:cor, opacity:0.7, flexShrink:0 } }, "→")
+        );
+      }),
+      sub && React.createElement('div', { style:{ fontSize:12, color:cor, padding:"8px 16px", fontWeight:700, borderTop:"1px solid "+cor+"30", background:cor+"08" } }, sub)
+    ),
+    !showExpand && sub && React.createElement('div', { style:{ fontSize:12, color:cor, padding:"4px 16px 10px", fontWeight:600 } }, sub)
   );
 }
 
@@ -13122,6 +13141,13 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab }) {
   var wCode = _wCodeState[0]; var setWCode = _wCodeState[1];
   var _expState = React.useState(false);
   var expanded = _expState[0]; var setExpanded = _expState[1];
+  var _readState = React.useState(function(){
+    try { var s = localStorage.getItem("notif_read_ts"); return s ? parseInt(s) : 0; } catch(e){ return 0; }
+  });
+  var lastRead = _readState[0]; var setLastRead = _readState[1];
+  var _filterState = React.useState("all");
+  var filterCat = _filterState[0]; var setFilterCat = _filterState[1];
+
   React.useEffect(function() {
     fetch("https://wttr.in/Praia+Grande,SP?format=j1")
       .then(function(r){ return r.json(); })
@@ -13129,7 +13155,6 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab }) {
         if (d && d.current_condition && d.current_condition[0]) {
           var cc = d.current_condition[0];
           setTemp(parseInt(cc.temp_C, 10));
-          // map wmo weather code from wttr
           var code = parseInt(cc.weatherCode, 10);
           var wmo = code <= 113 ? 0 : code <= 116 ? 1 : code <= 119 ? 2 : code <= 122 ? 3 : code <= 260 ? 45 : code <= 296 ? 61 : code <= 314 ? 63 : code <= 395 ? 71 : 95;
           setWCode(wmo);
@@ -13137,11 +13162,45 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab }) {
       })
       .catch(function(){});
   }, []);
+
   var wEmoji = wCode === null ? "" : wCode === 0 ? "☀️" : wCode <= 2 ? "⛅" : wCode <= 3 ? "☁️" : wCode <= 48 ? "🌫️" : wCode <= 67 ? "🌧️" : wCode <= 77 ? "🌨️" : wCode <= 82 ? "🌦️" : "⛈️";
-  var nAlertas = alertas || 0;
+  var groups = (alertaGroups || []).filter(function(g){ return g.items && g.items.length > 0; });
+  // Derive nAlertas from groups directly — avoids stale prop if totalAlertas is miscounted
+  var nAlertas = groups.reduce(function(s,g){ return s + g.items.length; }, 0);
   var alertColor = nAlertas > 5 ? C.red : C.orange;
-  var groups = alertaGroups || [];
-  return React.createElement('div', { style:{ background:"linear-gradient(160deg,rgba(180,180,190,0.22) 0%,rgba(230,230,235,0.12) 50%,rgba(255,255,255,0) 100%)", borderRadius:14, border:"1px solid "+C.border, backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)", overflow:"hidden" } },
+
+  // Derive unread count (new alerts since last "mark all read")
+  var sessionKey = groups.map(function(g){ return g.titulo; }).join("|");
+  var _hashState = React.useState(sessionKey);
+  var prevKey = _hashState[0]; var setPrevKey = _hashState[1];
+  var _unreadState = React.useState(nAlertas);
+  var unread = _unreadState[0]; var setUnread = _unreadState[1];
+  React.useEffect(function(){
+    if (sessionKey !== prevKey) { setUnread(nAlertas); setPrevKey(sessionKey); }
+  }, [sessionKey, nAlertas]);
+
+  function markAllRead() {
+    var now = Date.now();
+    try { localStorage.setItem("notif_read_ts", String(now)); } catch(e){}
+    setLastRead(now);
+    setUnread(0);
+  }
+
+  // Category filter tags derived from groups
+  var cats = ["all"].concat(groups.map(function(g){ return g.icon + " " + g.titulo.split(" (")[0]; }));
+  var visibleGroups = filterCat === "all" ? groups : groups.filter(function(g){ return (g.icon + " " + g.titulo.split(" (")[0]) === filterCat; });
+
+  // Swipe-to-collapse
+  var _dragY = React.useRef(0);
+  function onTouchStart(ev) { _dragY.current = ev.touches[0].clientY; }
+  function onTouchEnd(ev) {
+    var dy = ev.changedTouches[0].clientY - _dragY.current;
+    if (dy < -40) setExpanded(true);
+    if (dy > 40) setExpanded(false);
+  }
+
+  return React.createElement('div', { style:{ background:"linear-gradient(160deg,rgba(180,180,190,0.22) 0%,rgba(230,230,235,0.12) 50%,rgba(255,255,255,0) 100%)", borderRadius:14, border:"1px solid "+C.border, backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)", overflow:"hidden" }, onTouchStart:onTouchStart, onTouchEnd:onTouchEnd },
+    // Header row
     React.createElement('div', { style:{ padding:"10px 14px" } },
       React.createElement('div', { style:{ display:"flex", alignItems:"center", justifyContent:"space-between" } },
         React.createElement('div', { onClick: function(){ setTab("calendario"); }, style:{ display:"flex", alignItems:"center", gap:6, cursor:"pointer", flex:1 } },
@@ -13150,6 +13209,11 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab }) {
         ),
         nAlertas > 0
           ? React.createElement('div', { onClick: function(){ setExpanded(function(v){ return !v; }); }, style:{ cursor:"pointer", textAlign:"right", userSelect:"none", display:"flex", alignItems:"center", gap:6 } },
+              // Unread badge on bell
+              React.createElement('div', { style:{ position:"relative", display:"inline-flex" } },
+                React.createElement('span', { style:{ fontSize:18 } }, "🔔"),
+                unread > 0 && React.createElement('span', { style:{ position:"absolute", top:-3, right:-4, background:"#FF3B30", color:"#fff", borderRadius:10, fontSize:8, fontWeight:800, minWidth:14, height:14, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 2px", lineHeight:1 } }, unread > 9 ? "9+" : unread)
+              ),
               React.createElement('div', { style:{ fontSize:13, fontWeight:600, color:alertColor } }, nAlertas + (nAlertas === 1 ? " alerta" : " alertas")),
               React.createElement('div', { style:{ fontSize:11, color:alertColor, background:alertColor+"18", borderRadius:6, padding:"2px 7px", fontWeight:700, transition:"transform .2s", transform: expanded ? "rotate(180deg)" : "rotate(0deg)" } }, "▼")
             )
@@ -13159,14 +13223,87 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab }) {
       ),
       React.createElement('div', { onClick: function(){ setTab("calendario"); }, style:{ fontSize:10, color:C.sub, marginTop:5, cursor:"pointer" } }, "Praia Grande - SP  •  " + diaNome + ", " + dataStr)
     ),
-    expanded && nAlertas > 0 && React.createElement('div', { style:{ borderTop:"1px solid "+C.border, padding:"12px 14px", display:"flex", flexDirection:"column", gap:8 } },
-      React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 } }, "Central de Alertas"),
-      groups.filter(function(g){ return g.items && g.items.length > 0; }).map(function(g, i) {
-        return React.createElement(AlertBox, { key: i, cor: g.cor, icon: g.icon, titulo: g.titulo, items: g.items, sub: g.sub, tab: g.tab, setTab: setTab });
-      })
+    // Expanded panel
+    expanded && nAlertas > 0 && React.createElement('div', { style:{ borderTop:"1px solid "+C.border } },
+      // Toolbar: title + mark-all-read + filter chips
+      React.createElement('div', { style:{ padding:"10px 14px 6px", display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 } },
+        React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Central de Alertas"),
+        unread > 0 && React.createElement('button', { onClick: markAllRead, style:{ border:"none", background:"rgba(120,120,128,0.12)", borderRadius:8, padding:"4px 10px", fontSize:11, fontWeight:600, color:C.sub, cursor:"pointer", flexShrink:0 } }, "✓ Marcar lidos")
+      ),
+      // Category filter chips (scrollable)
+      groups.length > 1 && React.createElement('div', { style:{ display:"flex", gap:6, padding:"0 14px 8px", overflowX:"auto", scrollbarWidth:"none", WebkitOverflowScrolling:"touch" } },
+        cats.slice(0, 8).map(function(cat, ci) {
+          var isActive = filterCat === cat;
+          return React.createElement('button', { key:ci, onClick:function(){ setFilterCat(cat); }, style:{ flexShrink:0, border:"none", borderRadius:20, padding:"4px 10px", fontSize:11, fontWeight: isActive?700:500, background: isActive ? alertColor+"22" : "rgba(120,120,128,0.10)", color: isActive ? alertColor : C.sub, cursor:"pointer", whiteSpace:"nowrap" } },
+            cat === "all" ? "Todos (" + nAlertas + ")" : cat
+          );
+        })
+      ),
+      // Alert groups
+      React.createElement('div', { style:{ padding:"0 14px 14px", display:"flex", flexDirection:"column", gap:8 } },
+        visibleGroups.map(function(g, i) {
+          return React.createElement(AlertBox, { key: i, cor: g.cor, icon: g.icon, titulo: g.titulo, items: g.items, sub: g.sub, tab: g.tab, setTab: setTab });
+        })
+      )
     )
   );
 }
+
+// PWA Safari swipe-back: inject edge-swipe navigation via history stack
+(function() {
+  if (typeof window === "undefined") return;
+  // Only activate in standalone PWA mode
+  var isPWA = window.navigator.standalone === true || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+  if (!isPWA) return;
+
+  // We'll expose a global push/pop tab history that React can hook into
+  window.__pwaTabHistory = window.__pwaTabHistory || [];
+
+  // Swipe-back detector: detect right-edge swipe on touch devices
+  var startX = 0, startY = 0, tracking = false;
+  var EDGE_WIDTH = 30; // px from left edge to start tracking
+  var MIN_SWIPE_X = 80; // min horizontal distance
+  var MAX_SWIPE_Y = 60; // max vertical drift
+
+  document.addEventListener("touchstart", function(e) {
+    var t = e.touches[0];
+    tracking = t.clientX <= EDGE_WIDTH;
+    if (tracking) { startX = t.clientX; startY = t.clientY; }
+  }, { passive: true });
+
+  document.addEventListener("touchend", function(e) {
+    if (!tracking) return;
+    tracking = false;
+    var t = e.changedTouches[0];
+    var dx = t.clientX - startX;
+    var dy = Math.abs(t.clientY - startY);
+    if (dx >= MIN_SWIPE_X && dy <= MAX_SWIPE_Y) {
+      // Fire back
+      if (window.__pwaGoBack && typeof window.__pwaGoBack === "function") {
+        window.__pwaGoBack();
+      }
+    }
+  }, { passive: true });
+
+  // Visual swipe indicator overlay
+  var indicator = document.createElement("div");
+  indicator.id = "__pwa_swipe_indicator";
+  indicator.style.cssText = "position:fixed;left:0;top:50%;transform:translateY(-50%);width:4px;height:80px;background:rgba(0,122,255,0.0);border-radius:0 4px 4px 0;z-index:99998;transition:background 0.15s,width 0.15s;pointer-events:none;";
+  document.addEventListener("DOMContentLoaded", function(){ document.body.appendChild(indicator); });
+
+  document.addEventListener("touchstart", function(e) {
+    var t = e.touches[0];
+    if (t.clientX <= EDGE_WIDTH) {
+      indicator.style.background = "rgba(0,122,255,0.35)";
+      indicator.style.width = "5px";
+    }
+  }, { passive: true });
+  document.addEventListener("touchend", function() {
+    indicator.style.background = "rgba(0,122,255,0.0)";
+    indicator.style.width = "4px";
+  }, { passive: true });
+})();
+
 function fmtDate(d) { if (!d) return "--"; var p = d.split("-"); if (p.length !== 3) return d; return p[2] + "/" + p[1] + "/" + p[0]; }
 function despesaVisivelNoMes(d, mes) {
   var dataMes = (d.data || "").slice(0, 7);
@@ -13486,10 +13623,9 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
   const em3dias = new Date(); em3dias.setDate(em3dias.getDate() + 3); const str3 = em3dias.toISOString().split("T")[0];
   const em20dias = new Date(); em20dias.setDate(em20dias.getDate() + 20); const str20 = em20dias.toISOString().split("T")[0];
   const [despExpanded, setDespExpanded] = React.useState(false);
-  const [despDashFilter, setDespDashFilter] = React.useState(null); // null | "previstas" | "pagas"
   const [manExpanded, setManExpanded] = React.useState(false);
   const [manDashFilter, setManDashFilter] = React.useState(null); // null | "previstas" | "pagas"
-  const [catSel, setCatSel] = React.useState("Todas");
+  const [catSel, setCatSel] = React.useState("Combustivel");
   const [catMode, setCatMode] = React.useState("previstas");
   // Renewal label (same 3-tier logic as Contratos tab)
   var _inicioById = {};
@@ -13560,36 +13696,27 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     if (c.renovado_para) renovadosIds.add(c.id);
     if (c.status === "cancelado") renovadosIds.add(c.id);
   });
-  const contratosAtrasados = contratos.filter(c => {
-    if (c.status === "cancelado") return false;
-    if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false;
-    if (!c.previsao_pagamento || c.previsao_pagamento >= hoje) return false;
-    return true; // ativo, concluido ou qualquer status — se não pagou e venceu, alerta
-  });
+  const contratosAtrasados = contratos.filter(c => c.status === "ativo" && !c.renovado_para && c.status_pagamento !== "pago" && c.status_pagamento !== "isento" && c.previsao_pagamento && c.previsao_pagamento < hoje);
   const contratosVencendo = contratos.filter(c => c.status === "ativo" && c.data_fim && c.data_fim >= hoje && c.data_fim <= str7 && !renovadosIds.has(c.id));
 
   const cnhVencida = clientes.filter(c => c.vencimento_cnh && c.vencimento_cnh < hoje);
   const cnhVencendo = clientes.filter(c => c.vencimento_cnh && c.vencimento_cnh >= hoje && c.vencimento_cnh <= str30);
   const multasPend = multas.filter(m => m.status === "pendente");
-  const contasVencidas = (contas || []).filter(c => c.status !== "pago" && c.status !== "cancelado" && c.vencimento && c.vencimento < hoje);
-  const contasVencendo = (contas || []).filter(c => c.status !== "pago" && c.status !== "cancelado" && c.vencimento && c.vencimento >= hoje && c.vencimento <= str3);
+  const contasVencidas = (contas || []).filter(c => c.status === "pendente" && c.vencimento && c.vencimento < hoje);
+  const contasVencendo = (contas || []).filter(c => c.status === "pendente" && c.vencimento && c.vencimento >= hoje && c.vencimento <= str3);
   const manutProlongadas = manutencoes.filter(m => m.status === "em_andamento" && m.data_saida && m.data_saida < hoje);
-  const manutPendPagto = manutencoes.filter(m => {
-    if (m.status_financeiro === "pago" || !!m.data_pagamento) return false;
-    var dt = m.data_previsao_pagamento || m.data_entrada || "";
-    return dt && dt < hoje;
-  });
   function _dataRefDesp(d) { return (d.recorrente && (d.data||"").slice(0,7) < mesAtual) ? (mesAtual + "-" + (d.data||"").slice(8,10)) : (d.data||""); }
   function _dataRefRec(r) { return (r.recorrente && (r.data||"").slice(0,7) < mesAtual) ? (mesAtual + "-" + (r.data||"").slice(8,10)) : (r.data||""); }
-  const despesasVencidas = (despesas || []).filter(d => { if (d.status === "pago" || !!d.data_pagamento) return false; var dr = _dataRefDesp(d); return dr && dr < hoje; });
-  const despesasVencendo = (despesas || []).filter(d => { if (d.status === "pago" || !!d.data_pagamento) return false; var dr = _dataRefDesp(d); return dr && dr >= hoje && dr <= str3; });
+  const despesasVencidas = (despesas || []).filter(d => { if (d.status === "pago") return false; var dr = _dataRefDesp(d); return dr && dr < hoje; });
+  const despesasVencendo = (despesas || []).filter(d => { if (d.status === "pago") return false; var dr = _dataRefDesp(d); return dr && dr >= hoje && dr <= str3; });
   const receitasAtrasadas = (receitas || []).filter(r => { if (r.ref_fatura || r.status === "recebido") return false; var dr = _dataRefRec(r); return dr && dr < hoje; });
   const receitasVencendo = (receitas || []).filter(r => { if (r.ref_fatura || r.status === "recebido") return false; var dr = _dataRefRec(r); return dr && dr >= hoje && dr <= str3; });
   // Faturas vencidas/vencendo — baseado em previsao_pagamento do contrato
   var _str5 = new Date(Date.now() + 5*864e5).toISOString().split("T")[0];
   var faturasVencidas = (contratos || []).filter(c => {
-    if (c.status === "cancelado") return false;
+    if (c.status !== "ativo") return false;
     if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false;
+    if (c.renovado_para) return false;
     if (!c.previsao_pagamento || c.previsao_pagamento >= hoje) return false;
     var mesKey = c.previsao_pagamento.slice(0,7);
     var refKey = "fat_" + c.id + "_" + mesKey;
@@ -13597,8 +13724,9 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     return !paga;
   });
   var faturasVencendo = (contratos || []).filter(c => {
-    if (c.status === "cancelado") return false;
+    if (c.status !== "ativo") return false;
     if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false;
+    if (c.renovado_para) return false;
     if (!c.previsao_pagamento || c.previsao_pagamento < hoje || c.previsao_pagamento > _str5) return false;
     var mesKey = c.previsao_pagamento.slice(0,7);
     var refKey = "fat_" + c.id + "_" + mesKey;
@@ -13623,46 +13751,39 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
   const reservasPendentes = (reservas||[]).filter(function(r){ return r.status === "pendente"; });
   const reservasHoje = (reservas||[]).filter(function(r){ return r.status !== "cancelada" && r.data_retirada === hoje; });
   const reservasProximas = (reservas||[]).filter(function(r){ return r.status === "confirmada" && r.data_retirada > hoje && r.data_retirada <= str7res; });
-  // Contratos vencidos sem baixa (data_fim < hoje, status ativo, pagamento pendente)
+  // Contratos vencidos que não tiveram baixa (data_fim < hoje, status ativo, pagamento pendente)
   const contratosVencidosSemBaixa = contratos.filter(c => c.status === "ativo" && c.data_fim && c.data_fim < hoje && c.status_pagamento !== "pago" && c.status_pagamento !== "isento" && !c.renovado_para);
   // Contratos vencendo hoje
   const contratosVencendoHoje = contratos.filter(c => c.status === "ativo" && c.data_fim && c.data_fim === hoje && !c.renovado_para);
   // Despesas a pagar hoje
-  const despesasHoje = (despesas||[]).filter(d => { if (d.status === "pago" || !!d.data_pagamento) return false; var dr = _dataRefDesp(d); return dr && dr === hoje; });
-  // Multas vencidas não pagas
-  const multasVencidasAlerta = (multas||[]).filter(m => m.status !== "pago" && m.status !== "cancelada" && m.status !== "cancelado" && (m.vencimento||m.data||"") < hoje);
-  // Multas vencendo em 3 dias
-  const multasVencendoAlerta = (multas||[]).filter(m => { var dt = m.vencimento||m.data||""; return m.status !== "pago" && m.status !== "cancelada" && m.status !== "cancelado" && dt >= hoje && dt <= str3; });
+  const despesasHoje = (despesas||[]).filter(d => { if (d.status === "pago") return false; var dr = _dataRefDesp(d); return dr && dr === hoje; });
 
   var alertaGroups = [
-    { cor: C.red,    icon: "📅", titulo: "Reservas para hoje (" + reservasHoje.length + ")",                         items: reservasHoje.map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · " + (r.hora_retirada||"") + " · " + (r.status==="pendente"?"⚠️ Não confirmada":"✓ Confirmada"); }), tab: "reservas" },
-    { cor: C.orange, icon: "📅", titulo: "Reservas pendentes de confirmação (" + reservasPendentes.length + ")",     items: reservasPendentes.slice(0,5).map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · Retirada: " + fmtDate(r.data_retirada); }), tab: "reservas" },
-    { cor: C.blue,   icon: "📅", titulo: "Reservas confirmadas próximas (" + reservasProximas.length + ")",          items: reservasProximas.slice(0,5).map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · " + fmtDate(r.data_retirada) + (r.hora_retirada?" "+r.hora_retirada:""); }), tab: "reservas" },
-    { cor: C.red,    icon: "🚨", titulo: "Contratos com pagamento atrasado (" + contratosAtrasados.length + ")",     items: contratosAtrasados.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); var ve = veiculos.find(function(x){return x.id==c.veiculo_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + " · venc. " + fmtDate(c.previsao_pagamento) + " · " + fmtBRL(c.valor_total); }), sub: "Total: " + fmtBRL(contratosAtrasados.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)), tab: "contratos" },
+    { cor: C.red,    icon: "📅", titulo: "Reservas para hoje (" + reservasHoje.length + ")",                       items: reservasHoje.map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · " + (r.hora_retirada||"") + " · " + (r.status==="pendente"?"⚠️ Não confirmada":"✓ Confirmada"); }), tab: "reservas" },
+    { cor: C.orange, icon: "📅", titulo: "Reservas pendentes de confirmação (" + reservasPendentes.length + ")",   items: reservasPendentes.slice(0,5).map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · Retirada: " + fmtDate(r.data_retirada); }), tab: "reservas" },
+    { cor: C.blue,   icon: "📅", titulo: "Reservas confirmadas próximas (" + reservasProximas.length + ")",        items: reservasProximas.slice(0,5).map(function(r){ return (r.nome||"–") + " · " + (r.veiculo||"–") + " · " + fmtDate(r.data_retirada) + (r.hora_retirada?" "+r.hora_retirada:""); }), tab: "reservas" },
+    { cor: C.red,    icon: "🚨", titulo: "Pagamentos atrasados (" + contratosAtrasados.length + ")",               items: contratosAtrasados.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--") + " · " + fmtDate(c.previsao_pagamento); }), sub: "Total: " + fmtBRL(contratosAtrasados.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)), tab: "contratos" },
+    { cor: C.orange, icon: "⏰", titulo: "Contratos vencendo em 7 dias (" + contratosVencendo.length + ")",        items: contratosVencendo.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--") + " · ate " + fmtDate(c.data_fim); }), tab: "contratos" },
+    { cor: C.red,    icon: "🪪",  titulo: "CNH vencida (" + cnhVencida.length + ")",                               items: cnhVencida.map(function(c){ return c.nome + " · " + fmtDate(c.vencimento_cnh); }), tab: "clientes" },
+    { cor: C.orange, icon: "🪪",  titulo: "CNH vencendo em 30 dias (" + cnhVencendo.length + ")",                  items: cnhVencendo.map(function(c){ return c.nome + " · " + fmtDate(c.vencimento_cnh); }), tab: "clientes" },
+    { cor: C.red,    icon: "💸", titulo: "Contas vencidas (" + contasVencidas.length + ")",                        items: contasVencidas.map(function(c){ return c.descricao + " · " + fmtBRL(c.valor) + " · " + fmtDate(c.vencimento); }), sub: "Total: " + fmtBRL(contasVencidas.reduce(function(s,c){return s+parseFloat(c.valor||0);},0)), tab: "financeiro" },
+    { cor: C.orange, icon: "💰", titulo: "Contas vencendo em 3 dias (" + contasVencendo.length + ")",              items: contasVencendo.map(function(c){ return c.descricao + " · " + fmtBRL(c.valor) + " · " + fmtDate(c.vencimento); }), tab: "financeiro" },
+    { cor: C.red,    icon: "🧾", titulo: "Faturas vencidas (" + faturasVencidas.length + ")",                      items: faturasVencidas.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · venc. " + fmtDate(c.previsao_pagamento); }), tab: "financeiro" },
+    { cor: C.orange, icon: "🧾", titulo: "Faturas vencendo em 5 dias (" + faturasVencendo.length + ")",            items: faturasVencendo.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · venc. " + fmtDate(c.previsao_pagamento); }), tab: "financeiro" },
+    { cor: C.blue,   icon: "📤", titulo: "Faturas a emitir — venc. em 20 dias (" + faturasAEmitir.length + ")",   items: faturasAEmitir.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · " + fmtBRL(c.valor_total) + " · venc. " + fmtDate(c.previsao_pagamento); }), tab: "financeiro" },
+    { cor: C.purple, icon: "🔧", titulo: "Manutenções com prazo vencido (" + manutProlongadas.length + ")",       items: manutProlongadas.map(function(m){ var ve = veiculos.find(function(v){return v.id==m.veiculo_id;}); return (ve&&ve.placa||"--") + " · " + m.tipo + " · " + fmtDate(m.data_saida); }), tab: "manutencao" },
+    { cor: C.red,    icon: "📄", titulo: "Documentos vencidos (" + docsVencidos.length + ")",                      items: docsVencidos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]<hoje;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
+    { cor: C.red,    icon: "⚠️", titulo: "Documentos vencendo em 7 dias (" + docsCriticos.length + ")",           items: docsCriticos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]>=hoje&&p[1]<=str7doc;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
+    { cor: C.orange, icon: "📄", titulo: "Documentos vencendo em 30 dias (" + docsVencendo.length + ")",           items: docsVencendo.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]>str7doc&&p[1]<=str30doc;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
+    { cor: C.red,    icon: "📤", titulo: "Despesas vencidas (" + despesasVencidas.length + ")",                    items: despesasVencidas.map(function(d){ return (d.manutencao_id ? "🔧 " : "") + d.descricao + " · " + fmtBRL(d.valor) + " · " + fmtDate(_dataRefDesp(d)); }), sub: "Total: " + fmtBRL(despesasVencidas.reduce(function(s,d){return s+parseFloat(d.valor||0);},0)), tab: "financeiro" },
+    { cor: C.orange, icon: "📤", titulo: "Despesas vencendo em 3 dias (" + despesasVencendo.length + ")",          items: despesasVencendo.map(function(d){ return (d.manutencao_id ? "🔧 " : "") + d.descricao + " · " + fmtBRL(d.valor) + " · " + fmtDate(_dataRefDesp(d)); }), tab: "financeiro" },
+    { cor: C.red,    icon: "💰", titulo: "Receitas atrasadas (" + receitasAtrasadas.length + ")",                  items: receitasAtrasadas.map(function(r){ return r.descricao + " · " + fmtBRL(r.valor) + " · " + fmtDate(_dataRefRec(r)); }), sub: "Total: " + fmtBRL(receitasAtrasadas.reduce(function(s,r){return s+parseFloat(r.valor||0);},0)), tab: "financeiro" },
+    { cor: C.orange, icon: "💰", titulo: "Receitas vencendo em 3 dias (" + receitasVencendo.length + ")",          items: receitasVencendo.map(function(r){ return r.descricao + " · " + fmtBRL(r.valor) + " · " + fmtDate(_dataRefRec(r)); }), tab: "financeiro" },
     { cor: C.red,    icon: "📋", titulo: "Contratos vencidos sem baixa (" + contratosVencidosSemBaixa.length + ")",  items: contratosVencidosSemBaixa.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--") + " · venceu " + fmtDate(c.data_fim); }), sub: "⚠️ Dê baixa nas receitas!", tab: "contratos" },
     { cor: C.red,    icon: "📋", titulo: "Contratos vencendo hoje (" + contratosVencendoHoje.length + ")",           items: contratosVencendoHoje.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--"); }), tab: "contratos" },
-    { cor: C.orange, icon: "⏰", titulo: "Contratos vencendo em 7 dias (" + contratosVencendo.length + ")",          items: contratosVencendo.map(function(c){ var cl = clientes.find(function(x){return x.id==c.cliente_id;}); return "Contrato nº " + numCt(c.id) + " · " + (cl&&cl.nome||"--") + " · até " + fmtDate(c.data_fim); }), tab: "contratos" },
-    { cor: C.red,    icon: "🪪",  titulo: "CNH vencida (" + cnhVencida.length + ")",                                 items: cnhVencida.map(function(c){ return c.nome + " · venceu " + fmtDate(c.vencimento_cnh); }), tab: "clientes" },
-    { cor: C.orange, icon: "🪪",  titulo: "CNH vencendo em 30 dias (" + cnhVencendo.length + ")",                    items: cnhVencendo.map(function(c){ return c.nome + " · vence " + fmtDate(c.vencimento_cnh); }), tab: "clientes" },
-    { cor: C.red,    icon: "💸", titulo: "Contas vencidas (" + contasVencidas.length + ")",                          items: contasVencidas.map(function(c){ return c.descricao + " · " + fmtBRL(c.valor) + " · " + fmtDate(c.vencimento); }), sub: "Total: " + fmtBRL(contasVencidas.reduce(function(s,c){return s+parseFloat(c.valor||0);},0)), tab: "financeiro" },
-    { cor: C.orange, icon: "💸", titulo: "Contas vencendo em 3 dias (" + contasVencendo.length + ")",                items: contasVencendo.map(function(c){ return c.descricao + " · " + fmtBRL(c.valor) + " · " + fmtDate(c.vencimento); }), tab: "financeiro" },
-    { cor: C.red,    icon: "🧾", titulo: "Faturas vencidas (" + faturasVencidas.length + ")",                        items: faturasVencidas.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · venc. " + fmtDate(c.previsao_pagamento) + " · " + fmtBRL(c.valor_total); }), sub: "Total: " + fmtBRL(faturasVencidas.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)), tab: "financeiro" },
-    { cor: C.orange, icon: "🧾", titulo: "Faturas vencendo em 5 dias (" + faturasVencendo.length + ")",              items: faturasVencendo.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · venc. " + fmtDate(c.previsao_pagamento); }), tab: "financeiro" },
-    { cor: C.blue,   icon: "📤", titulo: "Faturas a emitir — venc. em 20 dias (" + faturasAEmitir.length + ")",     items: faturasAEmitir.map(function(c){ var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;}); var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;}); return (cl&&cl.nome||"–") + " · " + (ve&&ve.placa||"–") + " · " + fmtBRL(c.valor_total) + " · venc. " + fmtDate(c.previsao_pagamento); }), tab: "financeiro" },
-    { cor: C.red,    icon: "💸", titulo: "Despesas a pagar hoje (" + despesasHoje.length + ")",                      items: despesasHoje.map(function(d){ return d.descricao + " · " + fmtBRL(d.valor); }), tab: "financeiro" },
-    { cor: C.red,    icon: "📤", titulo: "Despesas vencidas (" + despesasVencidas.length + ")",                      items: despesasVencidas.map(function(d){ return (d.manutencao_id ? "🔧 " : "") + d.descricao + " · " + fmtBRL(d.valor) + " · " + fmtDate(_dataRefDesp(d)); }), sub: "Total: " + fmtBRL(despesasVencidas.reduce(function(s,d){return s+parseFloat(d.valor||0);},0)), tab: "financeiro" },
-    { cor: C.orange, icon: "📤", titulo: "Despesas vencendo em 3 dias (" + despesasVencendo.length + ")",            items: despesasVencendo.map(function(d){ return (d.manutencao_id ? "🔧 " : "") + d.descricao + " · " + fmtBRL(d.valor) + " · " + fmtDate(_dataRefDesp(d)); }), tab: "financeiro" },
-    { cor: C.red,    icon: "💰", titulo: "Receitas atrasadas (" + receitasAtrasadas.length + ")",                    items: receitasAtrasadas.map(function(r){ return r.descricao + " · " + fmtBRL(r.valor) + " · " + fmtDate(_dataRefRec(r)); }), sub: "Total: " + fmtBRL(receitasAtrasadas.reduce(function(s,r){return s+parseFloat(r.valor||0);},0)), tab: "financeiro" },
-    { cor: C.orange, icon: "💰", titulo: "Receitas vencendo em 3 dias (" + receitasVencendo.length + ")",            items: receitasVencendo.map(function(r){ return r.descricao + " · " + fmtBRL(r.valor) + " · " + fmtDate(_dataRefRec(r)); }), tab: "financeiro" },
-    { cor: C.red,    icon: "⚠️", titulo: "Multas vencidas não pagas (" + multasVencidasAlerta.length + ")",          items: multasVencidasAlerta.slice(0,5).map(function(m){ var ct = m.contrato_id ? contratos.find(function(x){return x.id==m.contrato_id;}) : null; var cl = ct ? clientes.find(function(x){return x.id==ct.cliente_id;}) : clientes.find(function(x){return x.id==m.cliente_id;}); return (cl&&cl.nome||"–") + " · " + (m.tipo||"Multa") + " · " + fmtBRL(m.valor) + " · venc. " + fmtDate(m.vencimento||m.data); }), sub: "Total: " + fmtBRL(multasVencidasAlerta.reduce(function(s,m){return s+parseFloat(m.valor||0);},0)), tab: "multas" },
-    { cor: C.orange, icon: "⚠️", titulo: "Multas vencendo em 3 dias (" + multasVencendoAlerta.length + ")",          items: multasVencendoAlerta.map(function(m){ return (m.tipo||"Multa") + " · " + fmtBRL(m.valor) + " · " + fmtDate(m.vencimento||m.data); }), tab: "multas" },
-    { cor: C.purple, icon: "🔧", titulo: "Manutenções com prazo vencido (" + manutProlongadas.length + ")",          items: manutProlongadas.map(function(m){ var ve = veiculos.find(function(v){return v.id==m.veiculo_id;}); return (ve&&ve.placa||"--") + " · " + m.tipo + " · " + fmtDate(m.data_saida); }), tab: "manutencao" },
-    { cor: C.orange, icon: "🔧", titulo: "Manutenções com pagamento em atraso (" + manutPendPagto.length + ")",      items: manutPendPagto.map(function(m){ var ve = veiculos.find(function(v){return v.id==m.veiculo_id;}); return (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção") + " · " + fmtBRL(m.custo) + " · " + fmtDate(m.data_previsao_pagamento||m.data_entrada); }), sub: "Total: " + fmtBRL(manutPendPagto.reduce(function(s,m){return s+parseFloat(m.custo||0);},0)), tab: "manutencao" },
-    { cor: C.red,    icon: "📄", titulo: "Documentos vencidos (" + docsVencidos.length + ")",                        items: docsVencidos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]<hoje;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
-    { cor: C.red,    icon: "⚠️", titulo: "Documentos vencendo em 7 dias (" + docsCriticos.length + ")",              items: docsCriticos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]>=hoje&&p[1]<=str7doc;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
-    { cor: C.orange, icon: "📄", titulo: "Documentos vencendo em 30 dias (" + docsVencendo.length + ")",             items: docsVencendo.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]>str7doc&&p[1]<=str30doc;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), tab: "frota" },
+    { cor: C.red,    icon: "💸", titulo: "Despesas a pagar hoje (" + despesasHoje.length + ")",                     items: despesasHoje.map(function(d){ return d.descricao + " · " + fmtBRL(d.valor); }), tab: "financeiro" },
   ];
-  const totalAlertas = alertaGroups.filter(function(g){ return g.items && g.items.length > 0; }).length;
+  const totalAlertas = alertaGroups.filter(function(g){ return g.items && g.items.length > 0; }).reduce(function(s,g){ return s + g.items.length; }, 0);
 
   return React.createElement('div', { className: "inicio-fade-top", style: { display: "flex", flexDirection: "column", gap: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 339}}
 
@@ -13702,6 +13823,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         , React.createElement('div', null
           , React.createElement('div', { style: { fontSize: 9, color: C.sub, fontWeight: 500, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 1 } }, "Previs\u00e3o Faturamento")
           , React.createElement('div', { style: { fontSize: 18, fontWeight: 700, letterSpacing: -0.3, color: "var(--c-text)", lineHeight: 1.1 } }, fmtBRL(prevMes))
+          , React.createElement('div', { style: { fontSize: 10, color: C.sub, marginTop: 1 } }, "contratos do m\u00eas")
         )
         , (() => {
           var despMesAtual = despesas.filter(d => despesaVisivelNoMes(d, dashMes) && !d.manutencao_id).reduce((s,d)=>s+parseFloat(d.valor||0),0);
@@ -13713,6 +13835,21 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             , React.createElement('div', { style: { fontSize: 10, color: C.sub, marginTop: 1 } }, "previs\u00e3o \u2212 despesas")
           );
         })()
+      )
+      /* Pagos / Pendentes / Atrasados — qty na frente do label */
+      , React.createElement('div', { onClick: () => setTab("contratos"), style: { display: "flex", gap: 0, padding: "10px 14px", borderTop: "1px solid " + C.border, cursor: "pointer" } }
+        , React.createElement('div', { style: { flex: 1, display: "flex", alignItems: "center", gap: 5 } }
+          , React.createElement('span', { style: { fontSize: 15, fontWeight: 700, color: C.green } }, pagosMes)
+          , React.createElement('span', { style: { fontSize: 10, color: C.sub, fontWeight: 400, textTransform: "uppercase" } }, "Pagos")
+        )
+        , React.createElement('div', { style: { flex: 1, display: "flex", alignItems: "center", gap: 5 } }
+          , React.createElement('span', { style: { fontSize: 15, fontWeight: 700, color: pendMes > 0 ? C.orange : C.sub } }, pendMes)
+          , React.createElement('span', { style: { fontSize: 10, color: C.sub, fontWeight: 400, textTransform: "uppercase" } }, "Pendentes")
+        )
+        , React.createElement('div', { style: { flex: 1, display: "flex", alignItems: "center", gap: 5 } }
+          , React.createElement('span', { style: { fontSize: 15, fontWeight: 700, color: contratosAtrasados.length > 0 ? C.red : C.sub } }, contratosAtrasados.length)
+          , React.createElement('span', { style: { fontSize: 10, color: contratosAtrasados.length > 0 ? C.red : C.sub, fontWeight: contratosAtrasados.length > 0 ? 700 : 400, textTransform: "uppercase" } }, "Atrasados")
+        )
       )
     )
 
@@ -13841,8 +13978,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 , React.createElement('span', { style: { fontSize: 11, fontWeight: 700, color: "var(--c-text)" } }, fmtDate(day.dt))
                 , React.createElement('span', { style: { fontSize: 11, fontWeight: 700, color: totalEnt-totalSai >= 0 ? C.green : C.red } }, fmtBRL(totalEnt-totalSai).split(",")[0])
               )
-              , day.entradas.map(function(e,i){ return React.createElement('div', { key:"e"+i, style:{display:"flex",justifyContent:"space-between",fontSize:11,color:C.green,marginTop:2} }, React.createElement('span',null,"+ "+e.label), React.createElement('span',{style:{fontWeight:600}},fmtBRL(e.val).split(",")[0])); })
-              , day.saidas.map(function(s,i){ return React.createElement('div', { key:"s"+i, style:{display:"flex",justifyContent:"space-between",fontSize:11,color:C.red,marginTop:2} }, React.createElement('span',null,"- "+s.label), React.createElement('span',{style:{fontWeight:600}},fmtBRL(s.val).split(",")[0])); })
+              , day.entradas.map(function(e,i){ return React.createElement('div', { key:"e"+i, style:{display:"flex",justifyContent:"space-between",fontSize:11,color:C.green,marginTop:2} }, React.createElement('span',null,e.label), React.createElement('span',{style:{fontWeight:600}},fmtBRL(e.val).split(",")[0])); })
+              , day.saidas.map(function(s,i){ return React.createElement('div', { key:"s"+i, style:{display:"flex",justifyContent:"space-between",fontSize:11,color:C.red,marginTop:2} }, React.createElement('span',null,s.label), React.createElement('span',{style:{fontWeight:600}},fmtBRL(s.val).split(",")[0])); })
             );
           })
         )
@@ -13853,34 +13990,25 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     , React.createElement('div', { onClick: () => setTab("financeiro"), style: { marginTop: 28, fontSize: 12, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer" } }, "Despesas →")
         , (() => {
       var hoje2 = new Date().toISOString().split("T")[0];
-
-      // Helper: dado uma despesa e um mês, ela está "paga nesse mês"?
-      // - recorrente: considera paga no mês M se data_pagamento.slice(0,7)===M
-      //   (uma recorrente pode ter sido paga em qualquer mês futuro)
-      // - normal: considera paga se status==="pago" ou data_pagamento preenchido,
-      //   e o mês de referência é o da despesa
-      function despPagaNoMes(d, m) {
-        if (d.manutencao_id) return false;
-        if (!despesaVisivelNoMes(d, m)) return false;
-        if (d.recorrente && (d.data||"").slice(0,7) < m) {
-          // recorrente projetada no mês m: paga se data_pagamento cai em m
-          return (d.data_pagamento||"").slice(0,7) === m;
-        }
-        // normal ou recorrente no próprio mês de origem
-        return d.status === "pago" || !!d.data_pagamento;
-      }
-
-      // Helper: despesa está pendente (não paga) no mês m
-      function despPendenteNoMes(d, m) {
-        if (d.manutencao_id) return false;
-        if (!despesaVisivelNoMes(d, m)) return false;
-        return !despPagaNoMes(d, m);
-      }
-
       var despPrev = despesas.filter(d => despesaVisivelNoMes(d, dashMes) && !d.manutencao_id).reduce((s,d)=>s+parseFloat(d.valor||0),0);
-      var despPagosList = despesas.filter(d => despPagaNoMes(d, dashMes));
+      var despPagosList = despesas.filter(d => {
+        if (!despesaVisivelNoMes(d, dashMes) || d.manutencao_id) return false;
+        var dataMes = (d.data || "").slice(0, 7);
+        var isRecFutura = d.recorrente && dataMes < dashMes;
+        if (isRecFutura) return false; // recurring future = not yet paid
+        return d.status === "pago" || !!d.data_pagamento;
+      });
       var despPagas = despPagosList.reduce((s,d)=>s+parseFloat(d.valor||0),0);
-      var despPend = despesas.filter(d => despPendenteNoMes(d, dashMes));
+      var despPend = despesas.filter(d => {
+        if (!despesaVisivelNoMes(d, dashMes) || d.manutencao_id) return false;
+        var dataMes = (d.data || "").slice(0, 7);
+        var isRecFutura = d.recorrente && dataMes < dashMes;
+        if (isRecFutura) {
+          var pagaMes = (d.data_pagamento || "").slice(0, 7);
+          return pagaMes !== dashMes && d.status !== "pago";
+        }
+        return d.status !== "pago" && !d.data_pagamento;
+      });
       var em2d = new Date(); em2d.setDate(em2d.getDate()+2); var str2d = em2d.toISOString().split("T")[0];
       var despPendSort = despPend.slice().sort(function(a,b){ return (a.data||"").localeCompare(b.data||""); });
       var despUrgentes = despPendSort.filter(d => d.data && d.data <= str2d);
@@ -13890,17 +14018,17 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         : despPendSort.filter(d => !d.data || d.data > str2d);
       var isOpen = despExpanded || autoExpandDesp;
       return React.createElement(React.Fragment, null
-        , React.createElement('div', { onClick: () => { setDespExpanded(v => !v); setDespDashFilter(null); }, style: { background: C.card, borderRadius: isOpen ? "14px 14px 0 0" : 14, border: "1px solid " + C.border, borderBottom: isOpen ? "none" : "1px solid " + C.border, padding: "12px 14px", cursor: "pointer" } }
+        , React.createElement('div', { onClick: () => setDespExpanded(v => !v), style: { background: C.card, borderRadius: isOpen ? "14px 14px 0 0" : 14, border: "1px solid " + C.border, borderBottom: isOpen ? "none" : "1px solid " + C.border, padding: "12px 14px", cursor: "pointer" } }
           , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }
             , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: "var(--c-text)" } }, "Despesas")
             , React.createElement('div', { style: { fontSize: 11, color: C.sub, background: "rgba(120,120,128,0.1)", borderRadius: 6, padding: "2px 7px", fontWeight: 700, transition: "transform .2s", transform: isOpen ? "rotate(180deg)" : "rotate(0deg)" } }, "\u25bc")
           )
           , React.createElement('div', { style: { display: "flex", gap: 6 } }
-            , React.createElement('div', { onClick: (e) => { e.stopPropagation(); setDespDashFilter(despDashFilter==="previstas" ? null : "previstas"); setDespExpanded(true); }, style: { flex: 1, background: despDashFilter==="previstas" ? "rgba(255,149,0,0.18)" : "rgba(255,149,0,0.07)", borderRadius: 10, padding: "8px 10px", cursor: "pointer", border: despDashFilter==="previstas" ? "1.5px solid "+C.orange : "1.5px solid transparent" } }
+            , React.createElement('div', { style: { flex: 1, background: "rgba(255,149,0,0.07)", borderRadius: 10, padding: "8px 10px" } }
               , React.createElement('div', { style: { fontSize: 10, color: C.orange, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 } }, "Previstas")
               , React.createElement('div', { style: { fontSize: 15, fontWeight: 700, color: C.orange, marginTop: 3 } }, fmtBRL(despPrev).split(",")[0])
             )
-            , React.createElement('div', { onClick: (e) => { e.stopPropagation(); setDespDashFilter(despDashFilter==="pagas" ? null : "pagas"); setDespExpanded(true); }, style: { flex: 1, background: despDashFilter==="pagas" ? "rgba(52,199,89,0.18)" : "rgba(52,199,89,0.07)", borderRadius: 10, padding: "8px 10px", cursor: "pointer", border: despDashFilter==="pagas" ? "1.5px solid "+C.green : "1.5px solid transparent" } }
+            , React.createElement('div', { style: { flex: 1, background: "rgba(52,199,89,0.07)", borderRadius: 10, padding: "8px 10px" } }
               , React.createElement('div', { style: { fontSize: 10, color: C.green, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 } }, "Pagas")
               , React.createElement('div', { style: { fontSize: 15, fontWeight: 700, color: C.green, marginTop: 3 } }, fmtBRL(despPagas).split(",")[0])
             )
@@ -13919,44 +14047,21 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             })
           )
         )
-        , isOpen && React.createElement('div', { style: { background: C.card, border: "1px solid " + C.border, borderTop: "none", borderRadius: "0 0 14px 14px", overflow: "hidden" } },
-          (function() {
-            // Determine which list to show based on filter
-            var despListaPanel;
-            var panelLabel;
-            var panelCor;
-            if (despDashFilter === "previstas") {
-              // All expenses of the month (paid or not)
-              despListaPanel = despesas.filter(function(d) { return despesaVisivelNoMes(d, dashMes) && !d.manutencao_id; }).slice().sort(function(a,b){ return (a.data||"").localeCompare(b.data||""); });
-              panelLabel = "Todas as Despesas do Mês";
-              panelCor = C.orange;
-            } else if (despDashFilter === "pagas") {
-              despListaPanel = despPagosList.slice().sort(function(a,b){ return (a.data||"").localeCompare(b.data||""); });
-              panelLabel = "Despesas Pagas";
-              panelCor = C.green;
-            } else {
-              despListaPanel = despExpanded ? despPendSort : despPendNoPanel;
-              panelLabel = "A Pagar";
-              panelCor = C.red;
-            }
-            if (despListaPanel.length === 0) return React.createElement('div', { style: { padding: "14px", fontSize: 12, color: C.sub, textAlign: "center" } }, "Nenhuma despesa encontrada para este filtro.");
-            return React.createElement('div', null
-              , React.createElement('div', { style: { padding: "8px 14px 6px", fontSize: 10, fontWeight: 700, color: panelCor, textTransform: "uppercase", letterSpacing: 0.4 } }, panelLabel)
-              , despListaPanel.map(function(d, i) {
-                var pago = despPagaNoMes(d, dashMes);
-                var venc = d.data && d.data < hoje2 && !pago;
-                var itemCor = pago ? C.green : (venc ? C.red : C.orange);
-                return React.createElement('div', { key: d.id, onClick: function() { setFinDeepLink && setFinDeepLink({ subTab: "despesas", itemId: d.id }); setTab("financeiro"); },
-                  style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", cursor: "pointer", borderTop: "1px solid " + C.border, background: venc ? "rgba(255,59,48,0.03)" : "transparent" } }
-                  , React.createElement('div', null
-                    , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: venc ? C.red : "var(--c-text)" } }, (venc ? "⚠️ " : pago ? "✅ " : "") + (d.descricao || "--"))
-                    , React.createElement('div', { style: { fontSize: 10, color: C.sub, marginTop: 1 } }, fmtDate(d.data) + (d.categoria ? " · " + d.categoria : "") + (pago ? " · paga" : venc ? " · vencida" : ""))
-                  )
-                  , React.createElement('div', { style: { fontWeight: 700, fontSize: 12, color: itemCor } }, fmtBRL(d.valor).split(",")[0])
-                );
-              })
-            );
-          })()
+        , isOpen && React.createElement('div', { style: { background: C.card, border: "1px solid " + C.border, borderTop: "none", borderRadius: "0 0 14px 14px", overflow: "hidden" } }
+          , despPendNoPanel.length > 0 && React.createElement('div', null
+            , React.createElement('div', { style: { padding: "8px 14px 6px", fontSize: 10, fontWeight: 700, color: C.red, textTransform: "uppercase", letterSpacing: 0.4 } }, "A Pagar")
+            , despPendNoPanel.map(function(d, i) {
+              var venc = d.data && d.data < hoje2;
+              return React.createElement('div', { key: d.id, onClick: function() { setFinDeepLink && setFinDeepLink({ subTab: "despesas", itemId: d.id }); setTab("financeiro"); },
+                style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", cursor: "pointer", borderTop: "1px solid " + C.border, background: venc ? "rgba(255,59,48,0.03)" : "transparent" } }
+                , React.createElement('div', null
+                  , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: venc ? C.red : "var(--c-text)" } }, (venc ? "⚠️ " : "") + (d.descricao || "--"))
+                  , React.createElement('div', { style: { fontSize: 10, color: C.sub, marginTop: 1 } }, fmtDate(d.data) + (d.categoria ? " · " + d.categoria : "") + (venc ? " · vencida" : ""))
+                )
+                , React.createElement('div', { style: { fontWeight: 700, fontSize: 12, color: venc ? C.red : C.orange } }, fmtBRL(d.valor).split(",")[0])
+              );
+            })
+          )
         )
       );
     })()
@@ -14153,45 +14258,29 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         return despesas.filter(function(d){ return despesaVisivelNoMes(d,m) && !d.manutencao_id; }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
       });
       // Category data for selected cat over 6 months
-      // "previstas" = todas visíveis no mês (pagas ou não)
-      // "pagas" = apenas efetivamente pagas naquele mês
+      // Includes manutencao-linked despesas (they carry categoria "Manutenção")
       var catData = meses6.map(function(m){
-        var isTodas = catSel === "Todas";
-        var isManCat = isTodas || catSel === "Manutencao" || catSel === "Manutenção";
-
-        // Despesas normais (sem manutencao_id) + despesas vinculadas a manutenção (manutencao_id)
-        // Ambas podem ter qualquer categoria — filtrar por categoria normalmente
         var totalDesp = despesas.filter(function(d){
-          if (!despesaVisivelNoMes(d, m)) return false;
-          // Para despesas vinculadas à manutenção: só inclui se catSel é Todas ou Manutenção
-          if (d.manutencao_id && !isManCat) return false;
-          // Para despesas normais: filtrar por categoria
-          if (!d.manutencao_id && !isTodas && (d.categoria||"Outros") !== catSel) return false;
-          if (catMode === "pagas") {
-            if (d.recorrente && (d.data||"").slice(0,7) < m) return (d.data_pagamento||"").slice(0,7) === m;
-            return d.status === "pago" || !!d.data_pagamento;
-          }
+          if (!despesaVisivelNoMes(d,m)) return false;
+          if ((d.categoria||"Outros") !== catSel) return false;
+          if (catMode === "pagas") return d.status === "pago" || !!d.data_pagamento;
           return true;
         }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
-
-        // Manutenções SEM despesa vinculada (fallback para registros antigos)
+        // Also include manutencoes that match categoria "Manutencao"/"Manutenção" directly
         var totalMan = 0;
-        if (isManCat) {
+        if (catSel === "Manutencao" || catSel === "Manutenção" || catSel === "Outros") {
           totalMan = (manutencoes||[]).filter(function(mn){
-            if (!manVisivelNoMes(mn, m)) return false;
-            // Só inclui se não há despesa vinculada (evita dupla contagem)
+            var mnMes = manMesRefGlobal(mn);
+            if (mnMes !== m) return false;
+            // only include if there's NO linked despesa (to avoid double count)
             var hasDesp = (despesas||[]).some(function(d){ return String(d.manutencao_id) === String(mn.id); });
             if (hasDesp) return false;
-            if (catMode === "pagas") {
-              if (mn.recorrente && (mn.data_previsao_pagamento||mn.data_entrada||"").slice(0,7) < m) return (mn.data_pagamento||"").slice(0,7) === m;
-              return mn.status_financeiro === "pago" || !!mn.data_pagamento;
-            }
+            if (catMode === "pagas") return mn.status_financeiro === "pago" || !!mn.data_pagamento;
             return true;
           }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
         }
         return totalDesp + totalMan;
       });
-      var totalMesSel = catData[meses6.indexOf(dashMes)] >= 0 ? catData[meses6.indexOf(dashMes)] : catData[catData.length-1] || 0;
       var maxRD = Math.max.apply(null, recData.concat(despData).concat([1]));
       var maxCat = Math.max.apply(null, catData.concat([1]));
       var barW = "calc((100% - " + (meses6.length-1)*8 + "px) / " + meses6.length + ")";
@@ -14206,7 +14295,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             var isSel = i === selIdx;
             var barCor = isSel ? cor : cor.replace("rgba(","rgba(").replace(/,\s*1\)/, ",0.40)");
             return React.createElement('div', { key:i, style:{ flex:1, display:"flex", flexDirection:"column", alignItems:"center" } },
-              React.createElement('div', { style:{ fontSize:10, color: isSel ? "var(--c-text)" : C.sub, fontWeight:600, marginBottom:2, height:14, lineHeight:"14px", textAlign:"center" } }, v > 0 ? "R$"+Math.round(v) : ""),
+              React.createElement('div', { style:{ fontSize:10, color: isSel ? "var(--c-text)" : C.sub, fontWeight:600, marginBottom:2, height:14, lineHeight:"14px", textAlign:"center" } }, v > 0 ? (v>=1000?"R$"+Math.round(v/1000)+"k":"R$"+Math.round(v)) : ""),
               React.createElement('div', { style:{ width:"100%", background: barCor, borderRadius:"5px 5px 0 0", height: px+"px", transition:"height .5s cubic-bezier(.4,0,.2,1)", boxShadow: isSel ? "0 2px 10px "+cor.replace(/,\s*1\)/, ",0.35)") : "none" } }),
               React.createElement('div', { style:{ width:"100%", height:2, background: isSel ? cor : "transparent" } }),
               React.createElement('div', { style:{ fontSize:10, color: isSel ? "var(--c-text)" : C.sub, fontWeight: isSel ? 700 : 400, marginTop:3, textAlign:"center" } }, nomesMes6[i])
@@ -14229,7 +14318,6 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         React.createElement('div', { style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"14px", boxShadow:"0 1px 8px rgba(0,0,0,0.05)" } },
           React.createElement('div', { style:{ display:"flex", gap:8, marginBottom:10 } },
             React.createElement('select', { value:catSel, onChange:function(e){ setCatSel(e.target.value); }, style:{ flex:1, background:"rgba(120,120,128,0.10)", border:"1px solid "+C.border, borderRadius:10, padding:"7px 10px", fontSize:13, fontWeight:600, color:"var(--c-text)", outline:"none" } },
-              React.createElement('option', { key:"Todas", value:"Todas" }, "Todas as categorias"),
               CATS_DESP_ALL.map(function(c){ return React.createElement('option', { key:c, value:c }, c); })
             ),
             React.createElement('select', { value:catMode, onChange:function(e){ setCatMode(e.target.value); }, style:{ background:"rgba(120,120,128,0.10)", border:"1px solid "+C.border, borderRadius:10, padding:"7px 10px", fontSize:12, fontWeight:600, color:"var(--c-text)", outline:"none" } },
@@ -14238,13 +14326,9 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             )
           ),
           BarChart(catData, "rgba(0,122,255,1)", catSel),
-          React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:11, color:C.sub, marginTop:8, paddingTop:8, borderTop:"1px solid "+C.border } },
-            React.createElement('span', null, "Total do mês (" + new Date(dashMes+"-15").toLocaleString("pt-BR",{month:"short",year:"numeric"}) + "):"),
-            React.createElement('span', { style:{ fontWeight:800, color:C.blue, fontSize:14 } }, fmtBRL(totalMesSel))
-          ),
-          React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:10, color:C.sub, marginTop:4 } },
-            React.createElement('span', null, "Média mensal:"),
-            React.createElement('span', { style:{ fontWeight:700, color:C.sub } }, fmtBRL(catData.reduce(function(s,v){ return s+v; },0) / catData.length))
+          React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", fontSize:10, color:C.sub, marginTop:4 } },
+            React.createElement('span', null, "Total 6 meses: "),
+            React.createElement('span', { style:{ fontWeight:700, color:C.blue } }, "R$" + (catData.reduce(function(s,v){ return s+v; },0)/1000).toFixed(1) + "k")
           )
         )
       );
@@ -14336,16 +14420,15 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 , day.events.map(function(e, ei) {
                   var isRec = e.tipo==="rec";
                   var cor = e.isProlabore ? C.blue : isRec ? (e.pago?C.green:C.orange) : (e.tipo==="man"?"#AF52DE":C.red);
-                  var sinal = isRec ? "+" : e.isProlabore ? "→" : "-";
                   return React.createElement('div', { key:ei, style:{ marginBottom:3, padding:"3px 5px", borderRadius:6, background: cor+"12", borderLeft:"2px solid "+cor } }
                     , React.createElement('div', { style:{ fontSize:10, fontWeight:600, color:"var(--c-text)", lineHeight:1.3, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:120 } }, e.label)
-                    , React.createElement('div', { style:{ fontSize:10, fontWeight:700, color:cor } }, sinal+fmtBRL(e.val))
+                    , React.createElement('div', { style:{ fontSize:10, fontWeight:700, color:cor } }, fmtBRL(e.val).split(",")[0])
                   );
                 })
                 // Running balance
                 , React.createElement('div', { style:{ marginTop:4, padding:"3px 5px", borderRadius:6, background:saldoCor+"10", borderTop:"1px solid "+C.border } }
                   , React.createElement('div', { style:{ fontSize:8, color:C.sub, textTransform:"uppercase", letterSpacing:0.3 } }, "Saldo")
-                  , React.createElement('div', { style:{ fontSize:11, fontWeight:800, color:saldoCor } }, fmtBRL(saldo))
+                  , React.createElement('div', { style:{ fontSize:11, fontWeight:800, color:saldoCor } }, fmtBRL(saldo).split(",")[0])
                 )
               );
             })
@@ -17352,21 +17435,20 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 , React.createElement('span', { style: { fontSize: 10, fontWeight: 400, color: P.sub } }, "Acumulado ", fmtBRL(row.acc))
               )
               , React.createElement('div', { style: { textAlign:"right" } }
-                , React.createElement('div', { style: { fontSize: 14, fontWeight: 500, color: dotColor, letterSpacing:"-0.01em" } }, (pos ? "+ " : "− ") + fmtBRL(Math.abs(row.saldo)))
+                , React.createElement('div', { style: { fontSize: 14, fontWeight: 500, color: dotColor, letterSpacing:"-0.01em" } }, fmtBRL(Math.abs(row.saldo)).split(",")[0])
               )
             )
             , sortedEv.length > 0 && React.createElement('div', { style: { display:"flex", flexDirection:"column" } }
               , sortedEv.map(function(e, k){
                 var c = KIND_C[e.kind];
                 var paid = STATUS_PAID[e.status];
-                var sign = e.kind === "rec" ? "+ " : "− ";
                 return React.createElement('div', { key: k, style: { display:"flex", alignItems:"center", gap: 10, padding:"7px 0", borderTop: k > 0 ? "0.5px solid var(--c-border)" : "none" } }
                   , React.createElement('span', { style: { width: 8, height: 8, borderRadius:"50%", background: paid ? c : "transparent", border: "1.5px solid " + c, flexShrink: 0 } })
                   , React.createElement('div', { style: { flex: 1, minWidth: 0 } }
                     , React.createElement('div', { style: { fontSize: 12, fontWeight: 400, color: P.ink, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" } }, e.label)
                     , React.createElement('div', { style: { fontSize: 10, fontWeight: 400, color: P.sub, marginTop: 1 } }, (e.cat || KIND_LBL[e.kind]) + " · " + e.status)
                   )
-                  , React.createElement('div', { style: { fontSize: 12, fontWeight: 500, color: c, letterSpacing:"-0.01em", flexShrink: 0 } }, sign + fmtBRL(e.val))
+                  , React.createElement('div', { style: { fontSize: 12, fontWeight: 500, color: c, letterSpacing:"-0.01em", flexShrink: 0 } }, fmtBRL(e.val).split(",")[0])
                 );
               })
             )
@@ -17393,7 +17475,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 , React.createElement('div', { style: { fontSize: 10, fontWeight: 400, color: P.sub, marginTop: 2 } }, "Acumulado ", fmtBRL(row.acc))
               )
               , React.createElement('div', { style: { textAlign:"right" } }
-                , React.createElement('div', { style: { fontSize: 15, fontWeight: 500, color: dotColor, letterSpacing:"-0.01em" } }, (pos ? "+ " : "− ") + fmtBRL(Math.abs(row.saldo)))
+                , React.createElement('div', { style: { fontSize: 15, fontWeight: 500, color: dotColor, letterSpacing:"-0.01em" } }, fmtBRL(Math.abs(row.saldo)).split(",")[0])
                 , React.createElement('div', { style: { fontSize: 9, fontWeight: 500, color: P.sub, marginTop: 2, textTransform:"uppercase", letterSpacing:"0.08em" } }, "Saldo do mês")
               )
             )
@@ -21306,6 +21388,26 @@ function App() {
 
   function toast(msg, type) { setToastState({ msg: msg, type: type || "ok" }); setTimeout(() => setToastState({ msg: "", type: "ok" }), 3000); }
 
+  // PWA swipe-back: maintain tab navigation history
+  var tabHistory = React.useRef(["inicio"]);
+  function setTabWithHistory(newTab) {
+    if (newTab !== tab) {
+      tabHistory.current = tabHistory.current.concat([newTab]).slice(-20);
+    }
+    setTab(newTab);
+  }
+  React.useEffect(function() {
+    window.__pwaGoBack = function() {
+      var hist = tabHistory.current;
+      if (hist.length > 1) {
+        var prev = hist[hist.length - 2];
+        tabHistory.current = hist.slice(0, -1);
+        setTab(prev);
+      }
+    };
+    return function() { delete window.__pwaGoBack; };
+  }, [tab]);
+
   useEffect(() => {
     // Indicador de cold start: se 1ª resposta demorar >3s mostra banner "Acordando banco..."
     var coldTimer = setTimeout(function(){ setBancoAcordando(true); }, 3000);
@@ -21427,7 +21529,7 @@ function App() {
     })();
   }, [contratos.length]);
 
-  var props = { veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, reservas, setReservas, multas, setMultas, manutencoes, setManutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, usos, setUsos, empresa, toast, setTab, finDeepLink, setFinDeepLink };
+  var props = { veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, reservas, setReservas, multas, setMultas, manutencoes, setManutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, usos, setUsos, empresa, toast, setTab: setTabWithHistory, finDeepLink, setFinDeepLink };
 
   function page() {
     if (tab === "inicio") return React.createElement(Inicio, { ...props });
@@ -21466,7 +21568,7 @@ function App() {
               var nContratosPend = t.id === "contratos" ? (contratos||[]).filter(function(c){ return c.status === "ativo" && !c.renovado_para && c.status_pagamento !== "pago" && c.status_pagamento !== "isento" && c.previsao_pagamento && c.previsao_pagamento < new Date().toISOString().split("T")[0]; }).length : 0;
               var nFinanceiroPend = t.id === "financeiro" ? (function(){ var h = new Date().toISOString().split("T")[0]; return (despesas||[]).filter(function(d){ return d.status !== "pago" && d.data && d.data < h; }).length + (contas||[]).filter(function(c){ return c.status !== "pago" && c.status !== "cancelado" && c.vencimento && c.vencimento < h; }).length; })() : 0;
               var nBadge = nReservasPend || nContratosPend || nFinanceiroPend;
-              return React.createElement('button', { key: t.id, onClick: function(){setTab(t.id);}, className: "lg-nav-btn" + (tab === t.id ? " lg-nav-btn-active" : ""), style: { position: "relative" } }
+              return React.createElement('button', { key: t.id, onClick: function(){setTabWithHistory(t.id);}, className: "lg-nav-btn" + (tab === t.id ? " lg-nav-btn-active" : ""), style: { position: "relative" } }
                 , React.createElement(NavIcon, { id: t.id, active: tab === t.id })
                 , nBadge > 0 && React.createElement('span', { style: { position: "absolute", top: 4, right: 4, background: "#FF3B30", color: "#fff", borderRadius: 10, fontSize: 9, fontWeight: 800, minWidth: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px", zIndex: 10, lineHeight: 1 } }, nBadge > 9 ? "9+" : nBadge)
                 , React.createElement('span', { style: { fontSize: 10, fontWeight: tab === t.id ? 700 : 400, color: tab === t.id ? C.blue : C.sub, whiteSpace: "nowrap", position: "relative", zIndex: 1, letterSpacing: 0 } }, t.label)
@@ -21498,7 +21600,7 @@ function App() {
           if (t.id === "reservas") _nBadge = (reservas||[]).filter(function(r){return r.status==="pendente";}).length;
           if (t.id === "contratos") _nBadge = (contratos||[]).filter(function(c){ return c.status==="ativo" && !c.renovado_para && c.status_pagamento!=="pago" && c.status_pagamento!=="isento" && c.previsao_pagamento && c.previsao_pagamento < _hoje; }).length;
           if (t.id === "financeiro") _nBadge = (despesas||[]).filter(function(d){ return d.status!=="pago" && d.data && d.data < _hoje; }).length + (contas||[]).filter(function(c){ return c.status!=="pago" && c.status!=="cancelado" && c.vencimento && c.vencimento < _hoje; }).length;
-          return React.createElement('button', { key: t.id, onClick: () => setTab(t.id), className: tab===t.id?"lg-tab-active":"", style: { borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: tab === t.id ? 600 : 400, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10, transition: "all .15s ease", color: tab === t.id ? C.blue : "var(--c-text)", border: "none", background: "transparent", position: "relative" } }
+          return React.createElement('button', { key: t.id, onClick: () => setTabWithHistory(t.id), className: tab===t.id?"lg-tab-active":"", style: { borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: tab === t.id ? 600 : 400, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10, transition: "all .15s ease", color: tab === t.id ? C.blue : "var(--c-text)", border: "none", background: "transparent", position: "relative" } }
             , React.createElement(NavIcon, { id: t.id, active: tab === t.id }), t.label
             , _nBadge > 0 && React.createElement('span', { style: { marginLeft: "auto", background: "#FF3B30", color: "#fff", borderRadius: 10, fontSize: 10, fontWeight: 800, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", lineHeight: 1 } }, _nBadge > 9 ? "9+" : _nBadge)
           );

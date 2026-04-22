@@ -13191,6 +13191,17 @@ function receitaVisivelNoMes(r, mes) {
   }
   return false;
 }
+function manVisivelNoMes(m, mes) {
+  var dataMes = (m.data_previsao_pagamento || m.data_pagamento || m.data_entrada || "").slice(0, 7);
+  if (dataMes === mes) return true;
+  if (m.recorrente && dataMes && dataMes < mes) {
+    if (!m.prazo_recorrencia) return true;
+    var ini = new Date(dataMes + "-01"), fim = new Date(mes + "-01");
+    var diff = (fim.getFullYear() - ini.getFullYear()) * 12 + (fim.getMonth() - ini.getMonth());
+    return diff <= parseInt(m.prazo_recorrencia);
+  }
+  return false;
+}
 function manMesRefGlobal(m) { return (m.data_previsao_pagamento || m.data_pagamento || m.data_entrada || "").slice(0, 7); }
 function mesDe(d) { return (d || "").slice(0, 7); }
 function ctMesRef(c) { return mesDe(c.previsao_pagamento || c.data_fim); }
@@ -13476,6 +13487,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
   const em20dias = new Date(); em20dias.setDate(em20dias.getDate() + 20); const str20 = em20dias.toISOString().split("T")[0];
   const [despExpanded, setDespExpanded] = React.useState(false);
   const [manExpanded, setManExpanded] = React.useState(false);
+  const [manDashFilter, setManDashFilter] = React.useState(null); // null | "previstas" | "pagas"
   const [catSel, setCatSel] = React.useState("Combustivel");
   const [catMode, setCatMode] = React.useState("previstas");
   // Renewal label (same 3-tier logic as Contratos tab)
@@ -13678,7 +13690,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         )
         , (() => {
           var despMesAtual = despesas.filter(d => despesaVisivelNoMes(d, dashMes) && !d.manutencao_id).reduce((s,d)=>s+parseFloat(d.valor||0),0);
-          var manMesAtualBanner = manutencoes.filter(m => manMesRefGlobal(m) === dashMes).reduce((s,m)=>s+parseFloat(m.custo||0),0);
+          var manMesAtualBanner = manutencoes.filter(m => manVisivelNoMes(m, dashMes)).reduce((s,m)=>s+parseFloat(m.custo||0),0);
           var resultPrev = prevMes - despMesAtual - manMesAtualBanner;
           return React.createElement('div', { style: { borderLeft: "1px solid " + C.border, paddingLeft: 12 } }
             , React.createElement('div', { style: { fontSize: 9, color: C.sub, fontWeight: 500, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 1 } }, "Resultado Previsto")
@@ -13699,7 +13711,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         )
         , React.createElement('div', { style: { flex: 1, display: "flex", alignItems: "center", gap: 5 } }
           , React.createElement('span', { style: { fontSize: 15, fontWeight: 700, color: contratosAtrasados.length > 0 ? C.red : C.sub } }, contratosAtrasados.length)
-          , React.createElement('span', { style: { fontSize: 10, color: C.sub, fontWeight: 400, textTransform: "uppercase" } }, "Atrasados")
+          , React.createElement('span', { style: { fontSize: 10, color: contratosAtrasados.length > 0 ? C.red : C.sub, fontWeight: contratosAtrasados.length > 0 ? 700 : 400, textTransform: "uppercase" } }, "Atrasados")
         )
       )
     )
@@ -13708,14 +13720,16 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     , (() => {
       var ctsAPagar = ctsMes.filter(c => c.status_pagamento !== "pago" && c.status_pagamento !== "isento");
       var ctsPagos  = ctsMes.filter(c => c.status_pagamento === "pago");
+      var ctsAtrasadosRec = ctsAPagar.filter(c => c.previsao_pagamento && c.previsao_pagamento < hoje);
       var aRec = ctsAPagar.reduce((s,c)=>s+parseFloat(c.valor_total||0),0);
+      var aRecCor = ctsAtrasadosRec.length > 0 ? C.red : (aRec > 0 ? C.orange : C.green);
       var _ar = React.useState(null); var aRecSel = _ar[0]; var setARecSel = _ar[1];
       return React.createElement(React.Fragment, null
         , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }
-          , React.createElement('div', { onClick: () => setARecSel(aRecSel==="rec" ? null : "rec"), style: { background: C.card, borderRadius: 14, padding: "14px", cursor: "pointer", border: "1px solid " + (aRecSel==="rec" ? C.orange : C.border) } }
+          , React.createElement('div', { onClick: () => setARecSel(aRecSel==="rec" ? null : "rec"), style: { background: C.card, borderRadius: 14, padding: "14px", cursor: "pointer", border: "1px solid " + (aRecSel==="rec" ? aRecCor : C.border) } }
             , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "A Receber")
-            , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: aRec > 0 ? C.orange : C.green, marginTop: 4 } }, fmtBRL(aRec))
-            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, ctsAPagar.length + " contrato(s) · toque p/ ver")
+            , React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: aRecCor, marginTop: 4 } }, fmtBRL(aRec))
+            , React.createElement('div', { style: { fontSize: 11, color: ctsAtrasadosRec.length > 0 ? C.red : C.sub, marginTop: 2, fontWeight: ctsAtrasadosRec.length > 0 ? 600 : 400 } }, ctsAtrasadosRec.length > 0 ? ctsAtrasadosRec.length + " atrasado(s) · toque p/ ver" : ctsAPagar.length + " contrato(s) · toque p/ ver")
           )
           , React.createElement('div', { onClick: () => setARecSel(aRecSel==="pago" ? null : "pago"), style: { background: C.card, borderRadius: 14, padding: "14px", cursor: "pointer", border: "1px solid " + (aRecSel==="pago" ? C.green : C.border) } }
             , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 } }, "Recebido")
@@ -13745,12 +13759,14 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 , cts.map(function(c,i){
                   var cl = (clientes||[]).find(x=>x.id==c.cliente_id);
                   var ve = (veiculos||[]).find(x=>x.id==c.veiculo_id);
+                  var isAtrasado = aRecSel==="rec" && c.previsao_pagamento && c.previsao_pagamento < hoje;
+                  var itemCor = isAtrasado ? C.red : cor;
                   return React.createElement('div', { key: c.id, onClick: ()=>setTab("contratos"), style: { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 14px", borderTop:"1px solid "+C.border, cursor:"pointer" } }
                     , React.createElement('div', null
-                      , React.createElement('div', { style: { fontSize:12, fontWeight:600, color:"var(--c-text)" } }, (cl&&cl.nome)||"--")
-                      , React.createElement('div', { style: { fontSize:10, color:C.sub, marginTop:1 } }, (ve&&ve.placa||"--") + " · " + fmtDate(c.previsao_pagamento||c.data_fim))
+                      , React.createElement('div', { style: { fontSize:12, fontWeight:600, color: isAtrasado ? C.red : "var(--c-text)" } }, (cl&&cl.nome)||"--")
+                      , React.createElement('div', { style: { fontSize:10, color: isAtrasado ? C.red : C.sub, marginTop:1 } }, (ve&&ve.placa||"--") + " · " + fmtDate(c.previsao_pagamento||c.data_fim) + (isAtrasado ? " ⚠️ atrasado" : ""))
                     )
-                    , React.createElement('div', { style: { fontWeight:700, fontSize:13, color:cor } }, fmtBRL(c.valor_total).split(",")[0])
+                    , React.createElement('div', { style: { fontWeight:700, fontSize:13, color:itemCor } }, fmtBRL(c.valor_total).split(",")[0])
                   );
                 })
               );
@@ -13919,7 +13935,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       var hoje2 = new Date().toISOString().split("T")[0];
       var em2dM = new Date(); em2dM.setDate(em2dM.getDate()+2); var str2dM = em2dM.toISOString().split("T")[0];
       var isManPaga = m => m.status_financeiro === "pago" || !!m.data_pagamento || (despesas||[]).some(d => d.manutencao_id == m.id && (d.status === "pago" || !!d.data_pagamento));
-      var manTodas = manutencoes.filter(m => manMesRefGlobal(m) === dashMes);
+      var manTodas = manutencoes.filter(m => manVisivelNoMes(m, dashMes));
       var manPagosList = manTodas.filter(m => isManPaga(m));
       var manPend = manTodas.filter(m => !isManPaga(m));
       var manPendSort = manPend.slice().sort(function(a,b){
@@ -13942,11 +13958,11 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             , React.createElement('div', { style: { fontSize: 11, color: C.sub, background: "rgba(120,120,128,0.1)", borderRadius: 6, padding: "2px 7px", fontWeight: 700, transition: "transform .2s", transform: isOpenM ? "rotate(180deg)" : "rotate(0deg)" } }, "\u25bc")
           )
           , React.createElement('div', { style: { display: "flex", gap: 6 } }
-            , React.createElement('div', { style: { flex: 1, background: "rgba(255,149,0,0.07)", borderRadius: 10, padding: "8px 10px" } }
+            , React.createElement('div', { onClick: (e) => { e.stopPropagation(); setManDashFilter(manDashFilter==="previstas" ? null : "previstas"); setManExpanded(true); }, style: { flex: 1, background: manDashFilter==="previstas" ? "rgba(255,149,0,0.18)" : "rgba(255,149,0,0.07)", borderRadius: 10, padding: "8px 10px", cursor: "pointer", border: manDashFilter==="previstas" ? "1.5px solid "+C.orange : "1.5px solid transparent" } }
               , React.createElement('div', { style: { fontSize: 10, color: C.orange, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 } }, "Previstas")
               , React.createElement('div', { style: { fontSize: 15, fontWeight: 700, color: C.orange, marginTop: 3 } }, fmtBRL(manPrev).split(",")[0])
             )
-            , React.createElement('div', { style: { flex: 1, background: "rgba(52,199,89,0.07)", borderRadius: 10, padding: "8px 10px" } }
+            , React.createElement('div', { onClick: (e) => { e.stopPropagation(); setManDashFilter(manDashFilter==="pagas" ? null : "pagas"); setManExpanded(true); }, style: { flex: 1, background: manDashFilter==="pagas" ? "rgba(52,199,89,0.18)" : "rgba(52,199,89,0.07)", borderRadius: 10, padding: "8px 10px", cursor: "pointer", border: manDashFilter==="pagas" ? "1.5px solid "+C.green : "1.5px solid transparent" } }
               , React.createElement('div', { style: { fontSize: 10, color: C.green, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 } }, "Pagas")
               , React.createElement('div', { style: { fontSize: 15, fontWeight: 700, color: C.green, marginTop: 3 } }, fmtBRL(manPaga).split(",")[0])
             )
@@ -13967,20 +13983,54 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
           )
         )
         , isOpenM && React.createElement('div', { style: { background: C.card, border: "1px solid " + C.border, borderTop: "none", borderRadius: "0 0 14px 14px", overflow: "hidden" } }
-          , manPendNoPanel.length > 0 && React.createElement('div', null
-            , React.createElement('div', { style: { padding: "8px 14px 6px", fontSize: 10, fontWeight: 700, color: C.red, textTransform: "uppercase", letterSpacing: 0.4 } }, "A Pagar")
-            , manPendNoPanel.map(function(m, i) {
-              var ve = veiculos.find(v => v.id == m.veiculo_id);
-              var venc = (m.data_previsao_pagamento||m.data_entrada||"") < hoje2;
-              return React.createElement('div', { key: m.id, onClick: () => setTab("manutencao"),
-                style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", cursor: "pointer", borderTop: "1px solid " + C.border, background: venc ? "rgba(255,59,48,0.03)" : "transparent" } }
-                , React.createElement('div', null
-                  , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: venc ? C.red : "var(--c-text)" } }, (venc ? "⚠️ " : "") + (m.descricao || m.tipo || "--"))
-                  , React.createElement('div', { style: { fontSize: 10, color: C.sub, marginTop: 1 } }, (ve ? ve.placa + " · " : "") + fmtDate(m.data_entrada || m.data_previsao_pagamento) + (venc ? " · vencida" : ""))
-                )
-                , React.createElement('div', { style: { fontWeight: 700, fontSize: 12, color: venc ? C.red : C.orange } }, fmtBRL(m.custo).split(",")[0])
-              );
-            })
+          , manDashFilter === "pagas" ? (
+            manPagosList.length > 0 ? React.createElement('div', null
+              , React.createElement('div', { style: { padding: "8px 14px 6px", fontSize: 10, fontWeight: 700, color: C.green, textTransform: "uppercase", letterSpacing: 0.4 } }, "Pagas no mês (" + manPagosList.length + ")")
+              , manPagosList.map(function(m, i) {
+                var ve = veiculos.find(v => v.id == m.veiculo_id);
+                return React.createElement('div', { key: m.id, onClick: () => setTab("manutencao"),
+                  style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", cursor: "pointer", borderTop: "1px solid " + C.border } }
+                  , React.createElement('div', null
+                    , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "var(--c-text)" } }, m.descricao || m.tipo || "--")
+                    , React.createElement('div', { style: { fontSize: 10, color: C.sub, marginTop: 1 } }, (ve ? ve.placa + " · " : "") + fmtDate(m.data_pagamento || m.data_entrada))
+                  )
+                  , React.createElement('div', { style: { fontWeight: 700, fontSize: 12, color: C.green } }, fmtBRL(m.custo).split(",")[0])
+                );
+              })
+            ) : React.createElement('div', { style: { padding: "14px", fontSize: 12, color: C.sub, textAlign: "center" } }, "Nenhuma manutenção paga no mês")
+          ) : manDashFilter === "previstas" ? (
+            manTodas.length > 0 ? React.createElement('div', null
+              , React.createElement('div', { style: { padding: "8px 14px 6px", fontSize: 10, fontWeight: 700, color: C.orange, textTransform: "uppercase", letterSpacing: 0.4 } }, "Previstas no mês (" + manTodas.length + ")")
+              , manTodas.map(function(m, i) {
+                var ve = veiculos.find(v => v.id == m.veiculo_id);
+                var hoje2l = new Date().toISOString().split("T")[0];
+                var venc = (m.data_previsao_pagamento||m.data_entrada||"") < hoje2l;
+                return React.createElement('div', { key: m.id, onClick: () => setTab("manutencao"),
+                  style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", cursor: "pointer", borderTop: "1px solid " + C.border, background: venc ? "rgba(255,59,48,0.03)" : "transparent" } }
+                  , React.createElement('div', null
+                    , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: venc ? C.red : "var(--c-text)" } }, (venc ? "⚠️ " : "") + (m.descricao || m.tipo || "--"))
+                    , React.createElement('div', { style: { fontSize: 10, color: C.sub, marginTop: 1 } }, (ve ? ve.placa + " · " : "") + fmtDate(m.data_previsao_pagamento || m.data_entrada))
+                  )
+                  , React.createElement('div', { style: { fontWeight: 700, fontSize: 12, color: venc ? C.red : C.orange } }, fmtBRL(m.custo).split(",")[0])
+                );
+              })
+            ) : React.createElement('div', { style: { padding: "14px", fontSize: 12, color: C.sub, textAlign: "center" } }, "Nenhuma manutenção prevista no mês")
+          ) : (
+            manPendNoPanel.length > 0 && React.createElement('div', null
+              , React.createElement('div', { style: { padding: "8px 14px 6px", fontSize: 10, fontWeight: 700, color: C.red, textTransform: "uppercase", letterSpacing: 0.4 } }, "A Pagar")
+              , manPendNoPanel.map(function(m, i) {
+                var ve = veiculos.find(v => v.id == m.veiculo_id);
+                var venc = (m.data_previsao_pagamento||m.data_entrada||"") < hoje2;
+                return React.createElement('div', { key: m.id, onClick: () => setTab("manutencao"),
+                  style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", cursor: "pointer", borderTop: "1px solid " + C.border, background: venc ? "rgba(255,59,48,0.03)" : "transparent" } }
+                  , React.createElement('div', null
+                    , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: venc ? C.red : "var(--c-text)" } }, (venc ? "⚠️ " : "") + (m.descricao || m.tipo || "--"))
+                    , React.createElement('div', { style: { fontSize: 10, color: C.sub, marginTop: 1 } }, (ve ? ve.placa + " · " : "") + fmtDate(m.data_entrada || m.data_previsao_pagamento) + (venc ? " · vencida" : ""))
+                  )
+                  , React.createElement('div', { style: { fontWeight: 700, fontSize: 12, color: venc ? C.red : C.orange } }, fmtBRL(m.custo).split(",")[0])
+                );
+              })
+            )
           )
         )
       );
@@ -21360,9 +21410,12 @@ function App() {
         , React.createElement('div', { className: "lg-nav-pill", style: { overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none", WebkitOverflowScrolling: "touch" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3224}}
           , TABS.map(function(t) {
               var nReservasPend = t.id === "reservas" ? (reservas||[]).filter(function(r){return r.status==="pendente";}).length : 0;
+              var nContratosPend = t.id === "contratos" ? (contratos||[]).filter(function(c){ return c.status === "ativo" && !c.renovado_para && c.status_pagamento !== "pago" && c.status_pagamento !== "isento" && c.previsao_pagamento && c.previsao_pagamento < new Date().toISOString().split("T")[0]; }).length : 0;
+              var nFinanceiroPend = t.id === "financeiro" ? (function(){ var h = new Date().toISOString().split("T")[0]; return (despesas||[]).filter(function(d){ return d.status !== "pago" && d.data && d.data < h; }).length + (contas||[]).filter(function(c){ return c.status !== "pago" && c.status !== "cancelado" && c.vencimento && c.vencimento < h; }).length; })() : 0;
+              var nBadge = nReservasPend || nContratosPend || nFinanceiroPend;
               return React.createElement('button', { key: t.id, onClick: function(){setTab(t.id);}, className: "lg-nav-btn" + (tab === t.id ? " lg-nav-btn-active" : ""), style: { position: "relative" } }
                 , React.createElement(NavIcon, { id: t.id, active: tab === t.id })
-                , nReservasPend > 0 && React.createElement('span', { style: { position: "absolute", top: 4, right: 4, background: "#FF3B30", color: "#fff", borderRadius: 10, fontSize: 9, fontWeight: 800, minWidth: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px", zIndex: 10, lineHeight: 1 } }, nReservasPend > 9 ? "9+" : nReservasPend)
+                , nBadge > 0 && React.createElement('span', { style: { position: "absolute", top: 4, right: 4, background: "#FF3B30", color: "#fff", borderRadius: 10, fontSize: 9, fontWeight: 800, minWidth: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px", zIndex: 10, lineHeight: 1 } }, nBadge > 9 ? "9+" : nBadge)
                 , React.createElement('span', { style: { fontSize: 10, fontWeight: tab === t.id ? 700 : 400, color: tab === t.id ? C.blue : C.sub, whiteSpace: "nowrap", position: "relative", zIndex: 1, letterSpacing: 0 } }, t.label)
               );
             })
@@ -21386,11 +21439,17 @@ function App() {
         , React.createElement('div', { style: { position: "relative", marginBottom: 16, paddingLeft: 4, paddingRight: 4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3240}}
           , React.createElement(SearchBar, { clientes: clientes, contratos: contratos, multas: multas, veiculos: veiculos, setTab: setTab, desktop: true, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3240}})
         )
-        , TABS.map(t => (
-          React.createElement('button', { key: t.id, onClick: () => setTab(t.id), className: tab===t.id?"lg-tab-active":"", style: { borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: tab === t.id ? 600 : 400, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10, transition: "all .15s ease", color: tab === t.id ? C.blue : "var(--c-text)", border: "none", background: "transparent" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3241}}
-            , React.createElement(NavIcon, { id: t.id, active: tab === t.id, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3242}}), t.label
-          )
-        ))
+        , TABS.map(t => {
+          var _hoje = new Date().toISOString().split("T")[0];
+          var _nBadge = 0;
+          if (t.id === "reservas") _nBadge = (reservas||[]).filter(function(r){return r.status==="pendente";}).length;
+          if (t.id === "contratos") _nBadge = (contratos||[]).filter(function(c){ return c.status==="ativo" && !c.renovado_para && c.status_pagamento!=="pago" && c.status_pagamento!=="isento" && c.previsao_pagamento && c.previsao_pagamento < _hoje; }).length;
+          if (t.id === "financeiro") _nBadge = (despesas||[]).filter(function(d){ return d.status!=="pago" && d.data && d.data < _hoje; }).length + (contas||[]).filter(function(c){ return c.status!=="pago" && c.status!=="cancelado" && c.vencimento && c.vencimento < _hoje; }).length;
+          return React.createElement('button', { key: t.id, onClick: () => setTab(t.id), className: tab===t.id?"lg-tab-active":"", style: { borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: tab === t.id ? 600 : 400, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10, transition: "all .15s ease", color: tab === t.id ? C.blue : "var(--c-text)", border: "none", background: "transparent", position: "relative" } }
+            , React.createElement(NavIcon, { id: t.id, active: tab === t.id }), t.label
+            , _nBadge > 0 && React.createElement('span', { style: { marginLeft: "auto", background: "#FF3B30", color: "#fff", borderRadius: 10, fontSize: 10, fontWeight: 800, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", lineHeight: 1 } }, _nBadge > 9 ? "9+" : _nBadge)
+          );
+        })
         , React.createElement('button', { onClick: toggleDark, style: { marginTop: "auto", borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: 400, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10, border: "none", background: "transparent", color: "var(--c-sub)", width: "100%" } }, darkMode ? "☀️ Modo Claro" : "🌙 Modo Escuro")
       )
       , React.createElement('main', { style: { flex: 1, padding: "28px 24px", overflowY: "auto", maxWidth: 960, minWidth: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3246}}, page())

@@ -14249,29 +14249,36 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     , (() => {
       var hojeT = new Date(); hojeT.setHours(0,0,0,0);
       var hojeStr = hojeT.toISOString().split("T")[0];
+      var hojeY = hojeT.getFullYear(), hojeM = hojeT.getMonth() + 1;
       var [fluxoVeiculo, setFluxoVeiculo] = React.useState("");
       var [grafTooltip, setGrafTooltip] = React.useState(null);
       var eventos = [];
-      var mesY = parseInt(dashMes.slice(0,4),10);
-      var mesM = parseInt(dashMes.slice(5,7),10);
-      var mesInicio = dashMes + "-01";
-      var ultimoDia  = new Date(mesY, mesM, 0).getDate();
-      // Estender até o fim do próximo mês
-      var mesSegY = mesM === 12 ? mesY+1 : mesY;
-      var mesSegM = mesM === 12 ? 1 : mesM+1;
-      var mesProximo = mesSegY + "-" + (mesSegM<10?"0":"")+mesSegM;
-      var ultimoDiaSeg = new Date(mesSegY, mesSegM, 0).getDate();
-      var mesFim = mesProximo + "-" + (ultimoDiaSeg<10?"0":"")+ultimoDiaSeg;
+
+      // Range: 6 months back → 6 months forward from today
+      function _shiftM(y, m, n) { var d = new Date(y, m - 1 + n, 1); return [d.getFullYear(), d.getMonth() + 1]; }
+      var _ini = _shiftM(hojeY, hojeM, -6), _fim = _shiftM(hojeY, hojeM, 6);
+      var iniY = _ini[0], iniM = _ini[1], fimY = _fim[0], fimM = _fim[1];
+      var periodoInicio = iniY + "-" + (iniM < 10 ? "0" : "") + iniM + "-01";
+      var _ufim = new Date(fimY, fimM, 0).getDate();
+      var periodoFim = fimY + "-" + (fimM < 10 ? "0" : "") + fimM + "-" + (_ufim < 10 ? "0" : "") + _ufim;
+
+      // Build list of all months in range
+      var mesesRange = [];
+      var _ty = iniY, _tm = iniM;
+      while (_ty < fimY || (_ty === fimY && _tm <= fimM)) {
+        mesesRange.push(_ty + "-" + (_tm < 10 ? "0" : "") + _tm);
+        _tm++; if (_tm > 12) { _tm = 1; _ty++; }
+      }
 
       // Receitas de contratos
       (contratos||[]).forEach(function(c){
         if (c.status==="cancelado") return;
         if (fluxoVeiculo && String(c.veiculo_id||"") !== fluxoVeiculo) return;
         if (c.status_pagamento==="pago") {
-          var dt = c.data_pagamento||c.previsao_pagamento; if (!dt||dt<mesInicio||dt>mesFim) return;
+          var dt = c.data_pagamento||c.previsao_pagamento; if (!dt||dt<periodoInicio||dt>periodoFim) return;
           eventos.push({ dt:dt, tipo:"rec", label:(clientes||[]).find(x=>x.id==c.cliente_id)?.nome||"Contrato", val:parseFloat(c.valor_total||0), pago:true });
         } else if (c.status_pagamento!=="isento") {
-          var dt2 = c.previsao_pagamento||c.data_fim; if (!dt2||dt2<mesInicio||dt2>mesFim) return;
+          var dt2 = c.previsao_pagamento||c.data_fim; if (!dt2||dt2<periodoInicio||dt2>periodoFim) return;
           eventos.push({ dt:dt2, tipo:"rec", label:(clientes||[]).find(x=>x.id==c.cliente_id)?.nome||"Contrato #"+c.id, val:parseFloat(c.valor_total||0), pago:false });
         }
       });
@@ -14279,36 +14286,35 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       (receitas||[]).forEach(function(r){
         if (r.ref_fatura) return;
         if (fluxoVeiculo && String(r.veiculo_id||"") !== fluxoVeiculo) return;
-        var dt = r.data_pagamento||r.data; if (!dt||dt<mesInicio||dt>mesFim) return;
+        var dt = r.data_pagamento||r.data; if (!dt||dt<periodoInicio||dt>periodoFim) return;
         eventos.push({ dt:dt, tipo:"rec", label:r.descricao||"Receita", val:parseFloat(r.valor||0), pago:r.status==="recebido" });
       });
-      // Despesas (mês atual)
+      // Despesas — projeta recorrentes em todos os meses do range
       (despesas||[]).forEach(function(d){
         if (d.manutencao_id) return;
         if (fluxoVeiculo && String(d.veiculo_id||"") !== fluxoVeiculo) return;
         if (d.recorrente && d.data) {
-          // Projeta nos dois meses
-          [dashMes, mesProximo].forEach(function(mes){
+          mesesRange.forEach(function(mes){
             var mY2 = parseInt(mes.slice(0,4),10), mM2 = parseInt(mes.slice(5,7),10);
             if (mes < d.data.slice(0,7)) return;
             var _ult = new Date(mY2, mM2, 0).getDate();
             var _dia = parseInt(d.data.slice(8,10),10);
             var _df  = Math.min(_dia, _ult);
             var _dtProj = mes + "-" + (_df<10?"0":"")+_df;
-            if (_dtProj < mesInicio || _dtProj > mesFim) return;
+            if (_dtProj < periodoInicio || _dtProj > periodoFim) return;
             var _pago = d.status==="pago" || !!d.data_pagamento;
             var _dt   = _pago && d.data_pagamento && d.data_pagamento.slice(0,7)===mes ? d.data_pagamento : _dtProj;
             eventos.push({ dt:_dt, tipo:"desp", label:d.descricao||d.categoria||"Despesa", val:parseFloat(d.valor||0), pago:_pago && d.data_pagamento && d.data_pagamento.slice(0,7)===mes });
           });
           return;
         }
-        var dt = d.data_pagamento||d.data; if (!dt||dt<mesInicio||dt>mesFim) return;
+        var dt = d.data_pagamento||d.data; if (!dt||dt<periodoInicio||dt>periodoFim) return;
         eventos.push({ dt:dt, tipo:"desp", label:d.descricao||d.categoria||"Despesa", val:parseFloat(d.valor||0), pago:d.status==="pago"||!!d.data_pagamento });
       });
       // Manutenções
       (manutencoes||[]).forEach(function(m){
         if (fluxoVeiculo && String(m.veiculo_id||"") !== fluxoVeiculo) return;
-        var dt = m.data_pagamento||m.data_previsao_pagamento||m.data_entrada; if (!dt||dt<mesInicio||dt>mesFim) return;
+        var dt = m.data_pagamento||m.data_previsao_pagamento||m.data_entrada; if (!dt||dt<periodoInicio||dt>periodoFim) return;
         var ve = (veiculos||[]).find(v=>v.id==m.veiculo_id);
         eventos.push({ dt:dt, tipo:"man", label:(m.descricao||m.tipo||"Manutenção")+(ve?" · "+ve.placa:""), val:parseFloat(m.custo||0), pago:m.status_financeiro==="pago"||!!m.data_pagamento });
       });
@@ -14332,50 +14338,60 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
 
       if (diasData.length === 0) {
         return React.createElement("div", { style:{ marginTop:28 } }
-          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, marginBottom:10 } }, "Fluxo de Caixa Diário — " + nomeMes + " + " + new Date(mesProximo+"-15").toLocaleString("pt-BR",{month:"short"}))
+          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, marginBottom:10 } }, "Fluxo de Caixa Diário")
           , React.createElement("div", { style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"24px", textAlign:"center", color:C.sub, fontSize:13 } }, "Nenhum lançamento no período")
         );
       }
 
-      var maxRec  = Math.max.apply(null, diasData.map(function(d){return d.totalRec;}));
-      var maxDesp = Math.max.apply(null, diasData.map(function(d){return d.totalDesp;}));
+      var maxRec  = Math.max.apply(null, diasData.map(function(d){return d.totalRec;}).concat([1]));
+      var maxDesp = Math.max.apply(null, diasData.map(function(d){return d.totalDesp;}).concat([1]));
       var maxVal  = Math.max(maxRec, maxDesp, 1);
-      // Altura do gráfico: proporcional a receitas (acima) e despesas (abaixo) do zero
-      var recRatio  = maxRec  / maxVal;
-      var despRatio = maxDesp / maxVal;
-      var halfH   = 80;   // pixels por unidade de escala (acima e abaixo do zero)
-      var chartH  = halfH * 2;          // altura total da área de barras
-      var zeroY   = halfH;              // y do zero (de cima)
-      var labH    = 14;                 // altura para os rótulos de data
+      // Arredonda para valor "bonito"
+      var _mag = Math.pow(10, Math.floor(Math.log10(maxVal)));
+      maxVal = Math.ceil(maxVal / _mag) * _mag;
+
+      var halfH   = 240;
+      var chartH  = halfH * 2;
+      var zeroY   = halfH;
+      var labH    = 36;
       var svgH    = chartH + labH;
-      var yAxisW  = 52;                 // largura do eixo Y
-      var colW    = Math.max(44, Math.floor(360 / Math.max(diasData.length, 1)));
+      var yAxisW  = 80;
+      var colW    = 60;
       var totalW  = diasData.length * colW;
 
       function fmtShort(v) {
+        if (Math.abs(v) >= 1000000) return "R$" + (v/1000000).toFixed(1).replace(".",",") + "M";
         if (Math.abs(v) >= 1000) return "R$" + (v/1000).toFixed(1).replace(".",",") + "k";
         return "R$" + Math.round(v);
       }
 
-      var saldoMin   = Math.min.apply(null, diasData.map(function(d){return d.saldo;}));
-      var saldoMax   = Math.max.apply(null, diasData.map(function(d){return d.saldo;}));
+      var saldoMin = Math.min.apply(null, diasData.map(function(d){return d.saldo;}).concat([0]));
+      var saldoMax = Math.max.apply(null, diasData.map(function(d){return d.saldo;}).concat([0]));
       var maxAbsSaldo = Math.max(Math.abs(saldoMin), Math.abs(saldoMax), 1);
 
-      // Rótulos do eixo Y
       var yLabels = [
-        { v: maxVal,      y: 0 },
-        { v: maxVal*0.5,  y: zeroY * 0.5 },
-        { v: 0,           y: zeroY },
-        { v: -maxVal*0.5, y: zeroY + halfH*0.5 },
-        { v: -maxVal,     y: chartH }
+        { v: maxVal,       y: 6 },
+        { v: maxVal * 0.5, y: zeroY * 0.5 },
+        { v: 0,            y: zeroY },
+        { v: -maxVal * 0.5, y: zeroY + halfH * 0.5 },
+        { v: -maxVal,      y: chartH - 6 }
       ];
+
+      // Separadores de mês
+      var monthSeps = [];
+      var _prevM = "";
+      diasData.forEach(function(d, i) {
+        var m = d.dt.slice(0,7);
+        if (m !== _prevM) {
+          monthSeps.push({ x: i * colW, label: new Date(m+"-15").toLocaleString("pt-BR",{month:"short"}).toUpperCase() + "/" + m.slice(2,4), isFirst: i===0 });
+          _prevM = m;
+        }
+      });
 
       return React.createElement(React.Fragment, null
         /* Header */
         , React.createElement("div", { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:28, marginBottom:10, flexWrap:"wrap", gap:8 } }
-          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } },
-              "Fluxo de Caixa Diário — " + nomeMes + " + " + new Date(mesProximo+"-15").toLocaleString("pt-BR",{month:"short"})
-            )
+          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Fluxo de Caixa Diário — 6 meses ↔")
           , React.createElement("select", { value:fluxoVeiculo, onChange:function(e){setFluxoVeiculo(e.target.value);},
               style:{ border:"1px solid "+C.border, borderRadius:8, padding:"4px 8px", fontSize:12, background:C.card, color:"var(--c-text)", cursor:"pointer" } }
             , React.createElement("option", { value:"" }, "Todos os veículos")
@@ -14383,199 +14399,208 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
           )
         )
         /* Chart card */
-        , React.createElement("div", { style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"14px 8px 10px", overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"none", msOverflowStyle:"none" } }
-          , React.createElement("div", { style:{ display:"flex", minWidth: yAxisW + totalW + 4 } }
+        , React.createElement("div", { style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, overflow:"hidden" } }
+          , React.createElement("div", { style:{ display:"flex", paddingTop:14 } }
 
-            /* ── Eixo Y esquerdo ── */
-            , React.createElement("div", { style:{ width:yAxisW, flexShrink:0, position:"relative", height:svgH } }
-              , React.createElement("svg", { width:yAxisW, height:svgH, style:{ display:"block", overflow:"visible" } }
+            /* Eixo Y fixo */
+            , React.createElement("div", { style:{ width:yAxisW, flexShrink:0, background:C.card, zIndex:2 } }
+              , React.createElement("svg", { width:yAxisW, height:svgH, style:{ display:"block" } }
+                , React.createElement("rect", { x:0, y:0, width:yAxisW, height:svgH, fill:"var(--c-card)" })
+                , React.createElement("line", { x1:yAxisW-1, y1:0, x2:yAxisW-1, y2:chartH, stroke:C.border, strokeWidth:0.8 })
                 , yLabels.map(function(yl, i){
                     var isZero = yl.v === 0;
-                    var col = yl.v > 0 ? "#34C759" : yl.v < 0 ? "#FF3B30" : C.sub;
+                    var col = yl.v > 0 ? "#34C759" : yl.v < 0 ? "#FF3B30" : "var(--c-text)";
                     return React.createElement("g", { key:i }
                       , React.createElement("text", {
-                          x: yAxisW - 6,
-                          y: (yl.y + 3.5).toFixed(1),
+                          x: yAxisW - 10,
+                          y: (yl.y + 4).toFixed(1),
                           textAnchor: "end",
-                          fontSize: isZero ? 9 : 8,
-                          fontWeight: isZero ? 700 : 500,
+                          fontSize: isZero ? 13 : 11,
+                          fontWeight: isZero ? 800 : 600,
                           fill: col,
                           fontFamily: "-apple-system,BlinkMacSystemFont,sans-serif"
-                        }, yl.v === 0 ? "0" : fmtShort(Math.abs(yl.v)))
+                        }, isZero ? "R$ 0" : fmtShort(Math.abs(yl.v)))
                     );
                   })
               )
             )
 
-            /* ── Área do gráfico SVG ── */
-            , React.createElement("div", { style:{ flex:1, position:"relative" } }
+            /* Área scrollável */
+            , React.createElement("div", {
+                ref: function(el) {
+                  if (el && !el._fcScrolled) {
+                    el._fcScrolled = true;
+                    var ti = diasData.findIndex(function(d){ return d.dt >= hojeStr; });
+                    if (ti >= 0) el.scrollLeft = Math.max(0, (ti - 2) * colW);
+                  }
+                },
+                style:{ flex:1, overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"thin" }
+              }
               , React.createElement("svg", {
-                    width: totalW,
-                    height: svgH,
+                    width: totalW, height: svgH,
                     viewBox: "0 0 " + totalW + " " + svgH,
                     style:{ display:"block", shapeRendering:"geometricPrecision" }
                   }
                 , React.createElement("defs", null
-                  , React.createElement("linearGradient", { id:"recUpGrd", x1:"0", y1:"1", x2:"0", y2:"0" }
-                    , React.createElement("stop", { offset:"0%", stopColor:"#34C759", stopOpacity:"0.85" })
-                    , React.createElement("stop", { offset:"100%", stopColor:"#34C759", stopOpacity:"0.55" })
+                  , React.createElement("linearGradient", { id:"fcRecP", x1:"0", y1:"1", x2:"0", y2:"0" }
+                    , React.createElement("stop", { offset:"0%", stopColor:"#34C759", stopOpacity:"0.78" })
+                    , React.createElement("stop", { offset:"100%", stopColor:"#34C759", stopOpacity:"0.96" })
                   )
-                  , React.createElement("linearGradient", { id:"despDnGrd", x1:"0", y1:"0", x2:"0", y2:"1" }
-                    , React.createElement("stop", { offset:"0%", stopColor:"#FF3B30", stopOpacity:"0.85" })
-                    , React.createElement("stop", { offset:"100%", stopColor:"#FF3B30", stopOpacity:"0.52" })
+                  , React.createElement("linearGradient", { id:"fcDespP", x1:"0", y1:"0", x2:"0", y2:"1" }
+                    , React.createElement("stop", { offset:"0%", stopColor:"#FF3B30", stopOpacity:"0.78" })
+                    , React.createElement("stop", { offset:"100%", stopColor:"#FF3B30", stopOpacity:"0.94" })
                   )
-                  , React.createElement("linearGradient", { id:"saldoUpGrd", x1:"0", y1:"1", x2:"0", y2:"0" }
-                    , React.createElement("stop", { offset:"0%", stopColor:"#007AFF", stopOpacity:"0.04" })
-                    , React.createElement("stop", { offset:"100%", stopColor:"#007AFF", stopOpacity:"0.14" })
+                  , React.createElement("linearGradient", { id:"fcRecF", x1:"0", y1:"1", x2:"0", y2:"0" }
+                    , React.createElement("stop", { offset:"0%", stopColor:"#34C759", stopOpacity:"0.32" })
+                    , React.createElement("stop", { offset:"100%", stopColor:"#34C759", stopOpacity:"0.50" })
                   )
-                  , React.createElement("linearGradient", { id:"saldoDnGrd", x1:"0", y1:"0", x2:"0", y2:"1" }
-                    , React.createElement("stop", { offset:"0%", stopColor:"#FF3B30", stopOpacity:"0.04" })
-                    , React.createElement("stop", { offset:"100%", stopColor:"#FF3B30", stopOpacity:"0.12" })
+                  , React.createElement("linearGradient", { id:"fcDespF", x1:"0", y1:"0", x2:"0", y2:"1" }
+                    , React.createElement("stop", { offset:"0%", stopColor:"#FF3B30", stopOpacity:"0.28" })
+                    , React.createElement("stop", { offset:"100%", stopColor:"#FF3B30", stopOpacity:"0.46" })
                   )
                 )
 
-                /* Grid lines horizontais */
+                /* Grid horizontais */
                 , yLabels.map(function(yl, gi){
                     var isZero = yl.v === 0;
                     return React.createElement("line", { key:gi,
                         x1:0, y1:yl.y.toFixed(1), x2:totalW, y2:yl.y.toFixed(1),
-                        stroke: isZero ? "var(--c-text-dim, rgba(0,0,0,0.20))" : C.border,
-                        strokeWidth: isZero ? 1.2 : 0.4,
-                        strokeDasharray: isZero ? "none" : "3,4"
+                        stroke: isZero ? "rgba(150,150,160,0.45)" : C.border,
+                        strokeWidth: isZero ? 1.8 : 0.5,
+                        strokeDasharray: isZero ? "none" : "5,6"
                     });
                   })
 
-                /* Separador de meses */
-                , (function(){
-                    var firstSeg = diasData.findIndex(function(d){ return d.dt.slice(0,7) === mesProximo; });
-                    if (firstSeg <= 0) return null;
-                    var xSep = firstSeg * colW;
-                    return React.createElement("g", null
-                      , React.createElement("line", { x1:xSep, y1:0, x2:xSep, y2:chartH, stroke:C.border, strokeWidth:1, strokeDasharray:"4,3" })
-                      , React.createElement("text", { x:xSep+4, y:8, fontSize:7, fill:C.sub, fontWeight:600, fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif" },
-                          new Date(mesProximo+"-15").toLocaleString("pt-BR",{month:"short"}).toUpperCase()
-                        )
+                /* Separadores + labels de mês */
+                , monthSeps.map(function(sep, si){
+                    return React.createElement("g", { key:si }
+                      , !sep.isFirst && React.createElement("line", { x1:sep.x, y1:0, x2:sep.x, y2:chartH, stroke:C.border, strokeWidth:0.8, strokeDasharray:"3,4" })
+                      , React.createElement("text", { x:sep.x + (sep.isFirst ? 2 : 5), y:16,
+                          fontSize:12, fill:C.sub, fontWeight:700,
+                          fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif"
+                        }, sep.label)
                     );
+                  })
+
+                /* Linha vertical "hoje" */
+                , (function(){
+                    var ti = diasData.findIndex(function(d){ return d.dt === hojeStr; });
+                    if (ti < 0) return null;
+                    var cx = (ti + 0.5) * colW;
+                    return React.createElement("line", { x1:cx.toFixed(1), y1:0, x2:cx.toFixed(1), y2:chartH,
+                        stroke:"#007AFF", strokeWidth:1.5, strokeDasharray:"5,4", opacity:0.55 });
                   })()
 
-                /* Barras por coluna */
+                /* Barras diárias */
                 , diasData.map(function(day, di){
                     var cx = (di + 0.5) * colW;
-                    var bw = Math.max(6, colW * 0.55);
-                    var hRec  = (day.totalRec  > 0) ? Math.max(3, (day.totalRec  / maxVal) * (halfH - 4)) : 0;
-                    var hDesp = (day.totalDesp > 0) ? Math.max(3, (day.totalDesp / maxVal) * (halfH - 4)) : 0;
+                    var bw = Math.max(16, colW * 0.62);
+                    var hRec  = day.totalRec  > 0 ? Math.max(5, (day.totalRec  / maxVal) * (halfH - 8)) : 0;
+                    var hDesp = day.totalDesp > 0 ? Math.max(5, (day.totalDesp / maxVal) * (halfH - 8)) : 0;
                     var isToday = day.dt === hojeStr;
+                    var isPast  = day.dt <= hojeStr;
                     var isTT    = grafTooltip === di;
-                    var isNextMes = day.dt.slice(0,7) === mesProximo;
+                    var dayNum  = day.dt.slice(8,10);
+                    var showLbl = dayNum==="01"||dayNum==="05"||dayNum==="10"||dayNum==="15"||dayNum==="20"||dayNum==="25";
                     return React.createElement("g", { key:day.dt,
                         onClick:function(){ setGrafTooltip(isTT?null:di); },
                         style:{ cursor:"pointer" }
                       }
-                      /* Fundo coluna */
-                      , React.createElement("rect", { x:(di*colW).toFixed(1), y:0, width:(colW-1).toFixed(1), height:chartH, rx:0,
-                          fill: isToday ? "rgba(0,122,255,0.05)" : isTT ? "rgba(120,120,128,0.05)" : "transparent" })
-                      /* Barra receita — sobe do zero */
-                      , hRec>0 && React.createElement("rect", {
-                          x: (cx - bw/2).toFixed(2),
-                          y: (zeroY - hRec).toFixed(2),
-                          width: bw.toFixed(2),
-                          height: hRec.toFixed(2),
-                          rx: 3,
-                          fill: isToday ? "url(#recUpGrd)" : isNextMes ? "rgba(52,199,89,0.45)" : "rgba(52,199,89,0.72)"
+                      , React.createElement("rect", { x:(di*colW).toFixed(1), y:0, width:(colW-0.5).toFixed(1), height:chartH,
+                          fill: isToday ? "rgba(0,122,255,0.08)" : isTT ? "rgba(120,120,128,0.06)" : "transparent" })
+                      , hRec > 0 && React.createElement("rect", {
+                          x:(cx-bw/2).toFixed(2), y:(zeroY-hRec).toFixed(2),
+                          width:bw.toFixed(2), height:hRec.toFixed(2), rx:4,
+                          fill: isPast ? "url(#fcRecP)" : "url(#fcRecF)"
                         })
-                      /* Barra despesa — desce do zero */
-                      , hDesp>0 && React.createElement("rect", {
-                          x: (cx - bw/2).toFixed(2),
-                          y: zeroY.toFixed(2),
-                          width: bw.toFixed(2),
-                          height: hDesp.toFixed(2),
-                          rx: 3,
-                          fill: isToday ? "url(#despDnGrd)" : isNextMes ? "rgba(255,59,48,0.42)" : "rgba(255,59,48,0.68)"
+                      , hDesp > 0 && React.createElement("rect", {
+                          x:(cx-bw/2).toFixed(2), y:zeroY.toFixed(2),
+                          width:bw.toFixed(2), height:hDesp.toFixed(2), rx:4,
+                          fill: isPast ? "url(#fcDespP)" : "url(#fcDespF)"
                         })
-                      /* Rótulo de data */
-                      , React.createElement("text", {
-                          x: cx.toFixed(1), y: (svgH - 2).toFixed(1),
-                          textAnchor: "middle", fontSize: 8,
-                          fontWeight: isToday ? 800 : 400,
-                          fill: isToday ? C.blue : C.sub,
-                          fontFamily: "-apple-system,BlinkMacSystemFont,sans-serif"
-                        }, day.dt.slice(8,10)+"/"+day.dt.slice(5,7))
+                      , showLbl && React.createElement("text", {
+                          x:cx.toFixed(1), y:(svgH-5).toFixed(1),
+                          textAnchor:"middle", fontSize: isToday ? 12 : 10,
+                          fontWeight: isToday ? 800 : 500,
+                          fill: isToday ? "#007AFF" : C.sub,
+                          fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif"
+                        }, dayNum)
+                      , isToday && React.createElement("circle", { cx:cx.toFixed(1), cy:(svgH-18).toFixed(1), r:3.5, fill:"#007AFF" })
                     );
                   })
 
-                /* Linha de saldo — overlay sobre as barras */
+                /* Linha de saldo */
                 , diasData.length > 1 && (function(){
                     var pts = diasData.map(function(d, i){
                       var x = (i + 0.5) * colW;
-                      // saldo=0 → y=zeroY; positivo sobe; negativo desce
-                      var y = zeroY - (d.saldo / maxAbsSaldo) * (halfH - 6);
-                      return { x:x, y:Math.max(3, Math.min(chartH-3, y)), saldo:d.saldo };
+                      var y = zeroY - (d.saldo / maxAbsSaldo) * (halfH - 16);
+                      return { x:x, y:Math.max(10, Math.min(chartH-10, y)), saldo:d.saldo };
                     });
                     var pathD = pts.map(function(p,i){return(i===0?"M":"L")+p.x.toFixed(1)+","+p.y.toFixed(1);}).join(" ");
-                    var lColor = saldoMin >= 0 ? "#007AFF" : "#FF3B30";
+                    var lColor = pts[pts.length-1].saldo >= 0 ? "#007AFF" : "#FF3B30";
+                    var dotPts = pts.filter(function(_,i){
+                      var dn = diasData[i].dt.slice(8,10);
+                      return dn==="01"||dn==="08"||dn==="15"||dn==="22"||i===pts.length-1;
+                    });
                     return React.createElement(React.Fragment, null
-                      , React.createElement("path", { d:pathD, fill:"none", stroke:lColor, strokeWidth:"1.2",
+                      , React.createElement("path", { d:pathD, fill:"none", stroke:lColor, strokeWidth:"2.5",
                           strokeLinejoin:"round", strokeLinecap:"round", pointerEvents:"none" })
-                      , pts.map(function(p, i){
+                      , dotPts.map(function(p, i){
                           var cor = p.saldo >= 0 ? "#007AFF" : "#FF3B30";
+                          var lblY = p.y < 26 ? p.y + 18 : p.y - 8;
                           return React.createElement("g", { key:i, pointerEvents:"none" }
-                            , React.createElement("circle", { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"2.5", fill:cor, stroke:"#fff", strokeWidth:"1.5" })
-                            , React.createElement("text", { x:p.x.toFixed(1), y:(p.y - 5.5).toFixed(1),
-                                textAnchor:"middle", fontSize:"6.5", fill:cor,
-                                fontWeight:"700", fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif"
+                            , React.createElement("circle", { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"4", fill:cor, stroke:"#fff", strokeWidth:"2" })
+                            , React.createElement("text", { x:p.x.toFixed(1), y:lblY.toFixed(1),
+                                textAnchor:"middle", fontSize:"10", fill:cor, fontWeight:"700",
+                                fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif"
                               }, fmtShort(p.saldo))
                           );
                         })
                     );
                   })()
               )
-
-              /* Tooltips absolutos */
-              , diasData.map(function(day, di){
-                  if (grafTooltip !== di) return null;
-                  var cx = (di + 0.5) * colW;
-                  var leftPos = Math.min(Math.max(cx - 85, 0), totalW - 180);
-                  return React.createElement("div", { key:day.dt, style:{
-                      position:"absolute", bottom: svgH - zeroY + 20, left: leftPos,
-                      background: "var(--c-card)",
-                      border:"1px solid "+C.border, borderRadius:14, padding:"12px 14px",
-                      boxShadow:"0 8px 32px rgba(0,0,0,0.18)", zIndex:400,
-                      minWidth:160, maxWidth:230, pointerEvents:"none"
-                    } }
-                    , React.createElement("div",{style:{fontSize:11,fontWeight:700,color:C.sub,marginBottom:8,borderBottom:"1px solid "+C.border,paddingBottom:6}},fmtDate(day.dt))
-                    , day.receitas.length>0 && React.createElement("div",{style:{marginBottom:8}}
-                      , React.createElement("div",{style:{fontSize:9,color:C.green,fontWeight:800,textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}},"Receitas")
-                      , day.receitas.map(function(e,i){return React.createElement("div",{key:i,style:{display:"flex",justifyContent:"space-between",gap:10,fontSize:11,color:"var(--c-text)",marginBottom:2}},React.createElement("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:115}},e.label),React.createElement("span",{style:{fontWeight:700,color:C.green,flexShrink:0}},fmtBRL(e.val).split(",")[0]));})
-                      , day.receitas.length>1 && React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,fontWeight:700,color:C.green,borderTop:"1px solid "+C.border,marginTop:3,paddingTop:3}},React.createElement("span",null,"Total"),React.createElement("span",null,fmtBRL(day.totalRec).split(",")[0]))
-                    )
-                    , day.despesas.length>0 && React.createElement("div",{style:{marginBottom:8}}
-                      , React.createElement("div",{style:{fontSize:9,color:C.red,fontWeight:800,textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}},"Despesas")
-                      , day.despesas.map(function(e,i){return React.createElement("div",{key:i,style:{display:"flex",justifyContent:"space-between",gap:10,fontSize:11,color:"var(--c-text)",marginBottom:2}},React.createElement("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:115}},e.label),React.createElement("span",{style:{fontWeight:700,color:C.red,flexShrink:0}},fmtBRL(e.val).split(",")[0]));})
-                      , day.despesas.length>1 && React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,fontWeight:700,color:C.red,borderTop:"1px solid "+C.border,marginTop:3,paddingTop:3}},React.createElement("span",null,"Total"),React.createElement("span",null,fmtBRL(day.totalDesp).split(",")[0]))
-                    )
-                    , React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:800,color:day.saldo>=0?C.blue:C.red,borderTop:"2px solid "+C.border,paddingTop:6,marginTop:2}},React.createElement("span",null,"Saldo"),React.createElement("span",null,fmtBRL(day.saldo).split(",")[0]))
-                  );
-                })
             )
           )
 
           /* Legenda */
-          , React.createElement("div", { style:{ display:"flex", gap:14, marginTop:10, flexWrap:"wrap", borderTop:"1px solid "+C.border, paddingTop:8, paddingLeft:4 } }
-            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:C.sub } }
-              , React.createElement("div", { style:{ width:10, height:10, borderRadius:2, background:"rgba(52,199,89,0.75)" } })
+          , React.createElement("div", { style:{ display:"flex", gap:16, margin:"10px 12px 14px "+(yAxisW+6)+"px", flexWrap:"wrap", borderTop:"1px solid "+C.border, paddingTop:10 } }
+            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:6, fontSize:13, color:C.sub } }
+              , React.createElement("div", { style:{ width:16, height:16, borderRadius:4, background:"rgba(52,199,89,0.90)" } })
               , "Receitas ↑"
             )
-            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:C.sub } }
-              , React.createElement("div", { style:{ width:10, height:10, borderRadius:2, background:"rgba(255,59,48,0.68)" } })
+            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:6, fontSize:13, color:C.sub } }
+              , React.createElement("div", { style:{ width:16, height:16, borderRadius:4, background:"rgba(255,59,48,0.85)" } })
               , "Despesas ↓"
             )
-            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:C.sub } }
-              , React.createElement("div", { style:{ width:18, height:1.5, background:"#007AFF", borderRadius:2 } })
+            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:6, fontSize:13, color:C.sub } }
+              , React.createElement("div", { style:{ width:24, height:3, background:"#007AFF", borderRadius:2 } })
               , "Saldo acumulado"
             )
-            , React.createElement("div", { style:{ marginLeft:"auto", fontSize:10, color:C.sub } }, "Toque para detalhes")
+            , React.createElement("div", { style:{ marginLeft:"auto", fontSize:11, color:C.sub } }, "Toque para detalhes")
           )
         )
+
+        /* Tooltip card */
+        , grafTooltip !== null && diasData[grafTooltip] && (function(){
+            var day = diasData[grafTooltip];
+            return React.createElement("div", { style:{
+                background:C.card, border:"1px solid "+C.border, borderRadius:14, padding:"14px 16px",
+                boxShadow:"0 8px 32px rgba(0,0,0,0.15)", marginTop:8
+              } }
+              , React.createElement("div",{style:{fontSize:13,fontWeight:700,color:C.sub,marginBottom:8,borderBottom:"1px solid "+C.border,paddingBottom:6}},fmtDate(day.dt))
+              , day.receitas.length>0 && React.createElement("div",{style:{marginBottom:8}}
+                , React.createElement("div",{style:{fontSize:11,color:C.green,fontWeight:800,textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}},"Receitas")
+                , day.receitas.map(function(e,i){return React.createElement("div",{key:i,style:{display:"flex",justifyContent:"space-between",gap:10,fontSize:13,color:"var(--c-text)",marginBottom:2}},React.createElement("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:170}},e.label),React.createElement("span",{style:{fontWeight:700,color:C.green,flexShrink:0}},fmtBRL(e.val).split(",")[0]));})
+                , day.receitas.length>1 && React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700,color:C.green,borderTop:"1px solid "+C.border,marginTop:3,paddingTop:3}},React.createElement("span",null,"Total"),React.createElement("span",null,fmtBRL(day.totalRec).split(",")[0]))
+              )
+              , day.despesas.length>0 && React.createElement("div",{style:{marginBottom:8}}
+                , React.createElement("div",{style:{fontSize:11,color:C.red,fontWeight:800,textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}},"Despesas")
+                , day.despesas.map(function(e,i){return React.createElement("div",{key:i,style:{display:"flex",justifyContent:"space-between",gap:10,fontSize:13,color:"var(--c-text)",marginBottom:2}},React.createElement("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:170}},e.label),React.createElement("span",{style:{fontWeight:700,color:C.red,flexShrink:0}},fmtBRL(e.val).split(",")[0]));})
+                , day.despesas.length>1 && React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700,color:C.red,borderTop:"1px solid "+C.border,marginTop:3,paddingTop:3}},React.createElement("span",null,"Total"),React.createElement("span",null,fmtBRL(day.totalDesp).split(",")[0]))
+              )
+              , React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:14,fontWeight:800,color:day.saldo>=0?C.blue:C.red,borderTop:"2px solid "+C.border,paddingTop:6,marginTop:2}},React.createElement("span",null,"Saldo"),React.createElement("span",null,fmtBRL(day.saldo).split(",")[0]))
+            );
+          })()
       );
     })()
 
@@ -14583,13 +14608,12 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     /* ── GRÁFICOS: Evolução Mensal e por Categoria ── */
     , (() => {
       var CATS_DESP_ALL = ["Combustivel","Limpeza","Impostos","Salarios","Aluguel","Manutencao","Marketing","Seguros","Financiamento","Juros","Multas","Cartao de Credito","Conta de Luz","Conta de Agua","Internet","Telefone","Contabilidade","Juridico","Estacionamento","Pedagio","Lavagem","Funilaria","Pneus","IPVA","Licenciamento","Emplacamento","Prejuizo","Outros"];
-      // Build last 6 months
+      // Build 12 months: 6 back + 6 forward from today
       function addMonths(base, n) { var d = new Date(base + "-15"); d.setMonth(d.getMonth() + n); return d.toISOString().slice(0,7); }
+      var _mesHoje12 = new Date().toISOString().slice(0,7);
       var meses6 = [];
-      var _IMPLANTADO = "2026-03"; // sistema implantado em março/2026
-      // Exibe o mês atual + próximos 5 meses (total 6 meses para frente)
-      for (var mi = 0; mi <= 5; mi++) { var _m6 = addMonths(dashMes, mi); meses6.push(_m6); }
-      var nomesMes6 = meses6.map(function(m){ return new Date(m+"-15").toLocaleString("pt-BR",{month:"short"}); });
+      for (var mi = -6; mi <= 6; mi++) { meses6.push(addMonths(_mesHoje12, mi)); }
+      var nomesMes6 = meses6.map(function(m){ return new Date(m+"-15").toLocaleString("pt-BR",{month:"short",year:"2-digit"}); });
       // Monthly receitas e despesas
       var recData = meses6.map(function(m){
         if (recMode === "recebidas") {
@@ -14645,24 +14669,29 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       var totalMesSel = catData[meses6.indexOf(dashMes)] >= 0 ? catData[meses6.indexOf(dashMes)] : catData[catData.length-1] || 0;
       var maxRD = Math.max.apply(null, recData.concat(despData).concat([1]));
       var maxCat = Math.max.apply(null, catData.concat([1]));
-      var barW = "calc((100% - " + (meses6.length-1)*8 + "px) / " + meses6.length + ")";
-      var BAR_H = 80;
+      var BAR_H = 140;
+      var minColW = 80;
+      function fmtK(v) {
+        if (v >= 1000000) return (v/1000000).toFixed(1).replace(".",",")+"M";
+        if (v >= 1000) return (v/1000).toFixed(1).replace(".",",")+  "k";
+        return Math.round(v)+"";
+      }
       function BarChart(dados, cor, label) {
         var mx = Math.max.apply(null, dados.concat([1]));
         var dashIdx = meses6.indexOf(dashMes);
         var selIdx = dashIdx >= 0 ? dashIdx : meses6.length - 1;
-        var minColW = 56;
-        return React.createElement('div', { style:{ overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"none", msOverflowStyle:"none" } },
-          React.createElement('div', { style: { display:"flex", alignItems:"flex-end", gap:6, paddingBottom:0, position:"relative", minWidth: dados.length * minColW } },
+        return React.createElement('div', { style:{ overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"thin" } },
+          React.createElement('div', { style:{ display:"flex", alignItems:"flex-end", gap:6, paddingBottom:0, paddingTop:20, position:"relative", minWidth: dados.length * minColW } },
             dados.map(function(v, i) {
-            var px = Math.max(v > 0 ? 6 : 0, Math.round(v/mx*BAR_H));
+            var px = Math.max(v > 0 ? 8 : 0, Math.round(v/mx*BAR_H));
             var isSel = i === selIdx;
-            var barCor = isSel ? cor : cor.replace("rgba(","rgba(").replace(/,\s*1\)/, ",0.40)");
-            return React.createElement('div', { key:i, style:{ flex:1, display:"flex", flexDirection:"column", alignItems:"center" } },
-              React.createElement('div', { style:{ fontSize:10, color: isSel ? "var(--c-text)" : C.sub, fontWeight:600, marginBottom:2, height:14, lineHeight:"14px", textAlign:"center" } }, v > 0 ? "R$"+Math.round(v) : ""),
-              React.createElement('div', { style:{ width:"100%", background: barCor, borderRadius:"5px 5px 0 0", height: px+"px", transition:"height .5s cubic-bezier(.4,0,.2,1)", boxShadow: isSel ? "0 2px 10px "+cor.replace(/,\s*1\)/, ",0.35)") : "none" } }),
-              React.createElement('div', { style:{ width:"100%", height:2, background: isSel ? cor : "transparent" } }),
-              React.createElement('div', { style:{ fontSize:10, color: isSel ? "var(--c-text)" : C.sub, fontWeight: isSel ? 700 : 400, marginTop:3, textAlign:"center" } }, nomesMes6[i])
+            var isHoje = meses6[i] === _mesHoje12;
+            var barCor = isSel || isHoje ? cor : cor.replace(/,\s*1\)/, ",0.38)");
+            return React.createElement('div', { key:i, style:{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", minWidth:minColW } },
+              React.createElement('div', { style:{ fontSize:11, color: isSel||isHoje ? "var(--c-text)" : C.sub, fontWeight:700, marginBottom:3, textAlign:"center", whiteSpace:"nowrap" } }, v > 0 ? "R$"+fmtK(v) : ""),
+              React.createElement('div', { style:{ width:"80%", background: barCor, borderRadius:"6px 6px 0 0", height: px+"px", transition:"height .5s cubic-bezier(.4,0,.2,1)", boxShadow: isSel||isHoje ? "0 3px 12px "+cor.replace(/,\s*1\)/, ",0.38)") : "none" } }),
+              React.createElement('div', { style:{ width:"80%", height:3, background: isSel||isHoje ? cor : "transparent" } }),
+              React.createElement('div', { style:{ fontSize: isSel||isHoje ? 12 : 11, color: isSel||isHoje ? "var(--c-text)" : C.sub, fontWeight: isSel||isHoje ? 700 : 400, marginTop:4, textAlign:"center" } }, nomesMes6[i])
             );
           })
           )
@@ -14688,12 +14717,9 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         React.createElement('div', { style:{ marginTop:20, fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Lucratividade"),
         React.createElement('div', { style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"16px 14px 10px", boxShadow:"0 1px 8px rgba(0,0,0,0.05)" } },
           (function(){
-            // Gráfico começa no mês atual (hojeStr.slice(0,7)) e vai +5 meses
-            var hoje7 = new Date(); hoje7.setHours(0,0,0,0);
-            var mesBase = hoje7.toISOString().slice(0,7);
-            function addM(base,n){ var d=new Date(base+"-15"); d.setMonth(d.getMonth()+n); return d.toISOString().slice(0,7); }
-            var mL = []; for(var mi=0;mi<6;mi++) mL.push(addM(mesBase,mi));
-            var nomL = mL.map(function(m){ return new Date(m+"-15").toLocaleString("pt-BR",{month:"short"}); });
+            // 12 meses: 6 atrás + 6 à frente do mês atual
+            var mL = meses6;
+            var nomL = mL.map(function(m){ return new Date(m+"-15").toLocaleString("pt-BR",{month:"short",year:"2-digit"}); });
             var rec6L = mL.map(function(m){
               if(lucroMode==="recebidas"){
                 return contratos.filter(function(c){ var ref=c.status_pagamento==="pago"&&c.data_pagamento?c.data_pagamento:c.previsao_pagamento; return ref&&ref.slice(0,7)===m&&c.status_pagamento==="pago"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
@@ -14708,20 +14734,21 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             var lucro6L = rec6L.map(function(r,i){ return r-desp6L[i]; });
             var NL = mL.length;
             var maxBar = Math.max.apply(null,rec6L.concat(desp6L).concat([1]));
-            var BAR_H = 110;
-            var CHART_W = 300; var CHART_H = 140;
-            // Barras: cada mês ocupa CHART_W/NL, duas barras por grupo
-            var colW = CHART_W / NL;
-            var barW = colW * 0.36;
-            var barGap = colW * 0.04;
-            // Linha de lucro: ponto no centro de cada grupo
+            var LCW = minColW; // 80px por mês
+            var BAR_H_L = 150;
+            var TOP_PAD = 28; // espaço para valores acima das barras
+            var BOT_PAD = 26; // espaço para labels de mês
+            var CHART_W_L = NL * LCW;
+            var CHART_H_L = BAR_H_L + TOP_PAD + BOT_PAD;
+            var baseY_L = TOP_PAD + BAR_H_L;
+            var barW_L = LCW * 0.34;
+            var barGap_L = LCW * 0.03;
             var lucroLine = lucro6L.map(function(l,i){
-              var cx = colW*i + colW/2;
+              var cx = LCW*i + LCW/2;
               var norm = maxBar > 0 ? l/maxBar : 0;
-              var cy = CHART_H - 18 - norm*(BAR_H);
-              return { cx:cx, cy:cy, l:l };
+              var cy = baseY_L - norm*BAR_H_L;
+              return { cx:cx, cy:Math.max(TOP_PAD+4, Math.min(baseY_L, cy)), l:l };
             });
-            // smooth bezier path
             function bezierPath(pts){
               if(pts.length<2) return "";
               var d="M"+pts[0].cx.toFixed(1)+" "+pts[0].cy.toFixed(1);
@@ -14734,26 +14761,23 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
               return d;
             }
             var pathLL = bezierPath(lucroLine);
-            var areaPath = pathLL+" L"+lucroLine[NL-1].cx.toFixed(1)+" "+CHART_H+" L"+lucroLine[0].cx.toFixed(1)+" "+CHART_H+" Z";
-            // Y-axis labels (3 levels)
-            var yLabels = [0, maxBar*0.5, maxBar].map(function(v,i){
-              return { val:v, y: CHART_H-18 - (v/maxBar)*BAR_H };
-            });
-            function fK(v){ return v>=1000?(Math.round(v/100)/10)+"k":Math.round(v); }
+            var areaPath = pathLL+" L"+lucroLine[NL-1].cx.toFixed(1)+" "+baseY_L+" L"+lucroLine[0].cx.toFixed(1)+" "+baseY_L+" Z";
+            function fK2(v){ if(Math.abs(v)>=1000000) return (v/1000000).toFixed(1).replace(".",",")+"M"; if(Math.abs(v)>=1000) return (v/1000).toFixed(1).replace(".",",")+"k"; return Math.round(v)+""; }
             var selIdxL = mL.indexOf(dashMes);
-            if(selIdxL<0) selIdxL=0;
+            if(selIdxL<0) selIdxL = mL.indexOf(_mesHoje12);
+            if(selIdxL<0) selIdxL = 6;
             return React.createElement('div', null,
               // Header
               React.createElement('div', { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 } },
                 React.createElement('div', { style:{ display:"flex", gap:14, flexWrap:"wrap" } },
                   [{cor:"#34C759",label:"Receita",tipo:"bar"},{cor:"#FF3B30",label:"Despesa",tipo:"bar"},{cor:"#007AFF",label:"Lucro",tipo:"line"}].map(function(item,idx){
-                    return React.createElement('div', { key:idx, style:{ display:"flex", alignItems:"center", gap:5, fontSize:11, color:"var(--c-text)", fontWeight:500 } },
+                    return React.createElement('div', { key:idx, style:{ display:"flex", alignItems:"center", gap:5, fontSize:12, color:"var(--c-text)", fontWeight:500 } },
                       item.tipo==="line"
-                        ? React.createElement('svg',{width:18,height:10,style:{flexShrink:0}},
-                            React.createElement('line',{x1:0,y1:5,x2:18,y2:5,stroke:"#007AFF",strokeWidth:2,strokeDasharray:"3,2"}),
-                            React.createElement('circle',{cx:9,cy:5,r:3,fill:"#007AFF",stroke:"#fff",strokeWidth:1})
+                        ? React.createElement('svg',{width:20,height:12,style:{flexShrink:0}},
+                            React.createElement('line',{x1:0,y1:6,x2:20,y2:6,stroke:"#007AFF",strokeWidth:2.5,strokeDasharray:"3,2"}),
+                            React.createElement('circle',{cx:10,cy:6,r:3.5,fill:"#007AFF",stroke:"#fff",strokeWidth:1.5})
                           )
-                        : React.createElement('div',{style:{width:12,height:12,borderRadius:3,background:item.cor,flexShrink:0}}),
+                        : React.createElement('div',{style:{width:14,height:14,borderRadius:3,background:item.cor,flexShrink:0}}),
                       item.label
                     );
                   })
@@ -14764,71 +14788,69 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 )
               ),
               // SVG chart com rolagem lateral
-              React.createElement('div', { style:{ overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"none", msOverflowStyle:"none" } },
+              React.createElement('div', { style:{ overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"thin" } },
               React.createElement('svg', {
-                viewBox: "0 0 "+CHART_W+" "+CHART_H,
-                preserveAspectRatio: "xMidYMid meet",
-                style:{ width:Math.max(320, CHART_W)+"px", height:180, display:"block", overflow:"visible" }
+                width: CHART_W_L, height: CHART_H_L,
+                viewBox: "0 0 "+CHART_W_L+" "+CHART_H_L,
+                style:{ display:"block", overflow:"visible", shapeRendering:"geometricPrecision" }
               },
                 React.createElement('defs', null,
-                  React.createElement('linearGradient', { id:"recGrad", x1:"0", y1:"0", x2:"0", y2:"1" },
+                  React.createElement('linearGradient', { id:"recGrad2", x1:"0", y1:"0", x2:"0", y2:"1" },
                     React.createElement('stop', { offset:"0%", stopColor:"#34C759", stopOpacity:"0.95" }),
                     React.createElement('stop', { offset:"100%", stopColor:"#34C759", stopOpacity:"0.55" })
                   ),
-                  React.createElement('linearGradient', { id:"despGrad", x1:"0", y1:"0", x2:"0", y2:"1" },
-                    React.createElement('stop', { offset:"0%", stopColor:"#FF3B30", stopOpacity:"0.9" }),
-                    React.createElement('stop', { offset:"100%", stopColor:"#FF3B30", stopOpacity:"0.5" })
+                  React.createElement('linearGradient', { id:"despGrad2", x1:"0", y1:"0", x2:"0", y2:"1" },
+                    React.createElement('stop', { offset:"0%", stopColor:"#FF3B30", stopOpacity:"0.90" }),
+                    React.createElement('stop', { offset:"100%", stopColor:"#FF3B30", stopOpacity:"0.50" })
                   ),
-                  React.createElement('linearGradient', { id:"lucroAreaGrad", x1:"0", y1:"0", x2:"0", y2:"1" },
-                    React.createElement('stop', { offset:"0%", stopColor:"#007AFF", stopOpacity:"0.15" }),
+                  React.createElement('linearGradient', { id:"lucroAreaGrad2", x1:"0", y1:"0", x2:"0", y2:"1" },
+                    React.createElement('stop', { offset:"0%", stopColor:"#007AFF", stopOpacity:"0.14" }),
                     React.createElement('stop', { offset:"100%", stopColor:"#007AFF", stopOpacity:"0.02" })
                   )
                 ),
-                // Grid lines horizontais
-                yLabels.map(function(yl, gi) {
-                  return React.createElement('g', { key:gi },
-                    React.createElement('line', { x1:0, y1:yl.y.toFixed(1), x2:CHART_W, y2:yl.y.toFixed(1), stroke:"rgba(120,120,128,0.15)", strokeWidth:0.5, strokeDasharray:"3,3" }),
-                    React.createElement('text', { x:1, y:(yl.y-2).toFixed(1), fontSize:6, fill:"rgba(120,120,128,0.7)", fontWeight:500 }, fK(yl.val))
-                  );
+                // Grid lines
+                [0, 0.5, 1].map(function(frac, gi) {
+                  var y = baseY_L - frac*BAR_H_L;
+                  return React.createElement('line', { key:gi, x1:0, y1:y.toFixed(1), x2:CHART_W_L, y2:y.toFixed(1), stroke:"rgba(120,120,128,0.18)", strokeWidth:0.6, strokeDasharray:"4,4" });
                 }),
                 // Linha base
-                React.createElement('line', { x1:0, y1:CHART_H-18, x2:CHART_W, y2:CHART_H-18, stroke:"rgba(120,120,128,0.25)", strokeWidth:0.5 }),
+                React.createElement('line', { x1:0, y1:baseY_L, x2:CHART_W_L, y2:baseY_L, stroke:"rgba(120,120,128,0.30)", strokeWidth:0.8 }),
                 // Barras + labels mês
                 mL.map(function(m,i){
                   var isSel = i===selIdxL;
-                  var hRec = Math.max(rec6L[i]>0?3:0, (rec6L[i]/maxBar)*BAR_H);
-                  var hDesp = Math.max(desp6L[i]>0?3:0, (desp6L[i]/maxBar)*BAR_H);
-                  var x1 = colW*i + barGap*2;
-                  var x2 = x1 + barW + barGap;
-                  var baseY = CHART_H - 18;
+                  var isHojeM = m === _mesHoje12;
+                  var hRec = Math.max(rec6L[i]>0?4:0, (rec6L[i]/maxBar)*BAR_H_L);
+                  var hDesp = Math.max(desp6L[i]>0?4:0, (desp6L[i]/maxBar)*BAR_H_L);
+                  var x1 = LCW*i + barGap_L*2;
+                  var x2 = x1 + barW_L + barGap_L;
                   return React.createElement('g', { key:m },
+                    // Destaque coluna
+                    (isSel||isHojeM) && React.createElement('rect', { x:(LCW*i+1).toFixed(1), y:TOP_PAD, width:(LCW-2).toFixed(1), height:BAR_H_L, rx:4, fill:"rgba(0,122,255,0.05)", stroke:"rgba(0,122,255,0.14)", strokeWidth:0.6 }),
                     // Barra receita
-                    React.createElement('rect', { x:x1.toFixed(1), y:(baseY-hRec).toFixed(1), width:barW.toFixed(1), height:Math.max(hRec,0).toFixed(1), rx:2, fill: isSel?"url(#recGrad)":"rgba(52,199,89,0.5)", style:{transition:"height .5s"} }),
+                    React.createElement('rect', { x:x1.toFixed(1), y:(baseY_L-hRec).toFixed(1), width:barW_L.toFixed(1), height:Math.max(hRec,0).toFixed(1), rx:3, fill: isSel||isHojeM?"url(#recGrad2)":"rgba(52,199,89,0.50)" }),
                     // Valor receita
-                    rec6L[i]>0 && React.createElement('text', { x:(x1+barW/2).toFixed(1), y:(baseY-hRec-2).toFixed(1), textAnchor:"middle", fontSize:5.5, fontWeight:700, fill: isSel?"#34C759":"rgba(52,199,89,0.8)" }, fK(rec6L[i])),
+                    rec6L[i]>0 && React.createElement('text', { x:(x1+barW_L/2).toFixed(1), y:(baseY_L-hRec-4).toFixed(1), textAnchor:"middle", fontSize:10, fontWeight:700, fill: isSel||isHojeM?"#34C759":"rgba(52,199,89,0.85)", fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif" }, fK2(rec6L[i])),
                     // Barra despesa
-                    React.createElement('rect', { x:x2.toFixed(1), y:(baseY-hDesp).toFixed(1), width:barW.toFixed(1), height:Math.max(hDesp,0).toFixed(1), rx:2, fill: isSel?"url(#despGrad)":"rgba(255,59,48,0.45)", style:{transition:"height .5s"} }),
+                    React.createElement('rect', { x:x2.toFixed(1), y:(baseY_L-hDesp).toFixed(1), width:barW_L.toFixed(1), height:Math.max(hDesp,0).toFixed(1), rx:3, fill: isSel||isHojeM?"url(#despGrad2)":"rgba(255,59,48,0.45)" }),
                     // Valor despesa
-                    desp6L[i]>0 && React.createElement('text', { x:(x2+barW/2).toFixed(1), y:(baseY-hDesp-2).toFixed(1), textAnchor:"middle", fontSize:5.5, fontWeight:700, fill: isSel?"#FF3B30":"rgba(255,59,48,0.8)" }, fK(desp6L[i])),
+                    desp6L[i]>0 && React.createElement('text', { x:(x2+barW_L/2).toFixed(1), y:(baseY_L-hDesp-4).toFixed(1), textAnchor:"middle", fontSize:10, fontWeight:700, fill: isSel||isHojeM?"#FF3B30":"rgba(255,59,48,0.85)", fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif" }, fK2(desp6L[i])),
                     // Label mês
-                    React.createElement('text', { x:(colW*i+colW/2).toFixed(1), y:(CHART_H-4).toFixed(1), textAnchor:"middle", fontSize:7, fontWeight: isSel?800:500, fill: isSel?"var(--c-text)":"rgba(120,120,128,0.9)" }, nomL[i]),
-                    // Destaque coluna selecionada
-                    isSel && React.createElement('rect', { x:(colW*i+1).toFixed(1), y:0, width:(colW-2).toFixed(1), height:(CHART_H-18), rx:4, fill:"rgba(0,122,255,0.04)", stroke:"rgba(0,122,255,0.12)", strokeWidth:0.5 })
+                    React.createElement('text', { x:(LCW*i+LCW/2).toFixed(1), y:(CHART_H_L-6).toFixed(1), textAnchor:"middle", fontSize: isSel||isHojeM?13:11, fontWeight: isSel||isHojeM?800:500, fill: isSel||isHojeM?"var(--c-text)":"rgba(120,120,128,0.9)", fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif" }, nomL[i])
                   );
                 }),
                 // Área sob linha de lucro
-                React.createElement('path', { d:areaPath, fill:"url(#lucroAreaGrad)" }),
+                React.createElement('path', { d:areaPath, fill:"url(#lucroAreaGrad2)" }),
                 // Linha de lucro bezier
-                React.createElement('path', { d:pathLL, fill:"none", stroke:"#007AFF", strokeWidth:2, strokeLinejoin:"round", strokeLinecap:"round" }),
-                // Pontos da linha de lucro
+                React.createElement('path', { d:pathLL, fill:"none", stroke:"#007AFF", strokeWidth:2.5, strokeLinejoin:"round", strokeLinecap:"round" }),
+                // Pontos + valores da linha de lucro
                 lucroLine.map(function(p,i){
-                  var isSel=i===selIdxL;
+                  var isSel=i===selIdxL||mL[i]===_mesHoje12;
                   var cor=p.l>=0?"#007AFF":"#FF3B30";
+                  var lblY = p.cy < TOP_PAD+20 ? p.cy+18 : p.cy-(isSel?10:8);
                   return React.createElement('g', { key:i },
-                    React.createElement('circle', { cx:p.cx.toFixed(1), cy:p.cy.toFixed(1), r: isSel?4:2.5, fill:cor, stroke:"#fff", strokeWidth:1.5 }),
-                    // Valor lucro acima do ponto
-                    React.createElement('text', { x:p.cx.toFixed(1), y:(p.cy-(isSel?7:5)).toFixed(1), textAnchor:"middle", fontSize: isSel?6.5:5.5, fontWeight:800, fill:cor },
-                      (p.l>=0?"+":"")+fK(p.l))
+                    React.createElement('circle', { cx:p.cx.toFixed(1), cy:p.cy.toFixed(1), r: isSel?5:3.5, fill:cor, stroke:"#fff", strokeWidth:2 }),
+                    React.createElement('text', { x:p.cx.toFixed(1), y:lblY.toFixed(1), textAnchor:"middle", fontSize: isSel?11:9, fontWeight:800, fill:cor, fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif" },
+                      (p.l>=0?"+":"")+fK2(p.l))
                   );
                 })
               )

@@ -13993,7 +13993,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       var em2d = new Date(); em2d.setDate(em2d.getDate()+2); var str2d = em2d.toISOString().split("T")[0];
       var despPendSort = despPend.slice().sort(function(a,b){ return (a.data||"").localeCompare(b.data||""); });
       var despUrgentes = despPendSort.filter(d => d.data && d.data <= str2d);
-      var autoExpandDesp = despUrgentes.length > 0;
+      // A Pagar: nunca abre automaticamente — só abre ao clicar
+      var autoExpandDesp = false;
       // Sempre mostra todas as pendentes quando o painel está aberto (manual ou automático)
       var despPendNoPanel = despPendSort;
       var isOpen = despExpanded || autoExpandDesp;
@@ -14012,7 +14013,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
               , React.createElement('div', { style: { fontSize: 10, color: C.green, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 } }, "Pagas")
               , React.createElement('div', { style: { fontSize: 15, fontWeight: 700, color: C.green, marginTop: 3 } }, fmtBRL(despPagas).split(",")[0])
             )
-            , React.createElement('div', { style: { flex: 1, background: "rgba(255,59,48,0.05)", borderRadius: 10, padding: "8px 10px", border: "1px solid rgba(255,59,48,0.18)" } }
+            , React.createElement('div', { onClick: (e) => { e.stopPropagation(); setDespDashFilter(despDashFilter==="apagar" ? null : "apagar"); setDespExpanded(true); }, style: { flex: 1, background: despDashFilter==="apagar" ? "rgba(255,59,48,0.18)" : "rgba(255,59,48,0.05)", borderRadius: 10, padding: "8px 10px", cursor: "pointer", border: despDashFilter==="apagar" ? "1.5px solid "+C.red : "1px solid rgba(255,59,48,0.18)" } }
               , React.createElement('div', { style: { fontSize: 10, color: C.red, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 } }, "A Pagar")
               , React.createElement('div', { style: { fontSize: 15, fontWeight: 700, color: C.red, marginTop: 3 } }, fmtBRL(despPend.reduce((s,d)=>s+parseFloat(d.valor||0),0)).split(",")[0])
             )
@@ -14034,6 +14035,10 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
               despListaPanel = despPagosList.slice().sort(function(a,b){ return (a.data||"").localeCompare(b.data||""); });
               panelLabel = "Despesas Pagas";
               panelCor = C.green;
+            } else if (despDashFilter === "apagar") {
+              despListaPanel = despPendSort;
+              panelLabel = "A Pagar";
+              panelCor = C.red;
             } else {
               despListaPanel = despExpanded ? despPendSort : despPendNoPanel;
               panelLabel = "A Pagar";
@@ -14079,7 +14084,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         var db2 = b.data_previsao_pagamento||b.data_entrada||"";
         return da.localeCompare(db2);
       });
-      var manUrgentes = manPendSort.filter(m => { var dt = m.data_previsao_pagamento||m.data_entrada||""; return dt && dt <= str2dM; });
+      var manUrgentes = manPendSort.filter(m => { var dt = m.data_previsao_pagamento||m.data_entrada||""; return dt && dt.slice(0,7) === dashMes && dt <= str2dM; });
       var autoExpandMan = manUrgentes.length > 0;
       var manPendNoPanel = manExpanded
         ? manPendSort
@@ -14240,204 +14245,265 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       );
     })()
 
-    /* ── LINHA DO TEMPO: Fluxo de Caixa ── */
+    /* ── GRÁFICO DIÁRIO: Fluxo de Caixa ── */
     , (() => {
       var hojeT = new Date(); hojeT.setHours(0,0,0,0);
       var hojeStr = hojeT.toISOString().split("T")[0];
       var [fluxoVeiculo, setFluxoVeiculo] = React.useState("");
+      var [grafTooltip, setGrafTooltip] = React.useState(null);
       var eventos = [];
-      var m30 = new Date(hojeT); m30.setDate(m30.getDate()+30);
-      var str30T = m30.toISOString().split("T")[0];
-      // Receitas pendentes
+      var mesInicio = dashMes + "-01";
+      var mesY = parseInt(dashMes.slice(0,4),10);
+      var mesM = parseInt(dashMes.slice(5,7),10);
+      var ultimoDia = new Date(mesY, mesM, 0).getDate();
+      var mesFim = dashMes + "-" + (ultimoDia < 10 ? "0"+ultimoDia : String(ultimoDia));
+      // Receitas de contratos
       (contratos||[]).forEach(function(c){
-        if (c.status==="cancelado" || c.status_pagamento==="pago" || c.status_pagamento==="isento") return;
+        if (c.status==="cancelado") return;
         if (fluxoVeiculo && String(c.veiculo_id||"") !== fluxoVeiculo) return;
-        var dt = c.previsao_pagamento || c.data_fim; if (!dt) return;
-        eventos.push({ dt:dt, tipo:"rec", label:(clientes||[]).find(x=>x.id==c.cliente_id)?.nome||"Contrato #"+c.id, val:parseFloat(c.valor_total||0), pago:false });
+        if (c.status_pagamento==="pago") {
+          var dt = c.data_pagamento||c.previsao_pagamento; if (!dt||dt<mesInicio||dt>mesFim) return;
+          eventos.push({ dt:dt, tipo:"rec", label:(clientes||[]).find(x=>x.id==c.cliente_id)?.nome||"Contrato", val:parseFloat(c.valor_total||0), pago:true });
+        } else if (c.status_pagamento!=="isento") {
+          var dt2 = c.previsao_pagamento||c.data_fim; if (!dt2||dt2<mesInicio||dt2>mesFim) return;
+          eventos.push({ dt:dt2, tipo:"rec", label:(clientes||[]).find(x=>x.id==c.cliente_id)?.nome||"Contrato #"+c.id, val:parseFloat(c.valor_total||0), pago:false });
+        }
       });
-      (contratos||[]).forEach(function(c){
-        if (c.status_pagamento!=="pago") return;
-        if (fluxoVeiculo && String(c.veiculo_id||"") !== fluxoVeiculo) return;
-        var dt = c.data_pagamento||c.previsao_pagamento; if (!dt) return;
-        eventos.push({ dt:dt, tipo:"rec", label:(clientes||[]).find(x=>x.id==c.cliente_id)?.nome||"Contrato", val:parseFloat(c.valor_total||0), pago:true });
+      // Receitas extras
+      (receitas||[]).forEach(function(r){
+        if (r.ref_fatura) return;
+        if (fluxoVeiculo && String(r.veiculo_id||"") !== fluxoVeiculo) return;
+        var dt = r.data_pagamento||r.data; if (!dt||dt<mesInicio||dt>mesFim) return;
+        eventos.push({ dt:dt, tipo:"rec", label:r.descricao||"Receita", val:parseFloat(r.valor||0), pago:r.status==="recebido" });
       });
-      // Despesas (recorrentes projetadas para o mês atual)
-      var _mesProjFluxo = hojeStr.slice(0,7);
+      // Despesas
       (despesas||[]).forEach(function(d){
         if (d.manutencao_id) return;
         if (fluxoVeiculo && String(d.veiculo_id||"") !== fluxoVeiculo) return;
-        // Para despesas recorrentes: gera um evento por mês dentro do range (mês atual até +45 dias)
         if (d.recorrente && d.data) {
           var _dia = parseInt(d.data.slice(8,10),10);
-          // Gera para o mês atual e próximo (cobrir range de 45 dias)
-          var _mesesProj = [_mesProjFluxo];
-          var _proxMes = new Date(hojeT); _proxMes.setMonth(_proxMes.getMonth()+1);
-          _mesesProj.push(_proxMes.toISOString().slice(0,7));
-          _mesesProj.forEach(function(_mp) {
-            // Só projeta se a despesa já existia neste mês ou antes
-            if (_mp < d.data.slice(0,7)) return;
-            var _yf = parseInt(_mp.slice(0,4),10);
-            var _mf = parseInt(_mp.slice(5,7),10);
-            var _ult = new Date(_yf, _mf, 0).getDate();
-            var _df = Math.min(_dia, _ult);
-            var _dtProj = _mp + "-" + (_df < 10 ? "0"+_df : String(_df));
-            // Se já foi pago, usa data_pagamento apenas no mês que foi pago
-            var _pago = d.status==="pago" || !!d.data_pagamento;
-            var _dt = _pago && d.data_pagamento && d.data_pagamento.slice(0,7)===_mp ? d.data_pagamento : _dtProj;
-            eventos.push({ dt:_dt, tipo:"desp", label:d.descricao||d.categoria||"Despesa", val:parseFloat(d.valor||0), pago:_pago && d.data_pagamento && d.data_pagamento.slice(0,7)===_mp });
-          });
+          if (dashMes < d.data.slice(0,7)) return;
+          var _ult = new Date(mesY, mesM, 0).getDate();
+          var _df = Math.min(_dia, _ult);
+          var _dtProj = dashMes + "-" + (_df < 10 ? "0"+_df : String(_df));
+          if (_dtProj < mesInicio || _dtProj > mesFim) return;
+          var _pago = d.status==="pago" || !!d.data_pagamento;
+          var _dt = _pago && d.data_pagamento && d.data_pagamento.slice(0,7)===dashMes ? d.data_pagamento : _dtProj;
+          eventos.push({ dt:_dt, tipo:"desp", label:d.descricao||d.categoria||"Despesa", val:parseFloat(d.valor||0), pago:_pago && d.data_pagamento && d.data_pagamento.slice(0,7)===dashMes });
           return;
         }
-        // Despesa não recorrente: usa data_pagamento se paga, senão usa data prevista
-        var dt = d.data_pagamento || d.data;
-        if (!dt) return;
+        var dt = d.data_pagamento||d.data; if (!dt||dt<mesInicio||dt>mesFim) return;
         eventos.push({ dt:dt, tipo:"desp", label:d.descricao||d.categoria||"Despesa", val:parseFloat(d.valor||0), pago:d.status==="pago"||!!d.data_pagamento });
       });
       // Manutencoes
       (manutencoes||[]).forEach(function(m){
         if (fluxoVeiculo && String(m.veiculo_id||"") !== fluxoVeiculo) return;
-        var dt = m.data_pagamento||m.data_previsao_pagamento||m.data_entrada; if (!dt) return;
+        var dt = m.data_pagamento||m.data_previsao_pagamento||m.data_entrada; if (!dt||dt<mesInicio||dt>mesFim) return;
         var ve = (veiculos||[]).find(v=>v.id==m.veiculo_id);
-        eventos.push({ dt:dt, tipo:"man", label:(m.descricao||m.tipo||"Manutenção")+(ve?" · "+ve.placa:""), val:parseFloat(m.custo||0), pago:m.status_financeiro==="pago"||!!m.data_pagamento });
-      });
-      // Add pro-labore: day 30 of each month in range = withdraw remaining balance
-      // We'll add it as a special event after computing saldo
-      // First sort without prolabore
-      eventos.sort(function(a,b){ return a.dt < b.dt ? -1 : a.dt > b.dt ? 1 : 0; });
-      // Inject pro-labore on dia 30 of each month that has any event
-      var mesesComEventos = {};
-      eventos.forEach(function(e){ mesesComEventos[e.dt.slice(0,7)] = true; });
-      Object.keys(mesesComEventos).forEach(function(m){
-        var dia30 = m + "-30";
-        eventos.push({ dt: dia30, tipo: "prolabore", label: "Pró-Labore", val: 0, pago: false, isProlabore: true });
-      });
-      eventos.sort(function(a,b){ return a.dt < b.dt ? -1 : a.dt > b.dt ? 1 : 0; });
-      // Build running balance
-      var saldoAcum = 0;
-      var evComSaldo = eventos.map(function(e){
-        if (e.isProlabore) {
-          // pro-labore = withdraw whatever positive balance remains
-          var retira = saldoAcum > 0 ? saldoAcum : 0;
-          saldoAcum = saldoAcum > 0 ? 0 : saldoAcum;
-          return Object.assign({}, e, { val: retira, saldo: saldoAcum });
-        }
-        if (e.tipo==="rec") saldoAcum += e.val; else saldoAcum -= e.val;
-        return Object.assign({}, e, { saldo: saldoAcum });
+        eventos.push({ dt:dt, tipo:"man", label:(m.descricao||m.tipo||"Manutencao")+(ve?" · "+ve.placa:""), val:parseFloat(m.custo||0), pago:m.status_financeiro==="pago"||!!m.data_pagamento });
       });
       // Group by date
       var byDate = {};
-      evComSaldo.forEach(function(e){
-        if (!byDate[e.dt]) byDate[e.dt] = { events:[], saldo: e.saldo };
-        byDate[e.dt].events.push(e);
-        byDate[e.dt].saldo = e.saldo; // last saldo of that day
+      eventos.forEach(function(e){
+        if (!byDate[e.dt]) byDate[e.dt] = { receitas:[], despesas:[] };
+        if (e.tipo==="rec") byDate[e.dt].receitas.push(e);
+        else byDate[e.dt].despesas.push(e);
       });
-      // Show only selected day (default: today), with ±7 day range for context display
-      var d7b = new Date(hojeT); d7b.setDate(d7b.getDate()-3); // unused, kept for compat
-      var isHoje = hojeStr === hojeStr; // always true, kept for compat
-      // Date range: start of current dashMes to +45 days from today
-      var strMesInicio = dashMes + "-01";
-      var d45f = new Date(hojeT); d45f.setDate(d45f.getDate()+45);
-      var str45f = d45f.toISOString().split("T")[0];
-      var datesAll = Object.keys(byDate).sort().filter(function(d){ return d >= strMesInicio && d <= str45f; });
-      // Find today's index or next relevant date
-      var todayIdx = datesAll.indexOf(hojeStr);
-      if (todayIdx < 0) {
-        // find next date after today
-        todayIdx = datesAll.findIndex(function(d){ return d >= hojeStr; });
-        if (todayIdx < 0) todayIdx = 0;
+      var datesAll = Object.keys(byDate).sort();
+      // Caixa livre acumulado
+      var saldoAcum = 0;
+      var diasData = datesAll.map(function(dt){
+        var day = byDate[dt];
+        var totalRec = day.receitas.reduce(function(s,e){return s+e.val;},0);
+        var totalDesp = day.despesas.reduce(function(s,e){return s+e.val;},0);
+        saldoAcum += totalRec - totalDesp;
+        return { dt:dt, receitas:day.receitas, despesas:day.despesas, totalRec:totalRec, totalDesp:totalDesp, saldo:saldoAcum };
+      });
+      if (diasData.length === 0) {
+        return React.createElement("div", { style:{ marginTop:28 } }
+          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, marginBottom:10 } }, "Fluxo de Caixa Diário — " + nomeMes)
+          , React.createElement("div", { style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"24px", textAlign:"center", color:C.sub, fontSize:13 } }, "Nenhum lançamento em " + nomeMes)
+        );
       }
-      var scrollRef = React.useRef(null);
-      var scrolledRef = React.useRef(false);
-      React.useEffect(function() {
-        if (!scrollRef.current) return;
-        scrolledRef.current = false;
-        // Each column is exactly 50% of container width (2 days visible at once)
-        // Use requestAnimationFrame to ensure layout is complete
-        requestAnimationFrame(function() {
-          if (!scrollRef.current) return;
-          var colW = scrollRef.current.offsetWidth / 2;
-          scrollRef.current.scrollLeft = todayIdx * colW;
-          scrolledRef.current = true;
-        });
-      }, [datesAll.length, fluxoVeiculo]);
+      var maxRec  = Math.max.apply(null, diasData.map(function(d){return d.totalRec;}));
+      var maxDesp = Math.max.apply(null, diasData.map(function(d){return d.totalDesp;}));
+      var maxBar  = Math.max(maxRec, maxDesp, 1);
+      var barH    = 120;
+      var colW    = Math.max(48, Math.floor(280 / Math.max(diasData.length, 1)));
+      var totalW  = diasData.length * colW;
+      var saldoMin   = Math.min.apply(null, diasData.map(function(d){return d.saldo;}));
+      var saldoMax   = Math.max.apply(null, diasData.map(function(d){return d.saldo;}));
+      var saldoRange = Math.max(Math.abs(saldoMax - saldoMin), 1);
+      var lineAreaH  = 54;
+      function fmtShort(v) {
+        if (Math.abs(v) >= 1000) return "R$" + (v/1000).toFixed(1).replace(".",",") + "k";
+        return "R$" + Math.round(v);
+      }
+      var legendItems = [
+        { type:"bar",  cor:"rgba(52,199,89,0.78)",  label:"Receitas"    },
+        { type:"bar",  cor:"rgba(255,59,48,0.72)",   label:"Despesas"    },
+        { type:"line", cor:"#34C759",                label:"Caixa livre" }
+      ];
       return React.createElement(React.Fragment, null
-        , React.createElement('div', { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:28, marginBottom:8, flexWrap:"wrap", gap:8 } }
-          , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Fluxo de Caixa · Linha do Tempo")
-          , React.createElement('div', { style:{ display:"flex", alignItems:"center", gap:6 } }
-            , React.createElement('select', { value:fluxoVeiculo, onChange:function(e){setFluxoVeiculo(e.target.value);},
-                style:{ border:"1px solid "+C.border, borderRadius:8, padding:"4px 8px", fontSize:12, background:C.card, color:"var(--c-text)", cursor:"pointer" } }
-              , React.createElement('option', { value:"" }, "Todos os veículos")
-              , (veiculos||[]).map(function(v){ return React.createElement('option',{key:v.id,value:String(v.id)},v.placa+(v.modelo?" · "+v.modelo:"")); })
-            )
+        /* Header */
+        , React.createElement("div", { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:28, marginBottom:10, flexWrap:"wrap", gap:8 } }
+          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Fluxo de Caixa Diário — " + nomeMes)
+          , React.createElement("select", { value:fluxoVeiculo, onChange:function(e){setFluxoVeiculo(e.target.value);},
+              style:{ border:"1px solid "+C.border, borderRadius:8, padding:"4px 8px", fontSize:12, background:C.card, color:"var(--c-text)", cursor:"pointer" } }
+            , React.createElement("option", { value:"" }, "Todos os veículos")
+            , (veiculos||[]).map(function(v){ return React.createElement("option",{key:v.id,value:String(v.id)},v.placa+(v.modelo?" · "+v.modelo:"")); })
           )
         )
-        , React.createElement('div', { ref: scrollRef, style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"14px", overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"none", scrollSnapType:"x mandatory", msOverflowStyle:"none" } }
-          , datesAll.length === 0
-            ? React.createElement('div',{style:{textAlign:"center",color:C.sub,padding:"20px 0",fontSize:13}},"Nenhum evento no período")
-            : React.createElement('div', { style:{ display:"flex", gap:0, width: datesAll.length * 50 + "%" } }
-            , datesAll.map(function(dt, di) {
-              var day = byDate[dt];
-              var isToday = dt === hojeStr;
-              var saldo = day.saldo;
-              var saldoCor = saldo >= 0 ? C.green : C.red;
-              return React.createElement('div', { key:dt, style:{
-                width: "calc(100% / " + datesAll.length + ")",
-                flexShrink: 0,
-                borderLeft: di>0 ? "1px solid "+C.border : "none",
-                paddingLeft: di>0?12:0,
-                paddingRight:12,
-                scrollSnapAlign: "start",
-                position:"relative",
-                background: isToday ? "rgba(0,122,255,0.06)" : "transparent",
-                borderRadius: isToday ? 10 : 0,
-                boxSizing: "border-box"
-              } }
-                // Date header
-                , React.createElement('div', { style:{
-                    fontSize: isToday?12:10,
-                    fontWeight: isToday?800:600,
-                    color: isToday?C.blue:C.sub,
-                    marginBottom:6,
-                    background: isToday?"rgba(0,122,255,0.15)":"transparent",
-                    borderRadius:6,
-                    padding: isToday?"3px 8px":"1px 4px",
-                    display:"inline-flex",
-                    alignItems:"center",
-                    gap:5
-                  } },
-                  fmtDate(dt).slice(0,5),
-                  isToday ? React.createElement('span',{style:{fontSize:10,fontWeight:700,background:C.blue,color:"#fff",borderRadius:4,padding:"1px 5px",marginLeft:2}},"Hoje") : null
-                )
-                // Events
-                , day.events.map(function(e, ei) {
-                  var isRec = e.tipo==="rec";
-                  var cor = e.isProlabore ? C.blue : isRec ? (e.pago?C.green:C.orange) : (e.tipo==="man"?"#AF52DE":C.red);
-                  return React.createElement('div', { key:ei, style:{ marginBottom:4, padding:"5px 7px", borderRadius:8, background: cor+"18", border: isToday?"1px solid "+cor+"30":"none" } }
-                    , React.createElement('div', { style:{ fontSize:12, fontWeight:600, color:"var(--c-text)", lineHeight:1.3, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, e.label)
-                    , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:cor, marginTop:1 } }, fmtBRLint(e.val))
-                  );
+        /* Chart card */
+        , React.createElement("div", { style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"14px 8px 10px", overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"none", msOverflowStyle:"none" } }
+          , React.createElement("div", { style:{ minWidth: totalW + 108 } }
+
+            /* ── BAR CHART ── */
+            , React.createElement("div", { style:{ display:"flex", alignItems:"flex-end" } }
+
+              /* Y-axis LEFT (receitas) */
+              , React.createElement("div", { style:{ width:50, flexShrink:0, display:"flex", flexDirection:"column", alignItems:"flex-end", justifyContent:"space-between", height:barH+12, paddingBottom:12, paddingRight:6, boxSizing:"border-box" } }
+                , React.createElement("div", { style:{ fontSize:8, color:C.green, fontWeight:700 } }, fmtShort(maxBar))
+                , React.createElement("div", { style:{ fontSize:7, color:C.sub, marginTop:2 } }, "Rec.")
+                , React.createElement("div", { style:{ fontSize:8, color:C.sub, marginTop:"auto" } }, "0")
+              )
+
+              /* Bars + grid */
+              , React.createElement("div", { style:{ flex:1, position:"relative", height:barH+12 } }
+                /* Grid lines */
+                , [0,0.25,0.5,0.75,1].map(function(f,gi){
+                  return React.createElement("div", { key:gi, style:{ position:"absolute", left:0, right:0, bottom: f*(barH-2)+12, height:1, background:C.border, opacity:gi===0?0.9:0.35, pointerEvents:"none", zIndex:0 } });
                 })
-                // Running balance
-                , React.createElement('div', { style:{ marginTop:6, padding:"5px 7px", borderRadius:8, background:saldoCor+"12", borderTop:"1px solid "+C.border } }
-                  , React.createElement('div', { style:{ fontSize:9, color:C.sub, textTransform:"uppercase", letterSpacing:0.4 } }, "Saldo")
-                  , React.createElement('div', { style:{ fontSize:13, fontWeight:800, color:saldoCor } }, fmtBRLint(saldo))
+                /* Columns */
+                , React.createElement("div", { style:{ display:"flex", alignItems:"flex-end", height:"100%", gap:3, paddingBottom:12, boxSizing:"border-box" } }
+                  , diasData.map(function(day, di){
+                    var hRec  = day.totalRec  > 0 ? Math.max(5, (day.totalRec  / maxBar) * (barH-2)) : 0;
+                    var hDesp = day.totalDesp > 0 ? Math.max(5, (day.totalDesp / maxBar) * (barH-2)) : 0;
+                    var isToday = day.dt === hojeStr;
+                    var isTT    = grafTooltip === di;
+                    var colBg   = isToday ? "rgba(0,122,255,0.06)" : isTT ? "rgba(120,120,128,0.06)" : "transparent";
+                    return React.createElement("div", { key:day.dt, onClick:function(){ setGrafTooltip(isTT ? null : di); },
+                      style:{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"flex-end", position:"relative", cursor:"pointer",
+                              background:colBg, borderRadius:6, paddingBottom:0, zIndex: isTT ? 20 : 1 } }
+                      /* Bar pair */
+                      , React.createElement("div", { style:{ display:"flex", gap:2, alignItems:"flex-end", width:"100%" } }
+                        , React.createElement("div", { style:{ flex:1, height:hRec,  background:isToday?"rgba(52,199,89,0.92)":"rgba(52,199,89,0.68)",  borderRadius:"4px 4px 0 0", minWidth:0, transition:"height .3s", boxShadow:isToday?"0 0 8px rgba(52,199,89,0.45)":"none" } })
+                        , React.createElement("div", { style:{ flex:1, height:hDesp, background:isToday?"rgba(255,59,48,0.88)":"rgba(255,59,48,0.62)", borderRadius:"4px 4px 0 0", minWidth:0, transition:"height .3s", boxShadow:isToday?"0 0 8px rgba(255,59,48,0.38)":"none" } })
+                      )
+                      /* Date label */
+                      , React.createElement("div", { style:{ fontSize:8, color:isToday?C.blue:C.sub, fontWeight:isToday?800:500, marginTop:4, whiteSpace:"nowrap",
+                            background:isToday?"rgba(0,122,255,0.13)":"transparent", borderRadius:3, padding:isToday?"1px 4px":"0" } },
+                        day.dt.slice(8,10)+"/"+day.dt.slice(5,7)
+                      )
+                      /* Tooltip */
+                      , isTT && React.createElement("div", { style:{ position:"absolute", bottom:barH+22, left:"50%", transform:"translateX(-50%)",
+                            background:darkMode?"#2C2C2E":"#fff", border:"1px solid "+C.border, borderRadius:14, padding:"12px 14px",
+                            boxShadow:"0 8px 32px rgba(0,0,0,0.18)", zIndex:400, minWidth:160, maxWidth:230, pointerEvents:"none" } }
+                        /* Date */
+                        , React.createElement("div", { style:{ fontSize:11, fontWeight:700, color:C.sub, marginBottom:8, borderBottom:"1px solid "+C.border, paddingBottom:6 } }, fmtDate(day.dt))
+                        /* Receitas */
+                        , day.receitas.length > 0 && React.createElement("div", { style:{ marginBottom:8 } }
+                          , React.createElement("div", { style:{ fontSize:9, color:C.green, fontWeight:800, textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 } }, "Receitas")
+                          , day.receitas.map(function(e,i){
+                            return React.createElement("div",{key:i,style:{display:"flex",justifyContent:"space-between",gap:10,fontSize:11,color:"var(--c-text)",marginBottom:2}},
+                              React.createElement("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:115}},e.label),
+                              React.createElement("span",{style:{fontWeight:700,color:C.green,flexShrink:0}},fmtBRL(e.val).split(",")[0])
+                            );
+                          })
+                          , day.receitas.length > 1 && React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,fontWeight:700,color:C.green,borderTop:"1px solid "+C.border,marginTop:3,paddingTop:3}},
+                            React.createElement("span",null,"Total"),React.createElement("span",null,fmtBRL(day.totalRec).split(",")[0]))
+                        )
+                        /* Despesas */
+                        , day.despesas.length > 0 && React.createElement("div", { style:{ marginBottom:8 } }
+                          , React.createElement("div", { style:{ fontSize:9, color:C.red, fontWeight:800, textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 } }, "Despesas")
+                          , day.despesas.map(function(e,i){
+                            return React.createElement("div",{key:i,style:{display:"flex",justifyContent:"space-between",gap:10,fontSize:11,color:"var(--c-text)",marginBottom:2}},
+                              React.createElement("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:115}},e.label),
+                              React.createElement("span",{style:{fontWeight:700,color:C.red,flexShrink:0}},fmtBRL(e.val).split(",")[0])
+                            );
+                          })
+                          , day.despesas.length > 1 && React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,fontWeight:700,color:C.red,borderTop:"1px solid "+C.border,marginTop:3,paddingTop:3}},
+                            React.createElement("span",null,"Total"),React.createElement("span",null,fmtBRL(day.totalDesp).split(",")[0]))
+                        )
+                        /* Caixa livre */
+                        , React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:800,color:day.saldo>=0?C.green:C.red,borderTop:"2px solid "+C.border,paddingTop:6,marginTop:2}},
+                          React.createElement("span",null,"Caixa livre"),
+                          React.createElement("span",null,fmtBRL(day.saldo).split(",")[0])
+                        )
+                      )
+                    );
+                  })
                 )
-              );
-            })
-          )
-          , React.createElement('div', { style:{ display:"flex", gap:12, marginTop:10, flexWrap:"wrap", borderTop:"1px solid "+C.border, paddingTop:8 } }
-            , [{cor:C.green,label:"Receita recebida"},{cor:C.orange,label:"A receber"},{cor:C.red,label:"Despesa/Manutenção"},{cor:C.blue,label:"Pró-Labore (dia 30)"}].map(function(l,i){
-              return React.createElement('div', { key:i, style:{ display:"flex", alignItems:"center", gap:4, fontSize:10, color:C.sub } }
-                , React.createElement('div', { style:{ width:8, height:8, borderRadius:"50%", background:l.cor } })
-                , l.label
-              );
-            })
+              )
+
+              /* Y-axis RIGHT (despesas) */
+              , React.createElement("div", { style:{ width:50, flexShrink:0, display:"flex", flexDirection:"column", alignItems:"flex-start", justifyContent:"space-between", height:barH+12, paddingBottom:12, paddingLeft:6, boxSizing:"border-box" } }
+                , React.createElement("div", { style:{ fontSize:8, color:C.red, fontWeight:700 } }, fmtShort(maxBar))
+                , React.createElement("div", { style:{ fontSize:7, color:C.sub, marginTop:2 } }, "Desp.")
+                , React.createElement("div", { style:{ fontSize:8, color:C.sub, marginTop:"auto" } }, "0")
+              )
+            )
+
+            /* ── CAIXA LIVRE LINE ── */
+            , React.createElement("div", { style:{ display:"flex", alignItems:"stretch", marginTop:4 } }
+              /* Left spacer with label */
+              , React.createElement("div", { style:{ width:50, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"flex-end", paddingRight:6 } }
+                , React.createElement("div", { style:{ fontSize:7, color:C.sub, textAlign:"right", lineHeight:1.3, fontWeight:600 } }, "Caixa"+"\n"+"livre")
+              )
+              /* SVG line chart */
+              , React.createElement("div", { style:{ flex:1, position:"relative", height:lineAreaH+16 } }
+                , React.createElement("svg", { style:{ width:"100%", height:lineAreaH+16, overflow:"visible", display:"block" },
+                    viewBox:("0 0 "+(diasData.length*colW)+" "+(lineAreaH+16)), preserveAspectRatio:"none" }
+                  , React.createElement("defs", null
+                    , React.createElement("linearGradient", { id:"cashGradFill", x1:"0", y1:"0", x2:"0", y2:"1" }
+                      , React.createElement("stop", { offset:"0%",   stopColor:saldoMin>=0?"#34C759":"#FF3B30", stopOpacity:"0.28" })
+                      , React.createElement("stop", { offset:"100%", stopColor:saldoMin>=0?"#34C759":"#FF3B30", stopOpacity:"0.02" })
+                    )
+                  )
+                  , (function(){
+                    var pts = diasData.map(function(d,i){
+                      var x = (i + 0.5) * colW;
+                      var norm = saldoRange > 0 ? (d.saldo - saldoMin) / saldoRange : 0.5;
+                      var y = (lineAreaH - 8) * (1 - norm) + 8;
+                      return { x:x, y:y, saldo:d.saldo };
+                    });
+                    var pathD  = pts.map(function(p,i){ return (i===0?"M":"L")+p.x.toFixed(1)+","+p.y.toFixed(1); }).join(" ");
+                    var areaD  = pathD+" L"+pts[pts.length-1].x.toFixed(1)+","+(lineAreaH+12)+" L"+pts[0].x.toFixed(1)+","+(lineAreaH+12)+" Z";
+                    var lColor = saldoMin >= 0 ? "#34C759" : "#FF3B30";
+                    return React.createElement(React.Fragment, null
+                      , React.createElement("path", { d:areaD, fill:"url(#cashGradFill)" })
+                      , React.createElement("path", { d:pathD, fill:"none", stroke:lColor, strokeWidth:"2.5", strokeLinejoin:"round", strokeLinecap:"round" })
+                      , pts.map(function(p,i){
+                        var cor = p.saldo >= 0 ? "#34C759" : "#FF3B30";
+                        return React.createElement(React.Fragment, { key:i }
+                          , React.createElement("circle", { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"3.5", fill:cor, stroke:"#fff", strokeWidth:"2" })
+                          , React.createElement("text", { x:p.x.toFixed(1), y:(p.y-9).toFixed(1), textAnchor:"middle", fontSize:"7.5", fill:cor, fontWeight:"700", fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif" }, fmtShort(p.saldo))
+                        );
+                      })
+                    );
+                  })()
+                )
+              )
+              /* Right spacer */
+              , React.createElement("div", { style:{ width:50, flexShrink:0 } })
+            )
+
+            /* ── LEGEND ── */
+            , React.createElement("div", { style:{ display:"flex", gap:14, marginTop:8, flexWrap:"wrap", borderTop:"1px solid "+C.border, paddingTop:8 } }
+              , legendItems.map(function(l,i){
+                return React.createElement("div", { key:i, style:{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:C.sub } }
+                  , l.type==="bar"
+                    ? React.createElement("div", { style:{ width:10, height:10, borderRadius:2, background:l.cor } })
+                    : React.createElement("div", { style:{ width:18, height:2.5, background:l.cor, borderRadius:2 } })
+                  , l.label
+                );
+              })
+              , React.createElement("div", { style:{ marginLeft:"auto", fontSize:10, color:C.sub } }, "Toque para detalhes")
+            )
           )
         )
       );
     })()
-
-
 
 
     /* ── GRÁFICOS: Evolução Mensal e por Categoria ── */

@@ -14252,11 +14252,17 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       var [fluxoVeiculo, setFluxoVeiculo] = React.useState("");
       var [grafTooltip, setGrafTooltip] = React.useState(null);
       var eventos = [];
-      var mesInicio = dashMes + "-01";
       var mesY = parseInt(dashMes.slice(0,4),10);
       var mesM = parseInt(dashMes.slice(5,7),10);
-      var ultimoDia = new Date(mesY, mesM, 0).getDate();
-      var mesFim = dashMes + "-" + (ultimoDia < 10 ? "0"+ultimoDia : String(ultimoDia));
+      var mesInicio = dashMes + "-01";
+      var ultimoDia  = new Date(mesY, mesM, 0).getDate();
+      // Estender até o fim do próximo mês
+      var mesSegY = mesM === 12 ? mesY+1 : mesY;
+      var mesSegM = mesM === 12 ? 1 : mesM+1;
+      var mesProximo = mesSegY + "-" + (mesSegM<10?"0":"")+mesSegM;
+      var ultimoDiaSeg = new Date(mesSegY, mesSegM, 0).getDate();
+      var mesFim = mesProximo + "-" + (ultimoDiaSeg<10?"0":"")+ultimoDiaSeg;
+
       // Receitas de contratos
       (contratos||[]).forEach(function(c){
         if (c.status==="cancelado") return;
@@ -14276,33 +14282,38 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         var dt = r.data_pagamento||r.data; if (!dt||dt<mesInicio||dt>mesFim) return;
         eventos.push({ dt:dt, tipo:"rec", label:r.descricao||"Receita", val:parseFloat(r.valor||0), pago:r.status==="recebido" });
       });
-      // Despesas
+      // Despesas (mês atual)
       (despesas||[]).forEach(function(d){
         if (d.manutencao_id) return;
         if (fluxoVeiculo && String(d.veiculo_id||"") !== fluxoVeiculo) return;
         if (d.recorrente && d.data) {
-          var _dia = parseInt(d.data.slice(8,10),10);
-          if (dashMes < d.data.slice(0,7)) return;
-          var _ult = new Date(mesY, mesM, 0).getDate();
-          var _df = Math.min(_dia, _ult);
-          var _dtProj = dashMes + "-" + (_df < 10 ? "0"+_df : String(_df));
-          if (_dtProj < mesInicio || _dtProj > mesFim) return;
-          var _pago = d.status==="pago" || !!d.data_pagamento;
-          var _dt = _pago && d.data_pagamento && d.data_pagamento.slice(0,7)===dashMes ? d.data_pagamento : _dtProj;
-          eventos.push({ dt:_dt, tipo:"desp", label:d.descricao||d.categoria||"Despesa", val:parseFloat(d.valor||0), pago:_pago && d.data_pagamento && d.data_pagamento.slice(0,7)===dashMes });
+          // Projeta nos dois meses
+          [dashMes, mesProximo].forEach(function(mes){
+            var mY2 = parseInt(mes.slice(0,4),10), mM2 = parseInt(mes.slice(5,7),10);
+            if (mes < d.data.slice(0,7)) return;
+            var _ult = new Date(mY2, mM2, 0).getDate();
+            var _dia = parseInt(d.data.slice(8,10),10);
+            var _df  = Math.min(_dia, _ult);
+            var _dtProj = mes + "-" + (_df<10?"0":"")+_df;
+            if (_dtProj < mesInicio || _dtProj > mesFim) return;
+            var _pago = d.status==="pago" || !!d.data_pagamento;
+            var _dt   = _pago && d.data_pagamento && d.data_pagamento.slice(0,7)===mes ? d.data_pagamento : _dtProj;
+            eventos.push({ dt:_dt, tipo:"desp", label:d.descricao||d.categoria||"Despesa", val:parseFloat(d.valor||0), pago:_pago && d.data_pagamento && d.data_pagamento.slice(0,7)===mes });
+          });
           return;
         }
         var dt = d.data_pagamento||d.data; if (!dt||dt<mesInicio||dt>mesFim) return;
         eventos.push({ dt:dt, tipo:"desp", label:d.descricao||d.categoria||"Despesa", val:parseFloat(d.valor||0), pago:d.status==="pago"||!!d.data_pagamento });
       });
-      // Manutencoes
+      // Manutenções
       (manutencoes||[]).forEach(function(m){
         if (fluxoVeiculo && String(m.veiculo_id||"") !== fluxoVeiculo) return;
         var dt = m.data_pagamento||m.data_previsao_pagamento||m.data_entrada; if (!dt||dt<mesInicio||dt>mesFim) return;
         var ve = (veiculos||[]).find(v=>v.id==m.veiculo_id);
-        eventos.push({ dt:dt, tipo:"man", label:(m.descricao||m.tipo||"Manutencao")+(ve?" · "+ve.placa:""), val:parseFloat(m.custo||0), pago:m.status_financeiro==="pago"||!!m.data_pagamento });
+        eventos.push({ dt:dt, tipo:"man", label:(m.descricao||m.tipo||"Manutenção")+(ve?" · "+ve.placa:""), val:parseFloat(m.custo||0), pago:m.status_financeiro==="pago"||!!m.data_pagamento });
       });
-      // Group by date
+
+      // Agrupar por dia
       var byDate = {};
       eventos.forEach(function(e){
         if (!byDate[e.dt]) byDate[e.dt] = { receitas:[], despesas:[] };
@@ -14310,44 +14321,61 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         else byDate[e.dt].despesas.push(e);
       });
       var datesAll = Object.keys(byDate).sort();
-      // Caixa livre acumulado
       var saldoAcum = 0;
       var diasData = datesAll.map(function(dt){
         var day = byDate[dt];
-        var totalRec = day.receitas.reduce(function(s,e){return s+e.val;},0);
+        var totalRec  = day.receitas.reduce(function(s,e){return s+e.val;},0);
         var totalDesp = day.despesas.reduce(function(s,e){return s+e.val;},0);
         saldoAcum += totalRec - totalDesp;
         return { dt:dt, receitas:day.receitas, despesas:day.despesas, totalRec:totalRec, totalDesp:totalDesp, saldo:saldoAcum };
       });
+
       if (diasData.length === 0) {
         return React.createElement("div", { style:{ marginTop:28 } }
-          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, marginBottom:10 } }, "Fluxo de Caixa Diário — " + nomeMes)
-          , React.createElement("div", { style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"24px", textAlign:"center", color:C.sub, fontSize:13 } }, "Nenhum lançamento em " + nomeMes)
+          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, marginBottom:10 } }, "Fluxo de Caixa Diário — " + nomeMes + " + " + new Date(mesProximo+"-15").toLocaleString("pt-BR",{month:"short"}))
+          , React.createElement("div", { style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"24px", textAlign:"center", color:C.sub, fontSize:13 } }, "Nenhum lançamento no período")
         );
       }
+
       var maxRec  = Math.max.apply(null, diasData.map(function(d){return d.totalRec;}));
       var maxDesp = Math.max.apply(null, diasData.map(function(d){return d.totalDesp;}));
-      var maxBar  = Math.max(maxRec, maxDesp, 1);
-      var barH    = 120;
-      var colW    = Math.max(48, Math.floor(280 / Math.max(diasData.length, 1)));
+      var maxVal  = Math.max(maxRec, maxDesp, 1);
+      // Altura do gráfico: proporcional a receitas (acima) e despesas (abaixo) do zero
+      var recRatio  = maxRec  / maxVal;
+      var despRatio = maxDesp / maxVal;
+      var halfH   = 80;   // pixels por unidade de escala (acima e abaixo do zero)
+      var chartH  = halfH * 2;          // altura total da área de barras
+      var zeroY   = halfH;              // y do zero (de cima)
+      var labH    = 14;                 // altura para os rótulos de data
+      var svgH    = chartH + labH;
+      var yAxisW  = 52;                 // largura do eixo Y
+      var colW    = Math.max(44, Math.floor(360 / Math.max(diasData.length, 1)));
       var totalW  = diasData.length * colW;
-      var saldoMin   = Math.min.apply(null, diasData.map(function(d){return d.saldo;}));
-      var saldoMax   = Math.max.apply(null, diasData.map(function(d){return d.saldo;}));
-      var saldoRange = Math.max(Math.abs(saldoMax - saldoMin), 1);
-      var lineAreaH  = 54;
+
       function fmtShort(v) {
         if (Math.abs(v) >= 1000) return "R$" + (v/1000).toFixed(1).replace(".",",") + "k";
         return "R$" + Math.round(v);
       }
-      var legendItems = [
-        { type:"bar",  cor:"rgba(52,199,89,0.78)",  label:"Receitas"    },
-        { type:"bar",  cor:"rgba(255,59,48,0.72)",   label:"Despesas"    },
-        { type:"line", cor:"#34C759",                label:"Caixa livre" }
+
+      var saldoMin   = Math.min.apply(null, diasData.map(function(d){return d.saldo;}));
+      var saldoMax   = Math.max.apply(null, diasData.map(function(d){return d.saldo;}));
+      var maxAbsSaldo = Math.max(Math.abs(saldoMin), Math.abs(saldoMax), 1);
+
+      // Rótulos do eixo Y
+      var yLabels = [
+        { v: maxVal,      y: 0 },
+        { v: maxVal*0.5,  y: zeroY * 0.5 },
+        { v: 0,           y: zeroY },
+        { v: -maxVal*0.5, y: zeroY + halfH*0.5 },
+        { v: -maxVal,     y: chartH }
       ];
+
       return React.createElement(React.Fragment, null
         /* Header */
         , React.createElement("div", { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:28, marginBottom:10, flexWrap:"wrap", gap:8 } }
-          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Fluxo de Caixa Diário — " + nomeMes)
+          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } },
+              "Fluxo de Caixa Diário — " + nomeMes + " + " + new Date(mesProximo+"-15").toLocaleString("pt-BR",{month:"short"})
+            )
           , React.createElement("select", { value:fluxoVeiculo, onChange:function(e){setFluxoVeiculo(e.target.value);},
               style:{ border:"1px solid "+C.border, borderRadius:8, padding:"4px 8px", fontSize:12, background:C.card, color:"var(--c-text)", cursor:"pointer" } }
             , React.createElement("option", { value:"" }, "Todos os veículos")
@@ -14356,150 +14384,196 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         )
         /* Chart card */
         , React.createElement("div", { style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"14px 8px 10px", overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"none", msOverflowStyle:"none" } }
-          , React.createElement("div", { style:{ minWidth: totalW + 108 } }
+          , React.createElement("div", { style:{ display:"flex", minWidth: yAxisW + totalW + 4 } }
 
-            /* ── BAR CHART ── */
-            , React.createElement("div", { style:{ display:"flex", alignItems:"flex-end" } }
-
-              /* Y-axis LEFT (receitas) */
-              , React.createElement("div", { style:{ width:50, flexShrink:0, display:"flex", flexDirection:"column", alignItems:"flex-end", justifyContent:"space-between", height:barH+12, paddingBottom:12, paddingRight:6, boxSizing:"border-box" } }
-                , React.createElement("div", { style:{ fontSize:8, color:C.green, fontWeight:700 } }, fmtShort(maxBar))
-                , React.createElement("div", { style:{ fontSize:7, color:C.sub, marginTop:2 } }, "Rec.")
-                , React.createElement("div", { style:{ fontSize:8, color:C.sub, marginTop:"auto" } }, "0")
-              )
-
-              /* Bars + grid */
-              , React.createElement("div", { style:{ flex:1, position:"relative", height:barH+12 } }
-                /* Grid lines */
-                , [0,0.25,0.5,0.75,1].map(function(f,gi){
-                  return React.createElement("div", { key:gi, style:{ position:"absolute", left:0, right:0, bottom: f*(barH-2)+12, height:1, background:C.border, opacity:gi===0?0.9:0.35, pointerEvents:"none", zIndex:0 } });
-                })
-                /* Columns */
-                , React.createElement("div", { style:{ display:"flex", alignItems:"flex-end", height:"100%", gap:3, paddingBottom:12, boxSizing:"border-box" } }
-                  , diasData.map(function(day, di){
-                    var hRec  = day.totalRec  > 0 ? Math.max(5, (day.totalRec  / maxBar) * (barH-2)) : 0;
-                    var hDesp = day.totalDesp > 0 ? Math.max(5, (day.totalDesp / maxBar) * (barH-2)) : 0;
-                    var isToday = day.dt === hojeStr;
-                    var isTT    = grafTooltip === di;
-                    var colBg   = isToday ? "rgba(0,122,255,0.06)" : isTT ? "rgba(120,120,128,0.06)" : "transparent";
-                    return React.createElement("div", { key:day.dt, onClick:function(){ setGrafTooltip(isTT ? null : di); },
-                      style:{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"flex-end", position:"relative", cursor:"pointer",
-                              background:colBg, borderRadius:6, paddingBottom:0, zIndex: isTT ? 20 : 1 } }
-                      /* Bar pair */
-                      , React.createElement("div", { style:{ display:"flex", gap:2, alignItems:"flex-end", width:"100%" } }
-                        , React.createElement("div", { style:{ flex:1, height:hRec,  background:isToday?"rgba(52,199,89,0.92)":"rgba(52,199,89,0.68)",  borderRadius:"4px 4px 0 0", minWidth:0, transition:"height .3s", boxShadow:isToday?"0 0 8px rgba(52,199,89,0.45)":"none" } })
-                        , React.createElement("div", { style:{ flex:1, height:hDesp, background:isToday?"rgba(255,59,48,0.88)":"rgba(255,59,48,0.62)", borderRadius:"4px 4px 0 0", minWidth:0, transition:"height .3s", boxShadow:isToday?"0 0 8px rgba(255,59,48,0.38)":"none" } })
-                      )
-                      /* Date label */
-                      , React.createElement("div", { style:{ fontSize:8, color:isToday?C.blue:C.sub, fontWeight:isToday?800:500, marginTop:4, whiteSpace:"nowrap",
-                            background:isToday?"rgba(0,122,255,0.13)":"transparent", borderRadius:3, padding:isToday?"1px 4px":"0" } },
-                        day.dt.slice(8,10)+"/"+day.dt.slice(5,7)
-                      )
-                      /* Tooltip */
-                      , isTT && React.createElement("div", { style:{ position:"absolute", bottom:barH+22, left:"50%", transform:"translateX(-50%)",
-                            background:darkMode?"#2C2C2E":"#fff", border:"1px solid "+C.border, borderRadius:14, padding:"12px 14px",
-                            boxShadow:"0 8px 32px rgba(0,0,0,0.18)", zIndex:400, minWidth:160, maxWidth:230, pointerEvents:"none" } }
-                        /* Date */
-                        , React.createElement("div", { style:{ fontSize:11, fontWeight:700, color:C.sub, marginBottom:8, borderBottom:"1px solid "+C.border, paddingBottom:6 } }, fmtDate(day.dt))
-                        /* Receitas */
-                        , day.receitas.length > 0 && React.createElement("div", { style:{ marginBottom:8 } }
-                          , React.createElement("div", { style:{ fontSize:9, color:C.green, fontWeight:800, textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 } }, "Receitas")
-                          , day.receitas.map(function(e,i){
-                            return React.createElement("div",{key:i,style:{display:"flex",justifyContent:"space-between",gap:10,fontSize:11,color:"var(--c-text)",marginBottom:2}},
-                              React.createElement("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:115}},e.label),
-                              React.createElement("span",{style:{fontWeight:700,color:C.green,flexShrink:0}},fmtBRL(e.val).split(",")[0])
-                            );
-                          })
-                          , day.receitas.length > 1 && React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,fontWeight:700,color:C.green,borderTop:"1px solid "+C.border,marginTop:3,paddingTop:3}},
-                            React.createElement("span",null,"Total"),React.createElement("span",null,fmtBRL(day.totalRec).split(",")[0]))
-                        )
-                        /* Despesas */
-                        , day.despesas.length > 0 && React.createElement("div", { style:{ marginBottom:8 } }
-                          , React.createElement("div", { style:{ fontSize:9, color:C.red, fontWeight:800, textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 } }, "Despesas")
-                          , day.despesas.map(function(e,i){
-                            return React.createElement("div",{key:i,style:{display:"flex",justifyContent:"space-between",gap:10,fontSize:11,color:"var(--c-text)",marginBottom:2}},
-                              React.createElement("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:115}},e.label),
-                              React.createElement("span",{style:{fontWeight:700,color:C.red,flexShrink:0}},fmtBRL(e.val).split(",")[0])
-                            );
-                          })
-                          , day.despesas.length > 1 && React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,fontWeight:700,color:C.red,borderTop:"1px solid "+C.border,marginTop:3,paddingTop:3}},
-                            React.createElement("span",null,"Total"),React.createElement("span",null,fmtBRL(day.totalDesp).split(",")[0]))
-                        )
-                        /* Caixa livre */
-                        , React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:800,color:day.saldo>=0?C.green:C.red,borderTop:"2px solid "+C.border,paddingTop:6,marginTop:2}},
-                          React.createElement("span",null,"Caixa livre"),
-                          React.createElement("span",null,fmtBRL(day.saldo).split(",")[0])
-                        )
-                      )
+            /* ── Eixo Y esquerdo ── */
+            , React.createElement("div", { style:{ width:yAxisW, flexShrink:0, position:"relative", height:svgH } }
+              , React.createElement("svg", { width:yAxisW, height:svgH, style:{ display:"block", overflow:"visible" } }
+                , yLabels.map(function(yl, i){
+                    var isZero = yl.v === 0;
+                    var col = yl.v > 0 ? "#34C759" : yl.v < 0 ? "#FF3B30" : C.sub;
+                    return React.createElement("g", { key:i }
+                      , React.createElement("text", {
+                          x: yAxisW - 6,
+                          y: (yl.y + 3.5).toFixed(1),
+                          textAnchor: "end",
+                          fontSize: isZero ? 9 : 8,
+                          fontWeight: isZero ? 700 : 500,
+                          fill: col,
+                          fontFamily: "-apple-system,BlinkMacSystemFont,sans-serif"
+                        }, yl.v === 0 ? "0" : fmtShort(Math.abs(yl.v)))
                     );
                   })
-                )
-              )
-
-              /* Y-axis RIGHT (despesas) */
-              , React.createElement("div", { style:{ width:50, flexShrink:0, display:"flex", flexDirection:"column", alignItems:"flex-start", justifyContent:"space-between", height:barH+12, paddingBottom:12, paddingLeft:6, boxSizing:"border-box" } }
-                , React.createElement("div", { style:{ fontSize:8, color:C.red, fontWeight:700 } }, fmtShort(maxBar))
-                , React.createElement("div", { style:{ fontSize:7, color:C.sub, marginTop:2 } }, "Desp.")
-                , React.createElement("div", { style:{ fontSize:8, color:C.sub, marginTop:"auto" } }, "0")
               )
             )
 
-            /* ── CAIXA LIVRE LINE ── */
-            , React.createElement("div", { style:{ display:"flex", alignItems:"stretch", marginTop:4 } }
-              /* Left spacer with label */
-              , React.createElement("div", { style:{ width:50, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"flex-end", paddingRight:6 } }
-                , React.createElement("div", { style:{ fontSize:7, color:C.sub, textAlign:"right", lineHeight:1.3, fontWeight:600 } }, "Caixa"+"\n"+"livre")
-              )
-              /* SVG line chart */
-              , React.createElement("div", { style:{ flex:1, position:"relative", height:lineAreaH+16 } }
-                , React.createElement("svg", { style:{ width:"100%", height:lineAreaH+16, overflow:"visible", display:"block" },
-                    viewBox:("0 0 "+(diasData.length*colW)+" "+(lineAreaH+16)), preserveAspectRatio:"none" }
-                  , React.createElement("defs", null
-                    , React.createElement("linearGradient", { id:"cashGradFill", x1:"0", y1:"0", x2:"0", y2:"1" }
-                      , React.createElement("stop", { offset:"0%",   stopColor:saldoMin>=0?"#34C759":"#FF3B30", stopOpacity:"0.28" })
-                      , React.createElement("stop", { offset:"100%", stopColor:saldoMin>=0?"#34C759":"#FF3B30", stopOpacity:"0.02" })
-                    )
+            /* ── Área do gráfico SVG ── */
+            , React.createElement("div", { style:{ flex:1, position:"relative" } }
+              , React.createElement("svg", {
+                    width: totalW,
+                    height: svgH,
+                    viewBox: "0 0 " + totalW + " " + svgH,
+                    style:{ display:"block", shapeRendering:"geometricPrecision" }
+                  }
+                , React.createElement("defs", null
+                  , React.createElement("linearGradient", { id:"recUpGrd", x1:"0", y1:"1", x2:"0", y2:"0" }
+                    , React.createElement("stop", { offset:"0%", stopColor:"#34C759", stopOpacity:"0.85" })
+                    , React.createElement("stop", { offset:"100%", stopColor:"#34C759", stopOpacity:"0.55" })
                   )
-                  , (function(){
-                    var pts = diasData.map(function(d,i){
-                      var x = (i + 0.5) * colW;
-                      var norm = saldoRange > 0 ? (d.saldo - saldoMin) / saldoRange : 0.5;
-                      var y = (lineAreaH - 8) * (1 - norm) + 8;
-                      return { x:x, y:y, saldo:d.saldo };
+                  , React.createElement("linearGradient", { id:"despDnGrd", x1:"0", y1:"0", x2:"0", y2:"1" }
+                    , React.createElement("stop", { offset:"0%", stopColor:"#FF3B30", stopOpacity:"0.85" })
+                    , React.createElement("stop", { offset:"100%", stopColor:"#FF3B30", stopOpacity:"0.52" })
+                  )
+                  , React.createElement("linearGradient", { id:"saldoUpGrd", x1:"0", y1:"1", x2:"0", y2:"0" }
+                    , React.createElement("stop", { offset:"0%", stopColor:"#007AFF", stopOpacity:"0.04" })
+                    , React.createElement("stop", { offset:"100%", stopColor:"#007AFF", stopOpacity:"0.14" })
+                  )
+                  , React.createElement("linearGradient", { id:"saldoDnGrd", x1:"0", y1:"0", x2:"0", y2:"1" }
+                    , React.createElement("stop", { offset:"0%", stopColor:"#FF3B30", stopOpacity:"0.04" })
+                    , React.createElement("stop", { offset:"100%", stopColor:"#FF3B30", stopOpacity:"0.12" })
+                  )
+                )
+
+                /* Grid lines horizontais */
+                , yLabels.map(function(yl, gi){
+                    var isZero = yl.v === 0;
+                    return React.createElement("line", { key:gi,
+                        x1:0, y1:yl.y.toFixed(1), x2:totalW, y2:yl.y.toFixed(1),
+                        stroke: isZero ? "var(--c-text-dim, rgba(0,0,0,0.20))" : C.border,
+                        strokeWidth: isZero ? 1.2 : 0.4,
+                        strokeDasharray: isZero ? "none" : "3,4"
                     });
-                    var pathD  = pts.map(function(p,i){ return (i===0?"M":"L")+p.x.toFixed(1)+","+p.y.toFixed(1); }).join(" ");
-                    var areaD  = pathD+" L"+pts[pts.length-1].x.toFixed(1)+","+(lineAreaH+12)+" L"+pts[0].x.toFixed(1)+","+(lineAreaH+12)+" Z";
-                    var lColor = saldoMin >= 0 ? "#34C759" : "#FF3B30";
-                    return React.createElement(React.Fragment, null
-                      , React.createElement("path", { d:areaD, fill:"url(#cashGradFill)" })
-                      , React.createElement("path", { d:pathD, fill:"none", stroke:lColor, strokeWidth:"2.5", strokeLinejoin:"round", strokeLinecap:"round" })
-                      , pts.map(function(p,i){
-                        var cor = p.saldo >= 0 ? "#34C759" : "#FF3B30";
-                        return React.createElement(React.Fragment, { key:i }
-                          , React.createElement("circle", { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"3.5", fill:cor, stroke:"#fff", strokeWidth:"2" })
-                          , React.createElement("text", { x:p.x.toFixed(1), y:(p.y-9).toFixed(1), textAnchor:"middle", fontSize:"7.5", fill:cor, fontWeight:"700", fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif" }, fmtShort(p.saldo))
-                        );
-                      })
+                  })
+
+                /* Separador de meses */
+                , (function(){
+                    var firstSeg = diasData.findIndex(function(d){ return d.dt.slice(0,7) === mesProximo; });
+                    if (firstSeg <= 0) return null;
+                    var xSep = firstSeg * colW;
+                    return React.createElement("g", null
+                      , React.createElement("line", { x1:xSep, y1:0, x2:xSep, y2:chartH, stroke:C.border, strokeWidth:1, strokeDasharray:"4,3" })
+                      , React.createElement("text", { x:xSep+4, y:8, fontSize:7, fill:C.sub, fontWeight:600, fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif" },
+                          new Date(mesProximo+"-15").toLocaleString("pt-BR",{month:"short"}).toUpperCase()
+                        )
                     );
                   })()
-                )
-              )
-              /* Right spacer */
-              , React.createElement("div", { style:{ width:50, flexShrink:0 } })
-            )
 
-            /* ── LEGEND ── */
-            , React.createElement("div", { style:{ display:"flex", gap:14, marginTop:8, flexWrap:"wrap", borderTop:"1px solid "+C.border, paddingTop:8 } }
-              , legendItems.map(function(l,i){
-                return React.createElement("div", { key:i, style:{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:C.sub } }
-                  , l.type==="bar"
-                    ? React.createElement("div", { style:{ width:10, height:10, borderRadius:2, background:l.cor } })
-                    : React.createElement("div", { style:{ width:18, height:2.5, background:l.cor, borderRadius:2 } })
-                  , l.label
-                );
-              })
-              , React.createElement("div", { style:{ marginLeft:"auto", fontSize:10, color:C.sub } }, "Toque para detalhes")
+                /* Barras por coluna */
+                , diasData.map(function(day, di){
+                    var cx = (di + 0.5) * colW;
+                    var bw = Math.max(6, colW * 0.55);
+                    var hRec  = (day.totalRec  > 0) ? Math.max(3, (day.totalRec  / maxVal) * (halfH - 4)) : 0;
+                    var hDesp = (day.totalDesp > 0) ? Math.max(3, (day.totalDesp / maxVal) * (halfH - 4)) : 0;
+                    var isToday = day.dt === hojeStr;
+                    var isTT    = grafTooltip === di;
+                    var isNextMes = day.dt.slice(0,7) === mesProximo;
+                    return React.createElement("g", { key:day.dt,
+                        onClick:function(){ setGrafTooltip(isTT?null:di); },
+                        style:{ cursor:"pointer" }
+                      }
+                      /* Fundo coluna */
+                      , React.createElement("rect", { x:(di*colW).toFixed(1), y:0, width:(colW-1).toFixed(1), height:chartH, rx:0,
+                          fill: isToday ? "rgba(0,122,255,0.05)" : isTT ? "rgba(120,120,128,0.05)" : "transparent" })
+                      /* Barra receita — sobe do zero */
+                      , hRec>0 && React.createElement("rect", {
+                          x: (cx - bw/2).toFixed(2),
+                          y: (zeroY - hRec).toFixed(2),
+                          width: bw.toFixed(2),
+                          height: hRec.toFixed(2),
+                          rx: 3,
+                          fill: isToday ? "url(#recUpGrd)" : isNextMes ? "rgba(52,199,89,0.45)" : "rgba(52,199,89,0.72)"
+                        })
+                      /* Barra despesa — desce do zero */
+                      , hDesp>0 && React.createElement("rect", {
+                          x: (cx - bw/2).toFixed(2),
+                          y: zeroY.toFixed(2),
+                          width: bw.toFixed(2),
+                          height: hDesp.toFixed(2),
+                          rx: 3,
+                          fill: isToday ? "url(#despDnGrd)" : isNextMes ? "rgba(255,59,48,0.42)" : "rgba(255,59,48,0.68)"
+                        })
+                      /* Rótulo de data */
+                      , React.createElement("text", {
+                          x: cx.toFixed(1), y: (svgH - 2).toFixed(1),
+                          textAnchor: "middle", fontSize: 8,
+                          fontWeight: isToday ? 800 : 400,
+                          fill: isToday ? C.blue : C.sub,
+                          fontFamily: "-apple-system,BlinkMacSystemFont,sans-serif"
+                        }, day.dt.slice(8,10)+"/"+day.dt.slice(5,7))
+                    );
+                  })
+
+                /* Linha de saldo — overlay sobre as barras */
+                , diasData.length > 1 && (function(){
+                    var pts = diasData.map(function(d, i){
+                      var x = (i + 0.5) * colW;
+                      // saldo=0 → y=zeroY; positivo sobe; negativo desce
+                      var y = zeroY - (d.saldo / maxAbsSaldo) * (halfH - 6);
+                      return { x:x, y:Math.max(3, Math.min(chartH-3, y)), saldo:d.saldo };
+                    });
+                    var pathD = pts.map(function(p,i){return(i===0?"M":"L")+p.x.toFixed(1)+","+p.y.toFixed(1);}).join(" ");
+                    var lColor = saldoMin >= 0 ? "#007AFF" : "#FF3B30";
+                    return React.createElement(React.Fragment, null
+                      , React.createElement("path", { d:pathD, fill:"none", stroke:lColor, strokeWidth:"1.2",
+                          strokeLinejoin:"round", strokeLinecap:"round", pointerEvents:"none" })
+                      , pts.map(function(p, i){
+                          var cor = p.saldo >= 0 ? "#007AFF" : "#FF3B30";
+                          return React.createElement("g", { key:i, pointerEvents:"none" }
+                            , React.createElement("circle", { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"2.5", fill:cor, stroke:"#fff", strokeWidth:"1.5" })
+                            , React.createElement("text", { x:p.x.toFixed(1), y:(p.y - 5.5).toFixed(1),
+                                textAnchor:"middle", fontSize:"6.5", fill:cor,
+                                fontWeight:"700", fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif"
+                              }, fmtShort(p.saldo))
+                          );
+                        })
+                    );
+                  })()
+              )
+
+              /* Tooltips absolutos */
+              , diasData.map(function(day, di){
+                  if (grafTooltip !== di) return null;
+                  var cx = (di + 0.5) * colW;
+                  var leftPos = Math.min(Math.max(cx - 85, 0), totalW - 180);
+                  return React.createElement("div", { key:day.dt, style:{
+                      position:"absolute", bottom: svgH - zeroY + 20, left: leftPos,
+                      background: "var(--c-card)",
+                      border:"1px solid "+C.border, borderRadius:14, padding:"12px 14px",
+                      boxShadow:"0 8px 32px rgba(0,0,0,0.18)", zIndex:400,
+                      minWidth:160, maxWidth:230, pointerEvents:"none"
+                    } }
+                    , React.createElement("div",{style:{fontSize:11,fontWeight:700,color:C.sub,marginBottom:8,borderBottom:"1px solid "+C.border,paddingBottom:6}},fmtDate(day.dt))
+                    , day.receitas.length>0 && React.createElement("div",{style:{marginBottom:8}}
+                      , React.createElement("div",{style:{fontSize:9,color:C.green,fontWeight:800,textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}},"Receitas")
+                      , day.receitas.map(function(e,i){return React.createElement("div",{key:i,style:{display:"flex",justifyContent:"space-between",gap:10,fontSize:11,color:"var(--c-text)",marginBottom:2}},React.createElement("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:115}},e.label),React.createElement("span",{style:{fontWeight:700,color:C.green,flexShrink:0}},fmtBRL(e.val).split(",")[0]));})
+                      , day.receitas.length>1 && React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,fontWeight:700,color:C.green,borderTop:"1px solid "+C.border,marginTop:3,paddingTop:3}},React.createElement("span",null,"Total"),React.createElement("span",null,fmtBRL(day.totalRec).split(",")[0]))
+                    )
+                    , day.despesas.length>0 && React.createElement("div",{style:{marginBottom:8}}
+                      , React.createElement("div",{style:{fontSize:9,color:C.red,fontWeight:800,textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}},"Despesas")
+                      , day.despesas.map(function(e,i){return React.createElement("div",{key:i,style:{display:"flex",justifyContent:"space-between",gap:10,fontSize:11,color:"var(--c-text)",marginBottom:2}},React.createElement("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:115}},e.label),React.createElement("span",{style:{fontWeight:700,color:C.red,flexShrink:0}},fmtBRL(e.val).split(",")[0]));})
+                      , day.despesas.length>1 && React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,fontWeight:700,color:C.red,borderTop:"1px solid "+C.border,marginTop:3,paddingTop:3}},React.createElement("span",null,"Total"),React.createElement("span",null,fmtBRL(day.totalDesp).split(",")[0]))
+                    )
+                    , React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:800,color:day.saldo>=0?C.blue:C.red,borderTop:"2px solid "+C.border,paddingTop:6,marginTop:2}},React.createElement("span",null,"Saldo"),React.createElement("span",null,fmtBRL(day.saldo).split(",")[0]))
+                  );
+                })
             )
+          )
+
+          /* Legenda */
+          , React.createElement("div", { style:{ display:"flex", gap:14, marginTop:10, flexWrap:"wrap", borderTop:"1px solid "+C.border, paddingTop:8, paddingLeft:4 } }
+            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:C.sub } }
+              , React.createElement("div", { style:{ width:10, height:10, borderRadius:2, background:"rgba(52,199,89,0.75)" } })
+              , "Receitas ↑"
+            )
+            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:C.sub } }
+              , React.createElement("div", { style:{ width:10, height:10, borderRadius:2, background:"rgba(255,59,48,0.68)" } })
+              , "Despesas ↓"
+            )
+            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:C.sub } }
+              , React.createElement("div", { style:{ width:18, height:1.5, background:"#007AFF", borderRadius:2 } })
+              , "Saldo acumulado"
+            )
+            , React.createElement("div", { style:{ marginLeft:"auto", fontSize:10, color:C.sub } }, "Toque para detalhes")
           )
         )
       );
@@ -14577,8 +14651,10 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         var mx = Math.max.apply(null, dados.concat([1]));
         var dashIdx = meses6.indexOf(dashMes);
         var selIdx = dashIdx >= 0 ? dashIdx : meses6.length - 1;
-        return React.createElement('div', { style: { display:"flex", alignItems:"flex-end", gap:6, paddingBottom:0, position:"relative" } },
-          dados.map(function(v, i) {
+        var minColW = 56;
+        return React.createElement('div', { style:{ overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"none", msOverflowStyle:"none" } },
+          React.createElement('div', { style: { display:"flex", alignItems:"flex-end", gap:6, paddingBottom:0, position:"relative", minWidth: dados.length * minColW } },
+            dados.map(function(v, i) {
             var px = Math.max(v > 0 ? 6 : 0, Math.round(v/mx*BAR_H));
             var isSel = i === selIdx;
             var barCor = isSel ? cor : cor.replace("rgba(","rgba(").replace(/,\s*1\)/, ",0.40)");
@@ -14589,6 +14665,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
               React.createElement('div', { style:{ fontSize:10, color: isSel ? "var(--c-text)" : C.sub, fontWeight: isSel ? 700 : 400, marginTop:3, textAlign:"center" } }, nomesMes6[i])
             );
           })
+          )
         );
       }
       return React.createElement(React.Fragment, null,
@@ -14686,11 +14763,12 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                   React.createElement('option', { value:"recebidas" }, "Recebidas")
                 )
               ),
-              // SVG chart
+              // SVG chart com rolagem lateral
+              React.createElement('div', { style:{ overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"none", msOverflowStyle:"none" } },
               React.createElement('svg', {
                 viewBox: "0 0 "+CHART_W+" "+CHART_H,
-                preserveAspectRatio: "none",
-                style:{ width:"100%", height:180, display:"block", overflow:"visible" }
+                preserveAspectRatio: "xMidYMid meet",
+                style:{ width:Math.max(320, CHART_W)+"px", height:180, display:"block", overflow:"visible" }
               },
                 React.createElement('defs', null,
                   React.createElement('linearGradient', { id:"recGrad", x1:"0", y1:"0", x2:"0", y2:"1" },
@@ -14753,6 +14831,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                       (p.l>=0?"+":"")+fK(p.l))
                   );
                 })
+              )
               )
             );
           })()
@@ -18000,13 +18079,15 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 10 } }, "Fluxo de Caixa — 12 meses")
           , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginBottom: 14 } }, "Saldo mensal (entrada − saída) e saldo acumulado projetado")
           , (function(){
-              var W = 100, H = 40;
-              var pts = fluxo12.map(function(f,i){ var x = (i/(fluxo12.length-1||1))*W; var y = H/2 - (f.acc/maxAcc)*(H/2-4); return x+","+y; }).join(" ");
+              var W = Math.max(fluxo12.length * 30, 320), H = 120;
+              var pts = fluxo12.map(function(f,i){ var x = (i/(fluxo12.length-1||1))*W; var y = H/2 - (f.acc/maxAcc)*(H/2-8); return x+","+y; }).join(" ");
               var zeroY = H/2;
-              return React.createElement('svg', { viewBox: "0 0 "+W+" "+H, preserveAspectRatio: "none", style: { width: "100%", height: 140, marginBottom: 8 } }
+              return React.createElement('div', { style:{ overflowX:"auto", WebkitOverflowScrolling:"touch", scrollbarWidth:"none" } },
+              React.createElement('svg', { viewBox: "0 0 "+W+" "+H, preserveAspectRatio: "xMidYMid meet", style: { width: W+"px", height: 140, marginBottom: 8, display:"block" } }
                 , React.createElement('line', { x1: 0, x2: W, y1: zeroY, y2: zeroY, stroke: "var(--c-border)", strokeWidth: 0.3 })
-                , React.createElement('polyline', { points: pts, fill: "none", stroke: C.blue, strokeWidth: 0.6, strokeLinejoin: "round", strokeLinecap: "round" })
-                , fluxo12.map(function(f,i){ var x = (i/(fluxo12.length-1||1))*W; var y = H/2 - (f.acc/maxAcc)*(H/2-4); return React.createElement('circle', { key: i, cx: x, cy: y, r: 0.8, fill: f.acc>=0 ? C.green : C.red }); })
+                , React.createElement('polyline', { points: pts, fill: "none", stroke: C.blue, strokeWidth: 1.0, strokeLinejoin: "round", strokeLinecap: "round" })
+                , fluxo12.map(function(f,i){ var x = (i/(fluxo12.length-1||1))*W; var y = H/2 - (f.acc/maxAcc)*(H/2-8); return React.createElement('circle', { key: i, cx: x, cy: y, r: 1.2, fill: f.acc>=0 ? C.green : C.red }); })
+              )
               );
             })()
           , React.createElement('div', { style: { overflowX: "auto", marginTop: 6 } }

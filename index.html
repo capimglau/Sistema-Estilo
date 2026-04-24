@@ -13283,7 +13283,7 @@ function despesaVisivelNoMes(d, mes) {
     if (!d.prazo_recorrencia) return true;
     var ini = new Date(dataMes + "-01"), fim = new Date(mes + "-01");
     var diff = (fim.getFullYear() - ini.getFullYear()) * 12 + (fim.getMonth() - ini.getMonth());
-    return diff <= parseInt(d.prazo_recorrencia);
+    return diff < parseInt(d.prazo_recorrencia);
   }
   return false;
 }
@@ -13295,7 +13295,7 @@ function receitaVisivelNoMes(r, mes) {
     if (!r.prazo_recorrencia) return true;
     var ini2 = new Date(dataMes + "-01"), fim2 = new Date(mes + "-01");
     var diff2 = (fim2.getFullYear() - ini2.getFullYear()) * 12 + (fim2.getMonth() - ini2.getMonth());
-    return diff2 <= parseInt(r.prazo_recorrencia);
+    return diff2 < parseInt(r.prazo_recorrencia);
   }
   return false;
 }
@@ -13306,7 +13306,7 @@ function manVisivelNoMes(m, mes) {
     if (!m.prazo_recorrencia) return true;
     var ini = new Date(dataMes + "-01"), fim = new Date(mes + "-01");
     var diff = (fim.getFullYear() - ini.getFullYear()) * 12 + (fim.getMonth() - ini.getMonth());
-    return diff <= parseInt(m.prazo_recorrencia);
+    return diff < parseInt(m.prazo_recorrencia);
   }
   return false;
 }
@@ -17577,7 +17577,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     var inicio = new Date(em + "-01");
     var fim = new Date(mes + "-01");
     var diff = (fim.getFullYear() - inicio.getFullYear()) * 12 + (fim.getMonth() - inicio.getMonth());
-    return diff <= parseInt(it.prazo_recorrencia);
+    return diff < parseInt(it.prazo_recorrencia);
   }
 
   var itensProprios = itens.filter(it => efetivoMes(it) === filtroMes);
@@ -18310,7 +18310,26 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   var despExibidas = filtroCatDesp ? despFiltradas.filter(function(d){ return (d.categoria||"") === filtroCatDesp; }) : despFiltradas.filter(function(d){ return !isRetLucro(d); });
 
   // Fluxo de caixa por mês
-  var desByMes = {}; despesas.filter(d => !d.manutencao_id).forEach(function(d) { var mes = (d.data || "").slice(0, 7); if (mes) { if (!desByMes[mes]) desByMes[mes] = 0; desByMes[mes] += parseFloat(d.valor || 0); } });
+  var desByMes = {};
+  despesas.filter(function(d){ return !d.manutencao_id; }).forEach(function(d) {
+    var origemMes = (d.data || "").slice(0, 7);
+    if (!origemMes) return;
+    if (d.recorrente) {
+      // Projeta em todos os meses dos últimos 24 meses em que é visível
+      var hoje_db = new Date();
+      for (var mi_db = 0; mi_db < 24; mi_db++) {
+        var d_db = new Date(hoje_db.getFullYear(), hoje_db.getMonth() - mi_db, 1);
+        var mes_db = d_db.getFullYear() + "-" + String(d_db.getMonth()+1).padStart(2,"0");
+        if (despesaVisivelNoMes(d, mes_db)) {
+          if (!desByMes[mes_db]) desByMes[mes_db] = 0;
+          desByMes[mes_db] += parseFloat(d.valor || 0);
+        }
+      }
+    } else {
+      if (!desByMes[origemMes]) desByMes[origemMes] = 0;
+      desByMes[origemMes] += parseFloat(d.valor || 0);
+    }
+  });
   var manByMes = {};
   manutencoes.forEach(function(m) {
     // Para recorrentes, soma em cada mês em que é visível (últimos 24 meses)
@@ -18335,7 +18354,25 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     if (c.status_pagamento === "pago") recByMes[mes] += parseFloat(c.valor_total || 0);
     else if (c.status_pagamento === "parcial" && c.valor_pago) recByMes[mes] += parseFloat(c.valor_pago || 0);
   });
-  receitas.forEach(function(r) { var mes = (r.data || "").slice(0, 7); if (mes && !r.ref_fatura) { if (!recByMes[mes]) recByMes[mes] = 0; recByMes[mes] += parseFloat(r.valor || 0); } });
+  receitas.forEach(function(r) {
+    if (r.ref_fatura) return;
+    var origemMes = (r.data || "").slice(0, 7);
+    if (!origemMes) return;
+    if (r.recorrente) {
+      var hoje_rb = new Date();
+      for (var mi_rb = 0; mi_rb < 24; mi_rb++) {
+        var d_rb = new Date(hoje_rb.getFullYear(), hoje_rb.getMonth() - mi_rb, 1);
+        var mes_rb = d_rb.getFullYear() + "-" + String(d_rb.getMonth()+1).padStart(2,"0");
+        if (receitaVisivelNoMes(r, mes_rb)) {
+          if (!recByMes[mes_rb]) recByMes[mes_rb] = 0;
+          recByMes[mes_rb] += parseFloat(r.valor || 0);
+        }
+      }
+    } else {
+      if (!recByMes[origemMes]) recByMes[origemMes] = 0;
+      recByMes[origemMes] += parseFloat(r.valor || 0);
+    }
+  });
   var meses = Array.from(new Set(Object.keys(desByMes).concat(Object.keys(recByMes)).concat(Object.keys(manByMes)).concat(Object.keys(multaByMes)))).filter(Boolean).sort().reverse().slice(0, 12);
 
   // Receitas do mês selecionado (resumo)
@@ -18355,8 +18392,16 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
   // Despesas do mês — EXCLUI as geradas automaticamente por manutenção (evita dupla contagem)
   var despMes = despesas.filter(d => despesaVisivelNoMes(d, filtroMes) && !d.manutencao_id).reduce((s,d) => s+parseFloat(d.valor||0),0);
-  var despMesPago = despesas.filter(d => despesaVisivelNoMes(d, filtroMes) && !d.manutencao_id && d.status === "pago").reduce((s,d) => s+parseFloat(d.valor||0),0);
-  var despMesPendente = despesas.filter(d => despesaVisivelNoMes(d, filtroMes) && !d.manutencao_id && d.status !== "pago").reduce((s,d) => s+parseFloat(d.valor||0),0);
+  var despMesPago = despesas.filter(function(d) {
+    if (!despesaVisivelNoMes(d, filtroMes) || d.manutencao_id) return false;
+    if (d.recorrente && (d.data||"").slice(0,7) < filtroMes) return (d.data_pagamento||"").slice(0,7) === filtroMes;
+    return d.status === "pago";
+  }).reduce((s,d) => s+parseFloat(d.valor||0),0);
+  var despMesPendente = despesas.filter(function(d) {
+    if (!despesaVisivelNoMes(d, filtroMes) || d.manutencao_id) return false;
+    if (d.recorrente && (d.data||"").slice(0,7) < filtroMes) return (d.data_pagamento||"").slice(0,7) !== filtroMes;
+    return d.status !== "pago";
+  }).reduce((s,d) => s+parseFloat(d.valor||0),0);
   // Manutenções — mês pelo campo de previsão de pagamento (ou data_entrada como fallback)
   var manMesAll = manutencoes.filter(m => manVisivelNoMes(m, filtroMes));
   var manMes = manMesAll.reduce((s,m) => s+parseFloat(m.custo||0),0);
@@ -18860,7 +18905,13 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       var BUD_KEY = "ag_budgets_v1";
       var budgets = budgetsState || {};
       var gastoPorCat = {};
-      (despesas||[]).filter(function(d){ return !d.manutencao_id && !isRetLucro(d) && (d.data_pagamento||d.data||"").slice(0,7) === mesAtual; }).forEach(function(d){ var c = d.categoria || "Outros"; gastoPorCat[c] = (gastoPorCat[c]||0) + parseFloat(d.valor||0); });
+      (despesas||[]).filter(function(d){
+        if (d.manutencao_id || isRetLucro(d)) return false;
+        if (!despesaVisivelNoMes(d, mesAtual)) return false;
+        // Para recorrentes projetadas: considera pago se data_pagamento cai no mês atual
+        if (d.recorrente && (d.data||"").slice(0,7) < mesAtual) return (d.data_pagamento||"").slice(0,7) === mesAtual;
+        return (d.data_pagamento||d.data||"").slice(0,7) === mesAtual;
+      }).forEach(function(d){ var c = d.categoria || "Outros"; gastoPorCat[c] = (gastoPorCat[c]||0) + parseFloat(d.valor||0); });
       var catsBud = CATS_DESP.slice().sort(function(a,b){ return (gastoPorCat[b]||0) - (gastoPorCat[a]||0); });
 
       // ===== Lucratividade por Cliente =====
@@ -19244,7 +19295,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         if (!item.prazo_recorrencia) return true;
         var ini = new Date(dataMes+"-01"), fim = new Date(mes+"-01");
         var diff = (fim.getFullYear()-ini.getFullYear())*12 + fim.getMonth()-ini.getMonth();
-        return diff <= parseInt(item.prazo_recorrencia);
+        return diff < parseInt(item.prazo_recorrencia);
       }
       return React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2473}}
         , React.createElement('div', { style: { fontSize:13, color:C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2474}}, "Despesas e receitas fixas/recorrentes — próximos 4 meses"       )
@@ -20007,8 +20058,9 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
       var evol = meses12.map(function(mes) {
         var rec = contratos.filter(function(c){ var ref=c.previsao_pagamento||c.data_fim||""; return ref.slice(0,7)===mes && c.status_pagamento==="pago"; }).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)
           + (receitas||[]).filter(function(r){return !r.ref_fatura && r.status==="recebido" && (r.data_pagamento||r.data||"").slice(0,7)===mes;}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
-        var desp = (despesas||[]).filter(function(d){return !d.manutencao_id && !isRetLucro(d) && (d.data||"").slice(0,7)===mes;}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0)
-          + (manutencoes||[]).filter(function(m2){return (m2.data_entrada||"").slice(0,7)===mes;}).reduce(function(s,m2){return s+parseFloat(m2.custo||0);},0);
+        // Despesas: usa despesaVisivelNoMes para incluir recorrentes projetadas
+        var desp = (despesas||[]).filter(function(d){return !d.manutencao_id && !isRetLucro(d) && despesaVisivelNoMes(d, mes);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0)
+          + (manutencoes||[]).filter(function(m2){return manVisivelNoMes(m2, mes);}).reduce(function(s,m2){return s+parseFloat(m2.custo||0);},0);
         return { mes: mes, label: nomeMesG(mes), rec: rec, desp: desp, lucro: rec-desp };
       });
 
@@ -23157,7 +23209,7 @@ function App() {
           , TABS.map(function(t) {
               var nReservasPend = t.id === "reservas" ? (reservas||[]).filter(function(r){return r.status==="pendente";}).length : 0;
               var nContratosPend = t.id === "contratos" ? (contratos||[]).filter(function(c){ return c.status === "ativo" && !c.renovado_para && c.status_pagamento !== "pago" && c.status_pagamento !== "isento" && c.previsao_pagamento && c.previsao_pagamento < new Date().toISOString().split("T")[0]; }).length : 0;
-              var nFinanceiroPend = t.id === "financeiro" ? (function(){ var h = new Date().toISOString().split("T")[0]; return (despesas||[]).filter(function(d){ return !isRetLucro(d) && d.status !== "pago" && d.data && d.data < h; }).length + (contas||[]).filter(function(c){ return c.status !== "pago" && c.status !== "cancelado" && c.vencimento && c.vencimento < h; }).length; })() : 0;
+              var nFinanceiroPend = t.id === "financeiro" ? (function(){ var h = new Date().toISOString().split("T")[0]; var mesH = h.slice(0,7); return (despesas||[]).filter(function(d){ if (isRetLucro(d)) return false; if (!despesaVisivelNoMes(d, mesH)) return false; var dataRef = (d.recorrente && (d.data||"").slice(0,7) < mesH) ? (mesH + "-" + (d.data||"").slice(8,10)) : (d.data||""); if (!dataRef || dataRef >= h) return false; if (d.recorrente && (d.data||"").slice(0,7) < mesH) return (d.data_pagamento||"").slice(0,7) !== mesH; return d.status !== "pago"; }).length + (contas||[]).filter(function(c){ return c.status !== "pago" && c.status !== "cancelado" && c.vencimento && c.vencimento < h; }).length; })() : 0;
               var nBadge = nReservasPend || nContratosPend || nFinanceiroPend;
               return React.createElement('button', { key: t.id, onClick: function(){setTab(t.id);}, className: "lg-nav-btn" + (tab === t.id ? " lg-nav-btn-active" : ""), style: { position: "relative" } }
                 , React.createElement(NavIcon, { id: t.id, active: tab === t.id })
@@ -23190,7 +23242,7 @@ function App() {
           var _nBadge = 0;
           if (t.id === "reservas") _nBadge = (reservas||[]).filter(function(r){return r.status==="pendente";}).length;
           if (t.id === "contratos") _nBadge = (contratos||[]).filter(function(c){ return c.status==="ativo" && !c.renovado_para && c.status_pagamento!=="pago" && c.status_pagamento!=="isento" && c.previsao_pagamento && c.previsao_pagamento < _hoje; }).length;
-          if (t.id === "financeiro") _nBadge = (despesas||[]).filter(function(d){ return d.status!=="pago" && d.data && d.data < _hoje; }).length + (contas||[]).filter(function(c){ return c.status!=="pago" && c.status!=="cancelado" && c.vencimento && c.vencimento < _hoje; }).length;
+          if (t.id === "financeiro") { var _mesH = _hoje.slice(0,7); _nBadge = (despesas||[]).filter(function(d){ if (isRetLucro(d)) return false; if (!despesaVisivelNoMes(d, _mesH)) return false; var _dataRef = (d.recorrente && (d.data||"").slice(0,7) < _mesH) ? (_mesH + "-" + (d.data||"").slice(8,10)) : (d.data||""); if (!_dataRef || _dataRef >= _hoje) return false; if (d.recorrente && (d.data||"").slice(0,7) < _mesH) return (d.data_pagamento||"").slice(0,7) !== _mesH; return d.status !== "pago"; }).length + (contas||[]).filter(function(c){ return c.status!=="pago" && c.status!=="cancelado" && c.vencimento && c.vencimento < _hoje; }).length; }
           return React.createElement('button', { key: t.id, onClick: () => setTab(t.id), className: tab===t.id?"lg-tab-active":"", style: { borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: tab === t.id ? 600 : 400, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10, transition: "all .15s ease", color: tab === t.id ? C.blue : "var(--c-text)", border: "none", background: "transparent", position: "relative" } }
             , React.createElement(NavIcon, { id: t.id, active: tab === t.id }), t.label
             , _nBadge > 0 && React.createElement('span', { style: { marginLeft: "auto", background: "#FF3B30", color: "#fff", borderRadius: 10, fontSize: 10, fontWeight: 800, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", lineHeight: 1 } }, _nBadge > 9 ? "9+" : _nBadge)

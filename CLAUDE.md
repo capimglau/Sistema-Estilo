@@ -45,3 +45,7 @@ Quando o usuário enviar uma imagem como anexo para usar como ícone PWA:
 ## Branch de desenvolvimento
 
 Branch ativo: `claude/placeholder-task-nsnXx`
+
+## Fluxo de trabalho Git
+
+Após cada push, **sempre criar um PR** automaticamente via `mcp__github__create_pull_request` apontando para `main`, sem precisar que o usuário peça.

@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
       const res = await fetch(`${PLUGGY_BASE}/connect_token`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-API-KEY": apiKey },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ allowedOrigins: ["https://capimglau.github.io"] }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || data.error || JSON.stringify(data));

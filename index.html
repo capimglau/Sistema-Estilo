@@ -14228,31 +14228,43 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         "#007AFF","#5856D6","#34C759","#FF9500","#FF3B30",
         "#AF52DE","#FF6B35","#30B0C7","#FFD60A","#32ADE6"
       ];
+      var [catFiltro, setCatFiltro] = React.useState("previstas");
+      var [listaAberta, setListaAberta] = React.useState(false);
 
-      // Calcula despesas do mês agrupadas por categoria
+      // Calcula despesas agrupadas por categoria — respeita filtro previstas/pagas
       var catMap = {};
       despesas.filter(function(d){
-        return despesaVisivelNoMes(d, dashMes) && !d.manutencao_id && !isRetLucro(d);
+        if (!despesaVisivelNoMes(d, dashMes) || d.manutencao_id || isRetLucro(d)) return false;
+        if (catFiltro === "pagas") {
+          if (d.recorrente && (d.data||"").slice(0,7) < dashMes) return (d.data_pagamento||"").slice(0,7) === dashMes;
+          return d.status === "pago";
+        }
+        return true;
       }).forEach(function(d){
         var cat = d.categoria || "Outros";
         catMap[cat] = (catMap[cat]||0) + parseFloat(d.valor||0);
       });
-      // Inclui manutenções no mês como categoria "Manutenção"
-      var manTotal = manutencoes.filter(function(m){ return manVisivelNoMes(m, dashMes); }).reduce(function(s,m){ return s+parseFloat(m.custo||0); },0);
+      // Manutenções
+      var manFiltradas = manutencoes.filter(function(m){
+        if (!manVisivelNoMes(m, dashMes)) return false;
+        if (catFiltro === "pagas") return m.status_financeiro === "pago" || !!m.data_pagamento;
+        return true;
+      });
+      var manTotal = manFiltradas.reduce(function(s,m){ return s+parseFloat(m.custo||0); },0);
       if (manTotal > 0) catMap["Manutenção"] = (catMap["Manutenção"]||0) + manTotal;
 
       var catArr = Object.keys(catMap).map(function(k){ return { cat:k, val:catMap[k] }; })
         .sort(function(a,b){ return b.val-a.val; });
       var totalCat = catArr.reduce(function(s,x){ return s+x.val; },0);
 
-      if (catArr.length === 0) return null;
+      if (catArr.length === 0 && catFiltro === "pagas") {
+        // ainda mostra o card com filtro mas avisa vazio
+      }
 
-      var maxVal = catArr[0].val || 1;
+      var maxVal = catArr.length > 0 ? catArr[0].val : 1;
       var top = catArr.slice(0,8);
-
-      // Média diária
       var diasMes = new Date(parseInt(dashMes.slice(0,4)), parseInt(dashMes.slice(5,7)), 0).getDate();
-      var mediaDiaria = totalCat / diasMes;
+      var mediaDiaria = diasMes > 0 ? totalCat / diasMes : 0;
 
       return React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:0 } }
         , React.createElement('div', { onClick: () => setTab("financeiro"), style: { marginTop: 28, fontSize: 12, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer" } }, "Despesas por Categoria →")
@@ -14260,98 +14272,109 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         /* Card principal */
         , React.createElement('div', { style: { background: C.card, borderRadius: 20, border: "1px solid "+C.border, overflow:"hidden", marginTop: 10 } }
 
-          /* Header: total + média */
-          , React.createElement('div', { style: { padding: "18px 18px 0" } }
-            , React.createElement('div', { style: { fontSize: 11, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 } }, "Total de despesas")
-            , React.createElement('div', { style: { display:"flex", alignItems:"baseline", gap:4 } }
-              , React.createElement('div', { style: { fontSize: 30, fontWeight: 800, color: "var(--c-text)", letterSpacing: -1 } }, fmtBRL(totalCat).split(",")[0])
-              , React.createElement('div', { style: { fontSize: 14, fontWeight: 400, color: C.sub } }, "," + fmtBRL(totalCat).split(",")[1])
+          /* Header: total + filtros pill */
+          , React.createElement('div', { style: { padding: "16px 16px 0", display:"flex", justifyContent:"space-between", alignItems:"flex-start" } }
+            , React.createElement('div', null
+              , React.createElement('div', { style: { fontSize: 11, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 } }, "Total de despesas")
+              , React.createElement('div', { style: { display:"flex", alignItems:"baseline", gap:4 } }
+                , React.createElement('div', { style: { fontSize: 28, fontWeight: 800, color: "var(--c-text)", letterSpacing: -1 } }, fmtBRL(totalCat).split(",")[0])
+                , React.createElement('div', { style: { fontSize: 13, fontWeight: 400, color: C.sub } }, ","+fmtBRL(totalCat).split(",")[1])
+              )
+            )
+            /* Filtro pill */
+            , React.createElement('div', { style: { display:"flex", background: C.border+"60", borderRadius: 20, padding: 3, gap: 2, flexShrink:0 } }
+              , ["previstas","pagas"].map(function(f){
+                var active = catFiltro === f;
+                return React.createElement('button', { key:f, onClick: function(e){ e.stopPropagation(); setCatFiltro(f); },
+                  style: { padding:"5px 12px", borderRadius:16, border:"none", cursor:"pointer", fontSize:11, fontWeight:700,
+                    background: active ? (f==="pagas"?C.green:"#007AFF") : "transparent",
+                    color: active ? "#fff" : C.sub, transition:"all .15s" } },
+                  f === "pagas" ? "Pagas" : "Previstas"
+                );
+              })
             )
           )
 
           /* Barra de categorias — estilo Pinterest */
-          , React.createElement('div', { style: { padding: "18px 18px 0", overflowX: "auto", WebkitOverflowScrolling: "touch", scrollbarWidth:"none" } }
-            , React.createElement('div', { style: { display:"flex", gap:6, alignItems:"flex-end", height: 160, minWidth: top.length * 62 } }
-              , top.map(function(x, i) {
-                var h = Math.max(28, Math.round((x.val / maxVal) * 130));
-                var cor = CAT_CORES[i % CAT_CORES.length];
-                var pct = totalCat > 0 ? Math.round((x.val/totalCat)*100) : 0;
-                var icon = CAT_ICONS[x.cat] || "📦";
-                var shortName = x.cat.length > 8 ? x.cat.slice(0,7)+"…" : x.cat;
-                return React.createElement('div', { key: x.cat, onClick: function(){ setTab("financeiro"); },
-                  style: { display:"flex", flexDirection:"column", alignItems:"center", flex:1, minWidth:54, cursor:"pointer", gap:0 } }
-                  /* Ícone no topo */
-                  , React.createElement('div', { style: { fontSize: 18, height: 24, display:"flex", alignItems:"center", justifyContent:"center", opacity: 0.9 } }, icon)
-                  /* Barra */
-                  , React.createElement('div', { style: {
-                      width: "100%", height: h, background: cor,
-                      borderRadius: "8px 8px 0 0", marginTop: 130-h,
-                      display:"flex", flexDirection:"column", justifyContent:"flex-end",
-                      alignItems:"center", paddingBottom: 8, position:"relative",
-                      transition: "opacity .2s"
-                    } }
-                    , React.createElement('div', { style: { fontSize: 11, fontWeight: 800, color: "#fff", letterSpacing: -0.2 } }, pct+"%")
-                  )
-                );
-              })
+          , catArr.length > 0
+            ? React.createElement('div', { style: { padding: "14px 16px 0", overflowX: "auto", WebkitOverflowScrolling: "touch", scrollbarWidth:"none" } }
+              , React.createElement('div', { style: { display:"flex", gap:6, alignItems:"flex-end", height: 160, minWidth: top.length * 62 } }
+                , top.map(function(x, i) {
+                  var h = Math.max(28, Math.round((x.val / maxVal) * 130));
+                  var cor = CAT_CORES[i % CAT_CORES.length];
+                  var pct = totalCat > 0 ? Math.round((x.val/totalCat)*100) : 0;
+                  var icon = CAT_ICONS[x.cat] || "📦";
+                  return React.createElement('div', { key: x.cat, onClick: function(){ setTab("financeiro"); },
+                    style: { display:"flex", flexDirection:"column", alignItems:"center", flex:1, minWidth:54, cursor:"pointer", gap:0 } }
+                    , React.createElement('div', { style: { fontSize: 18, height: 24, display:"flex", alignItems:"center", justifyContent:"center" } }, icon)
+                    , React.createElement('div', { style: { width:"100%", height:h, background:cor, borderRadius:"8px 8px 0 0", marginTop:130-h,
+                        display:"flex", flexDirection:"column", justifyContent:"flex-end", alignItems:"center", paddingBottom:7 } }
+                      , React.createElement('div', { style: { fontSize:11, fontWeight:800, color:"#fff", letterSpacing:-0.2 } }, pct+"%")
+                    )
+                  );
+                })
+              )
+              , React.createElement('div', { style: { height:1, background:C.border } })
+              , React.createElement('div', { style: { display:"flex", gap:6, minWidth: top.length * 62, paddingBottom:4 } }
+                , top.map(function(x, i){
+                  var cor = CAT_CORES[i % CAT_CORES.length];
+                  var nm = x.cat.length > 8 ? x.cat.slice(0,7)+"…" : x.cat;
+                  return React.createElement('div', { key:x.cat, style:{ flex:1, minWidth:54, textAlign:"center", paddingTop:5 } }
+                    , React.createElement('div', { style:{ fontSize:9, color:cor, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" } }, nm)
+                  );
+                })
+              )
             )
-            /* Linha divisória */
-            , React.createElement('div', { style: { height: 1, background: C.border, marginTop: 0 } })
-            /* Nomes das categorias */
-            , React.createElement('div', { style: { display:"flex", gap:6, minWidth: top.length * 62 } }
-              , top.map(function(x, i) {
-                var cor = CAT_CORES[i % CAT_CORES.length];
-                var shortName = x.cat.length > 8 ? x.cat.slice(0,7)+"…" : x.cat;
-                return React.createElement('div', { key: x.cat, style: { flex:1, minWidth:54, textAlign:"center", paddingTop: 6 } }
-                  , React.createElement('div', { style: { fontSize: 9, color: cor, fontWeight: 700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" } }, shortName)
-                );
-              })
-            )
-          )
+            : React.createElement('div', { style: { padding:"28px 16px", textAlign:"center", color:C.sub, fontSize:13 } }, "Nenhuma despesa "+catFiltro+" neste mês")
 
           /* Rodapé: média diária + maior categoria */
-          , React.createElement('div', { style: { display:"flex", borderTop: "1px solid "+C.border, marginTop: 14 } }
+          , React.createElement('div', { style: { display:"flex", borderTop:"1px solid "+C.border, marginTop: catArr.length>0?12:0 } }
             , React.createElement('div', { style: { flex:1, padding:"12px 16px", borderRight:"1px solid "+C.border } }
-              , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform:"uppercase", letterSpacing: 0.3, marginBottom:2 } }, "Média diária")
+              , React.createElement('div', { style: { fontSize:10, color:C.sub, fontWeight:600, textTransform:"uppercase", letterSpacing:0.3, marginBottom:2 } }, "Média diária")
               , React.createElement('div', { style: { display:"flex", alignItems:"baseline", gap:2 } }
-                , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.orange } }, fmtBRL(mediaDiaria).split(",")[0])
-                , React.createElement('div', { style: { fontSize: 11, color: C.sub } }, ","+fmtBRL(mediaDiaria).split(",")[1])
+                , React.createElement('div', { style: { fontSize:18, fontWeight:800, color:C.orange } }, fmtBRL(mediaDiaria).split(",")[0])
+                , React.createElement('div', { style: { fontSize:11, color:C.sub } }, ","+fmtBRL(mediaDiaria).split(",")[1])
               )
             )
             , catArr.length > 0 && React.createElement('div', { style: { flex:1, padding:"12px 16px" } }
-              , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform:"uppercase", letterSpacing: 0.3, marginBottom:2 } }, "Maior gasto")
-              , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: CAT_CORES[0], marginBottom:1, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" } }, (CAT_ICONS[catArr[0].cat]||"📦")+" "+catArr[0].cat)
-              , React.createElement('div', { style: { fontSize: 11, color: C.sub } }, fmtBRL(catArr[0].val))
+              , React.createElement('div', { style: { fontSize:10, color:C.sub, fontWeight:600, textTransform:"uppercase", letterSpacing:0.3, marginBottom:2 } }, "Maior gasto")
+              , React.createElement('div', { style: { fontSize:13, fontWeight:700, color:CAT_CORES[0], marginBottom:1, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" } }, (CAT_ICONS[catArr[0].cat]||"📦")+" "+catArr[0].cat)
+              , React.createElement('div', { style: { fontSize:11, color:C.sub } }, fmtBRL(catArr[0].val))
             )
           )
         )
 
-        /* Lista detalhada abaixo */
-        , React.createElement('div', { style: { background: C.card, borderRadius: 20, border: "1px solid "+C.border, marginTop: 10, overflow:"hidden" } }
-          , React.createElement('div', { style: { padding: "14px 16px 6px", fontSize: 11, fontWeight: 700, color: C.sub, textTransform:"uppercase", letterSpacing: 0.5 } }, "Detalhamento")
-          , catArr.map(function(x, i) {
+        /* Lista detalhada — recolhível */
+        , catArr.length > 0 && React.createElement('div', { style: { background:C.card, borderRadius:20, border:"1px solid "+C.border, marginTop:10, overflow:"hidden" } }
+          /* Cabeçalho clicável */
+          , React.createElement('div', { onClick:function(){ setListaAberta(function(v){return !v;}); },
+            style: { padding:"14px 16px", display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer" } }
+            , React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Detalhamento (" + catArr.length + " categorias)")
+            , React.createElement('div', { style:{ fontSize:12, color:C.sub, fontWeight:700, transition:"transform .2s", transform: listaAberta?"rotate(180deg)":"rotate(0deg)" } }, "▼")
+          )
+          /* Conteúdo recolhível */
+          , listaAberta && catArr.map(function(x, i) {
             var cor = CAT_CORES[i % CAT_CORES.length];
             var pct = totalCat > 0 ? (x.val/totalCat)*100 : 0;
             var icon = CAT_ICONS[x.cat] || "📦";
-            return React.createElement('div', { key: x.cat, onClick: function(){ setTab("financeiro"); },
-              style: { padding:"10px 16px", borderTop: i>0?"1px solid "+C.border:"none", cursor:"pointer" } }
-              , React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:5 } }
-                , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:8 } }
-                  , React.createElement('div', { style: { width:28, height:28, borderRadius:8, background:cor+"20", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, flexShrink:0 } }, icon)
-                  , React.createElement('div', { style: { fontSize:13, fontWeight:600, color:"var(--c-text)" } }, x.cat)
+            return React.createElement('div', { key:x.cat, onClick:function(){ setTab("financeiro"); },
+              style:{ padding:"10px 16px", borderTop:"1px solid "+C.border, cursor:"pointer" } }
+              , React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:5 } }
+                , React.createElement('div', { style:{ display:"flex", alignItems:"center", gap:8 } }
+                  , React.createElement('div', { style:{ width:28, height:28, borderRadius:8, background:cor+"20", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, flexShrink:0 } }, icon)
+                  , React.createElement('div', { style:{ fontSize:13, fontWeight:600, color:"var(--c-text)" } }, x.cat)
                 )
-                , React.createElement('div', { style: { textAlign:"right" } }
-                  , React.createElement('div', { style: { fontSize:13, fontWeight:700, color:cor } }, fmtBRL(x.val))
-                  , React.createElement('div', { style: { fontSize:10, color:C.sub, marginTop:1 } }, pct.toFixed(1)+"%")
+                , React.createElement('div', { style:{ textAlign:"right" } }
+                  , React.createElement('div', { style:{ fontSize:13, fontWeight:700, color:cor } }, fmtBRL(x.val))
+                  , React.createElement('div', { style:{ fontSize:10, color:C.sub, marginTop:1 } }, pct.toFixed(1)+"%")
                 )
               )
-              /* Barra de progresso */
-              , React.createElement('div', { style: { height:4, borderRadius:2, background:C.border, overflow:"hidden" } }
-                , React.createElement('div', { style: { height:"100%", width:pct+"%", background:cor, borderRadius:2, transition:"width .4s ease" } })
+              , React.createElement('div', { style:{ height:4, borderRadius:2, background:C.border, overflow:"hidden" } }
+                , React.createElement('div', { style:{ height:"100%", width:pct+"%", background:cor, borderRadius:2, transition:"width .4s ease" } })
               )
             );
           })
-          , React.createElement('div', { style: { height: 8 } })
+          , listaAberta && React.createElement('div', { style:{ height:8 } })
         )
       );
     })()
@@ -14451,7 +14474,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
 
       if (diasData.length === 0) {
         return React.createElement("div", { style:{ marginTop:28 } }
-          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, marginBottom:10 } }, "Fluxo de Caixa Diário")
+          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, marginBottom:10 } }, "Financeiro por Dia")
           , React.createElement("div", { style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"24px", textAlign:"center", color:C.sub, fontSize:13 } }, "Nenhum lançamento no período")
         );
       }
@@ -14504,7 +14527,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       return React.createElement(React.Fragment, null
         /* Header */
         , React.createElement("div", { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:28, marginBottom:10, flexWrap:"wrap", gap:8 } }
-          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Fluxo de Caixa Diário — 6 meses ↔")
+          , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Financeiro por Dia — 6 meses ↔")
           , React.createElement("select", { value:fluxoVeiculo, onChange:function(e){setFluxoVeiculo(e.target.value);},
               style:{ border:"1px solid "+C.border, borderRadius:8, padding:"4px 8px", fontSize:12, background:C.card, color:"var(--c-text)", cursor:"pointer" } }
             , React.createElement("option", { value:"" }, "Todos os veículos")

@@ -16407,6 +16407,8 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   const [mostrarFiltros, setMostrarFiltros] = useState(false);
   const [filterNotif, setFilterNotif] = useState("todos");
   const [sortMul, setSortMul] = useState("data_asc");
+  const [modalDSV, setModalDSV] = useState(false);
+  const [multaDSV, setMultaDSV] = useState(null);
 
   React.useEffect(function() {
     function handleOpen(e) {
@@ -16461,7 +16463,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       // Normaliza IDs: "" → null (Postgres bigint rejeita string vazia)
       ["contrato_id","veiculo_id","cliente_id"].forEach(function(k){ if (payload[k] === "" || payload[k] === undefined) payload[k] = null; });
       // Normaliza datas: "" → null
-      ["data","vencimento","data_pagamento","data_notificacao"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
+      ["data","vencimento","data_pagamento","data_notificacao","data_cobranca_cliente"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
       // Normaliza números: "" → null
       ["valor","valor_cobrado","pontos"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
       if (edit) { const u = await db.patch("multas", edit, payload); setMultas(p => p.map(m => m.id === edit ? Object.assign({}, m, u) : m)); toast("Atualizado!"); }
@@ -16483,6 +16485,34 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     await db.patch("multas", m.id, { status: "pendente", data_pagamento: null });
     setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, { status: "pendente", data_pagamento: null }) : x));
     toast("↩ Revertido");
+  }
+  function buildLinkDSV(m, token) {
+    var base = window.location.origin + window.location.pathname;
+    return base + "#assinar_dsv=" + m.id + "&tk=" + token;
+  }
+  async function enviarDSVLink(m, cl, ve, via) {
+    var token = m.token_dsv;
+    if (!token) {
+      token = gerarTokenRand();
+      try {
+        await db.patch("multas", m.id, { token_dsv: token });
+        setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, { token_dsv: token }) : x));
+        m = Object.assign({}, m, { token_dsv: token });
+      } catch(e) { alert("Rode o SQL do Config (colunas DSV). Detalhe: " + e.message); return; }
+    }
+    var url = buildLinkDSV(m, token);
+    var nomeVe = (ve && ve.placa ? ve.placa : "") + (ve && ve.modelo ? " " + ve.modelo : "");
+    var msg = "Olá " + (cl && cl.nome ? cl.nome : "") + "!\n\nVocê recebeu uma notificação de infração de trânsito referente ao veículo " + nomeVe + ".\n\nAIT: " + (m.ait || "—") + "\nData: " + fmtDate(m.data) + "\nInfração: " + (m.tipo || "—") + "\nLocal: " + (m.local || "—") + "\n\nPor favor, acesse o link abaixo para visualizar o Formulário de Indicação de Condutor e assinar digitalmente:\n\n" + url + "\n\nAssine pelo celular mesmo, com o dedo.";
+    if (via === "whats") {
+      var tel = String((cl && cl.telefone) || "").replace(/\D/g, "");
+      if (tel && tel.length < 12) tel = "55" + tel;
+      window.open("https://wa.me/" + tel + "?text=" + encodeURIComponent(msg), "_blank");
+    } else if (via === "email") {
+      var to = (cl && cl.email) || "";
+      window.open("mailto:" + encodeURIComponent(to) + "?subject=" + encodeURIComponent("Formulário de Indicação de Condutor — AIT " + (m.ait || "")) + "&body=" + encodeURIComponent(msg), "_blank");
+    } else if (via === "copy") {
+      try { await navigator.clipboard.writeText(url); alert("Link copiado!"); } catch(e) { prompt("Copie o link:", url); }
+    }
   }
   function printNotificacao(m, cl, ve) {
     var emp = empresa || {};
@@ -16600,20 +16630,37 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
               , m.pontos && React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 4 } }, "🔴 " + m.pontos + " pontos")
             )
           )
-          /* Painel de status grande e claro */
-          , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 } }
+          /* Painel de status — 3 colunas: Locadora | DSV | Cliente */
+          , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 } }
             , React.createElement('div', { style: { background: locCor + "0D", border: "1px solid " + locCor + "40", borderRadius: 12, padding: "10px 12px" } }
-              , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Locadora (para o órgão)")
-              , React.createElement('div', { style: { fontSize: 13, fontWeight: 800, color: locCor, marginTop: 3, lineHeight: 1.2 } }, locLabel)
-              , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, isPago && m.data_pagamento ? "Pago em " + fmtDate(m.data_pagamento) : (m.vencimento ? "Venc. " + fmtDate(m.vencimento) : ""))
+              , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Locadora → Órgão")
+              , React.createElement('div', { style: { fontSize: 12, fontWeight: 800, color: locCor, marginTop: 3, lineHeight: 1.2 } }, locLabel)
+              , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } },
+                  isPago && m.data_pagamento ? "Pago em " + fmtDate(m.data_pagamento) :
+                  (m.vencimento ? "Venc. " + fmtDate(m.vencimento) : "Sem vencimento")
+              )
             )
+            , (function() {
+                var dsvCor = m.dsv_assinado_em ? C.green : (m.token_dsv ? C.orange : C.gray);
+                var dsvLabel = m.dsv_assinado_em ? "✅ Condutor assinou" : (m.token_dsv ? "⏳ Link enviado" : "○ Não enviado");
+                var dsvSub = m.dsv_assinado_em ? "Assinou em " + fmtDate(String(m.dsv_assinado_em).slice(0,10)) : (m.token_dsv ? "Aguardando assinatura" : "Envie o formulário DSV");
+                return React.createElement('div', { style: { background: dsvCor + "0D", border: "1px solid " + dsvCor + "40", borderRadius: 12, padding: "10px 12px", cursor: "pointer" }, onClick: function(){ setMultaDSV(m); setModalDSV(true); } }
+                  , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Notificação DSV")
+                  , React.createElement('div', { style: { fontSize: 12, fontWeight: 800, color: dsvCor, marginTop: 3, lineHeight: 1.2 } }, dsvLabel)
+                  , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, dsvSub)
+                );
+              })()
             , React.createElement('div', { style: { background: cliCor + "0D", border: "1px solid " + cliCor + "40", borderRadius: 12, padding: "10px 12px" } }
-              , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Cliente (reembolso)")
-              , React.createElement('div', { style: { fontSize: 13, fontWeight: 800, color: cliCor, marginTop: 3, lineHeight: 1.2 } }, cliLabel)
-              , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, valorCli ? (cc === "pago" ? "Recebido " + valorCli : "A receber " + valorCli) : (cc === "nao" ? "Sem cobrança" : ""))
+              , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 } }, "Cobrança ao Cliente")
+              , React.createElement('div', { style: { fontSize: 12, fontWeight: 800, color: cliCor, marginTop: 3, lineHeight: 1.2 } }, cliLabel)
+              , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } },
+                  valorCli
+                    ? (cc === "pago" ? "Recebido " + valorCli : "A receber " + valorCli)
+                    : (m.data_cobranca_cliente ? "Cobrado em " + fmtDate(m.data_cobranca_cliente) : (cc === "nao" ? "Não cobrado" : ""))
+              )
             )
           )
-          /* Chips secundários: notificação, contestado, anexos */
+          /* Chips secundários: notificação interna, contestado, anexos */
           , React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 } }
             , isContestado && React.createElement('span', { style: chipStyle(C.red) }, "⚖️ Contestado")
             , m.data_notificacao && React.createElement('span', { style: chipStyle(C.teal) }, "📤 Notif. " + fmtDate(m.data_notificacao))
@@ -16622,14 +16669,16 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
                 if (curIdx < 0) curIdx = 0;
                 var ns = NOTIF_STATUS[curIdx];
                 var proxIdx = (curIdx + 1) % NOTIF_STATUS.length;
-                return React.createElement('span', { title: "Clique para alterar notificação", onClick: function(){ notificar(m, NOTIF_STATUS[proxIdx].id); }, style: Object.assign({}, chipStyle(ns.cor), { cursor: "pointer" }) }, ns.emoji + " " + ns.label);
+                return React.createElement('span', { title: "Clique para alterar status de notificação interna", onClick: function(){ notificar(m, NOTIF_STATUS[proxIdx].id); }, style: Object.assign({}, chipStyle(ns.cor), { cursor: "pointer" }) }, ns.emoji + " " + ns.label);
               })()
+            , m.data_cobranca_cliente && React.createElement('span', { style: chipStyle(C.purple) }, "💳 Cobrado em " + fmtDate(m.data_cobranca_cliente))
             , m.auto_infracao_url && React.createElement('a', { href: m.auto_infracao_url, target: "_blank", rel: "noreferrer", style: Object.assign({}, chipStyle(C.teal), { textDecoration: "none" }) }, "📎 Auto")
             , m.cnh_condutor_url && React.createElement('a', { href: m.cnh_condutor_url, target: "_blank", rel: "noreferrer", style: Object.assign({}, chipStyle(C.teal), { textDecoration: "none" }) }, "🪪 CNH")
           )
           , React.createElement('div', { style: { display: "flex", gap: 6, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch", paddingBottom: 2 } },
             !isPago && React.createElement('button', { className: bCls(Ghost(C.green)), style: bStyle(Ghost(C.green)), onClick: function(){pagar(m);} }, "💰 Locadora pagou"),
             isPago && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: function(){reverterMulta(m);} }, "↩ Reverter"),
+            React.createElement('button', { className: bCls(Ghost(C.purple)), style: bStyle(Ghost(C.purple)), onClick: function(){ setMultaDSV(m); setModalDSV(true); } }, "📋 DSV"),
             React.createElement('button', { className: bCls(Ghost(C.teal)), style: bStyle(Ghost(C.teal)), onClick: function(){ printNotificacao(m, cl, ve); } }, "📄 PDF"),
             React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: function(){ setForm(Object.assign({}, m)); setEdit(m.id); setModal(true); } }, "Editar"),
             React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: function(){remove(m.id);} }, "✕")
@@ -16637,46 +16686,152 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         );
       })
     )
-    , React.createElement(Modal, { open: modal, onClose: () => setModal(false), title: edit ? "Editar Multa" : "Nova Multa", wide: true, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1359}}
-      , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1360}}
-        , React.createElement(Lbl, { label: "Contrato (opcional)" }, React.createElement('select', { style: FI, value: form.contrato_id || "", onChange: e => { var ctId = e.target.value; if (ctId) { var ctSel = contratos.find(function(x){return String(x.id)===ctId;}); setForm(function(p){ return Object.assign({}, p, { contrato_id: ctId, cliente_id: ctSel ? String(ctSel.cliente_id||"") : p.cliente_id, veiculo_id: ctSel ? String(ctSel.veiculo_id||"") : p.veiculo_id }); }); } else { F("contrato_id", ""); } } }, React.createElement('option', { value: "" }, "— Sem contrato vinculado"), contratos.map(function(c) { var cl = clientes.find(function(x){return x.id==c.cliente_id;}); var ve = veiculos.find(function(x){return x.id==c.veiculo_id;}); return React.createElement('option', { key: c.id, value: c.id }, "#", numCt(c.id), " - ", cl&&cl.nome||"?", " · ", ve&&ve.placa||""); })))
+    , React.createElement(Modal, { open: modal, onClose: () => setModal(false), title: edit ? "Editar Multa" : "Nova Multa", wide: true }
+      , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 } }
+        /* ── Seção: Dados da Infração ── */
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid " + C.border, paddingBottom: 4 } }, "Dados da Infração")
+        , React.createElement(Lbl, { label: "Contrato (opcional)" }, React.createElement('select', { style: FI, value: form.contrato_id || "", onChange: function(e) { var ctId = e.target.value; if (ctId) { var ctSel = contratos.find(function(x){return String(x.id)===ctId;}); setForm(function(p){ return Object.assign({}, p, { contrato_id: ctId, cliente_id: ctSel ? String(ctSel.cliente_id||"") : p.cliente_id, veiculo_id: ctSel ? String(ctSel.veiculo_id||"") : p.veiculo_id }); }); } else { F("contrato_id", ""); } } }, React.createElement('option', { value: "" }, "— Sem contrato vinculado"), contratos.map(function(c) { var cl = clientes.find(function(x){return x.id==c.cliente_id;}); var ve = veiculos.find(function(x){return x.id==c.veiculo_id;}); return React.createElement('option', { key: c.id, value: c.id }, "#", numCt(c.id), " - ", cl&&cl.nome||"?", " · ", ve&&ve.placa||""); })))
         , React.createElement('div', { style: { display: "flex", gap: 10 } }
-          , React.createElement(Lbl, { label: "Cliente", flex: 1 }, React.createElement('select', { style: FI, value: form.cliente_id || "", onChange: e => F("cliente_id", e.target.value) }, React.createElement('option', { value: "" }, "— Selecione..."), clientes.map(function(c){ return React.createElement('option', { key: c.id, value: c.id }, c.nome); })))
-          , React.createElement(Lbl, { label: "Veículo", flex: 1 }, React.createElement('select', { style: FI, value: form.veiculo_id || "", onChange: e => F("veiculo_id", e.target.value) }, React.createElement('option', { value: "" }, "— Selecione..."), veiculos.map(function(v){ return React.createElement('option', { key: v.id, value: v.id }, v.placa, " — ", v.marca, " ", v.modelo); })))
+          , React.createElement(Lbl, { label: "Condutor (Cliente)", flex: 1 }, React.createElement('select', { style: FI, value: form.cliente_id || "", onChange: function(e){F("cliente_id", e.target.value);} }, React.createElement('option', { value: "" }, "— Selecione..."), clientes.map(function(c){ return React.createElement('option', { key: c.id, value: c.id }, c.nome); })))
+          , React.createElement(Lbl, { label: "Veículo", flex: 1 }, React.createElement('select', { style: FI, value: form.veiculo_id || "", onChange: function(e){F("veiculo_id", e.target.value);} }, React.createElement('option', { value: "" }, "— Selecione..."), veiculos.map(function(v){ return React.createElement('option', { key: v.id, value: v.id }, v.placa, " — ", v.marca, " ", v.modelo); })))
         )
-        , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1362}}
-          , React.createElement(Lbl, { label: "Tipo *" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1363}}, React.createElement('select', { style: FI, value: form.tipo || "", onChange: e => F("tipo", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1363}}, React.createElement('option', { value: "", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1363}}, "Selecione..."), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1363}}, "Excesso de Velocidade"  ), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1363}}, "Estacionamento Irregular" ), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1363}}, "Avanco de Sinal"  ), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1363}}, "Uso de Celular"  ), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1363}}, "Faixa de Pedestre"  ), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1363}}, "Documentacao"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1363}}, "Outro")))
-          , React.createElement(Lbl, { label: "Valor *" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1364}}, React.createElement('input', { style: FI, type: "number", step: "0.01", value: form.valor || "", onChange: e => F("valor", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1364}} ))
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Tipo de Infração *", flex: 2 }, React.createElement('select', { style: FI, value: form.tipo || "", onChange: function(e){F("tipo", e.target.value);} },
+              React.createElement('option', { value: "" }, "Selecione..."),
+              React.createElement('option', null, "Excesso de Velocidade"),
+              React.createElement('option', null, "Estacionamento Irregular"),
+              React.createElement('option', null, "Avanço de Sinal"),
+              React.createElement('option', null, "Uso de Celular ao Volante"),
+              React.createElement('option', null, "Transitar em Local/Horário Não Permitido - Rodízio"),
+              React.createElement('option', null, "Faixa de Pedestre"),
+              React.createElement('option', null, "Documentação"),
+              React.createElement('option', null, "Outro")))
+          , React.createElement(Lbl, { label: "Valor (R$) *", flex: 1 }, React.createElement('input', { style: FI, type: "number", step: "0.01", value: form.valor || "", onChange: function(e){F("valor", e.target.value);} }))
+          , React.createElement(Lbl, { label: "Pontos", flex: 1 }, React.createElement('input', { style: FI, type: "number", value: form.pontos || "", onChange: function(e){F("pontos", e.target.value);} }))
         )
-        , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1366}}
-          , React.createElement(Lbl, { label: "Data *" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1367}}, React.createElement('input', { style: FI, type: "date", value: form.data || "", onChange: e => F("data", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1367}} ))
-          , React.createElement(Lbl, { label: "Vencimento", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1368}}, React.createElement('input', { style: FI, type: "date", value: form.vencimento || "", onChange: e => F("vencimento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1368}} ))
-          , React.createElement(Lbl, { label: "Pontos", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1369}}, React.createElement('input', { style: FI, type: "number", value: form.pontos || "", onChange: e => F("pontos", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1369}} ))
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Data da Infração *", flex: 1 }, React.createElement('input', { style: FI, type: "date", value: form.data || "", onChange: function(e){F("data", e.target.value);} }))
+          , React.createElement(Lbl, { label: "AIT (Nº do Auto)", flex: 1 }, React.createElement('input', { style: FI, value: form.ait || "", onChange: function(e){F("ait", e.target.value);}, placeholder: "Ex: HRA46770969" }))
         )
-        , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1371}}
-          , React.createElement(Lbl, { label: "AIT (Auto de Infração)", flex: 1 }, React.createElement('input', { style: FI, value: form.ait || "", onChange: function(e){F("ait",e.target.value);}, placeholder: "Nº do auto" }))
-          , React.createElement(Lbl, { label: "Local", flex: 1 }, React.createElement('input', { style: FI, value: form.local || "", onChange: function(e){F("local",e.target.value);}, placeholder: "Local da infração" }))
-          , React.createElement(Lbl, { label: "Status Pgto", flex: 1 }, React.createElement('select', { style: FI, value: form.status || "pendente", onChange: function(e){F("status",e.target.value);} },
+        , React.createElement(Lbl, { label: "Local da Infração" }, React.createElement('input', { style: FI, value: form.local || "", onChange: function(e){F("local", e.target.value);}, placeholder: "Ex: Av. Alcântara Machado, 4188" }))
+        , React.createElement(Lbl, { label: "Descrição da Infração" }, React.createElement('input', { style: FI, value: form.descricao || "", onChange: function(e){F("descricao", e.target.value);}, placeholder: "Descrição detalhada do auto de infração" }))
+        /* ── Seção: Pagamento da Locadora ao Órgão ── */
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.orange, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid " + C.orange + "40", paddingBottom: 4, marginTop: 4 } }, "Pagamento da Multa — Locadora ao Órgão")
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Status", flex: 1 }, React.createElement('select', { style: FI, value: form.status || "pendente", onChange: function(e){F("status", e.target.value);} },
               React.createElement('option', { value: "pendente" }, "Pendente"),
               React.createElement('option', { value: "pago" }, "Pago"),
               React.createElement('option', { value: "contestado" }, "Contestado")))
+          , React.createElement(Lbl, { label: "Vencimento da Multa", flex: 1 }, React.createElement('input', { style: FI, type: "date", value: form.vencimento || "", onChange: function(e){F("vencimento", e.target.value);} }))
         )
-        , React.createElement('div', { style: { display: "flex", gap: 10 } },
-          React.createElement(Lbl, { label: "Status Notificação", flex: 2 }, React.createElement('select', { style: FI, value: form.status_notificacao || "nao_notificado", onChange: function(e){F("status_notificacao",e.target.value);} },
-            NOTIF_STATUS.map(function(ns){ return React.createElement('option', { key: ns.id, value: ns.id }, ns.emoji + " " + ns.label); })
-          )),
-          React.createElement(Lbl, { label: "Data Notificação", flex: 1 }, React.createElement('input', { style: FI, type: "date", value: form.data_notificacao || "", onChange: function(e){F("data_notificacao",e.target.value);} }))
+        /* ── Seção: Notificação Interna ── */
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.teal, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid " + C.teal + "40", paddingBottom: 4, marginTop: 4 } }, "Notificação Interna ao Condutor")
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Status da Notificação", flex: 2 }, React.createElement('select', { style: FI, value: form.status_notificacao || "nao_notificado", onChange: function(e){F("status_notificacao", e.target.value);} },
+              NOTIF_STATUS.map(function(ns){ return React.createElement('option', { key: ns.id, value: ns.id }, ns.emoji + " " + ns.label); })
+          ))
+          , React.createElement(Lbl, { label: "Data da Notificação", flex: 1 }, React.createElement('input', { style: FI, type: "date", value: form.data_notificacao || "", onChange: function(e){F("data_notificacao", e.target.value);} }))
         )
-        , React.createElement(Lbl, { label: "Descricao" }, React.createElement('input', { style: FI, value: form.descricao || "", onChange: function(e){F("descricao",e.target.value);} }))
-        , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1376}}
-          , React.createElement(Lbl, { label: "Cobrado do Cliente?"  , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1377}}, React.createElement('select', { style: FI, value: form.cobrado_cliente || "nao", onChange: e => F("cobrado_cliente", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1377}}, React.createElement('option', { value: "nao", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1377}}, "Não cobrado" ), React.createElement('option', { value: "pendente", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1377}}, "Pendente"), React.createElement('option', { value: "pago", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1377}}, "Cliente pagou" )))
-          , React.createElement(Lbl, { label: "Valor Cobrado (R$)"  , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1378}}, React.createElement('input', { style: FI, type: "number", step: "0.01", value: form.valor_cobrado || "", onChange: e => F("valor_cobrado", e.target.value), placeholder: "Valor repassado" , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1378}} ))
+        , React.createElement('div', { style: { background: C.purple + "0D", border: "1px solid " + C.purple + "30", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: C.sub } },
+            "Para enviar o Formulário de Indicação de Condutor (DSV) com assinatura online, feche este formulário e clique em ", React.createElement('b', null, "📋 DSV"), " no cartão da multa."
         )
-        , React.createElement(UploadField, { label: "Auto de Infracao"  , value: form.auto_infracao_url || "", onChange: v => F("auto_infracao_url", v), pasta: "multas", nome: "auto_" + (form.contrato_id || "0"), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1380}} )
-        , React.createElement(UploadField, { label: "CNH do Condutor"  , value: form.cnh_condutor_url || "", onChange: v => F("cnh_condutor_url", v), pasta: "cnh_infratores", nome: "cnh_" + (form.contrato_id || "0"), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1381}} )
-        , React.createElement('button', { className: bCls(Btn(C.red)), style: bStyle(Btn(C.red)), onClick: save, disabled: loading, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1382}}, loading ? "Salvando..." : "Salvar")
+        /* ── Seção: Cobrança ao Cliente ── */
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.purple, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid " + C.purple + "40", paddingBottom: 4, marginTop: 4 } }, "Cobrança ao Cliente")
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Status da Cobrança", flex: 1 }, React.createElement('select', { style: FI, value: form.cobrado_cliente || "nao", onChange: function(e){F("cobrado_cliente", e.target.value);} },
+              React.createElement('option', { value: "nao" }, "Não cobrado"),
+              React.createElement('option', { value: "pendente" }, "Cobrado — Aguardando Pagamento"),
+              React.createElement('option', { value: "pago" }, "Cliente pagou")))
+          , React.createElement(Lbl, { label: "Data da Cobrança", flex: 1 }, React.createElement('input', { style: FI, type: "date", value: form.data_cobranca_cliente || "", onChange: function(e){F("data_cobranca_cliente", e.target.value);} }))
+          , React.createElement(Lbl, { label: "Valor Cobrado (R$)", flex: 1 }, React.createElement('input', { style: FI, type: "number", step: "0.01", value: form.valor_cobrado || "", onChange: function(e){F("valor_cobrado", e.target.value);}, placeholder: "Valor repassado" }))
+        )
+        /* ── Seção: Anexos ── */
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid " + C.border, paddingBottom: 4, marginTop: 4 } }, "Anexos")
+        , React.createElement(UploadField, { label: "Auto de Infração (PDF/Imagem)", value: form.auto_infracao_url || "", onChange: function(v){F("auto_infracao_url", v);}, pasta: "multas", nome: "auto_" + (form.contrato_id || "0") })
+        , React.createElement(UploadField, { label: "CNH do Condutor", value: form.cnh_condutor_url || "", onChange: function(v){F("cnh_condutor_url", v);}, pasta: "cnh_infratores", nome: "cnh_" + (form.contrato_id || "0") })
+        , React.createElement('button', { className: bCls(Btn(C.red)), style: bStyle(Btn(C.red)), onClick: save, disabled: loading }, loading ? "Salvando..." : "Salvar Multa")
       )
     )
+    /* ── Modal DSV ── */
+    , modalDSV && multaDSV && (function() {
+        var mDSV = multas.find(function(x){return x.id===multaDSV.id;}) || multaDSV;
+        var ctDSV = getCt(mDSV.contrato_id);
+        var clDSV = ctDSV ? getCl(ctDSV.cliente_id) : getCl(mDSV.cliente_id);
+        var veDSV = ctDSV ? getVeByContrato(mDSV.contrato_id) : (mDSV.veiculo_id ? veiculos.find(function(v){return v.id==mDSV.veiculo_id;}) : null);
+        var emp = empresa || {};
+        var isSigned = !!mDSV.dsv_assinado_em;
+        var secStyle = { background: "#F7F7FA", borderRadius: 10, padding: "10px 14px", marginBottom: 8 };
+        var rowStyle = { display: "flex", borderBottom: "1px solid #eee", padding: "6px 0", fontSize: 13 };
+        var lblStyle = { color: "#666", width: 180, flexShrink: 0, fontSize: 12 };
+        var valStyle = { fontWeight: 600, flex: 1 };
+        return React.createElement(Modal, { open: modalDSV, onClose: function(){ setModalDSV(false); setMultaDSV(null); }, title: "Notificação DSV — Formulário de Indicação de Condutor", wide: true }
+          , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 } }
+            , isSigned && React.createElement('div', { style: { background: "#34C75922", border: "1px solid #34C759", color: "#34C759", borderRadius: 10, padding: "10px 14px", fontWeight: 700, fontSize: 13 } },
+                "✅ Condutor assinou online em " + fmtDate(String(mDSV.dsv_assinado_em).slice(0,10)) + " " + String(mDSV.dsv_assinado_em).slice(11,16)
+            )
+            , !isSigned && React.createElement('div', { style: { display: "flex", gap: 8, flexWrap: "wrap" } }
+              , React.createElement('button', { style: Object.assign({}, Btn(C.green), { fontSize: 12, padding: "8px 12px" }), onClick: function(){ enviarDSVLink(mDSV, clDSV, veDSV, "whats"); } }, "📲 WhatsApp")
+              , React.createElement('button', { style: Object.assign({}, Btn(C.blue), { fontSize: 12, padding: "8px 12px" }), onClick: function(){ enviarDSVLink(mDSV, clDSV, veDSV, "email"); } }, "📧 E-mail")
+              , React.createElement('button', { style: Object.assign({}, Btn(), { fontSize: 12, padding: "8px 12px" }), onClick: function(){ enviarDSVLink(mDSV, clDSV, veDSV, "copy"); } }, "🔗 Copiar Link")
+            )
+            /* Preview do formulário */
+            , React.createElement('div', { style: { border: "1px solid #ddd", borderRadius: 12, padding: 16, background: "#fff", fontFamily: "Arial, sans-serif", fontSize: 13 } }
+              , React.createElement('div', { style: { textAlign: "center", marginBottom: 12 } }
+                , React.createElement('div', { style: { fontWeight: 800, fontSize: 15, textTransform: "uppercase", letterSpacing: 1 } }, "Formulário de Indicação de Condutor")
+                , emp.nome && React.createElement('div', { style: { fontSize: 12, color: "#666", marginTop: 2 } }, emp.nome + (emp.cnpj ? " — CNPJ " + emp.cnpj : ""))
+              )
+              , React.createElement('div', { style: secStyle }
+                , React.createElement('div', { style: { fontWeight: 700, fontSize: 11, textTransform: "uppercase", color: "#555", marginBottom: 6 } }, "Proprietário / Locadora")
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Nome"), React.createElement('span', { style: valStyle }, emp.nome || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "CNPJ"), React.createElement('span', { style: valStyle }, emp.cnpj || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Endereço"), React.createElement('span', { style: valStyle }, emp.endereco || "—"))
+              )
+              , React.createElement('div', { style: secStyle }
+                , React.createElement('div', { style: { fontWeight: 700, fontSize: 11, textTransform: "uppercase", color: "#555", marginBottom: 6 } }, "Veículo")
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "RENAVAM"), React.createElement('span', { style: valStyle }, (veDSV && veDSV.renavam) || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Placa"), React.createElement('span', { style: valStyle }, (veDSV && veDSV.placa) || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Marca / Modelo"), React.createElement('span', { style: valStyle }, (veDSV ? (veDSV.marca || "") + " " + (veDSV.modelo || "") : "—").trim() || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Ano"), React.createElement('span', { style: valStyle }, (veDSV && veDSV.ano) || "—"))
+              )
+              , React.createElement('div', { style: secStyle }
+                , React.createElement('div', { style: { fontWeight: 700, fontSize: 11, textTransform: "uppercase", color: "#555", marginBottom: 6 } }, "Autuação")
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Número AIT"), React.createElement('span', { style: valStyle }, mDSV.ait || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Data"), React.createElement('span', { style: valStyle }, fmtDate(mDSV.data)))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Local"), React.createElement('span', { style: valStyle }, mDSV.local || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Descrição"), React.createElement('span', { style: valStyle }, mDSV.descricao || mDSV.tipo || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Vencimento"), React.createElement('span', { style: valStyle }, fmtDate(mDSV.vencimento)))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Valor"), React.createElement('span', { style: Object.assign({}, valStyle, { color: "#FF3B30" }) }, fmtBRL(mDSV.valor)))
+              )
+              , React.createElement('div', { style: secStyle }
+                , React.createElement('div', { style: { fontWeight: 700, fontSize: 11, textTransform: "uppercase", color: "#555", marginBottom: 6 } }, "Condutor Infrator")
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Nome"), React.createElement('span', { style: valStyle }, (clDSV && clDSV.nome) || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "CPF"), React.createElement('span', { style: valStyle }, (clDSV && clDSV.cpf) || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Nº CNH"), React.createElement('span', { style: valStyle }, (clDSV && clDSV.cnh) || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Validade CNH"), React.createElement('span', { style: valStyle }, (clDSV && clDSV.vencimento_cnh) ? fmtDate(clDSV.vencimento_cnh) : "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "E-mail"), React.createElement('span', { style: valStyle }, (clDSV && clDSV.email) || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Telefone"), React.createElement('span', { style: valStyle }, (clDSV && clDSV.telefone) || "—"))
+                , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Endereço"), React.createElement('span', { style: valStyle }, (clDSV && clDSV.endereco) || "—"))
+              )
+              , React.createElement('div', { style: { display: "flex", gap: 40, marginTop: 24, paddingTop: 16, borderTop: "1px solid #ddd" } }
+                , React.createElement('div', { style: { flex: 1, textAlign: "center" } }
+                  , isSigned && mDSV.assinatura_dsv
+                    ? React.createElement('img', { src: mDSV.assinatura_dsv, style: { maxHeight: 60, maxWidth: "100%", display: "block", margin: "0 auto 4px" } })
+                    : React.createElement('div', { style: { height: 60, borderBottom: "2px solid #333", marginBottom: 4 } })
+                  , React.createElement('div', { style: { fontSize: 11, color: "#555" } }, "Assinatura do Condutor")
+                  , React.createElement('div', { style: { fontSize: 11, fontWeight: 700 } }, (clDSV && clDSV.nome) || "")
+                  , clDSV && clDSV.cpf && React.createElement('div', { style: { fontSize: 10, color: "#888" } }, "CPF: " + clDSV.cpf)
+                )
+                , React.createElement('div', { style: { flex: 1, textAlign: "center" } }
+                  , React.createElement('div', { style: { height: 60, borderBottom: "2px solid #333", marginBottom: 4 } })
+                  , React.createElement('div', { style: { fontSize: 11, color: "#555" } }, "Assinatura da Locadora / Proprietário")
+                  , React.createElement('div', { style: { fontSize: 11, fontWeight: 700 } }, emp.nome || "")
+                  , emp.cnpj && React.createElement('div', { style: { fontSize: 10, color: "#888" } }, "CNPJ: " + emp.cnpj)
+                )
+              )
+            )
+          )
+        );
+      })()
   );
 }
 
@@ -20250,6 +20405,11 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark }) {
                  , React.createElement('br', {}), "create policy \"all\" on bank_transactions for all using (true) with check (true);"
                  , React.createElement('br', {}), "grant all on bank_transactions to anon;"
                  , React.createElement('br', {}), "grant usage, select on sequence bank_transactions_id_seq to anon;"
+                 , React.createElement('br', {}), "-- Multas: novos campos (Notificação DSV + Cobrança ao Cliente):"
+                 , React.createElement('br', {}), "alter table multas add column if not exists data_cobranca_cliente date;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists token_dsv text;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists assinatura_dsv text;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists dsv_assinado_em timestamptz;"
 
       )
     )
@@ -22229,6 +22389,117 @@ function AssinarPublico({ contratoId, token }) {
   );
 }
 
+function AssinarDSVPublico({ multaId, token }) {
+  var [carregando, setCarregando] = useState(true);
+  var [multa, setMulta] = useState(null);
+  var [cliente, setCliente] = useState(null);
+  var [veiculo, setVeiculo] = useState(null);
+  var [empresa, setEmpresa] = useState({});
+  var [erro, setErro] = useState("");
+  var [assinatura, setAssinatura] = useState("");
+  var [enviando, setEnviando] = useState(false);
+  var [concluido, setConcluido] = useState(false);
+
+  useEffect(function() {
+    (async function() {
+      try {
+        var r = await fetch(SB_URL + "/rest/v1/multas?id=eq." + multaId + "&select=*", { headers: HDR });
+        var arr = await r.json();
+        var m = arr && arr[0];
+        if (!m) { setErro("Notificação não encontrada."); setCarregando(false); return; }
+        if (!m.token_dsv || m.token_dsv !== token) { setErro("Link inválido ou expirado."); setCarregando(false); return; }
+        if (m.dsv_assinado_em) { setMulta(m); setConcluido(true); setCarregando(false); return; }
+        setMulta(m);
+        var cid = m.cliente_id;
+        if (!cid && m.contrato_id) {
+          var rc = await fetch(SB_URL + "/rest/v1/contratos?id=eq." + m.contrato_id + "&select=cliente_id,veiculo_id", { headers: HDR });
+          var ac = await rc.json();
+          if (ac && ac[0]) { cid = ac[0].cliente_id; if (!m.veiculo_id) m = Object.assign({}, m, { veiculo_id: ac[0].veiculo_id }); }
+        }
+        if (cid) { var rc2 = await fetch(SB_URL + "/rest/v1/clientes?id=eq." + cid + "&select=*", { headers: HDR }); var ac2 = await rc2.json(); setCliente((ac2 && ac2[0]) || {}); }
+        if (m.veiculo_id) { var rv = await fetch(SB_URL + "/rest/v1/veiculos?id=eq." + m.veiculo_id + "&select=*", { headers: HDR }); var av = await rv.json(); setVeiculo((av && av[0]) || {}); }
+        var re = await fetch(SB_URL + "/rest/v1/config?limit=1", { headers: HDR });
+        var ae = await re.json(); setEmpresa((ae && ae[0]) || {});
+        setCarregando(false);
+      } catch(e) { setErro("Erro ao carregar: " + e.message); setCarregando(false); }
+    })();
+  }, []);
+
+  async function confirmar() {
+    if (!assinatura) { alert("Desenhe sua assinatura antes de confirmar."); return; }
+    setEnviando(true);
+    try {
+      var payload = { assinatura_dsv: assinatura, dsv_assinado_em: new Date().toISOString(), token_dsv: null };
+      var r = await fetch(SB_URL + "/rest/v1/multas?id=eq." + multaId + "&token_dsv=eq." + token, {
+        method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(payload)
+      });
+      if (!r.ok) { setEnviando(false); alert("Falha ao enviar. Link pode ter expirado."); return; }
+      setConcluido(true);
+    } catch(e) { alert("Erro: " + e.message); setEnviando(false); }
+  }
+
+  var wrap = { maxWidth: 600, margin: "20px auto", padding: "0 16px", fontFamily: "Arial, sans-serif", fontSize: 13 };
+  var card = { background: "#fff", borderRadius: 14, padding: 20, boxShadow: "0 2px 12px rgba(0,0,0,.08)", marginBottom: 14 };
+  var rowStyle = { display: "flex", borderBottom: "1px solid #eee", padding: "7px 0" };
+  var lblStyle = { color: "#666", width: 200, flexShrink: 0, fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 };
+  var valStyle = { fontWeight: 600, flex: 1 };
+
+  if (carregando) return React.createElement('div', { style: wrap }, React.createElement('div', { style: card }, "Carregando formulário…"));
+  if (erro) return React.createElement('div', { style: wrap }, React.createElement('div', { style: Object.assign({}, card, { color: "#C62828" }) }, erro));
+  if (concluido) return React.createElement('div', { style: wrap }
+    , React.createElement('div', { style: Object.assign({}, card, { textAlign: "center" }) }
+      , React.createElement('div', { style: { fontSize: 48 } }, "✅")
+      , React.createElement('div', { style: { fontSize: 18, fontWeight: 700, margin: "10px 0" } }, "Formulário assinado!")
+      , React.createElement('div', { style: { fontSize: 13, color: "#666" } }, "Obrigado. A locadora já recebeu sua assinatura.")
+    )
+  );
+
+  return React.createElement('div', { style: wrap }
+    , React.createElement('div', { style: Object.assign({}, card, { textAlign: "center", background: "#1C1C1E", color: "#fff", padding: "16px 20px" }) }
+      , React.createElement('div', { style: { fontSize: 11, opacity: 0.7, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 } }, empresa.nome || "Locadora")
+      , React.createElement('div', { style: { fontSize: 17, fontWeight: 800, textTransform: "uppercase", letterSpacing: 1 } }, "Formulário de Indicação de Condutor")
+    )
+    , React.createElement('div', { style: card }
+      , React.createElement('div', { style: { fontWeight: 700, fontSize: 11, textTransform: "uppercase", color: "#555", marginBottom: 8, letterSpacing: 0.5 } }, "Proprietário / Locadora")
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Proprietário"), React.createElement('span', { style: valStyle }, empresa.nome || "—"))
+      , empresa.cnpj && React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "CNPJ"), React.createElement('span', { style: valStyle }, empresa.cnpj))
+      , empresa.endereco && React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Endereço"), React.createElement('span', { style: valStyle }, empresa.endereco))
+    )
+    , React.createElement('div', { style: card }
+      , React.createElement('div', { style: { fontWeight: 700, fontSize: 11, textTransform: "uppercase", color: "#555", marginBottom: 8, letterSpacing: 0.5 } }, "Veículo")
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "RENAVAM"), React.createElement('span', { style: valStyle }, (veiculo && veiculo.renavam) || "—"))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Placa"), React.createElement('span', { style: valStyle }, (veiculo && veiculo.placa) || "—"))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Marca / Modelo"), React.createElement('span', { style: valStyle }, veiculo ? ((veiculo.marca || "") + " " + (veiculo.modelo || "")).trim() || "—" : "—"))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Ano"), React.createElement('span', { style: valStyle }, (veiculo && veiculo.ano) || "—"))
+    )
+    , React.createElement('div', { style: card }
+      , React.createElement('div', { style: { fontWeight: 700, fontSize: 11, textTransform: "uppercase", color: "#555", marginBottom: 8, letterSpacing: 0.5 } }, "Autuação")
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Número AIT"), React.createElement('span', { style: valStyle }, multa.ait || "—"))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Data"), React.createElement('span', { style: valStyle }, fmtDate(multa.data)))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Local"), React.createElement('span', { style: valStyle }, multa.local || "—"))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Descrição"), React.createElement('span', { style: valStyle }, multa.descricao || multa.tipo || "—"))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Vencimento"), React.createElement('span', { style: valStyle }, fmtDate(multa.vencimento)))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Valor"), React.createElement('span', { style: Object.assign({}, valStyle, { color: "#FF3B30", fontWeight: 800 }) }, parseFloat(multa.valor||0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })))
+    )
+    , React.createElement('div', { style: card }
+      , React.createElement('div', { style: { fontWeight: 700, fontSize: 11, textTransform: "uppercase", color: "#555", marginBottom: 8, letterSpacing: 0.5 } }, "Condutor Infrator — Dados Pessoais")
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Nome"), React.createElement('span', { style: valStyle }, (cliente && cliente.nome) || "—"))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "CPF"), React.createElement('span', { style: valStyle }, (cliente && cliente.cpf) || "—"))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Número CNH"), React.createElement('span', { style: valStyle }, (cliente && cliente.cnh) || "—"))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Validade CNH"), React.createElement('span', { style: valStyle }, cliente && cliente.vencimento_cnh ? fmtDate(cliente.vencimento_cnh) : "—"))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "E-mail"), React.createElement('span', { style: valStyle }, (cliente && cliente.email) || "—"))
+      , React.createElement('div', { style: rowStyle }, React.createElement('span', { style: lblStyle }, "Endereço"), React.createElement('span', { style: valStyle }, (cliente && cliente.endereco) || "—"))
+    )
+    , React.createElement('div', { style: card }
+      , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, marginBottom: 4 } }, "Assinatura do Condutor")
+      , React.createElement('div', { style: { fontSize: 12, color: "#666", marginBottom: 10 } }, "Ao assinar, você confirma que era o(a) condutor(a) do veículo no momento da infração e está ciente da notificação.")
+      , React.createElement(SignaturePad, { label: "Assine com o dedo ou mouse", value: assinatura, onChange: setAssinatura })
+      , React.createElement('button', { onClick: confirmar, disabled: enviando, style: { marginTop: 14, width: "100%", padding: "14px", background: enviando ? "#999" : "#007AFF", color: "#fff", border: "none", borderRadius: 10, fontSize: 15, fontWeight: 700, cursor: enviando ? "wait" : "pointer" } }, enviando ? "Enviando…" : "✓ Confirmar e Assinar")
+      , React.createElement('div', { style: { fontSize: 11, color: "#888", marginTop: 8, textAlign: "center" } }, "Formulário de Indicação de Condutor — " + (empresa.nome || "") + " · " + new Date().toLocaleDateString("pt-BR"))
+    )
+  );
+}
+
 function App() {
   const [logado, setLogado] = useState(false);
   const [tab, setTab] = useState(function(){
@@ -22417,11 +22688,13 @@ function App() {
     return null;
   }
 
-  // Rota pública para cliente assinar via link: #assinar=<id>&tk=<token>
+  // Rotas públicas de assinatura via link
   var hash = (window.location.hash || "").replace(/^#/, "");
   var mAss = hash.match(/(?:^|&)assinar=(\d+)/);
   var mTk = hash.match(/(?:^|&)tk=([a-f0-9]+)/);
   if (mAss && mTk) return React.createElement(AssinarPublico, { contratoId: mAss[1], token: mTk[1] });
+  var mDSV = hash.match(/(?:^|&)assinar_dsv=(\d+)/);
+  if (mDSV && mTk) return React.createElement(AssinarDSVPublico, { multaId: mDSV[1], token: mTk[1] });
 
   if (!logado) return React.createElement(LoginScreen, { onLogin: () => setLogado(true), __self: this, __source: {fileName: _jsxFileName, lineNumber: 3218}} );
 

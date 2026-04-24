@@ -14560,22 +14560,6 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             )
           )
 
-          /* Legenda */
-          , React.createElement("div", { style:{ display:"flex", gap:16, margin:"10px 12px 14px "+(yAxisW+6)+"px", flexWrap:"wrap", borderTop:"1px solid "+C.border, paddingTop:10 } }
-            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:6, fontSize:13, color:C.sub } }
-              , React.createElement("div", { style:{ width:16, height:16, borderRadius:4, background:"rgba(52,199,89,0.90)" } })
-              , "Receitas ↑"
-            )
-            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:6, fontSize:13, color:C.sub } }
-              , React.createElement("div", { style:{ width:16, height:16, borderRadius:4, background:"rgba(255,59,48,0.85)" } })
-              , "Despesas ↓"
-            )
-            , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:6, fontSize:13, color:C.sub } }
-              , React.createElement("div", { style:{ width:24, height:3, background:"#007AFF", borderRadius:2 } })
-              , "Saldo acumulado"
-            )
-            , React.createElement("div", { style:{ marginLeft:"auto", fontSize:11, color:C.sub } }, "Toque para resumo do dia")
-          )
         )
 
         /* Resumo inline ao clicar/hover — igual ao original */
@@ -14956,22 +14940,64 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         React.useEffect(function(){ setTlhDM(dashMes||_tlhMesD_init); }, [dashMes]);
 
         var tlhDiasD = (function(){
-          var map = {};
-          function ensure(d){ if(!map[d]) map[d]={receitas:[],despesas:[]}; }
-          (receitas||[]).forEach(function(r){
-            if(!r.data||r.data.slice(0,7)!==tlhDM) return;
-            if(tlhDV && String(r.veiculo_id||"")!==tlhDV) return;
-            ensure(r.data); map[r.data].receitas.push(r);
+          var mesInicio = tlhDM+"-01";
+          var _mY=parseInt(tlhDM.slice(0,4),10), _mM=parseInt(tlhDM.slice(5,7),10);
+          var _ult=new Date(_mY,_mM,0).getDate();
+          var mesFim = tlhDM+"-"+(_ult<10?"0":"")+_ult;
+          var evts = [];
+          // Contratos como receitas
+          (contratos||[]).forEach(function(c){
+            if(c.status==="cancelado") return;
+            if(tlhDV && String(c.veiculo_id||"")!==tlhDV) return;
+            var dt; var pago=false;
+            if(c.status_pagamento==="pago"){ dt=c.data_pagamento||c.previsao_pagamento; pago=true; }
+            else if(c.status_pagamento!=="isento"){ dt=c.previsao_pagamento||c.data_fim; }
+            if(!dt||dt<mesInicio||dt>mesFim) return;
+            var nm=(clientes||[]).find(function(x){return x.id==c.cliente_id;});
+            evts.push({dt:dt,tipo:"rec",label:nm?nm.nome:"Contrato #"+c.id,val:parseFloat(c.valor_total||0),pago:pago});
           });
+          // Receitas extras
+          (receitas||[]).forEach(function(r){
+            if(r.ref_fatura) return;
+            if(tlhDV && String(r.veiculo_id||"")!==tlhDV) return;
+            var dt=r.data_pagamento||r.data; if(!dt||dt<mesInicio||dt>mesFim) return;
+            evts.push({dt:dt,tipo:"rec",label:r.descricao||"Receita",val:parseFloat(r.valor||0),pago:r.status==="recebido"});
+          });
+          // Despesas (com projeção de recorrentes no mês)
           (despesas||[]).forEach(function(d){
-            if(!d.data||d.data.slice(0,7)!==tlhDM) return;
+            if(d.manutencao_id) return;
             if(tlhDV && String(d.veiculo_id||"")!==tlhDV) return;
-            ensure(d.data); map[d.data].despesas.push(d);
+            if(d.recorrente && d.data){
+              if(tlhDM<d.data.slice(0,7)) return;
+              var _dia=parseInt(d.data.slice(8,10),10);
+              var _df=Math.min(_dia,_ult);
+              var _dtProj=tlhDM+"-"+(_df<10?"0":"")+_df;
+              if(_dtProj<mesInicio||_dtProj>mesFim) return;
+              var _pago=d.status==="pago"||!!d.data_pagamento;
+              var _dt=_pago&&d.data_pagamento&&d.data_pagamento.slice(0,7)===tlhDM?d.data_pagamento:_dtProj;
+              evts.push({dt:_dt,tipo:"desp",label:d.descricao||d.categoria||"Despesa",val:parseFloat(d.valor||0),pago:_pago});
+              return;
+            }
+            var dt=d.data_pagamento||d.data; if(!dt||dt<mesInicio||dt>mesFim) return;
+            evts.push({dt:dt,tipo:"desp",label:d.descricao||d.categoria||"Despesa",val:parseFloat(d.valor||0),pago:d.status==="pago"||!!d.data_pagamento});
+          });
+          // Manutenções como despesas
+          (manutencoes||[]).forEach(function(m){
+            if(tlhDV && String(m.veiculo_id||"")!==tlhDV) return;
+            var dt=m.data_pagamento||m.data_previsao_pagamento||m.data_entrada; if(!dt||dt<mesInicio||dt>mesFim) return;
+            var ve=(veiculos||[]).find(function(v){return v.id==m.veiculo_id;});
+            evts.push({dt:dt,tipo:"desp",label:(m.descricao||m.tipo||"Manutenção")+(ve?" · "+ve.placa:""),val:parseFloat(m.custo||0),pago:m.status_financeiro==="pago"||!!m.data_pagamento});
+          });
+          var map={};
+          evts.forEach(function(e){
+            if(!map[e.dt]) map[e.dt]={receitas:[],despesas:[]};
+            if(e.tipo==="rec") map[e.dt].receitas.push(e);
+            else map[e.dt].despesas.push(e);
           });
           return Object.keys(map).sort().map(function(d){
             var rec=map[d].receitas; var dep=map[d].despesas;
-            var totalRec=rec.reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
-            var totalDep=dep.reduce(function(s,x){return s+parseFloat(x.valor||0);},0);
+            var totalRec=rec.reduce(function(s,r){return s+r.val;},0);
+            var totalDep=dep.reduce(function(s,x){return s+x.val;},0);
             return {date:d,receitas:rec,despesas:dep,totalRec:totalRec,totalDep:totalDep,saldo:totalRec-totalDep};
           });
         })();
@@ -14985,19 +15011,19 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
           , React.createElement("div", { className:"lg-card", style:Object.assign({},CARD,{padding:"14px 16px"}) }
             , React.createElement("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10, flexWrap:"wrap", gap:8 } }
               , React.createElement("div", { style:{ fontWeight:700, fontSize:14, color:C.text } }, "📊 Financeiro por Dia")
-              , React.createElement("div", { style:{ display:"flex", gap:5, alignItems:"center" } }
+              , React.createElement("div", { style:{ display:"flex", gap:5, alignItems:"center", flexWrap:"wrap" } }
+                , React.createElement("select", {
+                    value:tlhDV,
+                    onChange:function(e){ setTlhDV(e.target.value); },
+                    style:Object.assign({},FI,{fontSize:12,padding:"5px 8px",marginBottom:0})
+                  }
+                  , React.createElement("option", { value:"" }, "🚗 Todos os veículos")
+                  , (veiculos||[]).map(function(v){ return React.createElement("option", { key:v.id, value:String(v.id) }, v.placa+(v.marca?" — "+v.marca+" "+v.modelo:"")); })
+                )
                 , React.createElement("button", { className:"lg-pill lg-pill-sm lg-ghost", style:{ fontWeight:300, padding:"5px 10px" }, onClick:tlhPrevD }, "‹")
-                , React.createElement("span", { style:{ fontSize:12, fontWeight:600, color:C.text, minWidth:120, textAlign:"center", textTransform:"capitalize" } }, tlhLblD)
+                , React.createElement("span", { style:{ fontSize:12, fontWeight:600, color:C.text, minWidth:110, textAlign:"center", textTransform:"capitalize" } }, tlhLblD)
                 , React.createElement("button", { className:"lg-pill lg-pill-sm lg-ghost", style:{ fontWeight:300, padding:"5px 10px" }, onClick:tlhNextD }, "›")
               )
-            )
-            , React.createElement("select", {
-                value:tlhDV,
-                onChange:function(e){ setTlhDV(e.target.value); },
-                style:Object.assign({},FI,{marginBottom:10,fontSize:12,padding:"7px 10px"})
-              }
-              , React.createElement("option", { value:"" }, "🚗 Todos os veículos")
-              , (veiculos||[]).map(function(v){ return React.createElement("option", { key:v.id, value:String(v.id) }, v.placa+(v.marca?" — "+v.marca+" "+v.modelo:"")); })
             )
             , tlhDiasD.length > 0 && React.createElement("div", { className:"tlh-axis" }
               , React.createElement("div", { className:"tlh-axis-dot" })
@@ -15020,8 +15046,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                       , dia.receitas.map(function(r,i){
                           return React.createElement("div", { key:"r"+i, className:"tlh-item" }
                             , React.createElement("span", { className:"tlh-item-icon" }, "💵")
-                            , React.createElement("span", { className:"tlh-item-desc" }, r.descricao||r.categoria||"Receita")
-                            , React.createElement("span", { className:"tlh-item-val", style:{ color:C.green } }, "+"+fmtBRL(r.valor))
+                            , React.createElement("span", { className:"tlh-item-desc" }, r.label||"Receita")
+                            , React.createElement("span", { className:"tlh-item-val", style:{ color:C.green } }, "+"+fmtBRL(r.val))
                           );
                         })
                     )
@@ -15030,8 +15056,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                       , dia.despesas.map(function(d,i){
                           return React.createElement("div", { key:"d"+i, className:"tlh-item" }
                             , React.createElement("span", { className:"tlh-item-icon" }, "📉")
-                            , React.createElement("span", { className:"tlh-item-desc" }, d.descricao||d.categoria||"Despesa")
-                            , React.createElement("span", { className:"tlh-item-val", style:{ color:C.red } }, "-"+fmtBRL(d.valor))
+                            , React.createElement("span", { className:"tlh-item-desc" }, d.label||"Despesa")
+                            , React.createElement("span", { className:"tlh-item-val", style:{ color:C.red } }, "-"+fmtBRL(d.val))
                           );
                         })
                     )

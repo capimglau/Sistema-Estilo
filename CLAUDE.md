@@ -48,4 +48,6 @@ Branch ativo: `claude/placeholder-task-nsnXx`
 
 ## Fluxo de trabalho Git
 
-Após cada push, **sempre criar um PR** automaticamente via `mcp__github__create_pull_request` apontando para `main`, sem precisar que o usuário peça.
+Após cada push:
+1. **Sempre criar um PR** automaticamente via `mcp__github__create_pull_request` apontando para `main`
+2. **Sempre mergear o PR** imediatamente via `mcp__github__merge_pull_request` (squash), sem precisar que o usuário peça

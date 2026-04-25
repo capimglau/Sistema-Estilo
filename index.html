@@ -13372,71 +13372,109 @@ function AlertBox({ cor, icon, titulo, items, sub, tab, setTab }) {
 }
 
 function VoiceIA({ setTab, toast, veiculos, clientes, contratos, C }) {
-  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var _lst = React.useState(false); var listening = _lst[0]; var setListening = _lst[1];
   var _info = React.useState(null); var info = _info[0]; var setInfo = _info[1];
+  var listeningRef = React.useRef(false);
   var recognRef = React.useRef(null);
   var timerRef = React.useRef(null);
 
+  React.useEffect(function() { listeningRef.current = listening; }, [listening]);
+  React.useEffect(function() {
+    return function() {
+      if (recognRef.current) { try { recognRef.current.abort(); } catch(_){} }
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var isFileProtocol = window.location.protocol === "file:";
+
   if (!SR) return null;
 
-  function norm(t) { return (t||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,""); }
+  function showInfo(text, ok, duration) {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setInfo({ text: text, ok: ok !== false });
+    timerRef.current = setTimeout(function() { setInfo(null); }, duration || 5000);
+  }
 
   function parseIntent(text) {
-    var t = norm(text);
+    var t = (text || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     var action = null;
-    if (/\b(novo? contrato|criar contrato|abrir contrato)\b/.test(t))      { action = { tab: "contratos", msg: "Abrindo Contratos para novo contrato..." }; }
-    else if (/\b(nova reserva|criar reserva|abrir reserva)\b/.test(t))      { action = { tab: "reservas",  msg: "Abrindo Reservas para nova reserva..." }; }
-    else if (/\bcontrat/.test(t))                                            { action = { tab: "contratos", msg: "Contratos" }; }
-    else if (/\breserva/.test(t))                                            { action = { tab: "reservas",  msg: "Reservas" }; }
-    else if (/\b(financ|despesa|receita|caixa|pagamento)\b/.test(t))        { action = { tab: "financeiro",msg: "Financeiro" }; }
-    else if (/\b(frota|veiculo|carro|moto|placa)\b/.test(t))                { action = { tab: "frota",     msg: "Frota" }; }
-    else if (/\bcliente/.test(t))                                            { action = { tab: "clientes",  msg: "Clientes" }; }
-    else if (/\b(manutenc|revisao|servico)\b/.test(t))                      { action = { tab: "manutencao",msg: "Manutenção" }; }
-    else if (/\bmulta/.test(t))                                              { action = { tab: "multas",    msg: "Multas" }; }
-    else if (/\b(inicio|dashboard|home|resumo)\b/.test(t))                  { action = { tab: "inicio",    msg: "Início" }; }
-    else if (/\b(relatorio|relatorios|grafico)\b/.test(t))                  { action = { tab: "relatorios",msg: "Relatórios" }; }
-    else if (/\b(agenda|calendario)\b/.test(t))                              { action = { tab: "calendario",msg: "Calendário" }; }
-
-    if (action) {
-      setInfo({ text: "\"" + text + "\" → " + action.msg, ok: true });
-      setTab(action.tab);
-    } else {
-      setInfo({ text: "Não entendi: \"" + text + "\"", ok: false });
-    }
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(function() { setInfo(null); }, 3000);
+    if (/\b(novo? contrato|criar contrato)\b/.test(t))  action = { tab: "contratos", msg: "Contratos" };
+    else if (/\b(nova reserva|criar reserva)\b/.test(t)) action = { tab: "reservas", msg: "Reservas" };
+    else if (/\bcontrat/.test(t))  action = { tab: "contratos", msg: "Contratos" };
+    else if (/\breserva/.test(t))  action = { tab: "reservas",  msg: "Reservas" };
+    else if (/\b(financ|despesa|receita|caixa)\b/.test(t)) action = { tab: "financeiro", msg: "Financeiro" };
+    else if (/\b(frota|veiculo|carro|placa)\b/.test(t)) action = { tab: "frota", msg: "Frota" };
+    else if (/\bcliente/.test(t))  action = { tab: "clientes",  msg: "Clientes" };
+    else if (/\b(manutenc|revisao)\b/.test(t)) action = { tab: "manutencao", msg: "Manutencao" };
+    else if (/\bmulta/.test(t))    action = { tab: "multas",    msg: "Multas" };
+    else if (/\b(relatorio|grafico)\b/.test(t)) action = { tab: "relatorios", msg: "Relatorios" };
+    else if (/\b(agenda|calendario)\b/.test(t)) action = { tab: "calendario", msg: "Calendario" };
+    else if (/\b(inicio|home|resumo)\b/.test(t)) action = { tab: "inicio",   msg: "Inicio" };
+    if (action) { showInfo("\u201c" + text + "\u201d \u2192 " + action.msg, true); setTab(action.tab); }
+    else showInfo("Nao entendi: \u201c" + text + "\u201d", false);
   }
 
   function toggle() {
-    if (listening) { if (recognRef.current) recognRef.current.stop(); return; }
-    var r = new SR();
-    r.lang = "pt-BR"; r.interimResults = false; r.maxAlternatives = 1;
-    r.onstart  = function() { setListening(true); setInfo({ text: "Ouvindo...", ok: true }); };
-    r.onresult = function(e) { parseIntent(e.results[0][0].transcript); };
-    r.onerror  = function(e) { setInfo({ text: "Erro: " + e.error, ok: false }); if (timerRef.current) clearTimeout(timerRef.current); timerRef.current = setTimeout(function(){ setInfo(null); }, 3000); };
-    r.onend    = function() { setListening(false); };
-    recognRef.current = r;
-    try { r.start(); } catch(e) { setListening(false); }
+    // Arquivo local: microfone sempre bloqueado pelo browser
+    if (isFileProtocol) {
+      showInfo(
+        "\u26A0\uFE0F Microfone bloqueado em arquivo local.\n\n" +
+        "Abra o app via servidor:\n" +
+        "1. Pressione Win+R\n" +
+        "2. Digite: cmd\n" +
+        "3. Navegue at\u00e9 a pasta do arquivo\n" +
+        "4. Execute: python -m http.server 8080\n" +
+        "5. Abra no Edge: http://localhost:8080",
+        false, 12000
+      );
+      return;
+    }
+    if (listeningRef.current) {
+      if (recognRef.current) { try { recognRef.current.stop(); } catch(_){} }
+      setListening(false); listeningRef.current = false; setInfo(null);
+      return;
+    }
+    if (recognRef.current) { try { recognRef.current.abort(); } catch(_){} recognRef.current = null; }
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+      stream.getTracks().forEach(function(t) { t.stop(); });
+      var r = new SR();
+      r.lang = "pt-BR"; r.continuous = false; r.interimResults = false; r.maxAlternatives = 1;
+      r.onstart  = function() { setListening(true); listeningRef.current = true; showInfo("\uD83C\uDF99\uFE0F Ouvindo...", true, 15000); };
+      r.onresult = function(e) { var tr = e.results&&e.results[0]&&e.results[0][0]&&e.results[0][0].transcript; if (tr) parseIntent(tr); };
+      r.onerror  = function(e) {
+        var m = e.error==="not-allowed"?"Microfone negado":e.error==="no-speech"?"Nenhuma fala detectada":e.error==="network"?"Erro de rede":"Erro: "+e.error;
+        showInfo(m, false); setListening(false); listeningRef.current = false;
+      };
+      r.onend = function() { setListening(false); listeningRef.current = false; };
+      recognRef.current = r;
+      try { r.start(); } catch(ex) { showInfo("Erro: "+ex.message, false); setListening(false); listeningRef.current = false; }
+    }).catch(function() {
+      showInfo("\u26D4 Permiss\u00e3o de microfone negada no Edge.\nClique no cadeado \uD83D\uDD12 na barra de endere\u00e7o > Microfone > Permitir", false, 8000);
+    });
   }
 
+  var denied = isFileProtocol;
+  var btnBg = listening ? "rgba(255,59,48,0.92)" : denied ? "rgba(255,149,0,0.22)" : "rgba(120,120,128,0.18)";
+  var iconColor = listening ? "#fff" : denied ? "#FF9500" : "var(--c-text)";
+
   return React.createElement(React.Fragment, null,
-    info && React.createElement('div', { style: { position: "fixed", bottom: "calc(env(safe-area-inset-bottom,0px) + 148px)", right: 16, zIndex: 96, maxWidth: 260, background: "var(--c-card)", border: "1px solid " + (info.ok ? C.blue : C.red) + "44", borderRadius: 14, padding: "8px 12px", fontSize: 12, color: "var(--c-text)", boxShadow: "0 4px 20px rgba(0,0,0,0.15)", animation: "fadeInUp .15s ease", fontWeight: 500 } }, info.text),
+    info && React.createElement('div', { style: { position:"fixed", bottom:165, right:20, zIndex:9999, maxWidth:300, background:"var(--c-card)", border:"1.5px solid "+(info.ok?"#007AFF":"#FF3B30")+"88", borderRadius:14, padding:"12px 15px", fontSize:12, color:"var(--c-text)", boxShadow:"0 4px 24px rgba(0,0,0,0.2)", fontWeight:500, lineHeight:1.7, whiteSpace:"pre-line" } }, info.text),
     React.createElement('button', {
       onClick: toggle,
-      title: "IA por voz",
-      style: { position: "fixed", bottom: "calc(env(safe-area-inset-bottom,0px) + 90px)", right: 16, zIndex: 95, width: 46, height: 46, borderRadius: "50%", background: listening ? "rgba(255,59,48,0.92)" : "var(--c-banner-glass)", border: "0.5px solid var(--c-banner-border)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", boxShadow: listening ? "none" : "0 4px 20px rgba(0,0,0,0.18)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", animation: listening ? "pulse-mic 1.2s infinite" : "none", transition: "background .2s" }
+      title: denied ? "Microfone indisponivel em arquivo local - clique para instrucoes" : "IA por voz",
+      style: { position:"fixed", bottom:105, right:20, zIndex:9998, width:48, height:48, borderRadius:"50%", background:btnBg, border:"0.5px solid rgba(255,255,255,0.3)", backdropFilter:"blur(20px)", WebkitBackdropFilter:"blur(20px)", boxShadow:listening?"0 0 0 5px rgba(255,59,48,0.25)":"0 4px 20px rgba(0,0,0,0.18)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", animation:listening?"pulse-mic 1.2s infinite":"none", transition:"all .2s" }
     },
-      React.createElement('svg', { viewBox: "0 0 24 24", width: 20, height: 20, fill: "none" },
-        React.createElement('rect', { x: 9, y: 2, width: 6, height: 11, rx: 3, fill: listening ? "white" : "var(--c-text)" }),
-        React.createElement('path', { d: "M5 10a7 7 0 0 0 14 0", stroke: listening ? "white" : "var(--c-text)", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" }),
-        React.createElement('line', { x1: 12, y1: 17, x2: 12, y2: 21, stroke: listening ? "white" : "var(--c-text)", strokeWidth: 2, strokeLinecap: "round" }),
-        React.createElement('line', { x1: 9, y1: 21, x2: 15, y2: 21, stroke: listening ? "white" : "var(--c-text)", strokeWidth: 2, strokeLinecap: "round" })
+      React.createElement('svg', { viewBox:"0 0 24 24", width:20, height:20, fill:"none" },
+        React.createElement('rect', { x:9, y:2, width:6, height:11, rx:3, fill:iconColor }),
+        React.createElement('path', { d:"M5 10a7 7 0 0 0 14 0", stroke:iconColor, strokeWidth:2, strokeLinecap:"round", strokeLinejoin:"round" }),
+        React.createElement('line', { x1:12, y1:17, x2:12, y2:21, stroke:iconColor, strokeWidth:2, strokeLinecap:"round" }),
+        React.createElement('line', { x1:9, y1:21, x2:15, y2:21, stroke:iconColor, strokeWidth:2, strokeLinecap:"round" })
       )
     )
   );
 }
-
 function TopBanner({ alertaGroups, C, setTab, searchBarEl,
                      nomeMes, prevMes, recMes, resultPrev,
                      alugados, totalFrota, contratosAtrasados, cnhVencida, totalAlertas }) {
@@ -24134,7 +24172,7 @@ function App() {
       )
       , React.createElement('main', { style: { flex: 1, padding: "8px 24px 28px", overflowY: "auto", maxWidth: 960, minWidth: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3246}}, page())
       , React.createElement(Toast, { msg: toastState.msg, type: toastState.type, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3247}} )
-      , React.createElement(VoiceIA, { setTab: setTab, toast: toast, veiculos: veiculos, clientes: clientes, contratos: contratos, C: C })
+
     )
   );
 }

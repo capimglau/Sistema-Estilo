@@ -24025,6 +24025,7 @@ function ClaudeAssistant(props) {
   var _l = React.useState(false); var loading = _l[0], setLoading = _l[1];
   var _vm = React.useState(false); var voiceMode = _vm[0], setVoiceMode = _vm[1];
   var _sp = React.useState(false); var speaking = _sp[0], setSpeaking = _sp[1];
+  var _vs = React.useState(""); var voiceStatusMsg = _vs[0], setVoiceStatusMsg = _vs[1];
   var voiceModeRef = React.useRef(false);
   var recognRef = React.useRef(null);
 
@@ -24071,54 +24072,86 @@ function ClaudeAssistant(props) {
     window.speechSynthesis.speak(utt);
   }
 
-  var EXIT_WORDS = /\b(encerrar|encerra|encerre|obrigado|obrigada|tchau|ate mais|fechar|parar|para|sair|chega|pode parar)\b/;
+  // Apenas frases inequívocas de encerramento para evitar falsos positivos
+  var EXIT_WORDS = /\b(encerrar assistente|encerre assistente|desligar assistente|tchau assistente|fechar assistente|obrigado tchau|obrigada tchau)\b/;
 
   function startListening() {
     if (!voiceModeRef.current) return;
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
-    if (recognRef.current) { try { recognRef.current.abort(); } catch(e){} }
+    if (recognRef.current) { try { recognRef.current.stop(); } catch(e){} recognRef.current = null; }
     var r = new SR();
-    r.lang = "pt-BR"; r.continuous = false; r.interimResults = false;
+    r.lang = "pt-BR"; r.continuous = false; r.interimResults = false; r.maxAlternatives = 1;
     var resultReceived = false;
+    r.onstart = function() {
+      setVoiceStatusMsg("Ouvindo…");
+    };
     r.onresult = function(e) {
       resultReceived = true;
-      var t = e.results[0][0].transcript || "";
+      var t = (e.results && e.results[0] && e.results[0][0] && e.results[0][0].transcript) || "";
+      setVoiceStatusMsg("");
       var norm = t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
       if (EXIT_WORDS.test(norm)) { toggleVoiceMode(); return; }
       if (t && voiceModeRef.current) sendMsg(t);
     };
     r.onerror = function(e) {
+      setVoiceStatusMsg("");
       var code = e && e.error;
       if (code === "not-allowed" || code === "service-not-allowed") {
         toggleVoiceMode();
         setMsgs(function(p){ return [...p, { role:"assistant", content:"⚠️ Permissão de microfone negada. Verifique as configurações do navegador." }]; });
         return;
       }
-      if (voiceModeRef.current && !resultReceived) setTimeout(startListening, 400);
+      if (voiceModeRef.current && !resultReceived) setTimeout(startListening, 600);
     };
     r.onend = function() {
-      if (voiceModeRef.current && !resultReceived) setTimeout(startListening, 300);
+      setVoiceStatusMsg("");
+      if (voiceModeRef.current && !resultReceived) setTimeout(startListening, 500);
     };
     recognRef.current = r;
-    try { r.start(); } catch(e) {}
+    try { r.start(); } catch(e) {
+      if (voiceModeRef.current) setTimeout(startListening, 800);
+    }
   }
 
   function toggleVoiceMode() {
     var next = !voiceModeRef.current;
     voiceModeRef.current = next;
     setVoiceMode(next);
+    setVoiceStatusMsg("");
     if (!next) {
       window.speechSynthesis && window.speechSynthesis.cancel();
-      if (recognRef.current) { try { recognRef.current.abort(); } catch(e){} recognRef.current = null; }
+      if (recognRef.current) { try { recognRef.current.stop(); } catch(e){} recognRef.current = null; }
       setSpeaking(false);
     } else {
-      if (window.speechSynthesis) {
-        var primer = new SpeechSynthesisUtterance(" ");
-        primer.volume = 0;
-        window.speechSynthesis.speak(primer);
+      // getUserMedia desbloqueia o audio session do iOS para SpeechRecognition funcionar
+      var doStart = function() {
+        // Primer de síntese: desbloqueia o speaker do iOS para as respostas
+        if (window.speechSynthesis) {
+          var primer = new SpeechSynthesisUtterance(" ");
+          primer.volume = 0;
+          primer.onend = function() { setTimeout(startListening, 100); };
+          primer.onerror = function() { setTimeout(startListening, 100); };
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(primer);
+        } else {
+          setTimeout(startListening, 150);
+        }
+      };
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        navigator.mediaDevices.getUserMedia({ audio: true })
+          .then(function(stream) {
+            stream.getTracks().forEach(function(t) { t.stop(); });
+            doStart();
+          })
+          .catch(function() {
+            voiceModeRef.current = false;
+            setVoiceMode(false);
+            setMsgs(function(p){ return [...p, { role:"assistant", content:"⚠️ Permissão de microfone negada. Verifique as configurações do navegador." }]; });
+          });
+      } else {
+        doStart();
       }
-      setTimeout(startListening, 150);
     }
   }
 
@@ -24341,6 +24374,7 @@ function ClaudeAssistant(props) {
     if (typeof forceTxt !== "string") setInput("");
     window.speechSynthesis && window.speechSynthesis.cancel();
     setSpeaking(false);
+    setVoiceStatusMsg("");
     setLoading(true);
     var key = getApiKey();
     if (!key) {
@@ -24483,6 +24517,7 @@ function ClaudeAssistant(props) {
             return React.createElement('span', { key:j, style:{ width:7, height:7, borderRadius:"50%", background:"#7C3AED", display:"inline-block", animation:"claude-typing 1.1s " + (j*0.18) + "s infinite ease-in-out both" } });
           })
         ),
+        voiceStatusMsg && React.createElement('div', { style:{ alignSelf:"center", background:"rgba(255,59,48,0.10)", color:"#FF3B30", borderRadius:10, padding:"5px 14px", fontSize:12, fontWeight:600 } }, "🎙️ " + voiceStatusMsg),
         React.createElement('div', { ref:msgsEndRef })
       ),
       React.createElement('div', { style:{ display:"flex", gap:8, padding:"8px 12px " + (mobile ? "calc(env(safe-area-inset-bottom,0px)+14px)" : "14px"), borderTop:"1px solid var(--c-border)", flexShrink:0 } },

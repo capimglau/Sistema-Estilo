@@ -58,19 +58,32 @@ input[type=file]{display:none}
 }
 .lg-nav.nav-hidden *{pointer-events:none !important}
 
-/* ── BANNER TOPO ── */
+/* ── BANNER TOPO ──
+   Quando fechado: esmaece e sobe ao rolar.
+   Quando aberto (banner-expanded): sempre visível, sólido, z-index alto.
+   O painel expandido (banner-panel) fica fixo, separado do banner wrapper,
+   então nunca herda opacity do banner-hidden.
+*/
 .lg-top-banner{
   animation:ag-banner-appear 0.50s cubic-bezier(0.22,1,0.36,1) both;
   animation-delay:0.05s;
   transition:opacity 0.30s cubic-bezier(0.4,0,0.2,1), transform 0.32s cubic-bezier(0.4,0,0.2,1);
   will-change:opacity,transform;
 }
-.lg-top-banner.banner-hidden{
+/* Só esconde a barra quando ela está FECHADA */
+.lg-top-banner.banner-hidden:not(.banner-expanded){
   opacity:0 !important;
   transform:translateY(-14px) !important;
   pointer-events:none !important;
 }
-.lg-top-banner.banner-hidden *{pointer-events:none !important}
+.lg-top-banner.banner-hidden:not(.banner-expanded) *{pointer-events:none !important}
+
+/* Quando expandido: sempre visível e sólido */
+.lg-top-banner.banner-expanded{
+  opacity:1 !important;
+  transform:none !important;
+  pointer-events:all !important;
+}
 
 /* Hover desktop */
 @media(hover:hover){
@@ -13608,12 +13621,12 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl,
   var _cat  = React.useState("todos"); var catFiltro = _cat[0]; var setCatFiltro = _cat[1];
   var _grpExp = React.useState({}); var grpExp = _grpExp[0]; var setGrpExp = _grpExp[1];
   var _dim = React.useState(function(){
-    try { var s = sessionStorage.getItem("ag_dismissed"); return s ? JSON.parse(s) : []; } catch(_){ return []; }
+    try { var s = localStorage.getItem("ag_dismissed"); return s ? JSON.parse(s) : []; } catch(_){ return []; }
   }); var dismissed = _dim[0]; var setDismissed = _dim[1];
   function dismiss(key) {
     setDismissed(function(p) {
       var n = p.indexOf(key) < 0 ? p.concat([key]) : p;
-      try { sessionStorage.setItem("ag_dismissed", JSON.stringify(n)); } catch(_){}
+      try { localStorage.setItem("ag_dismissed", JSON.stringify(n)); } catch(_){}
       return n;
     });
   }
@@ -25019,18 +25032,14 @@ window.ReactDOM.createRoot(document.getElementById("root")).render(React.createE
 
 // ─── SCROLL-FADE: Banner topo + Dock ────────────────────────────────────────
 //
-// Layout mobile do React:
-//   <div style="height:100dvh; flex-column; overflow:hidden">
-//     <div style="flex:1; overflowY:auto; paddingBottom:110px">  ← scroll container
-//     <nav class="lg-nav" style="position:fixed; bottom:0">      ← Dock
-//   (fora do wrapper, fixed)
-//   <div class="lg-top-banner" style="position:fixed; top:0">    ← Banner topo
-//
-// Rolando para CIMA  (scrollTop cresce)  → esconde ambos
-// Rolando para BAIXO (scrollTop decresce) → mostra ambos
+// Regras:
+//  • Rolando para CIMA  → esconde banner (se fechado) + dock
+//  • Rolando para BAIXO → mostra ambos
+//  • Banner EXPANDIDO   → nunca esconde (classe banner-expanded protege via CSS)
+//  • Topo da página     → sempre mostra tudo
 //
 (function(){
-  var HIDE_AFTER  = 40;   // px acumulados subindo para esconder
+  var HIDE_AFTER  = 40;
   var lastY       = 0;
   var accumulated = 0;
   var hidden      = false;
@@ -25040,6 +25049,26 @@ window.ReactDOM.createRoot(document.getElementById("root")).render(React.createE
   function nav()    { return document.querySelector('.lg-nav'); }
   function banner() { return document.querySelector('.lg-top-banner'); }
 
+  // Detecta se o painel de notificações está aberto:
+  // O banner tem altura maior que ~60px quando expandido
+  function isBannerExpanded() {
+    var b = banner();
+    if (!b) return false;
+    // Verifica se há conteúdo filho com borderTop (o painel expandido tem borderTop)
+    // ou simplesmente se a altura atual é > 80px
+    return b.scrollHeight > 80;
+  }
+
+  function syncExpandedClass() {
+    var b = banner();
+    if (!b) return;
+    if (isBannerExpanded()) {
+      b.classList.add('banner-expanded');
+    } else {
+      b.classList.remove('banner-expanded');
+    }
+  }
+
   function show() {
     if (!hidden) return;
     hidden = false;
@@ -25048,6 +25077,8 @@ window.ReactDOM.createRoot(document.getElementById("root")).render(React.createE
   }
   function hide() {
     if (hidden) return;
+    // Nunca esconde se o banner estiver expandido
+    if (isBannerExpanded()) return;
     hidden = true;
     var n = nav();    if (n) n.classList.add('nav-hidden');
     var b = banner(); if (b) b.classList.add('banner-hidden');
@@ -25061,34 +25092,30 @@ window.ReactDOM.createRoot(document.getElementById("root")).render(React.createE
       var el = bound;
       if (!el) return;
 
+      syncExpandedClass();
+
       var y     = el.scrollTop;
       var delta = y - lastY;
       lastY = y;
 
       if (y < 10) {
-        // No topo → sempre visível
         show();
         accumulated = 0;
         return;
       }
 
       if (delta > 0) {
-        // Rolando para cima (conteúdo sobe, scrollTop cresce)
         accumulated += delta;
         if (accumulated > HIDE_AFTER) hide();
       } else if (delta < 0) {
-        // Rolando para baixo (volta ao topo)
         accumulated = 0;
         show();
       }
     });
   }
 
-  // Encontra o div de scroll do conteúdo:
-  // É o único div com overflowY:auto que tem paddingBottom ≥ 100px (= 110px do React)
   function findScrollDiv() {
     var all = document.querySelectorAll('div');
-    // Tentativa 1 — pelo paddingBottom de 110px que o React define
     for (var i = 0; i < all.length; i++) {
       var s = all[i].style;
       if ((s.overflowY === 'auto' || s.overflowY === 'scroll') &&
@@ -25096,7 +25123,6 @@ window.ReactDOM.createRoot(document.getElementById("root")).render(React.createE
         return all[i];
       }
     }
-    // Tentativa 2 — qualquer div scrollável com conteúdo maior que a viewport
     for (var j = 0; j < all.length; j++) {
       var t = all[j].style;
       if ((t.overflowY === 'auto' || t.overflowY === 'scroll') &&
@@ -25118,11 +25144,19 @@ window.ReactDOM.createRoot(document.getElementById("root")).render(React.createE
     el.addEventListener('scroll', onScroll, { passive: true });
   }
 
-  // Reconecta ao montar/remontar o layout (troca de aba recria o div)
-  new MutationObserver(function() { attach(); })
-    .observe(document.body || document.documentElement, { childList: true, subtree: true });
+  // MutationObserver detecta quando o React abre/fecha o painel
+  // e sincroniza banner-expanded imediatamente
+  new MutationObserver(function() {
+    syncExpandedClass();
+    // Se banner foi expandido, garante que fica visível
+    if (isBannerExpanded()) {
+      hidden = false;
+      var n = nav(); // dock continua com seu estado
+      var b = banner(); if (b) b.classList.remove('banner-hidden');
+    }
+    attach();
+  }).observe(document.body || document.documentElement, { childList: true, subtree: true });
 
-  // Ao clicar em qualquer aba: sempre mostra os dois e reconecta
   document.addEventListener('click', function(e) {
     var btn = e.target.closest('.lg-nav-btn, [class*="lg-tab"]');
     if (btn) {

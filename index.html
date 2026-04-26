@@ -24026,6 +24026,7 @@ function ClaudeAssistant(props) {
   var _vm = React.useState(false); var voiceMode = _vm[0], setVoiceMode = _vm[1];
   var _sp = React.useState(false); var speaking = _sp[0], setSpeaking = _sp[1];
   var _vs = React.useState(""); var voiceStatusMsg = _vs[0], setVoiceStatusMsg = _vs[1];
+  var _vh = React.useState(window.innerHeight); var viewportH = _vh[0], setViewportH = _vh[1];
   var voiceModeRef = React.useRef(false);
   var recognRef = React.useRef(null);
 
@@ -24033,6 +24034,16 @@ function ClaudeAssistant(props) {
   var msgsEndRef = React.useRef(null);
   var inputRef = React.useRef(null);
   var dataRef = React.useRef({});
+
+  React.useEffect(function() {
+    function onVPResize() { setViewportH(window.visualViewport ? window.visualViewport.height : window.innerHeight); }
+    window.addEventListener('resize', onVPResize);
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', onVPResize);
+    return function() {
+      window.removeEventListener('resize', onVPResize);
+      if (window.visualViewport) window.visualViewport.removeEventListener('resize', onVPResize);
+    };
+  }, []);
 
   React.useEffect(function() {
     dataRef.current = { veiculos: veiculos, clientes: clientes, contratos: contratos, reservas: reservas, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, contas: contas };
@@ -24067,8 +24078,15 @@ function ClaudeAssistant(props) {
     var ptVoice = window.speechSynthesis.getVoices().find(function(v){ return v.lang && v.lang.startsWith("pt"); });
     if (ptVoice) utt.voice = ptVoice;
     setSpeaking(true);
-    utt.onend = function() { setSpeaking(false); if (onDone) onDone(); };
-    utt.onerror = function() { setSpeaking(false); if (onDone) onDone(); };
+    var called = false;
+    var finish = function() { if (called) return; called = true; setSpeaking(false); if (onDone) onDone(); };
+    utt.onend = finish;
+    utt.onerror = finish;
+    // iOS às vezes não dispara onend/onerror — fallback por tempo
+    var ms = Math.min(Math.max(clean.length * 80, 4000), 30000);
+    var t = setTimeout(finish, ms);
+    utt.onend = function() { clearTimeout(t); finish(); };
+    utt.onerror = function() { clearTimeout(t); finish(); };
     window.speechSynthesis.speak(utt);
   }
 
@@ -24078,38 +24096,43 @@ function ClaudeAssistant(props) {
   function startListening() {
     if (!voiceModeRef.current) return;
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
+    if (!SR) {
+      setMsgs(function(p){ return [...p, { role:"assistant", content:"⚠️ Reconhecimento de voz não suportado neste dispositivo/navegador." }]; });
+      toggleVoiceMode();
+      return;
+    }
     if (recognRef.current) { try { recognRef.current.stop(); } catch(e){} recognRef.current = null; }
     var r = new SR();
     r.lang = "pt-BR"; r.continuous = false; r.interimResults = false; r.maxAlternatives = 1;
     var resultReceived = false;
-    r.onstart = function() {
-      setVoiceStatusMsg("Ouvindo…");
-    };
+    r.onstart = function() { setVoiceStatusMsg("Ouvindo… fale agora"); };
     r.onresult = function(e) {
       resultReceived = true;
       var t = (e.results && e.results[0] && e.results[0][0] && e.results[0][0].transcript) || "";
-      setVoiceStatusMsg("");
+      setVoiceStatusMsg("Entendido: " + t);
       var norm = t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
       if (EXIT_WORDS.test(norm)) { toggleVoiceMode(); return; }
       if (t && voiceModeRef.current) sendMsg(t);
     };
     r.onerror = function(e) {
-      setVoiceStatusMsg("");
-      var code = e && e.error;
+      var code = (e && e.error) || "desconhecido";
       if (code === "not-allowed" || code === "service-not-allowed") {
         toggleVoiceMode();
-        setMsgs(function(p){ return [...p, { role:"assistant", content:"⚠️ Permissão de microfone negada. Verifique as configurações do navegador." }]; });
+        setMsgs(function(p){ return [...p, { role:"assistant", content:"⚠️ Permissão de microfone negada. Toque no cadeado na barra do navegador e permita o microfone." }]; });
         return;
       }
+      setVoiceStatusMsg("Erro: " + code + " — tentando novamente…");
       if (voiceModeRef.current && !resultReceived) setTimeout(startListening, 600);
     };
     r.onend = function() {
-      setVoiceStatusMsg("");
-      if (voiceModeRef.current && !resultReceived) setTimeout(startListening, 500);
+      if (!resultReceived && voiceModeRef.current) {
+        setVoiceStatusMsg("Ouvindo… fale agora");
+        setTimeout(startListening, 500);
+      }
     };
     recognRef.current = r;
     try { r.start(); } catch(e) {
+      setVoiceStatusMsg("Erro ao iniciar: " + e.message);
       if (voiceModeRef.current) setTimeout(startListening, 800);
     }
   }
@@ -24486,7 +24509,7 @@ function ClaudeAssistant(props) {
         left: mobile ? 0 : "auto",
         right: mobile ? 0 : 20,
         width: mobile ? "100%" : 400,
-        maxHeight: mobile ? "min(88dvh,88svh)" : "76vh",
+        maxHeight: mobile ? Math.round(viewportH * 0.88) + "px" : "76vh",
         display:"flex", flexDirection:"column",
         background:"var(--c-bg,#F7F7FA)",
         borderRadius: mobile ? "22px 22px 0 0" : 18,

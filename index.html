@@ -13435,7 +13435,7 @@ function VoiceIA_unused({ setTab, toast, veiculos, clientes, contratos, C }) {
   function parseIntent(text) {
     var t = (text || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     var action = null;
-    if (/\b(novo? contrato|criar contrato)\b/.test(t))  action = { tab: "contratos", msg: "Contratos" };
+    if (/\b(novo? contrato|criar contrato)\b/.test(t))  action = { tab: "contratos", openNew: true, msg: "Novo Contrato" };
     else if (/\b(nova reserva|criar reserva)\b/.test(t)) action = { tab: "reservas", msg: "Reservas" };
     else if (/\bcontrat/.test(t))  action = { tab: "contratos", msg: "Contratos" };
     else if (/\breserva/.test(t))  action = { tab: "reservas",  msg: "Reservas" };
@@ -13447,7 +13447,11 @@ function VoiceIA_unused({ setTab, toast, veiculos, clientes, contratos, C }) {
     else if (/\b(relatorio|grafico)\b/.test(t)) action = { tab: "relatorios", msg: "Relatorios" };
     else if (/\b(agenda|calendario)\b/.test(t)) action = { tab: "calendario", msg: "Calendario" };
     else if (/\b(inicio|home|resumo)\b/.test(t)) action = { tab: "inicio",   msg: "Inicio" };
-    if (action) { showInfo("\u201c" + text + "\u201d \u2192 " + action.msg, true); setTab(action.tab); }
+    if (action) {
+      showInfo("\u201c" + text + "\u201d \u2192 " + action.msg, true);
+      setTab(action.tab);
+      if (action.openNew) setTimeout(function() { document.dispatchEvent(new CustomEvent("autoguest:novo-contrato")); }, 350);
+    }
     else showInfo("Nao entendi: \u201c" + text + "\u201d", false);
   }
 
@@ -16790,6 +16794,16 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   const [docsContrato, setDocsContrato] = useState(null);
   const [filtroMesCt, setFiltroMesCt] = useState(new Date().toISOString().slice(0, 7));
   function limparFiltros() { setFilDe(""); setFilAte(""); setFilVeiculo(""); setFilCliente(""); }
+  useEffect(function() {
+    function abrirNovoContrato() {
+      var _p = {}; try { _p = JSON.parse(localStorage.getItem("ag_prefs_v1") || "{}"); } catch(e) {}
+      setForm({ status: "ativo", km_franquia: _p.kmFranquia || "", valor_km_excedente: _p.valorKmExc || "", forma_pagamento: _p.formaPgto || "" });
+      setEdit(null);
+      setModal(true);
+    }
+    document.addEventListener("autoguest:novo-contrato", abrirNovoContrato);
+    return function() { document.removeEventListener("autoguest:novo-contrato", abrirNovoContrato); };
+  }, []);
   async function remove(id) { if (!confirm("Excluir contrato?")) return; await db.del("contratos", id); setContratos(p => p.filter(c => c.id !== id)); toast("Excluído!"); }
   async function sincronizarRefFatura(c, dtPag) {
     // Mês do pagamento real prevalece sobre previsão
@@ -24040,7 +24054,7 @@ function ClaudeAssistant(props) {
       "INSTRUÇÕES:",
       "- Responda sempre em português brasileiro, de forma direta e útil.",
       "- Use as ferramentas para obter dados reais antes de responder perguntas sobre eles.",
-      "- Ao criar contratos: use listar_dados para obter IDs de clientes/veículos disponíveis primeiro.",
+      "- Ao criar contratos: use listar_dados para obter IDs de clientes/veículos disponíveis primeiro. Quando o usuário pedir para abrir/criar/fazer um novo contrato, inicie o processo coletando as informações necessárias (cliente, veículo, datas, valor) e crie o contrato com criar_registro. NÃO use navegar_para para pedidos de criação de contrato.",
       "- Para fechar contratos: use fechar_contrato (libera o veículo automaticamente).",
       "- Para deletar: só execute se o usuário confirmar explicitamente (confirmacao=true).",
       "- Datas: YYYY-MM-DD para banco, DD/MM/YYYY nas respostas.",
@@ -24227,10 +24241,10 @@ function ClaudeAssistant(props) {
     }
   }
 
-  async function sendMsg() {
-    var txt = input.trim();
+  async function sendMsg(forceTxt) {
+    var txt = (forceTxt != null ? forceTxt : input).trim();
     if (!txt || loading) return;
-    setInput("");
+    if (forceTxt == null) setInput("");
     setLoading(true);
     var key = getApiKey();
     if (!key) {
@@ -24313,7 +24327,7 @@ function ClaudeAssistant(props) {
     r.interimResults = false;
     r.onresult = function(e) {
       var t = e.results[0][0].transcript;
-      setInput(function(prev){ return prev ? prev + " " + t : t; });
+      if (t) sendMsg(t);
     };
     r.onerror = function() {};
     r.start();

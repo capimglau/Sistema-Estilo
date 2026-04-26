@@ -22464,6 +22464,29 @@ function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, rese
   );
 }
 
+/*
+-- Tabelas adicionais (executar no SQL Editor do Supabase):
+-- create table if not exists perfis (id bigserial primary key, nome text not null, descricao text, permissoes jsonb default '{}', criado_em timestamptz default now());
+-- create table if not exists usuarios (id bigserial primary key, nome text not null, pin text not null, perfil_id bigint references perfis(id), ativo boolean default true, criado_em timestamptz default now());
+*/
+
+var PERFIS_PADRAO = [
+  { nome: "Administrador", descricao: "Acesso total ao sistema", permissoes: { tabs: ["inicio","reservas","contratos","financeiro","multas","manutencao","cadastro","tarifas","relatorios","calendario","simulador","linha_do_tempo","config","usuarios"], criar: true, editar: true, excluir: true } },
+  { nome: "Gerente", descricao: "Acesso a todos os módulos exceto configurações", permissoes: { tabs: ["inicio","reservas","contratos","financeiro","multas","manutencao","cadastro","tarifas","relatorios","calendario","simulador","linha_do_tempo"], criar: true, editar: true, excluir: true } },
+  { nome: "Operador", descricao: "Contratos, reservas e cadastros", permissoes: { tabs: ["inicio","reservas","contratos","multas","cadastro","calendario"], criar: true, editar: true, excluir: false } },
+  { nome: "Financeiro", descricao: "Módulo financeiro e relatórios", permissoes: { tabs: ["inicio","financeiro","relatorios","calendario"], criar: true, editar: true, excluir: false } },
+  { nome: "Visualizador", descricao: "Somente leitura", permissoes: { tabs: ["inicio","reservas","contratos","financeiro","multas","manutencao","cadastro","tarifas","relatorios","calendario","simulador","linha_do_tempo"], criar: false, editar: false, excluir: false } },
+];
+
+function temAcesso(usuario, tabId) {
+  if (!usuario) return false;
+  var tabs = (usuario.perfil && usuario.perfil.permissoes && usuario.perfil.permissoes.tabs) || [];
+  return tabs.indexOf(tabId) >= 0;
+}
+function podeCriar(usuario) { return usuario && usuario.perfil && usuario.perfil.permissoes && usuario.perfil.permissoes.criar !== false; }
+function podeEditar(usuario) { return usuario && usuario.perfil && usuario.perfil.permissoes && usuario.perfil.permissoes.editar !== false; }
+function podeExcluir(usuario) { return usuario && usuario.perfil && usuario.perfil.permissoes && usuario.perfil.permissoes.excluir !== false; }
+
 const TABS = [
   { id: "inicio", label: "Início" },
   { id: "reservas", label: "Reservas" },
@@ -22931,71 +22954,181 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
 
 
 function LoginScreen({ onLogin }) {
-  const [pin, setPin] = useState("");
-  const [erro, setErro] = useState("");
-  const [usarPin, setUsarPin] = useState(false);
-  const [carregando, setCarregando] = useState(false);
-  const PIN_CORRETO = "1234";
-  const RP_ID = location.hostname; // capimglau.github.io
+  // Estados de carregamento e dados
+  var _us = React.useState(null); var usuarios = _us[0], setUsuarios = _us[1];
+  var _pf = React.useState(null); var perfis = _pf[0], setPerfis = _pf[1];
+  var _ld = React.useState(true); var carregando = _ld[0], setCarregando = _ld[1];
+  var _er = React.useState(""); var erro = _er[0], setErro = _er[1];
+  // Estado da tela: "loading" | "primeiro_acesso" | "escolher_usuario" | "digitar_pin"
+  var _tl = React.useState("loading"); var tela = _tl[0], setTela = _tl[1];
+  var _us2 = React.useState(null); var usuarioSel = _us2[0], setUsuarioSel = _us2[1];
+  var _pin = React.useState(""); var pin = _pin[0], setPin = _pin[1];
+  // Campos primeiro acesso
+  var _fa = React.useState({ nome: "", pin: "", confirmPin: "" }); var primeiroAcesso = _fa[0], setPrimeiroAcesso = _fa[1];
+  var _sa = React.useState(false); var salvando = _sa[0], setSalvando = _sa[1];
 
-  async function tentarBiometrico() {
-    setErro(""); setCarregando(true);
-    try {
-      if (!window.PublicKeyCredential) { setUsarPin(true); setCarregando(false); return; }
-      const credId = localStorage.getItem("autogest_cred_id");
-      if (!credId) {
-        // Primeira vez: registra
-        const cred = await navigator.credentials.create({
-          publicKey: {
-            challenge: crypto.getRandomValues(new Uint8Array(32)),
-            rp: { id: RP_ID, name: "AutoGest Pro" },
-            user: { id: new Uint8Array(16), name: "usuario", displayName: "Usuário" },
-            pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
-            authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "preferred" },
-            timeout: 60000
-          }
+  var AVATAR_COLORS = ["#7C3AED","#2563EB","#059669","#D97706","#DC2626","#0891B2","#7C3AED","#BE185D"];
+
+  function avatarColor(nome) {
+    var idx = (nome || "?").charCodeAt(0) % AVATAR_COLORS.length;
+    return AVATAR_COLORS[idx];
+  }
+
+  React.useEffect(function() {
+    async function carregar() {
+      try {
+        var pfs = await db.get("perfis");
+        var usrs = await db.get("usuarios", "ativo=eq.true&order=nome.asc");
+        setPerfis(pfs || []);
+        // Merge perfil into each user
+        var usrsComPerfil = (usrs || []).map(function(u) {
+          var p = (pfs || []).find(function(pf){ return pf.id === u.perfil_id; }) || null;
+          return Object.assign({}, u, { perfil: p });
         });
-        localStorage.setItem("autogest_cred_id", btoa(String.fromCharCode(...new Uint8Array(cred.rawId))));
-        onLogin();
-      } else {
-        // Já registrado: autentica
-        try {
-          const rawId = Uint8Array.from(atob(credId), c => c.charCodeAt(0));
-          await navigator.credentials.get({
-            publicKey: {
-              challenge: crypto.getRandomValues(new Uint8Array(32)),
-              rpId: RP_ID,
-              allowCredentials: [{ type: "public-key", id: rawId }],
-              userVerification: "required",
-              timeout: 60000
-            }
-          });
-          onLogin();
-        } catch(e2) {
-          // Credencial inválida/expirada — apaga e tenta registrar de novo
-          localStorage.removeItem("autogest_cred_id");
-          setErro("Face ID expirou. Toque novamente para registrar.");
+        setUsuarios(usrsComPerfil);
+        if (!usrsComPerfil || usrsComPerfil.length === 0) {
+          setTela("primeiro_acesso");
+        } else {
+          setTela("escolher_usuario");
+        }
+      } catch(e) {
+        // Tabelas podem não existir ainda — tratar como primeiro acesso
+        setUsuarios([]);
+        setPerfis([]);
+        setTela("primeiro_acesso");
+      }
+      setCarregando(false);
+    }
+    carregar();
+  }, []);
+
+  async function criarPrimeiroAdmin() {
+    var n = (primeiroAcesso.nome || "").trim();
+    var p = primeiroAcesso.pin;
+    var c = primeiroAcesso.confirmPin;
+    if (!n) { setErro("Informe seu nome."); return; }
+    if (!p || p.length < 4) { setErro("PIN deve ter ao menos 4 dígitos."); return; }
+    if (p !== c) { setErro("Os PINs não coincidem."); return; }
+    setSalvando(true); setErro("");
+    try {
+      // Seed perfis padrão se não existirem
+      var pfsExist = await db.get("perfis");
+      var pfsLista = pfsExist || [];
+      if (!pfsLista.length) {
+        for (var i = 0; i < PERFIS_PADRAO.length; i++) {
+          var pfCriado = await db.post("perfis", PERFIS_PADRAO[i]);
+          if (pfCriado && pfCriado[0]) pfsLista.push(pfCriado[0]);
         }
       }
+      var adminPerfil = pfsLista.find(function(pf){ return pf.nome === "Administrador"; }) || pfsLista[0];
+      var novoUsuario = await db.post("usuarios", { nome: n, pin: p, perfil_id: adminPerfil ? adminPerfil.id : null, ativo: true });
+      var uObj = novoUsuario && novoUsuario[0] ? Object.assign({}, novoUsuario[0], { perfil: adminPerfil }) : null;
+      if (uObj) { onLogin(uObj); }
+      else { setErro("Erro ao criar usuário."); }
     } catch(e) {
-      if (e.name === "NotAllowedError") setErro("Cancelado. Tente novamente ou use o PIN.");
-      else if (e.name === "NotSupportedError") { setUsarPin(true); }
-      else { setErro("Face ID indisponível. Use o PIN."); setUsarPin(true); }
+      setErro("Erro: " + (e.message || String(e)));
     }
-    setCarregando(false);
+    setSalvando(false);
   }
 
-  function tentarPin() {
-    if (pin === PIN_CORRETO) { onLogin(); }
-    else { setErro("PIN incorreto."); setPin(""); }
+  function selecionarUsuario(u) {
+    setUsuarioSel(u); setPin(""); setErro(""); setTela("digitar_pin");
   }
 
-  function resetFaceId() {
-    localStorage.removeItem("autogest_cred_id");
-    setErro("Face ID redefinido. Toque para registrar novamente.");
+  function verificarPin() {
+    if (!usuarioSel) return;
+    if (pin === usuarioSel.pin) {
+      onLogin(usuarioSel);
+    } else {
+      setErro("PIN incorreto."); setPin("");
+    }
   }
 
-  React.useEffect(function() { tentarBiometrico(); }, []);
+  var bgStyle = { minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, background: "linear-gradient(135deg, #1e1b4b 0%, #312e81 40%, #4c1d95 70%, #6d28d9 100%)" };
+  var cardStyle = { background: "rgba(255,255,255,0.10)", backdropFilter: "blur(32px) saturate(180%)", WebkitBackdropFilter: "blur(32px) saturate(180%)", borderRadius: 24, padding: "32px 28px", width: "100%", maxWidth: 420, boxShadow: "0 24px 64px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25)", border: "1px solid rgba(255,255,255,0.18)" };
+  var titleStyle = { fontSize: 24, fontWeight: 800, color: "#fff", textAlign: "center", marginBottom: 6 };
+  var subStyle = { fontSize: 14, color: "rgba(255,255,255,0.65)", textAlign: "center", marginBottom: 28 };
+
+  if (tela === "loading") {
+    return React.createElement('div', { style: bgStyle },
+      React.createElement('div', { style: { color: "rgba(255,255,255,0.7)", fontSize: 16 } }, "Carregando…")
+    );
+  }
+
+  if (tela === "primeiro_acesso") {
+    return React.createElement('div', { style: bgStyle },
+      React.createElement('div', { style: cardStyle },
+        React.createElement('div', { style: { fontSize: 40, textAlign: "center", marginBottom: 12 } }, "🚗"),
+        React.createElement('div', { style: titleStyle }, "Bem-vindo ao AutoGest Pro"),
+        React.createElement('div', { style: subStyle }, "Primeiro acesso — crie o administrador"),
+        erro && React.createElement('div', { style: { background: "rgba(255,59,48,0.18)", border: "1px solid rgba(255,59,48,0.4)", borderRadius: 10, padding: "10px 14px", color: "#ff6b6b", fontSize: 13, marginBottom: 16 } }, erro),
+        React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 } },
+          React.createElement('div', null,
+            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.65)", marginBottom: 5 } }, "Seu nome"),
+            React.createElement('input', { type: "text", value: primeiroAcesso.nome, onChange: function(e){ setPrimeiroAcesso(function(p){ return Object.assign({},p,{nome:e.target.value}); }); }, placeholder: "Ex: João Silva", style: { width: "100%", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.12)", color: "#fff", fontSize: 15, outline: "none", boxSizing: "border-box" } })
+          ),
+          React.createElement('div', null,
+            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.65)", marginBottom: 5 } }, "PIN (mínimo 4 dígitos)"),
+            React.createElement('input', { type: "password", value: primeiroAcesso.pin, onChange: function(e){ setPrimeiroAcesso(function(p){ return Object.assign({},p,{pin:e.target.value}); }); }, placeholder: "••••", style: { width: "100%", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.12)", color: "#fff", fontSize: 15, outline: "none", boxSizing: "border-box", letterSpacing: 6 } })
+          ),
+          React.createElement('div', null,
+            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.65)", marginBottom: 5 } }, "Confirmar PIN"),
+            React.createElement('input', { type: "password", value: primeiroAcesso.confirmPin, onChange: function(e){ setPrimeiroAcesso(function(p){ return Object.assign({},p,{confirmPin:e.target.value}); }); onkeydown: function(e){ if(e.key==="Enter") criarPrimeiroAdmin(); }; }, placeholder: "••••", onKeyDown: function(e){ if(e.key==="Enter") criarPrimeiroAdmin(); }, style: { width: "100%", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.12)", color: "#fff", fontSize: 15, outline: "none", boxSizing: "border-box", letterSpacing: 6 } })
+          ),
+          React.createElement('button', { onClick: criarPrimeiroAdmin, disabled: salvando, style: { width: "100%", padding: "14px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.35)", background: salvando ? "rgba(124,58,237,0.4)" : "linear-gradient(135deg, rgba(124,58,237,0.85), rgba(79,70,229,0.85))", color: "#fff", fontSize: 16, fontWeight: 700, cursor: salvando ? "default" : "pointer", backdropFilter: "blur(16px)", boxShadow: "0 4px 16px rgba(124,58,237,0.3), inset 0 1.5px 0 rgba(255,255,255,0.25)", marginTop: 4 } },
+            salvando ? "Criando…" : "Criar Administrador"
+          )
+        )
+      )
+    );
+  }
+
+  if (tela === "escolher_usuario") {
+    return React.createElement('div', { style: bgStyle },
+      React.createElement('div', { style: cardStyle },
+        React.createElement('div', { style: { fontSize: 36, textAlign: "center", marginBottom: 8 } }, "🚗"),
+        React.createElement('div', { style: titleStyle }, "AutoGest Pro"),
+        React.createElement('div', { style: subStyle }, "Selecione seu perfil para entrar"),
+        React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 16, justifyContent: "center", marginTop: 8 } },
+          (usuarios || []).map(function(u) {
+            var inicial = (u.nome || "?")[0].toUpperCase();
+            var cor = avatarColor(u.nome);
+            return React.createElement('div', { key: u.id, onClick: function(){ selecionarUsuario(u); }, style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 8, cursor: "pointer", padding: "12px 10px", borderRadius: 16, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.12)", transition: "all 0.15s", minWidth: 80 },
+              onMouseEnter: function(e){ e.currentTarget.style.background = "rgba(255,255,255,0.14)"; },
+              onMouseLeave: function(e){ e.currentTarget.style.background = "rgba(255,255,255,0.07)"; }
+            },
+              React.createElement('div', { style: { width: 56, height: 56, borderRadius: "50%", background: cor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 800, color: "#fff", boxShadow: "0 4px 12px rgba(0,0,0,0.25)" } }, inicial),
+              React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "#fff", textAlign: "center", maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, u.nome),
+              u.perfil && React.createElement('div', { style: { fontSize: 10, color: "rgba(255,255,255,0.55)", textAlign: "center" } }, u.perfil.nome)
+            );
+          })
+        )
+      )
+    );
+  }
+
+  if (tela === "digitar_pin") {
+    var u = usuarioSel || {};
+    var inicial2 = (u.nome || "?")[0].toUpperCase();
+    var cor2 = avatarColor(u.nome);
+    return React.createElement('div', { style: bgStyle },
+      React.createElement('div', { style: cardStyle },
+        React.createElement('div', { style: { display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 24 } },
+          React.createElement('div', { style: { width: 72, height: 72, borderRadius: "50%", background: cor2, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 800, color: "#fff", marginBottom: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.30)" } }, inicial2),
+          React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: "#fff" } }, u.nome),
+          u.perfil && React.createElement('div', { style: { fontSize: 13, color: "rgba(255,255,255,0.55)", marginTop: 2 } }, u.perfil.nome)
+        ),
+        React.createElement('div', { style: { fontSize: 14, color: "rgba(255,255,255,0.65)", textAlign: "center", marginBottom: 16 } }, "Digite seu PIN"),
+        erro && React.createElement('div', { style: { background: "rgba(255,59,48,0.18)", border: "1px solid rgba(255,59,48,0.4)", borderRadius: 10, padding: "10px 14px", color: "#ff6b6b", fontSize: 13, marginBottom: 14, textAlign: "center" } }, erro),
+        React.createElement('input', { type: "password", value: pin, onChange: function(e){ setPin(e.target.value); setErro(""); }, onKeyDown: function(e){ if(e.key==="Enter") verificarPin(); }, placeholder: "••••", autoFocus: true, style: { width: "100%", textAlign: "center", fontSize: 28, letterSpacing: 12, padding: "14px 16px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.35)", outline: "none", background: "rgba(255,255,255,0.12)", color: "#fff", boxSizing: "border-box", backdropFilter: "blur(8px)" } }),
+        React.createElement('button', { onClick: verificarPin, style: { width: "100%", background: "linear-gradient(135deg, rgba(124,58,237,0.85), rgba(79,70,229,0.85))", backdropFilter: "blur(16px)", color: "#fff", border: "1px solid rgba(255,255,255,0.35)", borderRadius: 14, padding: "14px", fontSize: 16, fontWeight: 600, cursor: "pointer", marginTop: 14, boxShadow: "0 4px 16px rgba(124,58,237,0.30), inset 0 1.5px 0 rgba(255,255,255,0.25)" } }, "Entrar"),
+        React.createElement('button', { onClick: function(){ setTela("escolher_usuario"); setErro(""); setPin(""); }, style: { background: "none", border: "none", color: "rgba(255,255,255,0.55)", fontSize: 14, cursor: "pointer", marginTop: 12, width: "100%" } }, "← Voltar")
+      )
+    );
+  }
+
+  return null;
+}
 
   return React.createElement('div', { style: { minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3125}}
     , React.createElement('div', { style: { textAlign: "center", marginBottom: 16, display: 'flex', flexDirection: 'column', alignItems: 'center' }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3126}}
@@ -24809,10 +24942,329 @@ function ClaudeAssistant(props) {
   );
 }
 
+function Usuarios({ usuarioAtual, toast }) {
+  var _tabU = React.useState("usuarios"); var tabU = _tabU[0], setTabU = _tabU[1];
+  var _usrs = React.useState([]); var usrs = _usrs[0], setUsrs = _usrs[1];
+  var _pfs = React.useState([]); var pfs = _pfs[0], setPfs = _pfs[1];
+  var _ld = React.useState(true); var ld = _ld[0], setLd = _ld[1];
+  var _modalU = React.useState(false); var modalU = _modalU[0], setModalU = _modalU[1];
+  var _modalP = React.useState(false); var modalP = _modalP[0], setModalP = _modalP[1];
+  var _editU = React.useState(null); var editU = _editU[0], setEditU = _editU[1];
+  var _editP = React.useState(null); var editP = _editP[0], setEditP = _editP[1];
+  var _formU = React.useState({ nome: "", pin: "", confirmPin: "", perfil_id: "", ativo: true }); var formU = _formU[0], setFormU = _formU[1];
+  var _formP = React.useState({ nome: "", descricao: "", permissoes: { tabs: [], criar: true, editar: true, excluir: true } }); var formP = _formP[0], setFormP = _formP[1];
+  var _salvU = React.useState(false); var salvU = _salvU[0], setSalvU = _salvU[1];
+  var _salvP = React.useState(false); var salvP = _salvP[0], setSalvP = _salvP[1];
+  var _confDel = React.useState(null); var confDel = _confDel[0], setConfDel = _confDel[1];
+
+  var AVATAR_COLORS = ["#7C3AED","#2563EB","#059669","#D97706","#DC2626","#0891B2","#BE185D","#0F766E"];
+  function avatarColor(nome) { var idx = (nome||"?").charCodeAt(0) % AVATAR_COLORS.length; return AVATAR_COLORS[idx]; }
+
+  var ALL_TABS_INFO = [
+    { id: "inicio", label: "Início" }, { id: "reservas", label: "Reservas" }, { id: "contratos", label: "Contratos" },
+    { id: "financeiro", label: "Financeiro" }, { id: "multas", label: "Multas" }, { id: "manutencao", label: "Manutenção" },
+    { id: "cadastro", label: "Cadastro" }, { id: "tarifas", label: "Tarifas" }, { id: "relatorios", label: "Relatórios" },
+    { id: "calendario", label: "Calendário" }, { id: "simulador", label: "Simulador" }, { id: "linha_do_tempo", label: "Timeline" },
+    { id: "config", label: "Configurações" }, { id: "usuarios", label: "Usuários" }
+  ];
+
+  var isAdmin = usuarioAtual && usuarioAtual.perfil && usuarioAtual.perfil.nome === "Administrador";
+
+  React.useEffect(function() { carregarTudo(); }, []);
+
+  async function carregarTudo() {
+    setLd(true);
+    try {
+      var pData = await db.get("perfis");
+      var uData = await db.get("usuarios", "order=nome.asc");
+      var pList = pData || [];
+      setPfs(pList);
+      var uList = (uData || []).map(function(u) {
+        var p = pList.find(function(pf){ return pf.id === u.perfil_id; }) || null;
+        return Object.assign({}, u, { perfil: p });
+      });
+      setUsrs(uList);
+      // Seed perfis se não existirem
+      if (!pList.length) { await seedPerfis(); }
+    } catch(e) { toast("Erro ao carregar dados: " + (e.message||e), "error"); }
+    setLd(false);
+  }
+
+  async function seedPerfis() {
+    try {
+      for (var i = 0; i < PERFIS_PADRAO.length; i++) {
+        await db.post("perfis", PERFIS_PADRAO[i]);
+      }
+      var pData2 = await db.get("perfis");
+      setPfs(pData2 || []);
+      toast("Perfis padrão criados com sucesso!");
+    } catch(e) { toast("Erro ao criar perfis: " + (e.message||e), "error"); }
+  }
+
+  function abrirNovoUsuario() {
+    setEditU(null);
+    setFormU({ nome: "", pin: "", confirmPin: "", perfil_id: pfs.length ? pfs[0].id : "", ativo: true });
+    setModalU(true);
+  }
+
+  function abrirEditUsuario(u) {
+    setEditU(u);
+    setFormU({ nome: u.nome, pin: "", confirmPin: "", perfil_id: u.perfil_id || (pfs.length ? pfs[0].id : ""), ativo: u.ativo !== false });
+    setModalU(true);
+  }
+
+  async function salvarUsuario() {
+    var n = (formU.nome||"").trim();
+    if (!n) { toast("Informe o nome.", "error"); return; }
+    if (!editU && (!formU.pin || formU.pin.length < 4)) { toast("PIN deve ter ao menos 4 dígitos.", "error"); return; }
+    if (!editU && formU.pin !== formU.confirmPin) { toast("PINs não coincidem.", "error"); return; }
+    if (formU.pin && formU.pin !== formU.confirmPin) { toast("PINs não coincidem.", "error"); return; }
+    setSalvU(true);
+    try {
+      var payload = { nome: n, perfil_id: formU.perfil_id ? Number(formU.perfil_id) : null, ativo: formU.ativo };
+      if (formU.pin) payload.pin = formU.pin;
+      if (editU) {
+        await db.patch("usuarios", editU.id, payload);
+        toast("Usuário atualizado!");
+      } else {
+        await db.post("usuarios", Object.assign({ pin: formU.pin }, payload));
+        toast("Usuário criado!");
+      }
+      setModalU(false);
+      carregarTudo();
+    } catch(e) { toast("Erro: " + (e.message||e), "error"); }
+    setSalvU(false);
+  }
+
+  async function excluirUsuario(u) {
+    if (usuarioAtual && u.id === usuarioAtual.id) { toast("Você não pode excluir seu próprio usuário.", "error"); return; }
+    try {
+      await db.del("usuarios", u.id);
+      toast("Usuário removido.");
+      carregarTudo();
+    } catch(e) { toast("Erro: " + (e.message||e), "error"); }
+    setConfDel(null);
+  }
+
+  function abrirNovoPerfil() {
+    setEditP(null);
+    setFormP({ nome: "", descricao: "", permissoes: { tabs: [], criar: true, editar: true, excluir: true } });
+    setModalP(true);
+  }
+
+  function abrirEditPerfil(p) {
+    setEditP(p);
+    var perms = p.permissoes || { tabs: [], criar: true, editar: true, excluir: true };
+    setFormP({ nome: p.nome, descricao: p.descricao || "", permissoes: { tabs: (perms.tabs || []).slice(), criar: perms.criar !== false, editar: perms.editar !== false, excluir: perms.excluir !== false } });
+    setModalP(true);
+  }
+
+  async function salvarPerfil() {
+    var n = (formP.nome||"").trim();
+    if (!n) { toast("Informe o nome do perfil.", "error"); return; }
+    setSalvP(true);
+    try {
+      var payload = { nome: n, descricao: formP.descricao || "", permissoes: formP.permissoes };
+      if (editP) {
+        await db.patch("perfis", editP.id, payload);
+        toast("Perfil atualizado!");
+      } else {
+        await db.post("perfis", payload);
+        toast("Perfil criado!");
+      }
+      setModalP(false);
+      carregarTudo();
+    } catch(e) { toast("Erro: " + (e.message||e), "error"); }
+    setSalvP(false);
+  }
+
+  async function excluirPerfil(p) {
+    var usandoPerfil = usrs.filter(function(u){ return u.perfil_id === p.id; });
+    if (usandoPerfil.length > 0) { toast("Não é possível excluir: " + usandoPerfil.length + " usuário(s) usam este perfil.", "error"); return; }
+    try {
+      await db.del("perfis", p.id);
+      toast("Perfil removido.");
+      carregarTudo();
+    } catch(e) { toast("Erro: " + (e.message||e), "error"); }
+  }
+
+  function toggleTab(tabId) {
+    setFormP(function(fp) {
+      var ts = (fp.permissoes.tabs || []).slice();
+      var idx = ts.indexOf(tabId);
+      if (idx >= 0) ts.splice(idx, 1); else ts.push(tabId);
+      return Object.assign({}, fp, { permissoes: Object.assign({}, fp.permissoes, { tabs: ts }) });
+    });
+  }
+
+  var CARD = { borderRadius: 16, padding: 16, background: "var(--c-card)", border: "1px solid var(--c-border)", marginBottom: 10 };
+  var badgeStyle = function(cor) { return { display: "inline-block", padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: cor + "22", color: cor }; };
+
+  return React.createElement('div', { style: { maxWidth: 800, margin: "0 auto", paddingBottom: 40 } },
+    // Header
+    React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 12 } },
+      React.createElement('div', null,
+        React.createElement('div', { style: { fontSize: 22, fontWeight: 800, color: "var(--c-text)" } }, "Gestão de Usuários"),
+        React.createElement('div', { style: { fontSize: 13, color: "var(--c-sub)", marginTop: 2 } }, "Controle de acesso e perfis de permissão")
+      ),
+      isAdmin && React.createElement('button', { onClick: abrirNovoUsuario, style: { background: "linear-gradient(135deg, #7C3AED, #4F46E5)", color: "#fff", border: "none", borderRadius: 12, padding: "10px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 12px rgba(124,58,237,0.35)" } }, "+ Novo Usuário")
+    ),
+
+    // Sub-tabs
+    React.createElement('div', { style: { display: "flex", gap: 4, marginBottom: 20, background: "var(--c-card)", borderRadius: 12, padding: 4, border: "1px solid var(--c-border)", width: "fit-content" } },
+      ["usuarios","perfis"].map(function(tid) {
+        var lbl = tid === "usuarios" ? "Usuários" : "Perfis de Acesso";
+        var active = tabU === tid;
+        return React.createElement('button', { key: tid, onClick: function(){ setTabU(tid); }, style: { borderRadius: 9, padding: "8px 16px", fontSize: 13, fontWeight: active ? 700 : 400, background: active ? "linear-gradient(135deg, #7C3AED, #4F46E5)" : "transparent", color: active ? "#fff" : "var(--c-sub)", border: "none", cursor: "pointer", transition: "all .15s" } }, lbl);
+      })
+    ),
+
+    ld && React.createElement('div', { style: { textAlign: "center", color: "var(--c-sub)", padding: 40, fontSize: 15 } }, "Carregando…"),
+
+    // Tab Usuários
+    !ld && tabU === "usuarios" && React.createElement('div', null,
+      usrs.length === 0 && React.createElement('div', { style: Object.assign({}, CARD, { textAlign: "center", padding: "32px 20px", color: "var(--c-sub)" }) }, "Nenhum usuário cadastrado."),
+      React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12 } },
+        usrs.map(function(u) {
+          var inicial = (u.nome||"?")[0].toUpperCase();
+          var cor = avatarColor(u.nome);
+          var ehVoce = usuarioAtual && u.id === usuarioAtual.id;
+          return React.createElement('div', { key: u.id, className: "lg-card", style: Object.assign({}, CARD, { display: "flex", flexDirection: "column", gap: 12 }) },
+            React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 12 } },
+              React.createElement('div', { style: { width: 44, height: 44, borderRadius: "50%", background: cor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, color: "#fff", flexShrink: 0 } }, inicial),
+              React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+                React.createElement('div', { style: { fontSize: 15, fontWeight: 700, color: "var(--c-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, u.nome + (ehVoce ? " (você)" : "")),
+                u.perfil && React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)", marginTop: 2 } }, u.perfil.nome)
+              )
+            ),
+            React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between" } },
+              React.createElement('span', { style: badgeStyle(u.ativo !== false ? "#059669" : "#DC2626") }, u.ativo !== false ? "Ativo" : "Inativo"),
+              isAdmin && React.createElement('div', { style: { display: "flex", gap: 6 } },
+                React.createElement('button', { onClick: function(){ abrirEditUsuario(u); }, style: { background: "rgba(124,58,237,0.12)", border: "none", borderRadius: 8, padding: "5px 10px", fontSize: 12, color: C.purple, cursor: "pointer", fontWeight: 600 } }, "Editar"),
+                !ehVoce && React.createElement('button', { onClick: function(){ setConfDel(u); }, style: { background: "rgba(220,38,38,0.12)", border: "none", borderRadius: 8, padding: "5px 10px", fontSize: 12, color: C.red, cursor: "pointer", fontWeight: 600 } }, "Excluir")
+              )
+            )
+          );
+        })
+      )
+    ),
+
+    // Tab Perfis
+    !ld && tabU === "perfis" && React.createElement('div', null,
+      React.createElement('div', { style: { display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 12 } },
+        isAdmin && React.createElement('button', { onClick: seedPerfis, style: { background: "rgba(124,58,237,0.10)", border: "1px solid rgba(124,58,237,0.25)", borderRadius: 10, padding: "8px 14px", fontSize: 13, color: C.purple, cursor: "pointer", fontWeight: 600 } }, "Restaurar padrões"),
+        isAdmin && React.createElement('button', { onClick: abrirNovoPerfil, style: { background: "linear-gradient(135deg, #7C3AED, #4F46E5)", color: "#fff", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, "+ Novo Perfil")
+      ),
+      pfs.length === 0 && React.createElement('div', { style: Object.assign({}, CARD, { textAlign: "center", padding: "32px 20px", color: "var(--c-sub)" }) }, "Nenhum perfil encontrado. Clique em 'Restaurar padrões'."),
+      pfs.map(function(p) {
+        var perms = p.permissoes || {};
+        var nUsrs = usrs.filter(function(u){ return u.perfil_id === p.id; }).length;
+        return React.createElement('div', { key: p.id, className: "lg-card", style: CARD },
+          React.createElement('div', { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 } },
+            React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+              React.createElement('div', { style: { fontSize: 15, fontWeight: 700, color: "var(--c-text)" } }, p.nome),
+              p.descricao && React.createElement('div', { style: { fontSize: 13, color: "var(--c-sub)", marginTop: 2 } }, p.descricao),
+              React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 } },
+                React.createElement('span', { style: badgeStyle("#2563EB") }, nUsrs + " usuário" + (nUsrs !== 1 ? "s" : "")),
+                perms.criar !== false && React.createElement('span', { style: badgeStyle("#059669") }, "Criar"),
+                perms.editar !== false && React.createElement('span', { style: badgeStyle("#D97706") }, "Editar"),
+                perms.excluir !== false && React.createElement('span', { style: badgeStyle("#DC2626") }, "Excluir"),
+                React.createElement('span', { style: badgeStyle("#6B7280") }, ((perms.tabs||[]).length) + " módulos")
+              )
+            ),
+            isAdmin && React.createElement('div', { style: { display: "flex", gap: 6, flexShrink: 0 } },
+              React.createElement('button', { onClick: function(){ abrirEditPerfil(p); }, style: { background: "rgba(124,58,237,0.12)", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, color: C.purple, cursor: "pointer", fontWeight: 600 } }, "Editar"),
+              React.createElement('button', { onClick: function(){ excluirPerfil(p); }, style: { background: "rgba(220,38,38,0.12)", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, color: C.red, cursor: "pointer", fontWeight: 600 } }, "Excluir")
+            )
+          )
+        );
+      })
+    ),
+
+    // Modal: Usuário
+    React.createElement(Modal, { open: modalU, onClose: function(){ setModalU(false); }, title: editU ? "Editar Usuário" : "Novo Usuário" },
+      React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } },
+        React.createElement(Lbl, { label: "Nome" },
+          React.createElement('input', { type: "text", value: formU.nome, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{nome:e.target.value}); }); }, placeholder: "Nome completo", style: FI })
+        ),
+        React.createElement(Lbl, { label: editU ? "Novo PIN (deixe vazio para manter)" : "PIN (mínimo 4 dígitos)" },
+          React.createElement('input', { type: "password", value: formU.pin, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{pin:e.target.value}); }); }, placeholder: "••••", style: Object.assign({}, FI, { letterSpacing: 6 }) })
+        ),
+        React.createElement(Lbl, { label: "Confirmar PIN" },
+          React.createElement('input', { type: "password", value: formU.confirmPin, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{confirmPin:e.target.value}); }); }, placeholder: "••••", style: Object.assign({}, FI, { letterSpacing: 6 }) })
+        ),
+        React.createElement(Lbl, { label: "Perfil de Acesso" },
+          React.createElement('select', { value: formU.perfil_id, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{perfil_id:e.target.value}); }); }, style: FI },
+            React.createElement('option', { value: "" }, "Selecionar perfil…"),
+            pfs.map(function(pf){ return React.createElement('option', { key: pf.id, value: pf.id }, pf.nome); })
+          )
+        ),
+        React.createElement('label', { style: { display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 14 } },
+          React.createElement('input', { type: "checkbox", checked: formU.ativo, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{ativo:e.target.checked}); }); }, style: { width: 16, height: 16 } }),
+          React.createElement('span', { style: { color: "var(--c-text)" } }, "Usuário ativo")
+        ),
+        React.createElement('button', { onClick: salvarUsuario, disabled: salvU, style: { width: "100%", padding: "13px", borderRadius: 12, border: "none", background: salvU ? "rgba(124,58,237,0.4)" : "linear-gradient(135deg, #7C3AED, #4F46E5)", color: "#fff", fontSize: 15, fontWeight: 700, cursor: salvU ? "default" : "pointer", marginTop: 4 } },
+          salvU ? "Salvando…" : (editU ? "Salvar Alterações" : "Criar Usuário")
+        )
+      )
+    ),
+
+    // Modal: Perfil
+    React.createElement(Modal, { open: modalP, onClose: function(){ setModalP(false); }, title: editP ? "Editar Perfil" : "Novo Perfil", wide: true },
+      React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } },
+        React.createElement(Lbl, { label: "Nome do Perfil" },
+          React.createElement('input', { type: "text", value: formP.nome, onChange: function(e){ setFormP(function(f){ return Object.assign({},f,{nome:e.target.value}); }); }, placeholder: "Ex: Operador", style: FI })
+        ),
+        React.createElement(Lbl, { label: "Descrição" },
+          React.createElement('input', { type: "text", value: formP.descricao, onChange: function(e){ setFormP(function(f){ return Object.assign({},f,{descricao:e.target.value}); }); }, placeholder: "Breve descrição das permissões", style: FI })
+        ),
+        React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "var(--c-sub)", marginBottom: 4 } }, "Módulos com acesso"),
+        React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 6 } },
+          ALL_TABS_INFO.map(function(ti) {
+            var checked = (formP.permissoes.tabs || []).indexOf(ti.id) >= 0;
+            return React.createElement('label', { key: ti.id, style: { display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, padding: "6px 10px", borderRadius: 8, background: checked ? "rgba(124,58,237,0.10)" : "transparent", border: "1px solid " + (checked ? "rgba(124,58,237,0.25)" : "var(--c-border)"), transition: "all .12s" } },
+              React.createElement('input', { type: "checkbox", checked: checked, onChange: function(){ toggleTab(ti.id); }, style: { width: 14, height: 14, flexShrink: 0 } }),
+              ti.label
+            );
+          })
+        ),
+        React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "var(--c-sub)", marginTop: 8, marginBottom: 4 } }, "Permissões de operação"),
+        React.createElement('div', { style: { display: "flex", gap: 16, flexWrap: "wrap" } },
+          [["criar","Criar"],["editar","Editar"],["excluir","Excluir"]].map(function(pair) {
+            var key = pair[0], lbl = pair[1];
+            return React.createElement('label', { key: key, style: { display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 14 } },
+              React.createElement('input', { type: "checkbox", checked: formP.permissoes[key] !== false, onChange: function(e){ setFormP(function(fp){ return Object.assign({},fp,{permissoes:Object.assign({},fp.permissoes,{[key]:e.target.checked})}); }); }, style: { width: 16, height: 16 } }),
+              lbl
+            );
+          })
+        ),
+        React.createElement('button', { onClick: salvarPerfil, disabled: salvP, style: { width: "100%", padding: "13px", borderRadius: 12, border: "none", background: salvP ? "rgba(124,58,237,0.4)" : "linear-gradient(135deg, #7C3AED, #4F46E5)", color: "#fff", fontSize: 15, fontWeight: 700, cursor: salvP ? "default" : "pointer", marginTop: 8 } },
+          salvP ? "Salvando…" : (editP ? "Salvar Perfil" : "Criar Perfil")
+        )
+      )
+    ),
+
+    // Modal: Confirmar exclusão de usuário
+    React.createElement(Modal, { open: !!confDel, onClose: function(){ setConfDel(null); }, title: "Confirmar Exclusão" },
+      confDel && React.createElement('div', { style: { textAlign: "center" } },
+        React.createElement('div', { style: { fontSize: 40, marginBottom: 12 } }, "⚠️"),
+        React.createElement('div', { style: { fontSize: 16, fontWeight: 600, color: "var(--c-text)", marginBottom: 8 } }, "Excluir usuário \"" + confDel.nome + "\"?"),
+        React.createElement('div', { style: { fontSize: 14, color: "var(--c-sub)", marginBottom: 24 } }, "Esta ação não pode ser desfeita."),
+        React.createElement('div', { style: { display: "flex", gap: 10 } },
+          React.createElement('button', { onClick: function(){ setConfDel(null); }, style: { flex: 1, padding: "12px", borderRadius: 12, border: "1px solid var(--c-border)", background: "transparent", color: "var(--c-text)", fontSize: 14, fontWeight: 600, cursor: "pointer" } }, "Cancelar"),
+          React.createElement('button', { onClick: function(){ excluirUsuario(confDel); }, style: { flex: 1, padding: "12px", borderRadius: 12, border: "none", background: "#DC2626", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" } }, "Excluir")
+        )
+      )
+    )
+  );
+}
+
 function App() {
   const [logado, setLogado] = useState(false);
+  const [usuarioAtual, setUsuarioAtual] = useState(null);
+  function handleLogin(usuario) { setUsuarioAtual(usuario); setLogado(true); }
   const [tab, setTab] = useState(function(){
-    var TABS_VALIDAS = ["inicio","cadastro","frota","clientes","contratos","reservas","tarifas","multas","manutencao","financeiro","relatorios","simulador","config","calendario","linha_do_tempo"];
+    var TABS_VALIDAS = ["inicio","cadastro","frota","clientes","contratos","reservas","tarifas","multas","manutencao","financeiro","relatorios","simulador","config","calendario","linha_do_tempo","usuarios"];
     try { var p = JSON.parse(localStorage.getItem("ag_prefs_v1") || "{}"); var t = p.homeTab || "inicio"; return TABS_VALIDAS.indexOf(t) >= 0 ? t : "inicio"; } catch(e) { return "inicio"; }
   });
 
@@ -24996,9 +25448,16 @@ function App() {
     })();
   }, [contratos.length]);
 
-  var props = { veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, reservas, setReservas, multas, setMultas, manutencoes, setManutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, usos, setUsos, empresa, toast, setTab, finDeepLink, setFinDeepLink, claudeKey, setClaudeKey };
+  var props = { veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, reservas, setReservas, multas, setMultas, manutencoes, setManutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, usos, setUsos, empresa, toast, setTab, finDeepLink, setFinDeepLink, claudeKey, setClaudeKey, usuarioAtual };
+
+  var semPermissao = React.createElement('div', { style: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 300, color: "var(--c-sub)", gap: 12 } },
+    React.createElement('div', { style: { fontSize: 48 } }, "🔒"),
+    React.createElement('div', { style: { fontSize: 18, fontWeight: 700, color: "var(--c-text)" } }, "Sem permissão"),
+    React.createElement('div', { style: { fontSize: 14 } }, "Você não tem acesso a este módulo.")
+  );
 
   function page() {
+    if (usuarioAtual && !temAcesso(usuarioAtual, tab)) return semPermissao;
     if (tab === "inicio") return React.createElement(Inicio, { ...props, orcItens: orcItens, desktop: !mobile });
     if (tab === "cadastro") return React.createElement(Cadastro, { ...props });
     if (tab === "frota") return React.createElement(Frota, { ...props });
@@ -25011,9 +25470,10 @@ function App() {
     if (tab === "financeiro") return React.createElement(Financeiro, { ...props, onOrcItensChange: setOrcItens });
     if (tab === "relatorios") return React.createElement(Relatorios, { ...props });
     if (tab === "simulador") return React.createElement(Simulador, { veiculos: veiculos, contratos: contratos, despesas: despesas, manutencoes: manutencoes, multas: multas, receitas: receitas, toast: toast });
-    if (tab === "config") return React.createElement(Config, { empresa: empresa, setEmpresa: setEmpresa, toast: toast, darkMode: darkMode, toggleDark: toggleDark, setClaudeKey: setClaudeKey });
+    if (tab === "config") return React.createElement(Config, { empresa: empresa, setEmpresa: setEmpresa, toast: toast, darkMode: darkMode, toggleDark: toggleDark, setClaudeKey: setClaudeKey, usuarioAtual: usuarioAtual, onLogout: function(){ setLogado(false); setUsuarioAtual(null); } });
     if (tab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, setTab: setTab, orcItens: orcItens });
     if (tab === "linha_do_tempo") return React.createElement(LinhaDoTempo, { contratos: contratos, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, reservas: reservas, veiculos: veiculos, clientes: clientes });
+    if (tab === "usuarios") return React.createElement(Usuarios, { usuarioAtual: usuarioAtual, toast: toast });
     return null;
   }
 
@@ -25025,7 +25485,7 @@ function App() {
   var mDSV = hash.match(/(?:^|&)assinar_dsv=(\d+)/);
   if (mDSV && mTk) return React.createElement(AssinarDSVPublico, { multaId: mDSV[1], token: mTk[1] });
 
-  if (!logado) return React.createElement(LoginScreen, { onLogin: () => setLogado(true), __self: this, __source: {fileName: _jsxFileName, lineNumber: 3218}} );
+  if (!logado) return React.createElement(LoginScreen, { onLogin: handleLogin, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3218}} );
 
   if (mobile) return React.createElement(React.Fragment, null,
     React.createElement('div', { style: { height: "100dvh", display: "flex", flexDirection: "column", overflow: "hidden" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3221}}
@@ -25034,7 +25494,7 @@ function App() {
         )
       , React.createElement('nav', { className: "lg-nav", style: { position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 100, paddingBottom: "16px", paddingLeft: 16, paddingRight: 16, display: "flex", alignItems: "flex-end", justifyContent: "center" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3223}}
         , React.createElement('div', { className: "lg-nav-pill", style: { overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none", WebkitOverflowScrolling: "touch" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3224}}
-          , TABS.map(function(t) {
+          , TABS.filter(function(t){ return !usuarioAtual || temAcesso(usuarioAtual, t.id); }).map(function(t) {
               var nReservasPend = t.id === "reservas" ? (reservas||[]).filter(function(r){return r.status==="pendente";}).length : 0;
               var nContratosPend = t.id === "contratos" ? (contratos||[]).filter(function(c){ return c.status === "ativo" && !c.renovado_para && c.status_pagamento !== "pago" && c.status_pagamento !== "isento" && c.previsao_pagamento && c.previsao_pagamento < new Date().toISOString().split("T")[0]; }).length : 0;
               var nFinanceiroPend = t.id === "financeiro" ? (function(){ var h = new Date().toISOString().split("T")[0]; var mesH = h.slice(0,7); return (despesas||[]).filter(function(d){ if (isRetLucro(d)) return false; if (!despesaVisivelNoMes(d, mesH)) return false; var dataRef = (d.recorrente && (d.data||"").slice(0,7) < mesH) ? (mesH + "-" + (d.data||"").slice(8,10)) : (d.data||""); if (!dataRef || dataRef >= h) return false; if (d.recorrente && (d.data||"").slice(0,7) < mesH) return (d.data_pagamento||"").slice(0,7) !== mesH; return d.status !== "pago"; }).length + (contas||[]).filter(function(c){ return c.status !== "pago" && c.status !== "cancelado" && c.vencimento && c.vencimento < h; }).length; })() : 0;
@@ -25062,7 +25522,7 @@ function App() {
     React.createElement('div', { style: { display: "flex", height: "100dvh", overflow: "hidden" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3237}}
       , React.createElement('nav', { className: "lg-sidebar", style: { width: 210, padding: "26px 12px", display: "flex", flexDirection: "column", gap: 3, flexShrink: 0, position: "sticky", top: 0, height: "100vh", overflowY: "auto" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3238}}
         , React.createElement('div', { style: { fontSize: 16, fontWeight: 800, color: C.blue, marginBottom: 12, paddingLeft: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3239}}, "AutoGest Pro" )
-        , TABS.filter(t => t.id !== "config").map(t => {
+        , TABS.filter(function(t){ return t.id !== "config" && (!usuarioAtual || temAcesso(usuarioAtual, t.id)); }).map(t => {
           var _hoje = new Date().toISOString().split("T")[0];
           var _nBadge = 0;
           if (t.id === "reservas") _nBadge = (reservas||[]).filter(function(r){return r.status==="pendente";}).length;

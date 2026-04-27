@@ -18747,6 +18747,9 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   var nomeMesFiltro = new Date(filtroMes + "-15").toLocaleString("pt-BR", { month: "long", year: "numeric" });
 
   var CATS = ["Moradia", "Alimentacao", "Transporte", "Saude", "Lazer", "Educacao", "Investimento", "Vestuario", "Servicos", "Outros"];
+  var BUD_KEY_LOCAL = "ag_budgets_v1";
+  var _bud = React.useState(function(){ try { return JSON.parse(localStorage.getItem("ag_budgets_v1") || "{}"); } catch(e) { return {}; } });
+  var budgetsState = _bud[0]; var setBudgetsState = _bud[1];
 
   async function save() {
     if (!form.descricao || !form.valor) return toast("Descricao e valor obrigatorios", "error");
@@ -18829,227 +18832,451 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     );
   }
 
-  return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1720}}
-    , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1721}}
-      , React.createElement('div', { style: { fontSize: 18, fontWeight: 800 } }, "Orçamento Pessoal" )
-      , React.createElement('button', { className: bCls(Btn(C.purple)), style: bStyle(Btn(C.purple)), onClick: () => { setForm({ tipo: "despesa", categoria: "Moradia" }); setEdit(null); setModal(true); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1726}}, "+ Lançamento" )
+  // ── Gráfico de pizza SVG nativo por categoria ──
+  function PieChart({ data, size }) {
+    var sz = size || 160;
+    var cx = sz/2, cy = sz/2, r = sz*0.38, ri = sz*0.22;
+    var total = data.reduce(function(s,d){return s+d.value;},0);
+    if (total === 0) return React.createElement('div', { style:{width:sz,height:sz,display:'flex',alignItems:'center',justifyContent:'center',color:C.sub,fontSize:12}}, 'Sem dados');
+    var slices = []; var startAngle = -Math.PI/2;
+    data.forEach(function(d) {
+      var angle = (d.value/total)*2*Math.PI;
+      var endAngle = startAngle + angle;
+      var x1=cx+r*Math.cos(startAngle),y1=cy+r*Math.sin(startAngle);
+      var x2=cx+r*Math.cos(endAngle),y2=cy+r*Math.sin(endAngle);
+      var xi1=cx+ri*Math.cos(startAngle),yi1=cy+ri*Math.sin(startAngle);
+      var xi2=cx+ri*Math.cos(endAngle),yi2=cy+ri*Math.sin(endAngle);
+      var largeArc = angle > Math.PI ? 1 : 0;
+      var path = ['M',xi1,yi1,'L',x1,y1,'A',r,r,0,largeArc,1,x2,y2,'L',xi2,yi2,'A',ri,ri,0,largeArc,0,xi1,yi1,'Z'].join(' ');
+      slices.push({path,color:d.color,label:d.label,value:d.value,pct:Math.round(d.value/total*100)});
+      startAngle = endAngle;
+    });
+    return React.createElement('svg', {width:sz,height:sz,viewBox:'0 0 '+sz+' '+sz},
+      slices.map(function(s,i){ return React.createElement('path',{key:i,d:s.path,fill:s.color,opacity:0.92}); }),
+      React.createElement('text',{x:cx,y:cy-6,textAnchor:'middle',fontSize:sz*0.11,fontWeight:700,fill:'var(--c-text)'},fmtBRL(total).replace('R$','')),
+      React.createElement('text',{x:cx,y:cy+sz*0.1,textAnchor:'middle',fontSize:sz*0.08,fill:C.sub},'total')
+    );
+  }
+
+  // ── Gráfico de barras SVG nativo ──
+  function BarChartSVG({ months, entradas, saidas, height }) {
+    var h = height || 120; var w = '100%';
+    var maxVal = Math.max.apply(null, entradas.concat(saidas).concat([1]));
+    var n = months.length;
+    return React.createElement('svg', {width:'100%', height:h+30, style:{overflow:'visible'}},
+      months.map(function(m,i) {
+        var barW = Math.floor(100/n);
+        var x = (i/n*100);
+        var hE = Math.max(2, entradas[i]/maxVal*h);
+        var hS = Math.max(2, saidas[i]/maxVal*h);
+        var isAtual = m === filtroMes;
+        return React.createElement(React.Fragment, {key:m},
+          React.createElement('rect',{x:x+'%',y:(h-hE)+'px',width:(barW*0.4)+'%',height:hE,fill:C.green,opacity:isAtual?1:0.5,rx:3}),
+          React.createElement('rect',{x:(x+barW*0.45)+'%',y:(h-hS)+'px',width:(barW*0.4)+'%',height:hS,fill:C.red,opacity:isAtual?1:0.5,rx:3}),
+          React.createElement('text',{x:(x+barW*0.42)+'%',y:h+20,textAnchor:'middle',fontSize:9,fill:isAtual?'var(--c-text)':C.sub,fontWeight:isAtual?700:400},
+            new Date(m+'-15').toLocaleString('pt-BR',{month:'short'}).toUpperCase())
+        );
+      })
+    );
+  }
+
+  // ── Scorecard de saúde financeira ──
+  var SCORE_RULES = [
+    { label:'Reserva de emergência', check: function(){ return saldo >= despPessoais * 0.5; }, peso:20 },
+    { label:'Comprometimento < 70%', check: function(){ return percentGasto < 70; }, peso:25 },
+    { label:'Sem deficit previsto',  check: function(){ return saldo >= 0; }, peso:30 },
+    { label:'Lançamentos em dia',    check: function(){ return todosVisiveis.filter(function(it){return it.tipo==='despesa'&&it.status!=='pago'&&it.data&&it.data<new Date().toISOString().split('T')[0];}).length === 0; }, peso:15 },
+    { label:'Receitas > despesas',   check: function(){ return totalReceita > despPessoais; }, peso:10 },
+  ];
+  var score = SCORE_RULES.reduce(function(s,r){ return s + (r.check() ? r.peso : 0); }, 0);
+  var scoreColor = score >= 80 ? C.green : score >= 50 ? C.orange : C.red;
+  var scoreLabel = score >= 80 ? 'Excelente' : score >= 60 ? 'Bom' : score >= 40 ? 'Atenção' : 'Crítico';
+
+  // ── Dados do gráfico de pizza ──
+  var CAT_COLORS = {
+    Moradia:'#5E5CE6', Alimentacao:'#FF9500', Transporte:'#007AFF', Saude:'#FF2D55',
+    Lazer:'#34C759', Educacao:'#AF52DE', Investimento:'#00C7BE', Vestuario:'#FF6B35',
+    Servicos:'#A2845E', Outros:'#8E8E93'
+  };
+  var gastoPorCat2 = {};
+  todosVisiveis.filter(function(it){return it.tipo==='despesa';}).forEach(function(it){
+    var c = it.categoria||'Outros'; gastoPorCat2[c]=(gastoPorCat2[c]||0)+parseFloat(it.valor||0);
+  });
+  var pieData = Object.keys(gastoPorCat2).sort(function(a,b){return gastoPorCat2[b]-gastoPorCat2[a];}).slice(0,8).map(function(cat){
+    return {label:cat, value:gastoPorCat2[cat], color:CAT_COLORS[cat]||'#8E8E93'};
+  });
+
+  // ── 6 meses para gráfico de barras ──
+  var mesesBar6 = [];
+  for(var bi=0;bi<6;bi++){var db6=new Date();db6.setDate(1);db6.setMonth(db6.getMonth()-3+bi);mesesBar6.push(db6.toISOString().slice(0,7));}
+  var entradasBar6 = mesesBar6.map(function(m){
+    var recLoc2 = contratos.filter(function(c){return !c.status||c.status!=='cancelado';}).filter(function(c){var r=c.previsao_pagamento||c.data_fim||'';return r.slice(0,7)===m;}).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0);
+    var recAv2 = receitas.filter(function(r){return receitaVisivelNoMes(r,m)&&!r.ref_fatura;}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+    var recP2 = itens.filter(function(it){return it.tipo==='receita'&&itemVisivelNoMes(it,m);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+    return recLoc2+recAv2+recP2;
+  });
+  var saidasBar6 = mesesBar6.map(function(m){
+    return itens.filter(function(it){return it.tipo==='despesa'&&itemVisivelNoMes(it,m);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  });
+
+  // ── Próximas 5 contas a vencer ──
+  var hoje2 = new Date().toISOString().split('T')[0];
+  var proxVencer = todosVisiveis.filter(function(it){
+    return it.tipo==='despesa' && it.status!=='pago' && it.data && it.data >= hoje2;
+  }).sort(function(a,b){return (a.data||'').localeCompare(b.data||'');}).slice(0,5);
+
+  // ── Tetos por categoria (BUD) ──
+  return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 14 } }
+
+    /* ── Cabeçalho ── */
+    , React.createElement('div', { style: { display:'flex', justifyContent:'space-between', alignItems:'center' } }
+      , React.createElement('div', { style: { fontSize:18, fontWeight:800 } }, 'Orçamento Pessoal')
+      , React.createElement('button', { className:bCls(Btn(C.purple)), style:bStyle(Btn(C.purple)),
+          onClick: function(){ setForm({tipo:'despesa',categoria:'Moradia'}); setEdit(null); setModal(true); } }, '+ Lançamento')
     )
 
-    /* Sub-tabs */
-    , React.createElement('div', { style: { display: "flex", gap: 6, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1730}}
-      , [["dashboard","📊 Dashboard"],["despesas","📉 Despesas"],["receitas","💰 Receitas"],["recorrentes","🔁 Fixas"],["projecao","📈 Projeção"]].map(([v,l]) =>
-        React.createElement('button', { key: v, onClick: () => setSubTab(v), style: { background: subTab === v ? C.purple : "transparent", color: subTab === v ? "#fff" : C.sub, border: "1.5px solid " + (subTab === v ? C.purple : "#C7C7CC"), borderRadius: 10, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1732}}, l)
-      )
+    /* ── Sub-tabs ── */
+    , React.createElement('div', { style:{display:'flex',gap:6,overflowX:'auto',flexWrap:'nowrap',WebkitOverflowScrolling:'touch',paddingBottom:2} }
+      , [['dashboard','📊 Visão Geral'],['despesas','📉 Despesas'],['receitas','💰 Receitas'],['recorrentes','🔁 Fixas'],['projecao','📈 Projeção']].map(function(pair){
+        var v=pair[0],l=pair[1];
+        return React.createElement('button',{key:v,onClick:function(){setSubTab(v);},
+          style:{background:subTab===v?C.purple:'transparent',color:subTab===v?'#fff':C.sub,
+            border:'1.5px solid '+(subTab===v?C.purple:'#C7C7CC'),borderRadius:10,
+            padding:'8px 14px',fontSize:12,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}},l);
+      })
     )
 
-    , subTab === "dashboard" && React.createElement(React.Fragment, null
-      /* Banner principal */
-      , React.createElement('div', { style: { background: C.card, backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", borderRadius: 20, padding: "14px 16px", border: "1px solid " + C.border, boxShadow: "0 1px 10px rgba(0,0,0,0.05)" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1738}}
-        , React.createElement('div', { style: { fontSize: 10, fontWeight: 600, color: C.sub, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10, textTransform: "capitalize" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1739}}, nomeMesFiltro)
-        , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1740}}
-          , React.createElement('div', null
-            , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 } }, "Saldo Previsto")
-            , React.createElement('div', { style: { fontSize: 22, fontWeight: 800, letterSpacing: -0.5, color: lucroLocadora >= 0 ? C.green : C.red } }, fmtBRL(lucroLocadora))
-            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 1 } }, "resultado previsto da empresa")
+    /* ══════════ DASHBOARD ══════════ */
+    , subTab === 'dashboard' && React.createElement(React.Fragment, null
+
+      /* Hero: saldo + score */
+      , React.createElement('div', {style:{background:'linear-gradient(135deg,'+C.purple+'22,'+C.blue+'11)',borderRadius:22,padding:'18px 18px 14px',border:'1px solid '+C.purple+'33'}},
+        React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
+          React.createElement('div', null,
+            React.createElement('div', {style:{fontSize:10,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:4}}, nomeMesFiltro),
+            React.createElement('div', {style:{fontSize:11,color:C.sub,marginBottom:2}}, 'Saldo previsto'),
+            React.createElement('div', {style:{fontSize:32,fontWeight:900,letterSpacing:-1,color:saldo>=0?C.green:C.red,lineHeight:1}}, fmtBRL(saldo)),
+            React.createElement('div', {style:{fontSize:11,color:C.sub,marginTop:4}}, 'Pró-labore '+fmtBRL(lucroLocadora)+' + Extras '+fmtBRL(entradasExtras))
+          ),
+          React.createElement('div', {style:{textAlign:'center',background:'var(--c-card)',borderRadius:16,padding:'10px 14px',minWidth:72,boxShadow:'0 2px 8px rgba(0,0,0,0.08)'}},
+            React.createElement('div', {style:{fontSize:28,fontWeight:900,color:scoreColor,lineHeight:1}}, score),
+            React.createElement('div', {style:{fontSize:9,fontWeight:700,color:scoreColor,textTransform:'uppercase',marginTop:2}}, scoreLabel),
+            React.createElement('div', {style:{fontSize:9,color:C.sub,marginTop:1}}, 'Saúde fin.')
           )
-          , React.createElement('div', { style: { borderLeft: "1px solid " + C.border, paddingLeft: 12 } }
-            , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 } }, "Saldo Pessoal")
-            , React.createElement('div', { style: { fontSize: 22, fontWeight: 800, letterSpacing: -0.5, color: saldo >= 0 ? C.green : C.red } }, fmtBRL(saldo))
-            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 1 } }, "após despesas pessoais")
+        ),
+        /* Barra comprometimento */
+        React.createElement('div', {style:{marginTop:14}},
+          React.createElement('div', {style:{display:'flex',justifyContent:'space-between',marginBottom:5}},
+            React.createElement('span', {style:{fontSize:11,color:C.sub,fontWeight:600}}, 'Comprometido'),
+            React.createElement('span', {style:{fontSize:11,fontWeight:800,color:percentGasto>90?C.red:percentGasto>70?C.orange:C.green}}, percentGasto+'%')
+          ),
+          React.createElement('div', {style:{background:C.border,borderRadius:8,height:10,overflow:'hidden'}},
+            React.createElement('div', {style:{height:'100%',width:percentGasto+'%',
+              background:percentGasto>90?C.red:percentGasto>70?C.orange:'linear-gradient(90deg,'+C.green+','+C.teal+')',
+              borderRadius:8,transition:'width 0.4s'}})
+          )
+        ),
+        /* 3 KPIs inline */
+        React.createElement('div', {style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginTop:12,paddingTop:12,borderTop:'1px solid '+C.border}},
+          React.createElement('div', {style:{textAlign:'center'}},
+            React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,marginBottom:2}}, 'RECEBIDO'),
+            React.createElement('div', {style:{fontSize:14,fontWeight:800,color:C.green}}, fmtBRL(saldoReal))
+          ),
+          React.createElement('div', {style:{textAlign:'center',borderLeft:'1px solid '+C.border,borderRight:'1px solid '+C.border}},
+            React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,marginBottom:2}}, 'PAGO'),
+            React.createElement('div', {style:{fontSize:14,fontWeight:800,color:C.red}}, fmtBRL(despPago))
+          ),
+          React.createElement('div', {style:{textAlign:'center'}},
+            React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,marginBottom:2}}, 'A PAGAR'),
+            React.createElement('div', {style:{fontSize:14,fontWeight:800,color:despPessoais-despPago>0?C.orange:C.green}}, fmtBRL(despPessoais-despPago))
           )
         )
-        /* Barra de progresso */
-        , React.createElement('div', { style: { marginTop: 12, paddingTop: 10, borderTop: "1px solid " + C.border }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1753}}
-          , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", marginBottom: 6 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1754}}
-            , React.createElement('span', { style: { fontSize: 11, color: C.sub, fontWeight: 600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1755}}, "Comprometido")
-            , React.createElement('span', { style: { fontSize: 11, fontWeight: 700, color: percentGasto > 90 ? C.red : percentGasto > 70 ? C.orange : C.green }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1756}}, percentGasto, "%")
-          )
-          , React.createElement('div', { style: { background: C.border, borderRadius: 6, height: 8, overflow: "hidden" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1758}}
-            , React.createElement('div', { style: { height: "100%", width: percentGasto + "%", background: percentGasto > 90 ? C.red : percentGasto > 70 ? C.orange : C.green, borderRadius: 6, transition: "width 0.3s" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1759}} )
-          )
-        )
-        , React.createElement('div', { style: { display: "flex", gap: 0, marginTop: 12, paddingTop: 10, borderTop: "1px solid " + C.border }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1762}}
-          , React.createElement('div', { style: { flex: 1 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1763}}, React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1763}}, "PAGOS"), React.createElement('div', { style: { fontSize: 15, fontWeight: 800, color: C.red }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1763}}, fmtBRL(despPago)))
-          , React.createElement('div', { style: { flex: 1 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1764}}, React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1764}}, "A PAGAR" ), React.createElement('div', { style: { fontSize: 15, fontWeight: 800, color: despPessoais - despPago > 0 ? C.orange : "var(--c-text)" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1764}}, fmtBRL(despPessoais - despPago)))
-          , React.createElement('div', { style: { flex: 1 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1765}}, React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1765}}, "RECORRENTES"), React.createElement('div', { style: { fontSize: 15, fontWeight: 800, color: C.purple }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1765}}, fmtBRL(despRecorrente)))
-        )
       )
 
-      /* KPIs */
-      , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1770}}
-        , React.createElement('div', { style: { background: C.card, borderRadius: 16, padding: "14px 16px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1771}}
-          , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1772}}, "Pró-labore")
-          , React.createElement('div', { style: { fontSize: 20, fontWeight: 800, color: C.blue, marginTop: 4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1773}}, fmtBRL(lucroLocadora))
-          , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 1 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1774}}, "saldo líq. da locadora" )
-        )
-        , React.createElement('div', { style: { background: C.card, borderRadius: 16, padding: "14px 16px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1776}}
-          , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1777}}, "Extras")
-          , React.createElement('div', { style: { fontSize: 20, fontWeight: 800, color: C.green, marginTop: 4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1778}}, fmtBRL(entradasExtras))
-          , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 1 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1779}}, "entradas adicionais" )
-        )
-        , React.createElement('div', { style: { background: C.card, borderRadius: 16, padding: "14px 16px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1781}}
-          , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1782}}, "Despesas")
-          , React.createElement('div', { style: { fontSize: 20, fontWeight: 800, color: C.red, marginTop: 4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1783}}, fmtBRL(despPessoais))
-          , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 1 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1784}}, todosVisiveis.filter(it=>it.tipo==="despesa").length, " lançamento(s)" )
-        )
-        , React.createElement('div', { style: { background: C.card, borderRadius: 16, padding: "14px 16px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1786}}
-          , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1787}}, "Saldo Real" )
-          , React.createElement('div', { style: { fontSize: 20, fontWeight: 800, color: saldoReal >= 0 ? C.green : C.red, marginTop: 4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1788}}, fmtBRL(saldoReal))
-          , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 1 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1789}}, "recebido - pago"  )
-        )
+      /* Scorecard detalhado */
+      , React.createElement('div', {style:{background:'var(--c-card)',borderRadius:18,padding:'14px 16px',border:'1px solid '+C.border}},
+        React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+          React.createElement('div', {style:{fontSize:12,fontWeight:700,color:'var(--c-text)'}}, '🏅 Saúde Financeira'),
+          React.createElement('div', {style:{fontSize:10,color:C.sub}}, score+'/100 pts')
+        ),
+        SCORE_RULES.map(function(r,i){
+          var ok=r.check();
+          return React.createElement('div', {key:i,style:{display:'flex',alignItems:'center',gap:8,padding:'5px 0',borderBottom:i<SCORE_RULES.length-1?'1px solid '+C.border:'none'}},
+            React.createElement('div', {style:{width:18,height:18,borderRadius:'50%',background:ok?C.green+'22':C.red+'22',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},
+              React.createElement('span', {style:{fontSize:10,color:ok?C.green:C.red}}, ok?'✓':'✕')),
+            React.createElement('span', {style:{fontSize:12,color:ok?'var(--c-text)':C.sub,flex:1}}, r.label),
+            React.createElement('span', {style:{fontSize:11,fontWeight:700,color:ok?C.green:C.red}}, ok?'+'+r.peso+'pts':'0pts')
+          );
+        })
       )
 
-      /* Atalho para ver lançamentos */
-      , React.createElement('div', { style: { display: "flex", gap: 8, marginTop: 4 } }
-        , React.createElement('button', { onClick: function(){ setSubTab("despesas"); }, style: { flex: 1, background: "rgba(255,59,48,0.07)", border: "1px solid rgba(255,59,48,0.18)", borderRadius: 12, padding: "10px", fontSize: 12, fontWeight: 600, color: C.red, cursor: "pointer", textAlign: "center" } }, "Ver Despesas (" + todosVisiveis.filter(function(it){return it.tipo==="despesa";}).length + ")")
-        , React.createElement('button', { onClick: function(){ setSubTab("receitas"); }, style: { flex: 1, background: "rgba(52,199,89,0.07)", border: "1px solid rgba(52,199,89,0.18)", borderRadius: 12, padding: "10px", fontSize: 12, fontWeight: 600, color: C.green, cursor: "pointer", textAlign: "center" } }, "Ver Receitas (" + todosVisiveis.filter(function(it){return it.tipo==="receita";}).length + ")")
-      )
-      , todosVisiveis.length === 0 && !loading && React.createElement('div', { className: "lg-card", style: CARD, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1798}}, React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 24 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1798}}, "Nenhum lançamento neste mês"   ))
-    )
-
-    , subTab === "despesas" && React.createElement('div', { className: "lg-card", style: CARD, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1801}}
-      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } }
-        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5 } }, "Despesas")
-        , React.createElement('select', { style: Object.assign({}, FI, { width: "auto", fontSize: 12, padding: "5px 8px", cursor: "pointer" }), value: sortOP, onChange: function(e){ setSortOP(e.target.value); } }
-          , React.createElement('option', { value: "pendentes" }, "Pendentes primeiro")
-          , React.createElement('option', { value: "data_asc" }, "Data ↑")
-          , React.createElement('option', { value: "data_desc" }, "Data ↓")
-          , React.createElement('option', { value: "valor_desc" }, "Valor ↓")
-        )
-      )
-      , todosVisiveis.filter(it=>it.tipo==="despesa").length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 20 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1803}}, "Nenhuma despesa" )
-      , todosVisiveis.filter(it=>it.tipo==="despesa").sort(_sortOP).map((it, i, arr) => React.createElement(ItemCard, { key: it.id + "-" + filtroMes, it: it, i: i, total: arr.length, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1804}} ))
-    )
-
-    , subTab === "receitas" && React.createElement('div', { className: "lg-card", style: CARD, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1807}}
-      , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } }
-        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5 } }, "Receitas Extras")
-        , React.createElement('select', { style: Object.assign({}, FI, { width: "auto", fontSize: 12, padding: "5px 8px", cursor: "pointer" }), value: sortOP, onChange: function(e){ setSortOP(e.target.value); } }
-          , React.createElement('option', { value: "pendentes" }, "Pendentes primeiro")
-          , React.createElement('option', { value: "data_asc" }, "Data ↑")
-          , React.createElement('option', { value: "data_desc" }, "Data ↓")
-          , React.createElement('option', { value: "valor_desc" }, "Valor ↓")
-        )
-      )
-      , todosVisiveis.filter(it=>it.tipo==="receita").length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 20 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1809}}, "Nenhuma receita extra"  )
-      , todosVisiveis.filter(it=>it.tipo==="receita").sort(_sortOP).map((it, i, arr) => React.createElement(ItemCard, { key: it.id + "-" + filtroMes, it: it, i: i, total: arr.length, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1810}} ))
-    )
-
-    , subTab === "recorrentes" && (() => {
-      var mesesR = [];
-      for (var mi2 = 0; mi2 < 4; mi2++) {
-        var dr = new Date(); dr.setDate(1); dr.setMonth(dr.getMonth() + mi2);
-        mesesR.push(dr.toISOString().slice(0,7));
-      }
-      var mesAtualR = new Date().toISOString().slice(0,7);
-      var recorrentesAtivos = itens.filter(function(it) { return it.recorrente; });
-      return React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1821}}
-        , React.createElement('div', { style: { fontSize:13, color:C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1822}}, "Lançamentos fixos/recorrentes — próximos 4 meses"     )
-        , recorrentesAtivos.length === 0 && React.createElement('div', { className: CARD_CLS, style: Object.assign({},CARD,{textAlign:"center",color:C.sub,padding:30}), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1823}}, "Nenhum lançamento recorrente cadastrado"   )
-        , mesesR.map(function(mes) {
-          var visiveis = recorrentesAtivos.filter(function(it) { return itemVisivelNoMes(it, mes); });
-          if (visiveis.length === 0 && mes !== mesAtualR) return null;
-          var totalDesp2 = visiveis.filter(function(it){return it.tipo==="despesa";}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-          var totalRec2 = visiveis.filter(function(it){return it.tipo==="receita";}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-          var saldoR2 = totalRec2 - totalDesp2;
-          var nomeMesR2 = new Date(mes+"-15").toLocaleString("pt-BR",{month:"long",year:"numeric"});
-          var isAtual2 = mes === mesAtualR;
-          return React.createElement('div', { key: mes, className: CARD_CLS, style: Object.assign({},CARD,{border: isAtual2 ? "2px solid "+C.purple : "1px solid "+C.border}), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1832}}
-            , React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1833}}
-              , React.createElement('div', { style: { fontSize:14, fontWeight:700, textTransform:"capitalize" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1834}}, nomeMesR2, " " , isAtual2 && React.createElement('span', { style: Badge(C.purple), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1834}}, "atual"))
-              , React.createElement('div', { style: { fontWeight:800, fontSize:14, color:saldoR2>=0?C.green:C.red }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1835}}, saldoR2>=0?"+":"", fmtBRL(saldoR2))
+      /* Gráfico pizza + legenda */
+      , React.createElement('div', {style:{background:'var(--c-card)',borderRadius:18,padding:'14px 16px',border:'1px solid '+C.border}},
+        React.createElement('div', {style:{fontSize:12,fontWeight:700,color:'var(--c-text)',marginBottom:12}}, '🍩 Despesas por Categoria'),
+        pieData.length === 0
+          ? React.createElement('div', {style:{color:C.sub,textAlign:'center',padding:20,fontSize:13}}, 'Nenhuma despesa lançada neste mês')
+          : React.createElement('div', {style:{display:'flex',gap:14,alignItems:'center',flexWrap:'wrap'}},
+              React.createElement(PieChart, {data:pieData, size:148}),
+              React.createElement('div', {style:{flex:1,minWidth:120,display:'flex',flexDirection:'column',gap:5}},
+                pieData.map(function(d){
+                  var pct = Math.round(d.value/despPessoais*100);
+                  return React.createElement('div', {key:d.label,style:{display:'flex',alignItems:'center',gap:6}},
+                    React.createElement('div', {style:{width:10,height:10,borderRadius:3,background:d.color,flexShrink:0}}),
+                    React.createElement('div', {style:{flex:1,minWidth:0}},
+                      React.createElement('div', {style:{fontSize:11,fontWeight:600,color:'var(--c-text)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}, d.label),
+                      React.createElement('div', {style:{fontSize:10,color:C.sub}}, fmtBRL(d.value)+' · '+pct+'%')
+                    )
+                  );
+                })
+              )
             )
-            , visiveis.filter(function(it){return it.tipo==="despesa";}).length > 0 && React.createElement('div', { style: { marginBottom:8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1837}}
-              , React.createElement('div', { style: { fontSize:11, color:C.red, fontWeight:700, marginBottom:4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1838}}, "SAÍDAS — "  , fmtBRL(totalDesp2))
-              , visiveis.filter(function(it){return it.tipo==="despesa";}).map(function(it,i,arr) {
-                return React.createElement('div', { key: it.id, style: { display:"flex", justifyContent:"space-between", fontSize:12, padding:"4px 0", borderBottom: i<arr.length-1?"1px solid "+C.border:"none" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1840}}
-                  , React.createElement('span', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1841}}, it.descricao, " " , React.createElement('span', { style: { color:C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1841}}, "· " , it.categoria), " " , it.prazo_recorrencia && React.createElement('span', { style: { color:C.purple }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1841}}, "· " , it.prazo_recorrencia, "m"))
-                  , React.createElement('span', { style: { fontWeight:600, color:C.red }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1842}}, fmtBRL(it.valor))
+      )
+
+      /* Barras mensais: entradas vs saídas */
+      , React.createElement('div', {style:{background:'var(--c-card)',borderRadius:18,padding:'14px 16px',border:'1px solid '+C.border}},
+        React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+          React.createElement('div', {style:{fontSize:12,fontWeight:700,color:'var(--c-text)'}}, '📊 Entradas vs Saídas — 6 meses'),
+          React.createElement('div', {style:{display:'flex',gap:10,fontSize:10,color:C.sub}},
+            React.createElement('span', null, React.createElement('span', {style:{display:'inline-block',width:8,height:8,borderRadius:2,background:C.green,marginRight:4}}), 'Entradas'),
+            React.createElement('span', null, React.createElement('span', {style:{display:'inline-block',width:8,height:8,borderRadius:2,background:C.red,marginRight:4}}), 'Saídas')
+          )
+        ),
+        React.createElement(BarChartSVG, {months:mesesBar6, entradas:entradasBar6, saidas:saidasBar6, height:100})
+      )
+
+      /* Próximas contas a vencer */
+      , proxVencer.length > 0 && React.createElement('div', {style:{background:'var(--c-card)',borderRadius:18,padding:'14px 16px',border:'1px solid '+C.orange+'44'}},
+        React.createElement('div', {style:{fontSize:12,fontWeight:700,color:C.orange,marginBottom:10}}, '⏰ Próximas Contas a Vencer'),
+        proxVencer.map(function(it,i){
+          var dias = Math.round((new Date(it.data)-new Date(hoje2))/(1000*60*60*24));
+          var cor = dias<=3?C.red:dias<=7?C.orange:C.sub;
+          return React.createElement('div', {key:it.id,style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 0',borderBottom:i<proxVencer.length-1?'1px solid '+C.border:'none'}},
+            React.createElement('div', null,
+              React.createElement('div', {style:{fontSize:13,fontWeight:600}}, it.descricao),
+              React.createElement('div', {style:{fontSize:11,color:cor,fontWeight:600,marginTop:1}}, dias===0?'⚡ Vence hoje':dias===1?'⚡ Amanhã':'📅 '+dias+' dias · '+fmtDate(it.data))
+            ),
+            React.createElement('div', {style:{fontWeight:800,color:C.red}}, fmtBRL(it.valor))
+          );
+        })
+      )
+
+      /* Teto por categoria */
+      , React.createElement('div', {style:{background:'var(--c-card)',borderRadius:18,padding:'14px 16px',border:'1px solid '+C.border}},
+        React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
+          React.createElement('div', {style:{fontSize:12,fontWeight:700,color:'var(--c-text)'}}, '🎯 Teto por Categoria'),
+          React.createElement('button', {style:{fontSize:10,color:C.sub,background:'transparent',border:'none',cursor:'pointer'},
+            onClick:function(){if(confirm('Limpar tetos?')){localStorage.removeItem(BUD_KEY_LOCAL);setBudgetsState({});toast('Tetos removidos');}}}, 'Limpar')
+        ),
+        React.createElement('div', {style:{fontSize:11,color:C.sub,marginBottom:10}}, 'Defina limites. 🔴 = ultrapassado · 🟡 = ≥80%'),
+        CATS.map(function(cat){
+          var gasto2=gastoPorCat2[cat]||0;
+          var teto=parseFloat((budgetsState||{})[cat]||0);
+          var pct2=teto>0?Math.min(150,Math.round(gasto2/teto*100)):0;
+          var cor2=pct2>=100?C.red:pct2>=80?C.orange:C.green;
+          return React.createElement('div', {key:cat,style:{marginBottom:10}},
+            React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}},
+              React.createElement('div', {style:{fontSize:13,fontWeight:600,flex:1,minWidth:0}},
+                (pct2>=100?'🔴 ':pct2>=80?'🟡 ':'🟢 ')+cat
+              ),
+              React.createElement('input', {style:Object.assign({},FI,{width:100,fontSize:12,padding:'4px 8px'}),
+                type:'number',step:'0.01',placeholder:'teto R$',
+                value:(budgetsState||{})[cat]||'',
+                onChange:function(e){var nb=Object.assign({},(budgetsState||{}),{[cat]:e.target.value});localStorage.setItem(BUD_KEY_LOCAL,JSON.stringify(nb));setBudgetsState(nb);}}),
+              React.createElement('div', {style:{fontSize:12,fontWeight:700,color:cor2,width:100,textAlign:'right',flexShrink:0}},
+                fmtBRL(gasto2)+(teto>0?' / '+fmtBRL(teto):''))
+            ),
+            teto>0 && React.createElement('div', {style:{marginTop:4,background:C.bg,borderRadius:4,height:5,overflow:'hidden'}},
+              React.createElement('div', {style:{height:5,width:Math.min(100,pct2)+'%',background:cor2,transition:'width .3s'}})
+            )
+          );
+        })
+      )
+
+      /* Atalhos rápidos */
+      , React.createElement('div', {style:{display:'flex',gap:8}},
+        React.createElement('button', {onClick:function(){setSubTab('despesas');},style:{flex:1,background:C.red+'11',border:'1px solid '+C.red+'33',borderRadius:12,padding:'10px',fontSize:12,fontWeight:600,color:C.red,cursor:'pointer',textAlign:'center'}},
+          '📉 Despesas ('+todosVisiveis.filter(function(it){return it.tipo==='despesa';}).length+')'),
+        React.createElement('button', {onClick:function(){setSubTab('receitas');},style:{flex:1,background:C.green+'11',border:'1px solid '+C.green+'33',borderRadius:12,padding:'10px',fontSize:12,fontWeight:600,color:C.green,cursor:'pointer',textAlign:'center'}},
+          '💰 Receitas ('+todosVisiveis.filter(function(it){return it.tipo==='receita';}).length+')')
+      )
+
+      , todosVisiveis.length===0 && !loading && React.createElement('div', {className:'lg-card',style:CARD},
+          React.createElement('div', {style:{color:C.sub,textAlign:'center',padding:24}}, 'Nenhum lançamento neste mês'))
+    )
+
+    /* ══════════ DESPESAS ══════════ */
+    , subTab === 'despesas' && React.createElement('div', {className:'lg-card',style:CARD},
+      React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+        React.createElement('div', {style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:0.5}}, 'Despesas'),
+        React.createElement('select', {style:Object.assign({},FI,{width:'auto',fontSize:12,padding:'5px 8px',cursor:'pointer'}),
+          value:sortOP,onChange:function(e){setSortOP(e.target.value);}},
+          React.createElement('option', {value:'pendentes'}, 'Pendentes primeiro'),
+          React.createElement('option', {value:'data_asc'}, 'Data ↑'),
+          React.createElement('option', {value:'data_desc'}, 'Data ↓'),
+          React.createElement('option', {value:'valor_desc'}, 'Valor ↓')
+        )
+      ),
+      todosVisiveis.filter(function(it){return it.tipo==='despesa';}).length===0
+        && React.createElement('div', {style:{color:C.sub,textAlign:'center',padding:20}}, 'Nenhuma despesa'),
+      todosVisiveis.filter(function(it){return it.tipo==='despesa';}).sort(_sortOP).map(function(it,i,arr){
+        return React.createElement(ItemCard, {key:it.id+'-'+filtroMes,it:it,i:i,total:arr.length});
+      })
+    )
+
+    /* ══════════ RECEITAS ══════════ */
+    , subTab === 'receitas' && React.createElement('div', {className:'lg-card',style:CARD},
+      React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+        React.createElement('div', {style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:0.5}}, 'Receitas Extras'),
+        React.createElement('select', {style:Object.assign({},FI,{width:'auto',fontSize:12,padding:'5px 8px',cursor:'pointer'}),
+          value:sortOP,onChange:function(e){setSortOP(e.target.value);}},
+          React.createElement('option', {value:'pendentes'}, 'Pendentes primeiro'),
+          React.createElement('option', {value:'data_asc'}, 'Data ↑'),
+          React.createElement('option', {value:'data_desc'}, 'Data ↓'),
+          React.createElement('option', {value:'valor_desc'}, 'Valor ↓')
+        )
+      ),
+      todosVisiveis.filter(function(it){return it.tipo==='receita';}).length===0
+        && React.createElement('div', {style:{color:C.sub,textAlign:'center',padding:20}}, 'Nenhuma receita extra'),
+      todosVisiveis.filter(function(it){return it.tipo==='receita';}).sort(_sortOP).map(function(it,i,arr){
+        return React.createElement(ItemCard, {key:it.id+'-'+filtroMes,it:it,i:i,total:arr.length});
+      })
+    )
+
+    /* ══════════ FIXAS / RECORRENTES ══════════ */
+    , subTab === 'recorrentes' && (function(){
+      var mesesR2=[]; for(var mi3=0;mi3<4;mi3++){var dr2=new Date();dr2.setDate(1);dr2.setMonth(dr2.getMonth()+mi3);mesesR2.push(dr2.toISOString().slice(0,7));}
+      var mesAtualR2=new Date().toISOString().slice(0,7);
+      var recorrentesAtivos2=itens.filter(function(it){return it.recorrente;});
+      var totalFixoDesp=recorrentesAtivos2.filter(function(it){return it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var totalFixoRec=recorrentesAtivos2.filter(function(it){return it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      return React.createElement('div', {style:{display:'flex',flexDirection:'column',gap:12}},
+        /* KPIs fixas */
+        React.createElement('div', {style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}},
+          React.createElement('div', {style:{background:'var(--c-card)',borderRadius:14,padding:'12px',border:'1px solid '+C.border,textAlign:'center'}},
+            React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',marginBottom:3}}, 'FIXAS ATIVAS'),
+            React.createElement('div', {style:{fontSize:20,fontWeight:800}}, recorrentesAtivos2.length)
+          ),
+          React.createElement('div', {style:{background:'var(--c-card)',borderRadius:14,padding:'12px',border:'1px solid '+C.border,textAlign:'center'}},
+            React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',marginBottom:3}}, 'SAÍDAS/MÊS'),
+            React.createElement('div', {style:{fontSize:15,fontWeight:800,color:C.red}}, fmtBRL(totalFixoDesp))
+          ),
+          React.createElement('div', {style:{background:'var(--c-card)',borderRadius:14,padding:'12px',border:'1px solid '+C.border,textAlign:'center'}},
+            React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',marginBottom:3}}, 'ENTRADAS/MÊS'),
+            React.createElement('div', {style:{fontSize:15,fontWeight:800,color:C.green}}, fmtBRL(totalFixoRec))
+          )
+        ),
+        recorrentesAtivos2.length===0
+          && React.createElement('div', {className:CARD_CLS,style:Object.assign({},CARD,{textAlign:'center',color:C.sub,padding:30})}, 'Nenhum lançamento recorrente cadastrado'),
+        mesesR2.map(function(mes){
+          var visiveis2=recorrentesAtivos2.filter(function(it){return itemVisivelNoMes(it,mes);});
+          if(visiveis2.length===0&&mes!==mesAtualR2) return null;
+          var totalDesp3=visiveis2.filter(function(it){return it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+          var totalRec3=visiveis2.filter(function(it){return it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+          var saldoR3=totalRec3-totalDesp3;
+          var nomeMesR3=new Date(mes+'-15').toLocaleString('pt-BR',{month:'long',year:'numeric'});
+          var isAtual3=mes===mesAtualR2;
+          return React.createElement('div', {key:mes,className:CARD_CLS,style:Object.assign({},CARD,{border:isAtual3?'2px solid '+C.purple:'1px solid '+C.border})},
+            React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+              React.createElement('div', {style:{fontSize:14,fontWeight:700,textTransform:'capitalize'}}, nomeMesR3,
+                isAtual3&&React.createElement('span', {style:Badge(C.purple)}, ' atual')),
+              React.createElement('div', {style:{fontWeight:800,fontSize:14,color:saldoR3>=0?C.green:C.red}}, (saldoR3>=0?'+':'')+fmtBRL(saldoR3))
+            ),
+            visiveis2.filter(function(it){return it.tipo==='despesa';}).length>0&&React.createElement('div', {style:{marginBottom:8}},
+              React.createElement('div', {style:{fontSize:11,color:C.red,fontWeight:700,marginBottom:4}}, 'SAÍDAS — '+fmtBRL(totalDesp3)),
+              visiveis2.filter(function(it){return it.tipo==='despesa';}).map(function(it,i2,arr2){
+                return React.createElement('div', {key:it.id,style:{display:'flex',justifyContent:'space-between',fontSize:12,padding:'4px 0',borderBottom:i2<arr2.length-1?'1px solid '+C.border:'none'}},
+                  React.createElement('span', null, it.descricao,' ',React.createElement('span', {style:{color:C.sub}}, '· '+it.categoria),
+                    it.prazo_recorrencia&&React.createElement('span', {style:{color:C.purple}}, ' · '+it.prazo_recorrencia+'m')),
+                  React.createElement('span', {style:{fontWeight:600,color:C.red}}, fmtBRL(it.valor))
                 );
               })
-            )
-            , visiveis.filter(function(it){return it.tipo==="receita";}).length > 0 && React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1846}}
-              , React.createElement('div', { style: { fontSize:11, color:C.green, fontWeight:700, marginBottom:4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1847}}, "ENTRADAS — "  , fmtBRL(totalRec2))
-              , visiveis.filter(function(it){return it.tipo==="receita";}).map(function(it,i,arr) {
-                return React.createElement('div', { key: it.id, style: { display:"flex", justifyContent:"space-between", fontSize:12, padding:"4px 0", borderBottom: i<arr.length-1?"1px solid "+C.border:"none" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1849}}
-                  , React.createElement('span', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1850}}, it.descricao, " " , React.createElement('span', { style: { color:C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1850}}, "· " , it.categoria), " " , it.prazo_recorrencia && React.createElement('span', { style: { color:C.purple }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1850}}, "· " , it.prazo_recorrencia, "m"))
-                  , React.createElement('span', { style: { fontWeight:600, color:C.green }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1851}}, fmtBRL(it.valor))
+            ),
+            visiveis2.filter(function(it){return it.tipo==='receita';}).length>0&&React.createElement('div', null,
+              React.createElement('div', {style:{fontSize:11,color:C.green,fontWeight:700,marginBottom:4}}, 'ENTRADAS — '+fmtBRL(totalRec3)),
+              visiveis2.filter(function(it){return it.tipo==='receita';}).map(function(it,i2,arr2){
+                return React.createElement('div', {key:it.id,style:{display:'flex',justifyContent:'space-between',fontSize:12,padding:'4px 0',borderBottom:i2<arr2.length-1?'1px solid '+C.border:'none'}},
+                  React.createElement('span', null, it.descricao,' ',React.createElement('span', {style:{color:C.sub}}, '· '+it.categoria),
+                    it.prazo_recorrencia&&React.createElement('span', {style:{color:C.purple}}, ' · '+it.prazo_recorrencia+'m')),
+                  React.createElement('span', {style:{fontWeight:600,color:C.green}}, fmtBRL(it.valor))
                 );
               })
-            )
-            , visiveis.length === 0 && React.createElement('div', { style: { fontSize:12, color:C.sub, textAlign:"center", padding:8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1855}}, "Nenhum fixo neste mês"   )
+            ),
+            visiveis2.length===0&&React.createElement('div', {style:{fontSize:12,color:C.sub,textAlign:'center',padding:8}}, 'Nenhum fixo neste mês')
           );
         })
       );
     })()
 
-    , subTab === "projecao" && (() => {
-      var mesesPO = [];
-      for (var mip = 0; mip < 6; mip++) {
-        var dpx = new Date(); dpx.setDate(1); dpx.setMonth(dpx.getMonth() + mip);
-        mesesPO.push(dpx.toISOString().slice(0,7));
-      }
-      var projPessoal = mesesPO.map(function(mes) {
-        // Receita da locadora: contratos com previsão de pagamento no mês
-        var recLoc = contratos.filter(function(c) {
-          if (c.status === "cancelado") return false;
-          var ref = c.previsao_pagamento || c.data_fim || "";
-          return ref.slice(0,7) === mes;
-        }).reduce(function(s,c) { return s + parseFloat(c.valor_total||0); }, 0);
-        // Receitas avulsas da locadora no mês
-        var recAvulsas = receitas.filter(function(r) {
-          return receitaVisivelNoMes(r, mes) && !r.ref_fatura;
-        }).reduce(function(s,r) { return s + parseFloat(r.valor||0); }, 0);
-        // Receitas pessoais recorrentes do mês
-        var recPessoal = itens.filter(function(it) {
-          return it.tipo === "receita" && itemVisivelNoMes(it, mes);
-        }).reduce(function(s,it) { return s + parseFloat(it.valor||0); }, 0);
-        // Despesas pessoais recorrentes do mês
-        var despPessoalMes = itens.filter(function(it) {
-          return it.tipo === "despesa" && itemVisivelNoMes(it, mes);
-        }).reduce(function(s,it) { return s + parseFloat(it.valor||0); }, 0);
-        var totalEntradas = recLoc + recAvulsas + recPessoal;
-        var saldoPO = totalEntradas - despPessoalMes;
-        var isPastPO = mes < new Date().toISOString().slice(0,7);
-        return { mes, recLoc, recAvulsas, recPessoal, despPessoalMes, totalEntradas, saldoPO, isPastPO };
+    /* ══════════ PROJEÇÃO ══════════ */
+    , subTab === 'projecao' && (function(){
+      var mesesPO2=[]; for(var mip2=0;mip2<6;mip2++){var dpx2=new Date();dpx2.setDate(1);dpx2.setMonth(dpx2.getMonth()+mip2);mesesPO2.push(dpx2.toISOString().slice(0,7));}
+      var projPessoal2=mesesPO2.map(function(mes){
+        var recLoc3=contratos.filter(function(c){return c.status!=='cancelado';}).filter(function(c){var r=c.previsao_pagamento||c.data_fim||'';return r.slice(0,7)===mes;}).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0);
+        var recAvulsas2=receitas.filter(function(r){return receitaVisivelNoMes(r,mes)&&!r.ref_fatura;}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+        var recPessoal2=itens.filter(function(it){return it.tipo==='receita'&&itemVisivelNoMes(it,mes);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+        var despPessoalMes2=itens.filter(function(it){return it.tipo==='despesa'&&itemVisivelNoMes(it,mes);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+        var totalEntradas2=recLoc3+recAvulsas2+recPessoal2;
+        var saldoPO2=totalEntradas2-despPessoalMes2;
+        return {mes:mes,recLoc:recLoc3,recAvulsas:recAvulsas2,recPessoal:recPessoal2,despPessoalMes:despPessoalMes2,totalEntradas:totalEntradas2,saldoPO:saldoPO2,isPast:mes<new Date().toISOString().slice(0,7)};
       });
-      var maxPO = Math.max.apply(null, projPessoal.map(function(p){return p.totalEntradas;}).concat([1]));
-      var totalEntradas6 = projPessoal.reduce(function(s,p){return s+p.totalEntradas;},0);
-      var totalDesp6 = projPessoal.reduce(function(s,p){return s+p.despPessoalMes;},0);
-      var saldo6 = totalEntradas6 - totalDesp6;
-      return React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1891}}
-        , React.createElement('div', { style: { display:"flex", gap:10, flexWrap:"wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1892}}
-          , React.createElement('div', { className: CARD_CLS, style: Object.assign({},CARD,{flex:1,minWidth:120}), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1893}}
-            , React.createElement('div', { style: { fontSize:10, color:C.sub, textTransform:"uppercase", fontWeight:700, marginBottom:4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1894}}, "Entradas 6m" )
-            , React.createElement('div', { style: { fontSize:18, fontWeight:800, color:C.blue }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1895}}, fmtBRL(totalEntradas6))
+      var maxPO2=Math.max.apply(null,projPessoal2.map(function(p){return p.totalEntradas;}).concat([1]));
+      var totalE6=projPessoal2.reduce(function(s,p){return s+p.totalEntradas;},0);
+      var totalD6=projPessoal2.reduce(function(s,p){return s+p.despPessoalMes;},0);
+      var saldo6=totalE6-totalD6;
+      var melhorMes=projPessoal2.reduce(function(best,p){return p.saldoPO>best.saldoPO?p:best;},projPessoal2[0]);
+      return React.createElement('div', {style:{display:'flex',flexDirection:'column',gap:12}},
+        /* KPIs 6 meses */
+        React.createElement('div', {style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}},
+          React.createElement('div', {style:{background:'var(--c-card)',borderRadius:14,padding:'12px',border:'1px solid '+C.border}},
+            React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',marginBottom:2}}, 'ENTRADAS 6M'),
+            React.createElement('div', {style:{fontSize:16,fontWeight:800,color:C.blue}}, fmtBRL(totalE6))
+          ),
+          React.createElement('div', {style:{background:'var(--c-card)',borderRadius:14,padding:'12px',border:'1px solid '+C.border}},
+            React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',marginBottom:2}}, 'SAÍDAS 6M'),
+            React.createElement('div', {style:{fontSize:16,fontWeight:800,color:C.red}}, fmtBRL(totalD6))
+          ),
+          React.createElement('div', {style:{background:'var(--c-card)',borderRadius:14,padding:'12px',border:'1px solid '+C.border}},
+            React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',marginBottom:2}}, 'SALDO LÍQ.'),
+            React.createElement('div', {style:{fontSize:16,fontWeight:800,color:saldo6>=0?C.green:C.red}}, fmtBRL(saldo6))
           )
-          , React.createElement('div', { className: CARD_CLS, style: Object.assign({},CARD,{flex:1,minWidth:120}), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1897}}
-            , React.createElement('div', { style: { fontSize:10, color:C.sub, textTransform:"uppercase", fontWeight:700, marginBottom:4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1898}}, "Despesas 6m" )
-            , React.createElement('div', { style: { fontSize:18, fontWeight:800, color:C.red }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1899}}, fmtBRL(totalDesp6))
-          )
-          , React.createElement('div', { className: CARD_CLS, style: Object.assign({},CARD,{flex:1,minWidth:120}), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1901}}
-            , React.createElement('div', { style: { fontSize:10, color:C.sub, textTransform:"uppercase", fontWeight:700, marginBottom:4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1902}}, "Saldo líquido" )
-            , React.createElement('div', { style: { fontSize:18, fontWeight:800, color:saldo6>=0?C.green:C.red }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1903}}, fmtBRL(saldo6))
-          )
-        )
-        , React.createElement('div', { className: "lg-card", style: CARD, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1906}}
-          , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", marginBottom:14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1907}}, "Projeção pessoal — 6 meses"    )
-          , projPessoal.map(function(p) {
-            var nomePO = new Date(p.mes+"-15").toLocaleString("pt-BR",{month:"short",year:"2-digit"}).toUpperCase();
-            var pctPO = Math.round(p.totalEntradas / maxPO * 100);
-            return React.createElement('div', { key: p.mes, style: { marginBottom:16 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1911}}
-              , React.createElement('div', { style: { display:"flex", justifyContent:"space-between", marginBottom:4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1912}}
-                , React.createElement('span', { style: { fontSize:13, fontWeight:600, color:p.isPastPO?C.sub:"var(--c-text)" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1913}}, nomePO, " " , p.isPastPO && React.createElement('span', { style: { fontSize:10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1913}}, "(passado)"))
-                , React.createElement('span', { style: { fontSize:13, fontWeight:800, color:p.saldoPO>=0?C.green:C.red }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1914}}, p.saldoPO>=0?"+":"", fmtBRL(p.saldoPO))
-              )
-              , React.createElement('div', { style: { background:C.bg, borderRadius:6, height:10, overflow:"hidden", marginBottom:4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1916}}
-                , React.createElement('div', { style: { height:10, borderRadius:6, background:p.isPastPO?C.gray:C.purple, width:pctPO+"%", transition:"width .3s" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1917}} )
-              )
-              , React.createElement('div', { style: { display:"flex", gap:12, fontSize:11, color:C.sub, flexWrap:"wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1919}}
-                , p.recLoc > 0 && React.createElement('span', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1920}}, "🚗 Contratos · "   , fmtBRL(p.recLoc))
-                , p.recAvulsas > 0 && React.createElement('span', { style: { color:C.teal }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1920}}, "+ Avulsas · "   , fmtBRL(p.recAvulsas))
-                , p.recPessoal > 0 && React.createElement('span', { style: { color:C.green }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1921}}, "+ Extras · "   , fmtBRL(p.recPessoal))
-                , p.despPessoalMes > 0 && React.createElement('span', { style: { color:C.red }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1922}}, "↓ Desp. · "   , fmtBRL(p.despPessoalMes), " · Saldo "   , fmtBRL(p.saldoPO))
+        ),
+        /* Insight do melhor mês */
+        melhorMes&&React.createElement('div', {style:{background:C.green+'11',border:'1px solid '+C.green+'33',borderRadius:14,padding:'10px 14px'}},
+          React.createElement('div', {style:{fontSize:12,fontWeight:700,color:C.green}}, '💡 Melhor mês projetado'),
+          React.createElement('div', {style:{fontSize:13,fontWeight:600,marginTop:2}},
+            new Date(melhorMes.mes+'-15').toLocaleString('pt-BR',{month:'long',year:'numeric'})+' — Saldo: '+fmtBRL(melhorMes.saldoPO))
+        ),
+        /* Gráfico de barras projeção */
+        React.createElement('div', {style:{background:'var(--c-card)',borderRadius:18,padding:'14px 16px',border:'1px solid '+C.border}},
+          React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
+            React.createElement('div', {style:{fontSize:12,fontWeight:700}}, '📈 Projeção 6 meses'),
+            React.createElement('div', {style:{display:'flex',gap:10,fontSize:10,color:C.sub}},
+              React.createElement('span', null, React.createElement('span', {style:{display:'inline-block',width:8,height:8,borderRadius:2,background:C.green,marginRight:4}}), 'Entradas'),
+              React.createElement('span', null, React.createElement('span', {style:{display:'inline-block',width:8,height:8,borderRadius:2,background:C.red,marginRight:4}}), 'Saídas')
+            )
+          ),
+          React.createElement(BarChartSVG, {months:mesesPO2, entradas:projPessoal2.map(function(p){return p.totalEntradas;}), saidas:projPessoal2.map(function(p){return p.despPessoalMes;}), height:110})
+        ),
+        /* Detalhes mês a mês */
+        React.createElement('div', {style:{background:'var(--c-card)',borderRadius:18,padding:'14px 16px',border:'1px solid '+C.border}},
+          React.createElement('div', {style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',marginBottom:12}}, 'Detalhamento mês a mês'),
+          projPessoal2.map(function(p,idx){
+            var nomePO2=new Date(p.mes+'-15').toLocaleString('pt-BR',{month:'short',year:'2-digit'}).toUpperCase();
+            var pctPO2=Math.round(p.totalEntradas/maxPO2*100);
+            return React.createElement('div', {key:p.mes,style:{marginBottom:16,opacity:p.isPast?0.6:1}},
+              React.createElement('div', {style:{display:'flex',justifyContent:'space-between',marginBottom:4}},
+                React.createElement('span', {style:{fontSize:13,fontWeight:600}}, nomePO2,(p.isPast&&React.createElement('span', {style:{fontSize:10,color:C.sub}}, ' (passado)'))),
+                React.createElement('span', {style:{fontSize:13,fontWeight:800,color:p.saldoPO>=0?C.green:C.red}}, (p.saldoPO>=0?'+':'')+fmtBRL(p.saldoPO))
+              ),
+              /* Barra de entradas */
+              React.createElement('div', {style:{background:C.bg,borderRadius:6,height:8,overflow:'hidden',marginBottom:2}},
+                React.createElement('div', {style:{height:8,borderRadius:6,background:p.isPast?C.gray:C.purple,width:pctPO2+'%',transition:'width .4s'}})
+              ),
+              React.createElement('div', {style:{display:'flex',gap:10,fontSize:10,color:C.sub,flexWrap:'wrap'}},
+                p.recLoc>0&&React.createElement('span', null, '🚗 '+fmtBRL(p.recLoc)),
+                p.recAvulsas>0&&React.createElement('span', {style:{color:C.teal}}, '+Av '+fmtBRL(p.recAvulsas)),
+                p.recPessoal>0&&React.createElement('span', {style:{color:C.green}}, '+Ext '+fmtBRL(p.recPessoal)),
+                p.despPessoalMes>0&&React.createElement('span', {style:{color:C.red}}, '↓'+fmtBRL(p.despPessoalMes))
               )
             );
           })
@@ -19057,31 +19284,33 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
       );
     })()
 
-    , React.createElement(Modal, { open: modal, onClose: () => setModal(false), title: edit ? "Editar Lançamento" : "Novo Lançamento", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1930}}
-      , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1931}}
-        , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1932}}
-          , React.createElement('button', { style: { flex: 1, background: form.tipo === "despesa" ? C.sub : "transparent", color: form.tipo === "despesa" ? "#fff" : C.sub, border: "1.5px solid " + C.sub, borderRadius: 10, padding: "10px", fontWeight: 600, cursor: "pointer" }, onClick: () => F("tipo", "despesa"), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1933}}, "Despesa")
-          , React.createElement('button', { style: { flex: 1, background: form.tipo === "receita" ? C.sub : "transparent", color: form.tipo === "receita" ? "#fff" : C.sub, border: "1.5px solid " + C.sub, borderRadius: 10, padding: "10px", fontWeight: 600, cursor: "pointer" }, onClick: () => F("tipo", "receita"), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1934}}, "Receita Extra" )
-        )
-        , React.createElement(Lbl, { label: "Descrição *" , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1936}}, React.createElement('input', { style: FI, value: form.descricao || "", onChange: e => F("descricao", e.target.value), placeholder: "Ex: Aluguel, Supermercado..."  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1936}} ))
-        , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1937}}
-          , React.createElement(Lbl, { label: "Valor *" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1938}}, React.createElement('input', { style: FI, type: "number", step: "0.01", value: form.valor || "", onChange: e => F("valor", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1938}} ))
-          , React.createElement(Lbl, { label: "Data Prevista" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1939}}, React.createElement('input', { style: FI, type: "date", value: form.data || "", onChange: e => F("data", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1939}} ))
-        )
-        , React.createElement(Lbl, { label: "Categoria", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1941}}, React.createElement('select', { style: FI, value: form.categoria || "Outros", onChange: e => F("categoria", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1941}}, CATS.map(c => React.createElement('option', { key: c, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1941}}, c))))
-        /* Recorrente */
-        , React.createElement('div', { onClick: () => F("recorrente", !form.recorrente), style: { display: "flex", alignItems: "center", gap: 10, background: form.recorrente ? C.purple + "15" : C.border + "40", borderRadius: 12, padding: "12px 14px", cursor: "pointer", border: "1.5px solid " + (form.recorrente ? C.purple : C.border) }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1943}}
-          , React.createElement('div', { style: { width: 22, height: 22, borderRadius: 6, background: form.recorrente ? C.purple : "#fff", border: "2px solid " + (form.recorrente ? C.purple : "#C7C7CC"), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1944}}
-            , form.recorrente && React.createElement('span', { style: { color: "#fff", fontSize: 14, fontWeight: 900 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1945}}, "✓")
+    /* ── Modal de lançamento ── */
+    , React.createElement(Modal, {open:modal,onClose:function(){setModal(false);},title:edit?'Editar Lançamento':'Novo Lançamento'},
+      React.createElement('div', {style:{display:'flex',flexDirection:'column',gap:12}},
+        React.createElement('div', {style:{display:'flex',gap:10}},
+          React.createElement('button', {style:{flex:1,background:form.tipo==='despesa'?C.sub:'transparent',color:form.tipo==='despesa'?'#fff':C.sub,border:'1.5px solid '+C.sub,borderRadius:10,padding:'10px',fontWeight:600,cursor:'pointer'},onClick:function(){F('tipo','despesa');}}, 'Despesa'),
+          React.createElement('button', {style:{flex:1,background:form.tipo==='receita'?C.sub:'transparent',color:form.tipo==='receita'?'#fff':C.sub,border:'1.5px solid '+C.sub,borderRadius:10,padding:'10px',fontWeight:600,cursor:'pointer'},onClick:function(){F('tipo','receita');}}, 'Receita Extra')
+        ),
+        React.createElement(Lbl, {label:'Descrição *'}, React.createElement('input', {style:FI,value:form.descricao||'',onChange:function(e){F('descricao',e.target.value);},placeholder:'Ex: Aluguel, Supermercado...'})),
+        React.createElement('div', {style:{display:'flex',gap:10}},
+          React.createElement(Lbl, {label:'Valor *',flex:1}, React.createElement('input', {style:FI,type:'number',step:'0.01',value:form.valor||'',onChange:function(e){F('valor',e.target.value);}})),
+          React.createElement(Lbl, {label:'Data Prevista',flex:1}, React.createElement('input', {style:FI,type:'date',value:form.data||'',onChange:function(e){F('data',e.target.value);}}))
+        ),
+        React.createElement(Lbl, {label:'Categoria'}, React.createElement('select', {style:FI,value:form.categoria||'',onChange:function(e){F('categoria',e.target.value);}},
+          CATS.map(function(c){return React.createElement('option',{key:c,value:c},c);})
+        )),
+        React.createElement(Lbl, {label:'Observações'}, React.createElement('input', {style:FI,value:form.observacoes||'',onChange:function(e){F('observacoes',e.target.value);}})),
+        React.createElement('div', {style:{display:'flex',alignItems:'center',gap:12,padding:'10px 0',cursor:'pointer'},onClick:function(){F('recorrente',!form.recorrente);}},
+          React.createElement('div', {style:{width:22,height:22,borderRadius:6,background:form.recorrente?C.purple:'transparent',border:'2px solid '+(form.recorrente?C.purple:C.sub),display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},
+            form.recorrente&&React.createElement('span', {style:{color:'#fff',fontSize:14,fontWeight:900}}, '✓')
+          ),
+          React.createElement('div', null,
+            React.createElement('div', {style:{fontWeight:700,fontSize:14,color:form.recorrente?C.purple:'var(--c-text)'}}, '🔁 Lançamento recorrente'),
+            React.createElement('div', {style:{fontSize:12,color:C.sub}}, 'Aparece automaticamente nos próximos meses')
           )
-          , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1947}}
-            , React.createElement('div', { style: { fontWeight: 700, fontSize: 14, color: form.recorrente ? C.purple : "var(--c-text)" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1948}}, "🔁 Lançamento recorrente"  )
-            , React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1949}}, "Aparece automaticamente nos próximos meses"    )
-          )
-        )
-        , form.recorrente && React.createElement(Lbl, { label: "Prazo da Recorrência (meses)"   , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1952}}, React.createElement('input', { style: FI, type: "number", min: "1", max: "60", value: form.prazo_recorrencia || "", onChange: e => F("prazo_recorrencia", e.target.value), placeholder: "Vazio = sem prazo (indefinido)"    , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1952}} ))
-        , React.createElement(Lbl, { label: "Observações", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1953}}, React.createElement('input', { style: FI, value: form.observacoes || "", onChange: e => F("observacoes", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1953}} ))
-        , React.createElement('button', { className: bCls(Btn(C.purple)), style: bStyle(Btn(C.purple)), onClick: save, disabled: saving, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1954}}, saving ? "Salvando..." : "Salvar")
+        ),
+        form.recorrente&&React.createElement(Lbl, {label:'Prazo da Recorrência (meses)'}, React.createElement('input', {style:FI,type:'number',min:'1',max:'60',value:form.prazo_recorrencia||'',onChange:function(e){F('prazo_recorrencia',e.target.value);},placeholder:'Vazio = sem prazo (indefinido)'})),
+        React.createElement('button', {className:bCls(Btn(C.purple)),style:bStyle(Btn(C.purple)),onClick:save,disabled:saving}, saving?'Salvando...':'Salvar')
       )
     )
   );

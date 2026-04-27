@@ -13475,38 +13475,52 @@ const cache = {
   set: function(k, v) { try { localStorage.setItem("cache_" + k, JSON.stringify(v)); } catch(e) {} }
 };
 
+function fetchWithTimeout(url, opts, ms) {
+  var ctrl = new AbortController();
+  var id = setTimeout(function() { ctrl.abort(); }, ms);
+  return fetch(url, Object.assign({}, opts, { signal: ctrl.signal }))
+    .finally(function() { clearTimeout(id); });
+}
+
 const db = {
   async get(t, q) {
     try {
-      const r = await fetch(SB_URL + "/rest/v1/" + t + "?order=id.desc" + (q ? "&" + q : ""), { headers: HDR });
+      const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?order=id.desc" + (q ? "&" + q : ""), { headers: HDR }, 20000);
       if (!r.ok) return [];
       var data = await r.json();
       try { if (!q || /^limit=/.test(q)) cache.set(t, data); } catch(e) {}
       return data;
-    } catch(e) { console.warn("db.get", t, e); return []; }
+    } catch(e) {
+      console.warn("db.get", t, e);
+      if (e.name === "AbortError") {
+        var cached = cache.get(t);
+        if (cached) return cached;
+      }
+      return [];
+    }
   },
   async _audit(tabela, operacao, registro_id, dados) {
     try {
       if (tabela === "audit_log") return;
-      await fetch(SB_URL + "/rest/v1/audit_log", { method: "POST", headers: Object.assign({}, HDR, { Prefer: "return=minimal" }), body: JSON.stringify({ tabela: tabela, operacao: operacao, registro_id: registro_id == null ? null : String(registro_id), dados: dados || null }) });
+      await fetchWithTimeout(SB_URL + "/rest/v1/audit_log", { method: "POST", headers: Object.assign({}, HDR, { Prefer: "return=minimal" }), body: JSON.stringify({ tabela: tabela, operacao: operacao, registro_id: registro_id == null ? null : String(registro_id), dados: dados || null }) }, 10000);
     } catch(e) { /* best-effort */ }
   },
   async post(t, d) {
-    const r = await fetch(SB_URL + "/rest/v1/" + t, { method: "POST", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) });
+    const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t, { method: "POST", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
     if (!r.ok) { const e = await r.json(); throw new Error(e.message || "Erro"); }
     const j = await r.json(); const rec = Array.isArray(j) ? j[0] : j;
     this._audit(t, "insert", rec && rec.id, d);
     return rec;
   },
   async patch(t, id, d) {
-    const r = await fetch(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) });
+    const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
     if (!r.ok) { const e = await r.json(); throw new Error(e.message || "Erro"); }
     const j = await r.json(); const rec = Array.isArray(j) ? j[0] : j;
     this._audit(t, "update", id, d);
     return rec;
   },
   async del(t, id) {
-    const r = await fetch(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "DELETE", headers: Object.assign({}, HDR, { Prefer: "return=representation" }) });
+    const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "DELETE", headers: Object.assign({}, HDR, { Prefer: "return=representation" }) }, 30000);
     if (!r.ok) { let msg = "Erro ao excluir"; try { const e = await r.json(); msg = e.message || e.hint || msg; } catch(_){} throw new Error(msg); }
     const j = await r.json().catch(function(){ return []; });
     if (Array.isArray(j) && j.length === 0) {
@@ -13515,7 +13529,7 @@ const db = {
     this._audit(t, "delete", id, null);
   },
   async upload(path, file) {
-    const r = await fetch(SB_URL + "/storage/v1/object/documentos/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": file.type, "x-upsert": "true" }, body: file });
+    const r = await fetchWithTimeout(SB_URL + "/storage/v1/object/documentos/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": file.type, "x-upsert": "true" }, body: file }, 60000);
     if (!r.ok) throw new Error("Upload falhou. Verifique o bucket 'documentos' no Supabase Storage.");
     return SB_URL + "/storage/v1/object/public/documentos/" + path;
   }
@@ -19815,11 +19829,11 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   const [ofConnectUrl, setOfConnectUrl] = useState(null);
 
   async function ofCallProxy(body) {
-    var res = await fetch(SB_URL + "/functions/v1/pluggy-proxy", {
+    var res = await fetchWithTimeout(SB_URL + "/functions/v1/pluggy-proxy", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + SB_KEY },
       body: JSON.stringify(body),
-    });
+    }, 30000);
     var data = await res.json();
     if (!res.ok) throw new Error(data.error || "Proxy error");
     return data;

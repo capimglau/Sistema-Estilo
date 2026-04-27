@@ -26428,6 +26428,611 @@ window.ReactDOM.createRoot(document.getElementById("root")).render(React.createE
 })();
 
 </script>
+<!-- ═══════════════════════════════════════════════
+     CHART MANAGER — minimizar, arrastar, mover aba, duplicar
+     ═══════════════════════════════════════════════ -->
+<style>
+/* ── Chart Manager Styles ── */
+.cm-wrapper {
+  position: relative;
+  transition: opacity 0.25s ease;
+}
+.cm-wrapper.cm-dragging {
+  opacity: 0.55;
+  outline: 2px dashed rgba(0,122,255,0.5);
+  border-radius: 20px;
+}
+.cm-wrapper.cm-drag-over {
+  outline: 2px solid rgba(0,122,255,0.8);
+  border-radius: 20px;
+  background: rgba(0,122,255,0.04);
+}
+/* Toolbar injected at top of each card */
+.cm-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px 6px 10px;
+  border-bottom: 1px solid var(--c-border, rgba(0,0,0,0.07));
+  cursor: grab;
+  user-select: none;
+  border-radius: 18px 18px 0 0;
+  background: rgba(120,120,128,0.05);
+  position: relative;
+  z-index: 2;
+}
+.cm-toolbar:active { cursor: grabbing; }
+.cm-drag-handle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  color: var(--c-sub, #888);
+  font-size: 11px;
+  font-weight: 500;
+}
+.cm-drag-handle svg { flex-shrink: 0; opacity: 0.5; }
+.cm-chart-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+  font-size: 11px;
+}
+.cm-btns {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.cm-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(120,120,128,0.12);
+  color: var(--c-sub, #555);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, transform 0.1s;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+.cm-btn:hover { background: rgba(0,122,255,0.15); color: #007AFF; }
+.cm-btn:active { transform: scale(0.88); }
+/* Body of the card — collapsible */
+.cm-body {
+  overflow: hidden;
+  transition: max-height 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease;
+  max-height: 3000px;
+  opacity: 1;
+}
+.cm-body.cm-collapsed {
+  max-height: 0 !important;
+  opacity: 0;
+}
+/* Minimized badge */
+.cm-min-badge {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--c-sub, #888);
+  padding: 4px 8px;
+  font-style: italic;
+}
+.cm-collapsed + .cm-min-badge { display: flex; }
+
+/* Context menu */
+.cm-menu {
+  position: fixed;
+  z-index: 99999;
+  background: var(--c-card, #fff);
+  border: 1px solid var(--c-border, rgba(0,0,0,0.1));
+  border-radius: 14px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08);
+  padding: 6px;
+  min-width: 200px;
+  animation: cmMenuIn 0.18s cubic-bezier(0.22,1,0.36,1) both;
+}
+@keyframes cmMenuIn { from { opacity:0; transform: scale(0.92) translateY(-6px); } to { opacity:1; transform: scale(1) translateY(0); } }
+.cm-menu-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--c-sub, #888);
+  padding: 4px 10px 6px;
+}
+.cm-menu-divider { height: 1px; background: var(--c-border, rgba(0,0,0,0.07)); margin: 4px 0; }
+.cm-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--c-text, #1C1C1E);
+  transition: background 0.12s;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+}
+.cm-menu-item:hover { background: rgba(0,122,255,0.1); color: #007AFF; }
+.cm-menu-item.cm-danger:hover { background: rgba(255,59,48,0.1); color: #FF3B30; }
+.cm-menu-item svg { opacity: 0.7; flex-shrink: 0; }
+.cm-menu-sub {
+  padding-left: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.cm-menu-sub .cm-menu-item { font-size: 12px; }
+
+/* Toast */
+.cm-toast {
+  position: fixed;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%) translateY(0);
+  background: rgba(28,28,30,0.92);
+  color: #fff;
+  padding: 8px 18px;
+  border-radius: 20px;
+  font-size: 13px;
+  z-index: 100000;
+  pointer-events: none;
+  animation: cmToastIn 0.22s ease, cmToastOut 0.22s ease 1.6s forwards;
+}
+@keyframes cmToastIn { from { opacity:0; transform: translateX(-50%) translateY(10px); } to { opacity:1; transform: translateX(-50%) translateY(0); } }
+@keyframes cmToastOut { to { opacity:0; transform: translateX(-50%) translateY(8px); } }
+</style>
+
+<script>
+(function(){
+'use strict';
+
+/* ── Helpers ── */
+function qs(sel, ctx){ return (ctx||document).querySelector(sel); }
+function qsa(sel, ctx){ return Array.from((ctx||document).querySelectorAll(sel)); }
+function svg(path, size){ size=size||14; return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">'+path+'</svg>'; }
+
+var ICONS = {
+  drag: svg('<circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/>'),
+  min:  svg('<polyline points="5 12 19 12"/>'),
+  max:  svg('<polyline points="5 8 19 8"/><polyline points="5 16 19 16"/>'),
+  more: svg('<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>'),
+  dup:  svg('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
+  move: svg('<polyline points="5 9 2 12 5 15"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/>'),
+  del:  svg('<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>'),
+  chart:svg('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 17V13m4 4V9m4 8v-5"/>'),
+};
+
+var state = {
+  collapsed: JSON.parse(localStorage.getItem('cm_collapsed')||'{}'),
+  order:     JSON.parse(localStorage.getItem('cm_order')||'{}'),
+};
+function saveState(){
+  localStorage.setItem('cm_collapsed', JSON.stringify(state.collapsed));
+  localStorage.setItem('cm_order',     JSON.stringify(state.order));
+}
+
+/* ── Toast ── */
+var toastTimer;
+function toast(msg){
+  var old = qs('.cm-toast');
+  if(old) old.remove();
+  clearTimeout(toastTimer);
+  var el = document.createElement('div');
+  el.className = 'cm-toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  toastTimer = setTimeout(function(){ el.remove(); }, 2000);
+}
+
+/* ── Context menu ── */
+var activeMenu = null;
+function closeMenu(){ if(activeMenu){ activeMenu.remove(); activeMenu=null; } }
+document.addEventListener('click', closeMenu, true);
+document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeMenu(); });
+
+function openMenu(wrapper, e){
+  closeMenu();
+  e.preventDefault();
+  e.stopPropagation();
+
+  var id      = wrapper.dataset.cmId;
+  var coll    = state.collapsed[id];
+  var title   = wrapper.dataset.cmTitle||'Gráfico';
+
+  // Descubra em qual container/aba o wrapper está
+  var container = wrapper.parentElement;
+
+  // Colete todos os containers de gráficos visíveis na página
+  var allContainers = qsa('.cm-chart-zone');
+
+  var menu = document.createElement('div');
+  menu.className = 'cm-menu';
+  activeMenu = menu;
+
+  var html = '<div class="cm-menu-title">'+ICONS.chart+' '+title.slice(0,30)+'</div>';
+
+  // Minimizar / Expandir
+  html += '<button class="cm-menu-item" data-action="toggle">'+(coll?ICONS.max+' Expandir':ICONS.min+' Minimizar')+'</button>';
+
+  // Duplicar
+  html += '<button class="cm-menu-item" data-action="dup">'+ICONS.dup+' Duplicar gráfico</button>';
+
+  // Mover para outra aba
+  if(allContainers.length > 1){
+    html += '<div class="cm-menu-divider"></div>';
+    html += '<div class="cm-menu-title">'+ICONS.move+' Mover para...</div>';
+    html += '<div class="cm-menu-sub">';
+    allContainers.forEach(function(zone, i){
+      if(zone === container) return;
+      var label = zone.dataset.cmZoneLabel||'Seção '+(i+1);
+      html += '<button class="cm-menu-item" data-action="move" data-target-zone="'+i+'">'+label+'</button>';
+    });
+    html += '</div>';
+  }
+
+  html += '<div class="cm-menu-divider"></div>';
+  html += '<button class="cm-menu-item cm-danger" data-action="remove">'+ICONS.del+' Remover</button>';
+
+  menu.innerHTML = html;
+  document.body.appendChild(menu);
+
+  // Posicionar
+  var mx = e.clientX||0, my = e.clientY||0;
+  if(e.touches && e.touches[0]){ mx=e.touches[0].clientX; my=e.touches[0].clientY; }
+  var mw=210, mh=300;
+  var left = Math.min(mx, window.innerWidth-mw-8);
+  var top  = Math.min(my, window.innerHeight-mh-8);
+  menu.style.left = left+'px';
+  menu.style.top  = top+'px';
+
+  // Handlers
+  qsa('[data-action]', menu).forEach(function(btn){
+    btn.addEventListener('click', function(ev){
+      ev.stopPropagation();
+      var action = btn.dataset.action;
+      closeMenu();
+
+      if(action==='toggle'){
+        toggleCollapse(wrapper);
+      }
+      else if(action==='dup'){
+        duplicateWrapper(wrapper, container);
+      }
+      else if(action==='move'){
+        var zoneIdx = parseInt(btn.dataset.targetZone);
+        moveToZone(wrapper, allContainers[zoneIdx]);
+      }
+      else if(action==='remove'){
+        wrapper.style.transition='opacity 0.25s ease, transform 0.25s ease';
+        wrapper.style.opacity='0';
+        wrapper.style.transform='scale(0.95)';
+        setTimeout(function(){ wrapper.remove(); }, 260);
+        toast('Gráfico removido');
+      }
+    });
+  });
+}
+
+/* ── Collapse ── */
+function toggleCollapse(wrapper){
+  var id = wrapper.dataset.cmId;
+  var body = qs('.cm-body', wrapper);
+  var badge = qs('.cm-min-badge', wrapper);
+  var btnMin = qs('[data-cm-btn="min"]', wrapper);
+  var isNowColl = !state.collapsed[id];
+  state.collapsed[id] = isNowColl || undefined;
+  if(!isNowColl) delete state.collapsed[id];
+  body.classList.toggle('cm-collapsed', !!isNowColl);
+  if(badge) badge.style.display = isNowColl ? 'flex' : 'none';
+  if(btnMin) btnMin.innerHTML = isNowColl ? ICONS.max : ICONS.min;
+  saveState();
+}
+
+/* ── Duplicate ── */
+function duplicateWrapper(wrapper, container){
+  var clone = wrapper.cloneNode(true);
+  var newId = 'cm_'+ Date.now();
+  clone.dataset.cmId = newId;
+  clone.dataset.cmTitle = (wrapper.dataset.cmTitle||'Gráfico') + ' (cópia)';
+  // Re-bind toolbar
+  bindToolbar(clone);
+  // Insert after
+  wrapper.insertAdjacentElement('afterend', clone);
+  clone.style.opacity = '0';
+  clone.style.transform = 'translateY(10px)';
+  clone.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+  requestAnimationFrame(function(){
+    clone.style.opacity = '1';
+    clone.style.transform = 'translateY(0)';
+  });
+  toast('📋 Gráfico duplicado');
+}
+
+/* ── Move to zone ── */
+function moveToZone(wrapper, zone){
+  var title = wrapper.dataset.cmTitle || 'Gráfico';
+  var label = zone.dataset.cmZoneLabel || 'outra seção';
+  zone.appendChild(wrapper);
+  wrapper.style.outline = '2px solid rgba(0,122,255,0.7)';
+  wrapper.style.borderRadius = '20px';
+  setTimeout(function(){ wrapper.style.outline=''; }, 1200);
+  wrapper.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  toast('📦 Movido para: '+label);
+}
+
+/* ── Drag-and-drop reorder ── */
+var drag = { el: null, startY: 0, startX: 0 };
+
+function onDragStart(wrapper, e){
+  drag.el = wrapper;
+  wrapper.classList.add('cm-dragging');
+  if(e.dataTransfer){
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', wrapper.dataset.cmId);
+  }
+}
+function onDragEnd(wrapper){
+  wrapper.classList.remove('cm-dragging');
+  qsa('.cm-drag-over').forEach(function(el){ el.classList.remove('cm-drag-over'); });
+  drag.el = null;
+}
+function onDragOver(wrapper, e){
+  if(!drag.el || drag.el===wrapper) return;
+  e.preventDefault();
+  qsa('.cm-drag-over').forEach(function(el){ if(el!==wrapper) el.classList.remove('cm-drag-over'); });
+  wrapper.classList.add('cm-drag-over');
+}
+function onDrop(wrapper, e){
+  e.preventDefault();
+  wrapper.classList.remove('cm-drag-over');
+  if(!drag.el || drag.el===wrapper) return;
+  var container = wrapper.parentElement;
+  var kids = Array.from(container.children).filter(function(k){ return k.classList.contains('cm-wrapper'); });
+  var fromIdx = kids.indexOf(drag.el);
+  var toIdx   = kids.indexOf(wrapper);
+  if(fromIdx < 0 || toIdx < 0) return;
+  if(fromIdx < toIdx) wrapper.insertAdjacentElement('afterend', drag.el);
+  else wrapper.insertAdjacentElement('beforebegin', drag.el);
+  toast('↕️ Ordem reorganizada');
+}
+
+/* ── Bind toolbar to a wrapper ── */
+function bindToolbar(wrapper){
+  var toolbar = qs('.cm-toolbar', wrapper);
+  if(!toolbar) return;
+
+  // drag handle events
+  toolbar.addEventListener('dragstart', function(e){ onDragStart(wrapper, e); });
+  toolbar.addEventListener('dragend',   function(){ onDragEnd(wrapper); });
+  wrapper.addEventListener('dragover',  function(e){ onDragOver(wrapper, e); });
+  wrapper.addEventListener('drop',      function(e){ onDrop(wrapper, e); });
+
+  // min button
+  var btnMin = qs('[data-cm-btn="min"]', toolbar);
+  if(btnMin) btnMin.addEventListener('click', function(e){ e.stopPropagation(); toggleCollapse(wrapper); });
+
+  // more button
+  var btnMore = qs('[data-cm-btn="more"]', toolbar);
+  if(btnMore) btnMore.addEventListener('click', function(e){ e.stopPropagation(); openMenu(wrapper, e); });
+
+  // apply saved collapse
+  var id = wrapper.dataset.cmId;
+  if(state.collapsed[id]){
+    var body = qs('.cm-body', wrapper);
+    if(body) body.classList.add('cm-collapsed');
+    if(btnMin) btnMin.innerHTML = ICONS.max;
+    var badge = qs('.cm-min-badge', wrapper);
+    if(badge) badge.style.display = 'flex';
+  }
+}
+
+/* ── Touch drag ── */
+var touchDrag = { el: null, startY: 0, lastY: 0 };
+function bindTouchDrag(wrapper, handle){
+  var touchStarted = false, longPressTimer;
+  handle.addEventListener('touchstart', function(e){
+    touchStarted = false;
+    longPressTimer = setTimeout(function(){
+      touchStarted = true;
+      touchDrag.el = wrapper;
+      wrapper.classList.add('cm-dragging');
+      if(window._agVibe) window._agVibe(18);
+    }, 450);
+  }, {passive:true});
+  handle.addEventListener('touchmove', function(e){
+    if(!touchDrag.el) return;
+    e.preventDefault();
+    var touch = e.touches[0];
+    var container = wrapper.parentElement;
+    var kids = Array.from(container.children).filter(function(k){ return k.classList.contains('cm-wrapper'); });
+    var found = null;
+    kids.forEach(function(k){
+      if(k===touchDrag.el) return;
+      var r = k.getBoundingClientRect();
+      if(touch.clientY >= r.top && touch.clientY <= r.bottom) found = k;
+    });
+    qsa('.cm-drag-over', container).forEach(function(el){ el.classList.remove('cm-drag-over'); });
+    if(found) found.classList.add('cm-drag-over');
+  }, {passive:false});
+  handle.addEventListener('touchend', function(e){
+    clearTimeout(longPressTimer);
+    if(!touchDrag.el){ return; }
+    var touch = e.changedTouches[0];
+    var container = wrapper.parentElement;
+    var kids = Array.from(container.children).filter(function(k){ return k.classList.contains('cm-wrapper'); });
+    var found = null;
+    kids.forEach(function(k){
+      if(k===touchDrag.el) return;
+      var r = k.getBoundingClientRect();
+      if(touch.clientY >= r.top && touch.clientY <= r.bottom) found = k;
+    });
+    if(found){
+      var fromIdx = kids.indexOf(touchDrag.el);
+      var toIdx   = kids.indexOf(found);
+      if(fromIdx < toIdx) found.insertAdjacentElement('afterend', touchDrag.el);
+      else found.insertAdjacentElement('beforebegin', touchDrag.el);
+      toast('↕️ Ordem reorganizada');
+    }
+    wrapper.classList.remove('cm-dragging');
+    qsa('.cm-drag-over', container).forEach(function(el){ el.classList.remove('cm-drag-over'); });
+    touchDrag.el = null;
+  }, {passive:true});
+}
+
+/* ── Extract title from a card ── */
+function extractTitle(card){
+  // try first text node with font-weight:700 or uppercase
+  var els = Array.from(card.querySelectorAll('div,span,p'));
+  for(var i=0;i<els.length;i++){
+    var el=els[i];
+    var fs = parseFloat(window.getComputedStyle(el).fontSize||'0');
+    if(fs<10||fs>20) continue;
+    var txt=(el.innerText||el.textContent||'').trim().slice(0,50);
+    if(txt.length>3 && txt.length<80) return txt;
+  }
+  return 'Gráfico';
+}
+
+/* ── Wrap a .lg-card inside a cm-wrapper ── */
+var wrapped = new WeakSet();
+var zoneMap  = {}; // zone label per container element (weakmap-like via data attr)
+var zoneIdx  = 0;
+
+function wrapCard(card){
+  if(wrapped.has(card)) return;
+  if(card.closest('.cm-wrapper')) return; // already inside one
+  wrapped.add(card);
+
+  var id = 'cm_'+(Math.random().toString(36).slice(2));
+  var title = extractTitle(card);
+
+  // Create wrapper
+  var wrapper = document.createElement('div');
+  wrapper.className = 'cm-wrapper';
+  wrapper.dataset.cmId = id;
+  wrapper.dataset.cmTitle = title;
+  wrapper.draggable = true;
+
+  // Insert wrapper before card
+  card.parentNode.insertBefore(wrapper, card);
+
+  // Move card into body div
+  var body = document.createElement('div');
+  body.className = 'cm-body';
+  body.appendChild(card);
+
+  // Toolbar
+  var tb = document.createElement('div');
+  tb.className = 'cm-toolbar';
+  tb.innerHTML = '<div class="cm-drag-handle">'+ICONS.drag+'<span class="cm-chart-title">'+title.slice(0,40)+'</span></div>'
+    + '<div class="cm-btns">'
+    + '<button class="cm-btn" data-cm-btn="min" title="Minimizar/Expandir">'+ICONS.min+'</button>'
+    + '<button class="cm-btn" data-cm-btn="more" title="Opções">'+ICONS.more+'</button>'
+    + '</div>';
+
+  // Minimized badge
+  var badge = document.createElement('div');
+  badge.className = 'cm-min-badge';
+  badge.innerHTML = '<span style="color:var(--c-sub,#888);font-size:11px">📊 '+title.slice(0,30)+' — minimizado</span>';
+  badge.style.display = 'none';
+
+  wrapper.appendChild(tb);
+  wrapper.appendChild(body);
+  wrapper.appendChild(badge);
+
+  // Ensure container is marked as a chart zone
+  var container = wrapper.parentElement;
+  if(!container.classList.contains('cm-chart-zone')){
+    container.classList.add('cm-chart-zone');
+    var zLabel = container.dataset.cmZoneLabel;
+    if(!zLabel){
+      // Try to guess label from surrounding tab
+      var tabBtn = document.querySelector('.lg-nav-btn-active, .lg-tab-active');
+      zLabel = tabBtn ? (tabBtn.innerText||tabBtn.textContent||'').trim().slice(0,20) : 'Seção '+(++zoneIdx);
+      container.dataset.cmZoneLabel = zLabel;
+    }
+  }
+
+  bindToolbar(wrapper);
+  bindTouchDrag(wrapper, qs('.cm-drag-handle', tb));
+}
+
+/* ── Scan and wrap all chart cards ── */
+function scanCards(){
+  // Only wrap lg-card elements that contain canvas, svg bars, or explicit chart content
+  qsa('.lg-card').forEach(function(card){
+    if(wrapped.has(card)) return;
+    if(card.closest('.cm-wrapper')) return;
+    // Check if it has meaningful chart content
+    var hasCanvas = card.querySelector('canvas');
+    var hasChartDiv = card.querySelector('[style*="height:"][style*="display:flex"]');
+    var isChartTab = card.closest('[data-tab="graficos"], [id*="graficos"]');
+    // Include all lg-cards in relatorios/graficos sections or cards with canvas
+    if(hasCanvas || isChartTab){
+      wrapCard(card);
+      return;
+    }
+    // Also wrap cards in the Relatórios page (they're in the main content area)
+    var parentSection = card.closest('.cm-chart-zone, [class*="relat"], [class*="report"]');
+    if(hasChartDiv && parentSection){
+      wrapCard(card);
+    }
+  });
+}
+
+/* ── Update zone labels on tab switch ── */
+function updateZoneLabels(){
+  var activeEl = document.querySelector('.lg-nav-btn-active');
+  var label = activeEl ? (activeEl.innerText||activeEl.textContent||'').trim() : '';
+  // Mark newly visible zones
+  qsa('.cm-chart-zone:not([data-cm-zone-labeled])').forEach(function(zone){
+    if(label && !zone.dataset.cmZoneLabel){
+      zone.dataset.cmZoneLabel = label;
+    }
+    zone.dataset.cmZonelabeled = '1';
+  });
+}
+
+/* ── Observe DOM mutations to wrap new cards ── */
+var observer = new MutationObserver(function(mutations){
+  var shouldScan = mutations.some(function(m){
+    return m.addedNodes.length > 0;
+  });
+  if(shouldScan){
+    clearTimeout(observer._t);
+    observer._t = setTimeout(function(){
+      scanCards();
+      updateZoneLabels();
+    }, 250);
+  }
+});
+observer.observe(document.body, { childList: true, subtree: true });
+
+// Initial scan
+document.addEventListener('DOMContentLoaded', scanCards);
+if(document.readyState !== 'loading') setTimeout(scanCards, 500);
+
+// Also scan on nav clicks (tab changes)
+document.addEventListener('click', function(e){
+  if(e.target.closest('.lg-nav-btn, [class*="lg-tab"]')){
+    setTimeout(function(){ scanCards(); updateZoneLabels(); }, 400);
+  }
+}, {passive:true});
+
+})();
+</script>
 <a class="apres-tab" href="apresentacao.html" target="_blank" rel="noopener">
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14L21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
   Apresentação

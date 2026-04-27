@@ -16467,92 +16467,192 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       })()
 
     /* ── Rentabilidade por Veículo ── */
-    , React.createElement(RentabilidadeWidget, { veiculos:veiculos, contratos:contratos, despesas:despesas, receitas:receitas, manutencoes:manutencoes, multas:multas })
+    , React.createElement(RentabilidadeWidget, {
+        veiculos:veiculos, contratos:contratos, despesas:despesas,
+        receitas:receitas, manutencoes:manutencoes
+      })
   );
 }
 
 
-// -- RENTABILIDADE WIDGET (página Início) ------------------------------------
-function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutencoes, multas }) {
-  var [periodo, setPeriodo] = React.useState(24);
+// -- RENTABILIDADE WIDGET -------------------------------------------------------
+function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutencoes }) {
+  var hoje      = new Date();
+  var anoAtual  = hoje.getFullYear();
+  var mesAtual  = hoje.getMonth(); // 0-11
+
+  var [periodo,  setPeriodo]  = React.useState(24);
+  var [mesSel,   setMesSel]   = React.useState(mesAtual);
+  var [anoSel,   setAnoSel]   = React.useState(anoAtual);
+  var [modo,     setModo]     = React.useState('apurado'); // 'apurado' | 'previsto'
+
   var chartIds = React.useMemo(function(){
     var s = Math.random().toString(36).slice(2);
     return { c1:'rc1_'+s, c2:'rc2_'+s, c3:'rc3_'+s };
   }, []);
-  var refs = { c1: React.useRef(null), c2: React.useRef(null), c3: React.useRef(null) };
+  var r1 = React.useRef(null), r2 = React.useRef(null), r3 = React.useRef(null);
 
-  function fR(v){ if(!v && v!==0) return '—'; return 'R$ '+Math.round(parseFloat(v)||0).toLocaleString('pt-BR'); }
+  var MN = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
+            'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+  var MS = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 
-  var nVeicAtivos = Math.max(1, (veiculos||[]).filter(function(v){ return v.status !== 'inativo'; }).length);
+  // Anos disponíveis nos contratos
+  var anosDisp = React.useMemo(function(){
+    var set = {};
+    (contratos||[]).forEach(function(c){
+      if(c.data_inicio) set[new Date(c.data_inicio).getFullYear()] = 1;
+    });
+    var arr = Object.keys(set).map(Number).sort();
+    if(!arr.length) arr = [anoAtual];
+    return arr;
+  }, [contratos]);
 
-  var despGeralTotal = (despesas||[]).filter(function(d){
-    return (!d.veiculo_id || d.veiculo_id==='' || d.veiculo_id===null)
-        && !d.manutencao_id
-        && d.categoria !== 'Retirada de Lucro'
-        && d.categoria !== 'Ajuste de Saldo';
-  }).reduce(function(s,d){ return s + parseFloat(d.valor||0); }, 0);
+  // Helper: contrato pertence ao mês/ano selecionado?
+  function noMes(c, m, a) {
+    if(!c.data_inicio) return false;
+    var d = new Date(c.data_inicio);
+    return d.getMonth()===m && d.getFullYear()===a;
+  }
 
-  var rateioGeral = despGeralTotal / nVeicAtivos;
+  // Despesas gerais (sem vínculo a veículo) — filtradas pelo mês quando apurado
+  var nVeicAtivos = Math.max(1, (veiculos||[]).filter(function(v){ return v.status!=='inativo'; }).length);
 
-  var dados = React.useMemo(function(){
+  function calcDados(m, a, md) {
+    var despGeral = (despesas||[]).filter(function(d){
+      if(d.veiculo_id && d.veiculo_id!=='' && d.veiculo_id!==null) return false;
+      if(d.manutencao_id) return false;
+      if(d.categoria==='Retirada de Lucro'||d.categoria==='Ajuste de Saldo') return false;
+      if(md==='apurado') {
+        // filtra pelo mês/ano
+        var ref = d.data_vencimento||d.data||d.created_at||'';
+        if(!ref) return true;
+        var dr = new Date(ref);
+        return dr.getMonth()===m && dr.getFullYear()===a;
+      }
+      return true; // previsto = tudo
+    }).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
+    var rateio = despGeral / nVeicAtivos;
+
     return (veiculos||[]).map(function(v){
+      // contratos do veículo
       var cts = (contratos||[]).filter(function(c){ return String(c.veiculo_id)===String(v.id); });
-      var recContrato = cts.reduce(function(s,c){
-        if(c.status==='concluido'||c.status_pagamento==='pago') return s+parseFloat(c.valor_total||0);
-        if(c.status_pagamento==='parcial'&&c.valor_pago) return s+parseFloat(c.valor_pago||0);
-        return s;
-      }, 0);
-      var recAvulsa = (receitas||[]).filter(function(r){ return String(r.veiculo_id)===String(v.id); })
-        .reduce(function(s,r){ return s+parseFloat(r.valor||0); }, 0);
-      var receitaTotal = recContrato + recAvulsa;
-      var despDiretas = (despesas||[]).filter(function(d){
-        return String(d.veiculo_id)===String(v.id) && !d.manutencao_id
-            && d.categoria !== 'Retirada de Lucro';
-      }).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
-      var custoManut = (manutencoes||[]).filter(function(m){ return String(m.veiculo_id)===String(v.id); })
-        .reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);
-      var custoSemManut = despDiretas + rateioGeral;
-      var lucroSemManut = receitaTotal - custoSemManut;
-      var lucroTotal    = receitaTotal - custoSemManut - custoManut;
-      var diasRodados   = cts.reduce(function(s,c){
+      // contratos do mês selecionado (para gráficos com filtro de mês)
+      var ctsMes = cts.filter(function(c){ return noMes(c, m, a); });
+
+      // Receita: apurado = só contratos do mês; previsto = diária * dias do mês * 0.7
+      var recMes, recTotal;
+      if(md==='apurado') {
+        recMes = ctsMes.reduce(function(s,c){
+          if(c.status==='concluido'||c.status_pagamento==='pago') return s+parseFloat(c.valor_total||0);
+          if(c.status_pagamento==='parcial'&&c.valor_pago) return s+parseFloat(c.valor_pago||0);
+          return s+parseFloat(c.valor_total||0); // conta contratos ativos do mês tb
+        }, 0);
+        var recAvulsaMes = (receitas||[]).filter(function(r){
+          if(String(r.veiculo_id)!==String(v.id)) return false;
+          if(!r.data) return false;
+          var dr=new Date(r.data); return dr.getMonth()===m && dr.getFullYear()===a;
+        }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
+        recMes += recAvulsaMes;
+        recTotal = recMes;
+      } else {
+        // previsto: diária * 70% * dias do mês
+        var diasMes = new Date(a, m+1, 0).getDate();
+        recTotal = parseFloat(v.valor_diaria||0) * 0.70 * diasMes;
+      }
+
+      // Despesas diretas do veículo no mês
+      var despDir = (despesas||[]).filter(function(d){
+        if(String(d.veiculo_id)!==String(v.id)) return false;
+        if(d.manutencao_id) return false;
+        if(d.categoria==='Retirada de Lucro') return false;
+        if(md==='apurado') {
+          var ref = d.data_vencimento||d.data||d.created_at||'';
+          if(!ref) return true;
+          var dr=new Date(ref); return dr.getMonth()===m && dr.getFullYear()===a;
+        }
+        return true;
+      }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
+
+      var custoManut = (manutencoes||[]).filter(function(mn){
+        if(String(mn.veiculo_id)!==String(v.id)) return false;
+        if(md==='apurado') {
+          var ref = mn.data||mn.created_at||'';
+          if(!ref) return true;
+          var dr=new Date(ref); return dr.getMonth()===m && dr.getFullYear()===a;
+        }
+        return true;
+      }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
+
+      var custoSemManut = despDir + rateio;
+      var lucroSemManut = recTotal - custoSemManut;
+      var lucroTotal    = lucroSemManut - custoManut;
+      var margem        = recTotal>0 ? (lucroSemManut/recTotal*100) : 0;
+
+      // Para cenário: usa histórico completo para lucroDia
+      var ctsAll = cts;
+      var diasRodados = ctsAll.reduce(function(s,c){
         if(!c.data_inicio) return s;
         var ini=new Date(c.data_inicio), fim=c.status==='concluido'&&c.data_fim?new Date(c.data_fim):new Date();
         return s+Math.max(0,Math.floor((fim-ini)/86400000));
-      }, 0);
-      var mesesRef = Math.max(diasRodados/30, 1);
-      var lucroDia  = diasRodados>0 ? lucroSemManut/diasRodados
-                    : (parseFloat(v.valor_diaria||0)*0.70 - custoSemManut/30) / 30;
-      var valorAq   = parseFloat(v.valor_compra||v.valor_aquisicao||0);
-      var margem    = receitaTotal>0 ? (lucroSemManut/receitaTotal*100) : 0;
-      var perdaDep  = valorAq * 0.20;
-      var diariaMin = valorAq>0 ? (custoSemManut/mesesRef + perdaDep/24)/(0.70*30) : 0;
-      return { v:v, receitaTotal:receitaTotal, custoSemManut:custoSemManut, custoManut:custoManut,
+      },0);
+      var lucroHistDia = diasRodados>0
+        ? ctsAll.reduce(function(s,c){
+            if(c.status==='concluido'||c.status_pagamento==='pago') return s+parseFloat(c.valor_total||0);
+            return s;
+          },0) / diasRodados
+        : parseFloat(v.valor_diaria||0)*0.70/30;
+
+      var valorAq  = parseFloat(v.valor_compra||v.valor_aquisicao||0);
+      var perdaDep = valorAq*0.20;
+      var despMensalHist = diasRodados>0 ? (despDir+rateio)/(diasRodados/30) : (despDir+rateio);
+      var diariaMin = valorAq>0 ? (despMensalHist + perdaDep/24)/(0.70*30) : 0;
+
+      return { v:v, receitaTotal:recTotal, custoSemManut:custoSemManut, custoManut:custoManut,
                lucroSemManut:lucroSemManut, lucroTotal:lucroTotal, margem:margem,
-               diasRodados:diasRodados, lucroDia:lucroDia, valorAq:valorAq,
-               perdaDep:perdaDep, diariaMin:diariaMin, despDiretas:despDiretas, nCts:cts.length };
+               despDiretas:despDir, nCts:cts.length, nCtsMes:ctsMes.length,
+               valorAq:valorAq, perdaDep:perdaDep, diariaMin:diariaMin,
+               lucroHistDia:lucroHistDia };
     });
-  }, [veiculos, contratos, despesas, receitas, manutencoes]);
+  }
+
+  var dados = React.useMemo(function(){ return calcDados(mesSel, anoSel, modo); },
+    [veiculos,contratos,despesas,receitas,manutencoes,mesSel,anoSel,modo]);
+
+  var rateioGeral = React.useMemo(function(){
+    var despGeral = (despesas||[]).filter(function(d){
+      if(d.veiculo_id && d.veiculo_id!=='' && d.veiculo_id!==null) return false;
+      if(d.manutencao_id) return false;
+      if(d.categoria==='Retirada de Lucro'||d.categoria==='Ajuste de Saldo') return false;
+      if(modo==='apurado') {
+        var ref=d.data_vencimento||d.data||d.created_at||''; if(!ref) return true;
+        var dr=new Date(ref); return dr.getMonth()===mesSel && dr.getFullYear()===anoSel;
+      }
+      return true;
+    }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
+    return despGeral/nVeicAtivos;
+  }, [despesas,mesSel,anoSel,modo,nVeicAtivos]);
 
   var totalReceita = dados.reduce(function(s,d){return s+d.receitaTotal;},0);
   var totalLucro   = dados.reduce(function(s,d){return s+d.lucroSemManut;},0);
   var totalManut   = dados.reduce(function(s,d){return s+d.custoManut;},0);
-  var margemGlobal = totalReceita>0 ? (totalLucro/totalReceita*100) : 0;
+  var margemGlobal = totalReceita>0?(totalLucro/totalReceita*100):0;
 
   var CORES = ['#34C759','#007AFF','#FF9500','#AF52DE','#FF3B30','#5AC8FA','#FFD60A','#FF6B6B','#30D158','#64D2FF'];
   function tCor(v,t){ return v>=(t||0)?C.green:v>=0?C.orange:C.red; }
+  function fR(v){ if(!v&&v!==0) return '—'; return 'R$ '+Math.round(parseFloat(v)||0).toLocaleString('pt-BR'); }
 
   function buildCharts(){
     if(typeof Chart==='undefined') return;
     var labels = dados.map(function(d){ return d.v.placa||'?'; });
-    var grid = 'rgba(120,120,128,0.12)', tick = 'var(--c-sub)';
-    var fmtK = function(v){ return 'R$'+Math.round(v/1000)+'k'; };
-    var baseP = { responsive:true, maintainAspectRatio:false,
+    var grid='rgba(120,120,128,0.12)', tick='var(--c-sub)';
+    var fmtK=function(v){ return 'R$'+Math.round(v/1000)+'k'; };
+    var baseP={ responsive:true, maintainAspectRatio:false,
       plugins:{ legend:{ labels:{ color:tick, font:{size:10}, boxWidth:10, padding:8 } } } };
 
-    // Chart 1 - Receita/Custo/Lucro
-    var el1 = document.getElementById(chartIds.c1); if(!el1) return;
-    if(refs.c1.current){ refs.c1.current.destroy(); refs.c1.current=null; }
-    refs.c1.current = new Chart(el1, { type:'bar', data:{ labels:labels, datasets:[
+    // Chart 1
+    var el1=document.getElementById(chartIds.c1); if(!el1) return;
+    if(r1.current){r1.current.destroy();r1.current=null;}
+    r1.current = new Chart(el1,{ type:'bar', data:{ labels:labels, datasets:[
       { label:'Receita', data:dados.map(function(d){return d.receitaTotal;}),
         backgroundColor:dados.map(function(_,i){return CORES[i%CORES.length]+'99';}),
         borderColor:dados.map(function(_,i){return CORES[i%CORES.length];}), borderWidth:1.5, borderRadius:5 },
@@ -16566,29 +16666,28 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
       y:{ticks:{color:tick,font:{size:10},callback:fmtK},grid:{color:grid}}},
       plugins:Object.assign({},baseP.plugins,{tooltip:{callbacks:{label:function(ctx){return ' '+ctx.dataset.label+': '+fR(ctx.raw);}}}})})});
 
-    // Chart 2 - Margem %
-    var el2 = document.getElementById(chartIds.c2); if(!el2) return;
-    if(refs.c2.current){ refs.c2.current.destroy(); refs.c2.current=null; }
-    var mgs = dados.map(function(d){return d.margem;});
-    refs.c2.current = new Chart(el2, { type:'bar', data:{ labels:labels, datasets:[{
+    // Chart 2
+    var el2=document.getElementById(chartIds.c2); if(!el2) return;
+    if(r2.current){r2.current.destroy();r2.current=null;}
+    var mgs=dados.map(function(d){return d.margem;});
+    r2.current = new Chart(el2,{ type:'bar', data:{ labels:labels, datasets:[{
       label:'Margem %', data:mgs, indexAxis:'y',
-      backgroundColor:mgs.map(function(m){return m>=20?'rgba(52,199,89,0.7)':m>=0?'rgba(255,149,0,0.7)':'rgba(255,59,48,0.7)';}),
-      borderRadius:5
+      backgroundColor:mgs.map(function(m){return m>=20?'rgba(52,199,89,0.7)':m>=0?'rgba(255,149,0,0.7)':'rgba(255,59,48,0.7)';}), borderRadius:5
     }]}, options:Object.assign({},baseP,{ indexAxis:'y', scales:{
       x:{ticks:{color:tick,font:{size:10},callback:function(v){return v+'%';}},grid:{color:grid}},
       y:{ticks:{color:tick,font:{size:10}},grid:{display:false}}},
       plugins:Object.assign({},baseP.plugins,{legend:{display:false},
-        tooltip:{callbacks:{label:function(ctx){return ' '+ctx.raw.toFixed(1)+'%';}}}})})});
+        tooltip:{callback:{label:function(ctx){return ' '+ctx.raw.toFixed(1)+'%';}}}})})});
 
-    // Chart 3 - Cenário depreciação
-    var el3 = document.getElementById(chartIds.c3); if(!el3) return;
-    if(refs.c3.current){ refs.c3.current.destroy(); refs.c3.current=null; }
-    refs.c3.current = new Chart(el3, { type:'bar', data:{ labels:labels, datasets:[
-      { label:'Lucro Acum. ('+periodo+'m)', data:dados.map(function(d){return d.lucroDia*periodo*30;}),
+    // Chart 3 — cenário usa lucroDia histórico, não filtra por mês
+    var el3=document.getElementById(chartIds.c3); if(!el3) return;
+    if(r3.current){r3.current.destroy();r3.current=null;}
+    r3.current = new Chart(el3,{ type:'bar', data:{ labels:labels, datasets:[
+      { label:'Lucro Acum. ('+periodo+'m)', data:dados.map(function(d){return d.lucroHistDia*periodo*30;}),
         backgroundColor:'rgba(52,199,89,0.65)', borderColor:'#34C759', borderWidth:1, borderRadius:5 },
       { label:'Perda Dep. −20%', data:dados.map(function(d){return d.valorAq>0?d.perdaDep:0;}),
         backgroundColor:'rgba(255,59,48,0.50)', borderColor:'rgba(255,59,48,0.8)', borderWidth:1, borderRadius:5 },
-      { label:'Resultado Líquido', data:dados.map(function(d){return d.valorAq>0?d.lucroDia*periodo*30-d.perdaDep:null;}),
+      { label:'Resultado Líquido', data:dados.map(function(d){return d.valorAq>0?d.lucroHistDia*periodo*30-d.perdaDep:null;}),
         type:'line', borderColor:'#FFD60A', backgroundColor:'rgba(255,214,10,0.08)',
         pointBackgroundColor:'#FFD60A', pointRadius:4, tension:0.35, fill:true },
     ]}, options:Object.assign({},baseP,{ interaction:{mode:'index'}, scales:{
@@ -16598,145 +16697,208 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
   }
 
   React.useEffect(function(){
-    var t = setTimeout(buildCharts, 150);
-    return function(){ clearTimeout(t); };
-  }, [periodo, dados.length, JSON.stringify(dados.map(function(d){return [d.receitaTotal,d.lucroSemManut];}))]);
+    var t=setTimeout(buildCharts,150); return function(){clearTimeout(t);};
+  }, [periodo, mesSel, anoSel, modo,
+      JSON.stringify(dados.map(function(d){return [d.receitaTotal,d.lucroSemManut];}))]);
 
-  var pStyle = function(a){ return { padding:'5px 14px', borderRadius:980, border:'none', cursor:'pointer',
-    fontSize:12, fontWeight:a?700:400, background:a?'rgba(0,122,255,0.16)':'rgba(120,120,128,0.12)',
-    color:a?C.blue:'var(--c-sub)', fontFamily:'inherit' }; };
+  // ── Estilos utilitários ──────────────────────────────────────────────
+  var pill = function(ativo, cor){ return {
+    padding:'4px 13px', borderRadius:980, border:'none', cursor:'pointer', fontSize:12,
+    fontWeight:ativo?700:400,
+    background:ativo?(cor||'rgba(0,122,255,0.15)'):'rgba(120,120,128,0.10)',
+    color:ativo?(cor?'#fff':'var(--c-blue)'):'var(--c-sub)', fontFamily:'inherit',
+    transition:'all .15s'
+  }; };
 
-  var TH = function(t){ return React.createElement('th', { style:{padding:'8px 12px',textAlign:'left',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:0.8,color:'var(--c-sub)',whiteSpace:'nowrap',background:'rgba(120,120,128,0.06)'} }, t); };
+  var selectStyle = {
+    background:'rgba(120,120,128,0.10)', border:'1px solid var(--c-border)',
+    borderRadius:8, padding:'4px 10px', fontSize:12, color:'var(--c-text)',
+    fontFamily:'inherit', cursor:'pointer', outline:'none'
+  };
 
-  return React.createElement('div', { style:{display:'flex',flexDirection:'column',gap:14,marginTop:4} },
+  var TH = function(t){ return React.createElement('th',{style:{padding:'8px 12px',textAlign:'left',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:0.8,color:'var(--c-sub)',whiteSpace:'nowrap',background:'rgba(120,120,128,0.06)'}},t); };
 
-    /* Título */
-    React.createElement('div', { style:{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8} },
-      React.createElement('div', { style:{fontSize:16,fontWeight:700,letterSpacing:-0.3} }, '📊 Rentabilidade por Veículo'),
-      React.createElement('div', { style:{fontSize:11,color:'var(--c-sub)'} }, 'Custo = despesas diretas + rateio geral ÷ frota · sem manutenção')
+  // ── Barra de controles compartilhada (Gráfico 1 e 2) ─────────────────
+  var controles = React.createElement('div',{style:{display:'flex',alignItems:'center',flexWrap:'wrap',gap:10,marginBottom:16,padding:'10px 14px',background:'rgba(120,120,128,0.06)',borderRadius:10,border:'1px solid var(--c-border)'}},
+
+    // Label
+    React.createElement('span',{style:{fontSize:11,fontWeight:700,color:'var(--c-sub)',textTransform:'uppercase',letterSpacing:0.8,marginRight:4}},'Filtros:'),
+
+    // Mês
+    React.createElement('select',{value:mesSel, onChange:function(e){setMesSel(parseInt(e.target.value));}, style:selectStyle},
+      MN.map(function(nm,i){ return React.createElement('option',{key:i,value:i},nm); })
     ),
 
-    /* KPIs */
-    React.createElement('div', { style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:10} },
-      [{l:'Receita Total',v:fR(totalReceita),cor:C.green},
+    // Ano
+    React.createElement('select',{value:anoSel, onChange:function(e){setAnoSel(parseInt(e.target.value));}, style:selectStyle},
+      anosDisp.map(function(a){ return React.createElement('option',{key:a,value:a},a); })
+    ),
+
+    // Separador
+    React.createElement('div',{style:{width:1,height:20,background:'var(--c-border)',margin:'0 4px'}}),
+
+    // Apurado / Previsto
+    React.createElement('div',{style:{display:'flex',gap:5}},
+      React.createElement('button',{onClick:function(){setModo('apurado');}, style:pill(modo==='apurado')}, '📊 Apurado'),
+      React.createElement('button',{onClick:function(){setModo('previsto');}, style:pill(modo==='previsto','rgba(255,149,0,0.7)')}, '🔮 Previsto')
+    ),
+
+    // Badge período
+    React.createElement('span',{style:{marginLeft:'auto',fontSize:11,color:'var(--c-sub)'}},
+      MS[mesSel]+'/'+anoSel+' · '+(modo==='apurado'?'Valores apurados dos contratos':'Projeção: diária × 70% × dias do mês')
+    )
+  );
+
+  return React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:14,marginTop:4}},
+
+    // Título
+    React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}},
+      React.createElement('div',{style:{fontSize:16,fontWeight:700,letterSpacing:-0.3}},'📊 Rentabilidade por Veículo'),
+      React.createElement('div',{style:{fontSize:11,color:'var(--c-sub)'}},'Custo = despesas diretas + rateio geral ÷ frota · sem manutenção')
+    ),
+
+    // KPIs
+    React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:10}},
+      [{l:'Receita',v:fR(totalReceita),cor:C.green},
        {l:'Custo s/Manut',v:fR(dados.reduce(function(s,d){return s+d.custoSemManut;},0)),cor:C.red},
        {l:'Lucro s/Manut',v:fR(totalLucro),cor:totalLucro>=0?C.green:C.red},
        {l:'Manutenção',v:fR(totalManut),cor:C.purple},
        {l:'Margem Global',v:(margemGlobal>=0?'+':'')+margemGlobal.toFixed(1)+'%',cor:tCor(margemGlobal,20)},
+       {l:'Modo',v:modo==='apurado'?'Apurado':'Previsto',cor:modo==='apurado'?C.blue:C.orange},
       ].map(function(k,i){
-        return React.createElement('div', { key:i, style:{background:C.card,border:'1px solid var(--c-border)',borderRadius:14,padding:'12px 14px',borderTop:'2.5px solid '+k.cor} },
-          React.createElement('div', { style:{fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:0.8,color:'var(--c-sub)',marginBottom:5} }, k.l),
-          React.createElement('div', { style:{fontSize:17,fontWeight:800,color:k.cor,letterSpacing:-0.3} }, k.v)
+        return React.createElement('div',{key:i,style:{background:C.card,border:'1px solid var(--c-border)',borderRadius:14,padding:'12px 14px',borderTop:'2.5px solid '+k.cor}},
+          React.createElement('div',{style:{fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:0.8,color:'var(--c-sub)',marginBottom:5}},k.l),
+          React.createElement('div',{style:{fontSize:17,fontWeight:800,color:k.cor,letterSpacing:-0.3}},k.v)
         );
       })
     ),
 
-    /* Gráfico 1 */
-    React.createElement('div', { className:'lg-card', style:Object.assign({},CARD) },
-      React.createElement('div', { style:{fontSize:13,fontWeight:700,marginBottom:3} }, 'Receita · Custo · Lucro por Veículo'),
-      React.createElement('div', { style:{fontSize:11,color:'var(--c-sub)',marginBottom:14} }, 'Custo inclui rateio das despesas gerais da locadora por veículo ativo. Sem manutenção.'),
-      React.createElement('div', { style:{position:'relative',height:260} }, React.createElement('canvas', { id:chartIds.c1 }))
+    // Gráfico 1 — com controles de mês/modo
+    React.createElement('div',{className:'lg-card',style:Object.assign({},CARD)},
+      React.createElement('div',{style:{fontSize:13,fontWeight:700,marginBottom:3}},'Receita · Custo · Lucro por Veículo'),
+      React.createElement('div',{style:{fontSize:11,color:'var(--c-sub)',marginBottom:12}},
+        modo==='apurado'
+          ? 'Valores realizados no mês selecionado. Rateio das despesas gerais ÷ nº veículos ativos.'
+          : 'Projeção: diária × 70% ocupação × dias do mês. Rateio das despesas gerais ÷ nº veículos ativos.'
+      ),
+      controles,
+      React.createElement('div',{style:{position:'relative',height:260}},
+        React.createElement('canvas',{id:chartIds.c1})
+      )
     ),
 
-    /* Gráfico 2 */
-    React.createElement('div', { className:'lg-card', style:Object.assign({},CARD) },
-      React.createElement('div', { style:{fontSize:13,fontWeight:700,marginBottom:3} }, 'Margem de Lucro % por Veículo'),
-      React.createElement('div', { style:{fontSize:11,color:'var(--c-sub)',marginBottom:14} }, '🟢 ≥20% saudável · 🟡 0–20% atenção · 🔴 negativo'),
-      React.createElement('div', { style:{position:'relative',height:Math.max(100,dados.length*40)} }, React.createElement('canvas', { id:chartIds.c2 }))
+    // Gráfico 2 — com controles de mês/modo (compartilha estado)
+    React.createElement('div',{className:'lg-card',style:Object.assign({},CARD)},
+      React.createElement('div',{style:{fontSize:13,fontWeight:700,marginBottom:3}},'Margem de Lucro % por Veículo'),
+      React.createElement('div',{style:{fontSize:11,color:'var(--c-sub)',marginBottom:14}},
+        '🟢 ≥20% saudável · 🟡 0–20% atenção · 🔴 negativo · '+MS[mesSel]+'/'+anoSel+' ('+modo+')'
+      ),
+      React.createElement('div',{style:{position:'relative',height:Math.max(100,dados.length*40)}},
+        React.createElement('canvas',{id:chartIds.c2})
+      )
     ),
 
-    /* Tabela */
-    React.createElement('div', { className:'lg-card', style:Object.assign({},CARD,{padding:0,overflow:'hidden'}) },
-      React.createElement('div', { style:{padding:'14px 16px 10px',fontSize:13,fontWeight:700} }, 'Tabela Detalhada por Veículo'),
-      React.createElement('div', { style:{overflowX:'auto'} },
-        React.createElement('table', { style:{width:'100%',borderCollapse:'collapse',fontSize:12} },
-          React.createElement('thead', null,
-            React.createElement('tr', { style:{borderBottom:'1px solid var(--c-border)'} },
+    // Tabela — mesmos filtros
+    React.createElement('div',{className:'lg-card',style:Object.assign({},CARD,{padding:0,overflow:'hidden'})},
+      React.createElement('div',{style:{padding:'14px 16px 10px',display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}},
+        React.createElement('div',{style:{fontSize:13,fontWeight:700}},
+          'Tabela Detalhada — '+MN[mesSel]+'/'+anoSel
+        ),
+        React.createElement('span',{style:{fontSize:11,padding:'3px 10px',borderRadius:20,background:modo==='apurado'?'rgba(0,122,255,0.12)':'rgba(255,149,0,0.12)',color:modo==='apurado'?C.blue:C.orange,fontWeight:700}},
+          modo==='apurado'?'📊 Apurado':'🔮 Previsto'
+        )
+      ),
+      React.createElement('div',{style:{overflowX:'auto'}},
+        React.createElement('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
+          React.createElement('thead',null,
+            React.createElement('tr',{style:{borderBottom:'1px solid var(--c-border)'}},
               ['Veículo','Modelo','Cts','Receita','Custo Dir.','Rateio','Manut.','Lucro s/M','Margem','Lucro c/M'].map(TH)
             )
           ),
-          React.createElement('tbody', null,
+          React.createElement('tbody',null,
             dados.slice().sort(function(a,b){return b.lucroSemManut-a.lucroSemManut;}).map(function(d){
               var mg=d.margem, mgCor=tCor(mg,20);
-              return React.createElement('tr', { key:d.v.id, style:{borderBottom:'1px solid var(--c-border)'} },
-                React.createElement('td', {style:{padding:'10px 12px'}},
-                  React.createElement('span', {style:{fontFamily:'monospace',fontSize:11,fontWeight:600,background:'rgba(0,122,255,0.10)',color:C.blue,padding:'2px 7px',borderRadius:5}}, d.v.placa||'—')),
-                React.createElement('td', {style:{padding:'10px 12px',color:'var(--c-sub)',fontSize:11,whiteSpace:'nowrap'}}, (d.v.marca||'')+' '+(d.v.modelo||'')),
-                React.createElement('td', {style:{padding:'10px 12px',textAlign:'center',color:'var(--c-sub)'}}, d.nCts),
-                React.createElement('td', {style:{padding:'10px 12px',color:C.green,fontWeight:600,whiteSpace:'nowrap'}}, fR(d.receitaTotal)),
-                React.createElement('td', {style:{padding:'10px 12px',color:C.red,whiteSpace:'nowrap'}}, fR(d.despDiretas)),
-                React.createElement('td', {style:{padding:'10px 12px',color:C.orange,whiteSpace:'nowrap'}}, fR(rateioGeral)),
-                React.createElement('td', {style:{padding:'10px 12px',color:C.purple,whiteSpace:'nowrap'}}, fR(d.custoManut)),
-                React.createElement('td', {style:{padding:'10px 12px',fontWeight:700,whiteSpace:'nowrap',color:d.lucroSemManut>=0?C.green:C.red}}, fR(d.lucroSemManut)),
-                React.createElement('td', {style:{padding:'10px 12px',whiteSpace:'nowrap'}},
-                  React.createElement('span', {style:{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:20,background:mgCor+'22',color:mgCor}}, mg.toFixed(1)+'%')),
-                React.createElement('td', {style:{padding:'10px 12px',fontWeight:600,whiteSpace:'nowrap',color:d.lucroTotal>=0?C.green:C.red}}, fR(d.lucroTotal))
+              return React.createElement('tr',{key:d.v.id,style:{borderBottom:'1px solid var(--c-border)'}},
+                React.createElement('td',{style:{padding:'10px 12px'}},
+                  React.createElement('span',{style:{fontFamily:'monospace',fontSize:11,fontWeight:600,background:'rgba(0,122,255,0.10)',color:C.blue,padding:'2px 7px',borderRadius:5}},d.v.placa||'—')),
+                React.createElement('td',{style:{padding:'10px 12px',color:'var(--c-sub)',fontSize:11,whiteSpace:'nowrap'}},(d.v.marca||'')+' '+(d.v.modelo||'')),
+                React.createElement('td',{style:{padding:'10px 12px',textAlign:'center',color:'var(--c-sub)'}},d.nCtsMes),
+                React.createElement('td',{style:{padding:'10px 12px',color:C.green,fontWeight:600,whiteSpace:'nowrap'}},fR(d.receitaTotal)),
+                React.createElement('td',{style:{padding:'10px 12px',color:C.red,whiteSpace:'nowrap'}},fR(d.despDiretas)),
+                React.createElement('td',{style:{padding:'10px 12px',color:C.orange,whiteSpace:'nowrap'}},fR(rateioGeral)),
+                React.createElement('td',{style:{padding:'10px 12px',color:C.purple,whiteSpace:'nowrap'}},fR(d.custoManut)),
+                React.createElement('td',{style:{padding:'10px 12px',fontWeight:700,whiteSpace:'nowrap',color:d.lucroSemManut>=0?C.green:C.red}},fR(d.lucroSemManut)),
+                React.createElement('td',{style:{padding:'10px 12px',whiteSpace:'nowrap'}},
+                  React.createElement('span',{style:{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:20,background:mgCor+'22',color:mgCor}},mg.toFixed(1)+'%')),
+                React.createElement('td',{style:{padding:'10px 12px',fontWeight:600,whiteSpace:'nowrap',color:d.lucroTotal>=0?C.green:C.red}},fR(d.lucroTotal))
               );
             }),
-            React.createElement('tr', {style:{borderTop:'2px solid var(--c-border)',background:'rgba(120,120,128,0.04)'}},
-              React.createElement('td', {colSpan:3,style:{padding:'10px 12px',fontWeight:700,fontSize:12}}, 'TOTAL'),
-              React.createElement('td', {style:{padding:'10px 12px',color:C.green,fontWeight:800}}, fR(totalReceita)),
-              React.createElement('td', {style:{padding:'10px 12px',color:C.red,fontWeight:700}}, fR(dados.reduce(function(s,d){return s+d.despDiretas;},0))),
-              React.createElement('td', {style:{padding:'10px 12px',color:C.orange,fontWeight:700}}, fR(rateioGeral*nVeicAtivos)),
-              React.createElement('td', {style:{padding:'10px 12px',color:C.purple,fontWeight:700}}, fR(totalManut)),
-              React.createElement('td', {style:{padding:'10px 12px',fontWeight:800,color:totalLucro>=0?C.green:C.red}}, fR(totalLucro)),
-              React.createElement('td', {style:{padding:'10px 12px'}},
-                React.createElement('span', {style:{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:20,background:tCor(margemGlobal,20)+'22',color:tCor(margemGlobal,20)}}, margemGlobal.toFixed(1)+'%')),
-              React.createElement('td', {style:{padding:'10px 12px',fontWeight:800,color:tCor(totalLucro-totalManut,0)}}, fR(totalLucro-totalManut))
+            React.createElement('tr',{style:{borderTop:'2px solid var(--c-border)',background:'rgba(120,120,128,0.04)'}},
+              React.createElement('td',{colSpan:3,style:{padding:'10px 12px',fontWeight:700,fontSize:12}},'TOTAL'),
+              React.createElement('td',{style:{padding:'10px 12px',color:C.green,fontWeight:800}},fR(totalReceita)),
+              React.createElement('td',{style:{padding:'10px 12px',color:C.red,fontWeight:700}},fR(dados.reduce(function(s,d){return s+d.despDiretas;},0))),
+              React.createElement('td',{style:{padding:'10px 12px',color:C.orange,fontWeight:700}},fR(rateioGeral*nVeicAtivos)),
+              React.createElement('td',{style:{padding:'10px 12px',color:C.purple,fontWeight:700}},fR(totalManut)),
+              React.createElement('td',{style:{padding:'10px 12px',fontWeight:800,color:totalLucro>=0?C.green:C.red}},fR(totalLucro)),
+              React.createElement('td',{style:{padding:'10px 12px'}},
+                React.createElement('span',{style:{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:20,background:tCor(margemGlobal,20)+'22',color:tCor(margemGlobal,20)}},margemGlobal.toFixed(1)+'%')),
+              React.createElement('td',{style:{padding:'10px 12px',fontWeight:800,color:tCor(totalLucro-totalManut,0)}},fR(totalLucro-totalManut))
             )
           )
         )
       )
     ),
 
-    /* Cenário depreciação */
-    React.createElement('div', { className:'lg-card', style:Object.assign({},CARD) },
-      React.createElement('div', {style:{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10,marginBottom:4}},
-        React.createElement('div', null,
-          React.createElement('div', {style:{fontSize:13,fontWeight:700}}, 'Cenário Venda com Depreciação −20%'),
-          React.createElement('div', {style:{fontSize:11,color:'var(--c-sub)',marginTop:2}}, 'Resultado Líquido = Lucro Acumulado − Perda de 20% sobre o valor de aquisição na venda')
+    // Cenário depreciação — SEM filtro de mês (usa histórico completo), COM seletor de período
+    React.createElement('div',{className:'lg-card',style:Object.assign({},CARD)},
+      React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10,marginBottom:4}},
+        React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:13,fontWeight:700}},'Cenário Venda com Depreciação −20%'),
+          React.createElement('div',{style:{fontSize:11,color:'var(--c-sub)',marginTop:2}},
+            'Usa histórico completo de contratos (não filtra mês). Resultado Líquido = Lucro Acumulado − Perda de 20%.'
+          )
         ),
-        React.createElement('div', {style:{display:'flex',gap:6}},
+        React.createElement('div',{style:{display:'flex',gap:6}},
           [12,24,36].map(function(p){
-            return React.createElement('button', {key:p, onClick:function(){setPeriodo(p);}, style:pStyle(periodo===p)}, p+'m');
+            return React.createElement('button',{key:p,onClick:function(){setPeriodo(p);},style:pill(periodo===p)},p+'m');
           })
         )
       ),
-      React.createElement('div', {style:{position:'relative',height:220,marginTop:16}},
-        React.createElement('canvas', {id:chartIds.c3})
+      React.createElement('div',{style:{position:'relative',height:220,marginTop:16}},
+        React.createElement('canvas',{id:chartIds.c3})
       ),
-      React.createElement('div', {style:{overflowX:'auto',marginTop:20}},
-        React.createElement('table', {style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
-          React.createElement('thead', null,
-            React.createElement('tr', {style:{borderBottom:'1px solid var(--c-border)'}},
+      React.createElement('div',{style:{overflowX:'auto',marginTop:20}},
+        React.createElement('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
+          React.createElement('thead',null,
+            React.createElement('tr',{style:{borderBottom:'1px solid var(--c-border)'}},
               ['Veículo','Valor Aquisição','Venda (−20%)','Result. 12m','Result. 24m','Result. 36m','Diária Mín. 24m'].map(TH)
             )
           ),
-          React.createElement('tbody', null,
+          React.createElement('tbody',null,
             dados.map(function(d){
-              var r = function(m){ return d.valorAq>0 ? d.lucroDia*m*30-d.perdaDep : d.lucroDia*m*30; };
-              var r12=r(12), r24=r(24), r36=r(36);
-              return React.createElement('tr', {key:d.v.id, style:{borderBottom:'1px solid var(--c-border)'}},
-                React.createElement('td', {style:{padding:'10px 12px'}},
-                  React.createElement('span', {style:{fontFamily:'monospace',fontSize:11,fontWeight:600,background:'rgba(0,122,255,0.10)',color:C.blue,padding:'2px 7px',borderRadius:5}}, d.v.placa||'—')),
-                React.createElement('td', {style:{padding:'10px 12px',color:'var(--c-sub)',whiteSpace:'nowrap'}}, d.valorAq>0?fR(d.valorAq):'Não cadastrado'),
-                React.createElement('td', {style:{padding:'10px 12px',color:'var(--c-sub)',whiteSpace:'nowrap'}}, d.valorAq>0?fR(d.valorAq*0.80):'—'),
-                React.createElement('td', {style:{padding:'10px 12px',fontWeight:700,color:tCor(r12,0),whiteSpace:'nowrap'}}, fR(r12)),
-                React.createElement('td', {style:{padding:'10px 12px',fontWeight:700,color:tCor(r24,0),whiteSpace:'nowrap'}}, fR(r24)),
-                React.createElement('td', {style:{padding:'10px 12px',fontWeight:700,color:tCor(r36,0),whiteSpace:'nowrap'}}, fR(r36)),
-                React.createElement('td', {style:{padding:'10px 12px',whiteSpace:'nowrap'}},
+              var r=function(m){ return d.valorAq>0?d.lucroHistDia*m*30-d.perdaDep:d.lucroHistDia*m*30; };
+              var r12=r(12),r24=r(24),r36=r(36);
+              return React.createElement('tr',{key:d.v.id,style:{borderBottom:'1px solid var(--c-border)'}},
+                React.createElement('td',{style:{padding:'10px 12px'}},
+                  React.createElement('span',{style:{fontFamily:'monospace',fontSize:11,fontWeight:600,background:'rgba(0,122,255,0.10)',color:C.blue,padding:'2px 7px',borderRadius:5}},d.v.placa||'—')),
+                React.createElement('td',{style:{padding:'10px 12px',color:'var(--c-sub)',whiteSpace:'nowrap'}},d.valorAq>0?fR(d.valorAq):'Não cadastrado'),
+                React.createElement('td',{style:{padding:'10px 12px',color:'var(--c-sub)',whiteSpace:'nowrap'}},d.valorAq>0?fR(d.valorAq*0.80):'—'),
+                React.createElement('td',{style:{padding:'10px 12px',fontWeight:700,color:tCor(r12,0),whiteSpace:'nowrap'}},fR(r12)),
+                React.createElement('td',{style:{padding:'10px 12px',fontWeight:700,color:tCor(r24,0),whiteSpace:'nowrap'}},fR(r24)),
+                React.createElement('td',{style:{padding:'10px 12px',fontWeight:700,color:tCor(r36,0),whiteSpace:'nowrap'}},fR(r36)),
+                React.createElement('td',{style:{padding:'10px 12px',whiteSpace:'nowrap'}},
                   d.valorAq>0&&d.diariaMin>0
-                    ? React.createElement('span', {style:{fontWeight:700,color:C.blue}}, fR(d.diariaMin)+'/dia')
-                    : React.createElement('span', {style:{color:'var(--c-sub)'}}, '—')
+                    ?React.createElement('span',{style:{fontWeight:700,color:C.blue}},fR(d.diariaMin)+'/dia')
+                    :React.createElement('span',{style:{color:'var(--c-sub)'}},'—')
                 )
               );
             })
           )
         )
       ),
-      React.createElement('div', {style:{marginTop:14,padding:'10px 14px',background:'rgba(0,122,255,0.06)',borderRadius:10,border:'1px solid rgba(0,122,255,0.15)',fontSize:11,color:'var(--c-sub)',lineHeight:1.7}},
-        '⚡ ', React.createElement('strong', {style:{color:C.blue}}, 'Premissas:'),
-        ' Venda após o período com −20% sobre o valor de aquisição cadastrado. Projeção com base na rentabilidade diária histórica dos contratos. Veículos sem valor de aquisição não participam do comparativo de depreciação. Diária mínima 24m = (custos mensais + depreciação÷24) ÷ (70% × 30 dias).'
+      React.createElement('div',{style:{marginTop:14,padding:'10px 14px',background:'rgba(0,122,255,0.06)',borderRadius:10,border:'1px solid rgba(0,122,255,0.15)',fontSize:11,color:'var(--c-sub)',lineHeight:1.7}},
+        '⚡ ',React.createElement('strong',{style:{color:C.blue}},'Premissas:'),
+        ' Venda após o período com −20% sobre valor de aquisição. Projeção usa rentabilidade diária histórica de todos os contratos. Veículos sem valor de aquisição não participam da depreciação. Diária mínima 24m = (custos + depreciação÷24) ÷ (70% × 30 dias).'
       )
     )
   );

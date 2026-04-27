@@ -20265,6 +20265,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         , React.createElement('option', { value: "despesas" }, "📉 Despesas")
         , React.createElement('option', { value: "fluxo" }, "📈 Fluxo")
         , React.createElement('option', { value: "analise" }, "🧠 Análise")
+        , React.createElement('option', { value: "orcamento_empresa" }, "🎯 Orçamento")
         , React.createElement('option', { value: "contas_rec" }, "🔁 Fixas")
         , React.createElement('option', { value: "faturas" }, "🧾 Faturas")
         , React.createElement('option', { value: "pessoal" }, "🏠 Orç. Pessoal")
@@ -20897,6 +20898,371 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 8 } }, "Importar Extrato (CSV)")
           , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginBottom: 10 } }, "Formato aceito: colunas com data (YYYY-MM-DD ou DD/MM/AAAA), descrição e valor. Separador , ou ;")
           , React.createElement('input', { type: "file", accept: ".csv,text/csv", onChange: importHandler, style: Object.assign({}, FI, { cursor: "pointer" }) })
+        )
+      );
+    })()
+
+    , tab === "orcamento_empresa" && (function(){
+      var hoje = new Date();
+      var anoAtual = hoje.getFullYear();
+      var BUD_EMP_KEY = "ag_budgets_emp_v1";
+      var META_KEY    = "ag_meta_fat_v1";
+
+      /* ── Meses disponíveis: 6 passados + atual + 5 futuros ── */
+      var todosMeses = [];
+      for (var _mi = -6; _mi <= 5; _mi++) {
+        var _d = new Date(hoje.getFullYear(), hoje.getMonth() + _mi, 1);
+        todosMeses.push(_d.getFullYear() + "-" + String(_d.getMonth()+1).padStart(2,"0"));
+      }
+      var mesHoje = hoje.toISOString().slice(0,7);
+      var mesSel  = filtroMes;
+      var idxSel  = todosMeses.indexOf(mesSel);
+      if (idxSel < 0) { mesSel = mesHoje; idxSel = todosMeses.indexOf(mesHoje); }
+
+      function navMes(dir) { var ni=Math.max(0,Math.min(todosMeses.length-1,idxSel+dir)); setFiltroMes(todosMeses[ni]); }
+
+      /* ── Calcular dados de cada mês ── */
+      function calcMes(m) {
+        var ctsM = (contratos||[]).filter(function(c){
+          if (c.status==="cancelado") return false;
+          var ref = c.previsao_pagamento||c.data_fim||""; return ref.slice(0,7)===m;
+        });
+        var recAv  = (receitas||[]).filter(function(r){ return !r.ref_fatura && receitaVisivelNoMes(r,m); });
+        var despM  = (despesas||[]).filter(function(d){ return !d.manutencao_id && !isRetLucro(d) && despesaVisivelNoMes(d,m); });
+        var manM   = (manutencoes||[]).filter(function(mn){ return manMesRefGlobal(mn)===m; });
+        var multM  = (multas||[]).filter(function(mu){ return (mu.data||"").slice(0,7)===m||(mu.vencimento||"").slice(0,7)===m; });
+
+        var recPrev = ctsM.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
+          + recAv.reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
+        var recReal = ctsM.filter(function(c){ return c.status_pagamento==="pago"||c.status_pagamento==="isento"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
+          + ctsM.filter(function(c){ return c.status_pagamento==="parcial"; }).reduce(function(s,c){ return s+parseFloat(c.valor_pago||0); },0)
+          + recAv.filter(function(r){ return r.status==="pago"||r.status==="recebido"; }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
+        var despPrev = despM.reduce(function(s,d){ return s+parseFloat(d.valor||0); },0)
+          + manM.reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0)
+          + multM.reduce(function(s,mu){ var v=parseFloat(mu.valor||0); var cob=(mu.cobrado_cliente==="pago"||mu.cobrado_cliente==="pendente")?parseFloat(mu.valor_cobrado||mu.valor||0):0; return s+Math.max(0,v-cob); },0);
+        var despReal = despM.filter(function(d){ return d.status==="pago"; }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0)
+          + manM.filter(function(mn){ return mn.status_financeiro==="pago"||!!mn.data_pagamento; }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
+
+        var gastoCat = {};
+        despM.forEach(function(d){ var c=d.categoria||"Outros"; gastoCat[c]=(gastoCat[c]||0)+parseFloat(d.valor||0); });
+        manM.forEach(function(mn){ gastoCat["Manutenção"]=(gastoCat["Manutenção"]||0)+parseFloat(mn.custo||0); });
+
+        var liqPrev  = recPrev  - despPrev;
+        var liqReal  = recReal  - despReal;
+        return {
+          mes:m, ctsM:ctsM, recPrev:recPrev, recReal:recReal,
+          despPrev:despPrev, despReal:despReal, gastoCat:gastoCat,
+          liqPrev:liqPrev, liqReal:liqReal,
+          margPrev:  recPrev >0 ? Math.round((liqPrev /recPrev)*100)  : 0,
+          percRec:   recPrev >0 ? Math.min(100,Math.round((recReal /recPrev)*100))  : 0,
+          percDesp:  despPrev>0 ? Math.min(100,Math.round((despReal/despPrev)*100)) : 0
+        };
+      }
+
+      var dadosMeses = todosMeses.map(calcMes);
+      var DS = dadosMeses[idxSel];
+      var nomeMesSel = new Date(mesSel+"-15").toLocaleString("pt-BR",{month:"long",year:"numeric"});
+
+      /* ── Orçamento por categoria (metas) ── */
+      var budEmp  = (function(){ try { return JSON.parse(localStorage.getItem(BUD_EMP_KEY)||"{}"); } catch(e){ return {}; } })();
+      var metaFat = parseFloat(localStorage.getItem(META_KEY)||0);
+
+      /* ── DRE anual (12 meses calendário) ── */
+      var dreAnual = [];
+      for (var _mm=0; _mm<12; _mm++) {
+        var mStr = anoAtual+"-"+String(_mm+1).padStart(2,"0");
+        var dm = dadosMeses.find(function(d){ return d.mes===mStr; });
+        dreAnual.push(dm || calcMes(mStr));
+      }
+      var totDRE = dreAnual.reduce(function(a,d){ return {rec:a.rec+d.recReal, desp:a.desp+d.despReal, liq:a.liq+d.liqReal}; },{rec:0,desp:0,liq:0});
+      var BAR_H  = 88;
+      var maxBar = Math.max.apply(null, dreAnual.map(function(d){ return Math.max(d.recReal,d.despReal); }).concat([1]));
+
+      /* ── Lucratividade por veículo (histórico geral) ── */
+      var lucVei = (veiculos||[]).map(function(v){
+        var cts  = (contratos||[]).filter(function(c){ return c.veiculo_id==v.id&&c.status!=="cancelado"; });
+        var rec  = cts.filter(function(c){ return c.status_pagamento==="pago"||c.status_pagamento==="isento"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0);
+        var man  = (manutencoes||[]).filter(function(mn){ return mn.veiculo_id==v.id; }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
+        var mult = (multas||[]).filter(function(mu){ return mu.veiculo_id==v.id; }).reduce(function(s,mu){ return s+Math.max(0,parseFloat(mu.valor||0)-(mu.cobrado_cliente==="pago"?parseFloat(mu.valor_cobrado||0):0)); },0);
+        return { v:v, rec:rec, man:man, mult:mult, liq:rec-man-mult, nCts:cts.length };
+      }).filter(function(x){ return x.nCts>0; }).sort(function(a,b){ return b.liq-a.liq; });
+
+      /* ═══════════════ RENDER ═══════════════ */
+      return React.createElement('div', {style:{display:"flex",flexDirection:"column",gap:14}},
+
+        /* ── SELETOR DE MÊS COM ROLAGEM ── */
+        React.createElement('div', {style:{background:"var(--c-card)",borderRadius:18,border:"1px solid "+C.border,overflow:"hidden"}},
+          /* Nav principal */
+          React.createElement('div', {style:{display:"flex",alignItems:"center",padding:"12px 16px",borderBottom:"1px solid "+C.border}},
+            React.createElement('button', {
+              onClick:function(){ navMes(-1); }, disabled:idxSel===0,
+              style:{background:"transparent",border:"none",fontSize:26,lineHeight:1,cursor:"pointer",color:C.purple,padding:"0 10px",opacity:idxSel===0?0.2:1}
+            }, "\u2039"),
+            React.createElement('div', {style:{flex:1,textAlign:"center"}},
+              React.createElement('div', {style:{fontSize:16,fontWeight:800,textTransform:"capitalize"}}, nomeMesSel),
+              React.createElement('div', {style:{fontSize:11,color:C.sub,marginTop:2}},
+                mesSel===mesHoje ? "mês atual" : mesSel<mesHoje ? "histórico" : "projeção")
+            ),
+            React.createElement('button', {
+              onClick:function(){ navMes(1); }, disabled:idxSel===todosMeses.length-1,
+              style:{background:"transparent",border:"none",fontSize:26,lineHeight:1,cursor:"pointer",color:C.purple,padding:"0 10px",opacity:idxSel===todosMeses.length-1?0.2:1}
+            }, "\u203a")
+          ),
+          /* Chips de meses com scroll horizontal */
+          React.createElement('div', {style:{display:"flex",overflowX:"auto",padding:"10px 10px 10px",gap:6,WebkitOverflowScrolling:"touch",scrollbarWidth:"none",msOverflowStyle:"none"}},
+            todosMeses.map(function(m,ix){
+              var dm2    = dadosMeses[ix];
+              var isSel2 = m===mesSel;
+              var isAtual2 = m===mesHoje;
+              var nc     = new Date(m+"-15").toLocaleString("pt-BR",{month:"short"}).replace(".","").toUpperCase().slice(0,3);
+              var saldo2 = dm2.recPrev>0 ? dm2.liqPrev : null;
+              return React.createElement('button', {key:m, onClick:function(){ setFiltroMes(m); },
+                style:{flexShrink:0,width:52,padding:"7px 2px",borderRadius:12,cursor:"pointer",
+                  background:isSel2?C.purple:isAtual2?"rgba(124,58,237,0.1)":"var(--c-bg)",
+                  border:isSel2?"none":isAtual2?"1.5px solid "+C.purple:"1px solid "+C.border,
+                  color:isSel2?"#fff":isAtual2?C.purple:"var(--c-text)",textAlign:"center"}},
+                React.createElement('div', {style:{fontSize:10,fontWeight:700}}, nc),
+                React.createElement('div', {style:{fontSize:8,marginTop:2,fontWeight:600,
+                  color:isSel2?"rgba(255,255,255,0.8)":saldo2===null?C.sub:saldo2>=0?C.green:C.red}},
+                  saldo2===null ? "—" : (saldo2>=0?"+":"")+fmtBRL(saldo2).replace("R$","").trim())
+              );
+            })
+          )
+        ),
+
+        /* ── HERO KPIs ── */
+        React.createElement('div', {style:{background:"linear-gradient(135deg,"+C.purple+"22,"+C.blue+"11)",borderRadius:20,padding:"16px",border:"1px solid "+C.purple+"33"}},
+          React.createElement('div', {style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}},
+            [
+              ["Faturamento Previsto",  DS.recPrev,  C.blue,   DS.percRec+"% realizado"],
+              ["Faturamento Realizado", DS.recReal,  DS.recReal>=DS.recPrev?C.green:C.orange, DS.ctsM.length+" contratos"],
+              ["Despesas Previstas",    DS.despPrev, C.red,    DS.percDesp+"% executado"],
+              ["Resultado Líquido",     DS.liqPrev,  DS.liqPrev>=0?C.green:C.red, "Margem "+DS.margPrev+"%"],
+            ].map(function(row,i){
+              return React.createElement('div', {key:i,style:{background:"rgba(255,255,255,0.75)",borderRadius:14,padding:"12px"}},
+                React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:"uppercase",letterSpacing:0.4,marginBottom:2}}, row[0]),
+                React.createElement('div', {style:{fontSize:19,fontWeight:900,color:row[2],lineHeight:1}}, fmtBRL(row[1])),
+                React.createElement('div', {style:{fontSize:10,color:C.sub,marginTop:3}}, row[3])
+              );
+            })
+          ),
+          /* Barras de execução */
+          [
+            ["Execução Receita",   DS.percRec,  DS.percRec>=100?C.green:DS.percRec>=70?C.orange:C.red],
+            ["Execução Despesas",  DS.percDesp, DS.percDesp>=90?C.red:DS.percDesp>=70?C.orange:C.green],
+          ].map(function(row,i){
+            return React.createElement('div', {key:i,style:{marginBottom:i===0?8:0}},
+              React.createElement('div', {style:{display:"flex",justifyContent:"space-between",marginBottom:3}},
+                React.createElement('span', {style:{fontSize:11,color:C.sub,fontWeight:600}}, row[0]),
+                React.createElement('span', {style:{fontSize:11,fontWeight:800,color:row[2]}}, row[1]+"%")
+              ),
+              React.createElement('div', {style:{background:"rgba(0,0,0,0.08)",borderRadius:6,height:8,overflow:"hidden"}},
+                React.createElement('div', {style:{height:"100%",width:row[1]+"%",background:row[2],borderRadius:6,transition:"width .4s"}})
+              )
+            );
+          })
+        ),
+
+        /* ── META DE FATURAMENTO ── */
+        React.createElement('div', {className:"lg-card",style:CARD},
+          React.createElement('div', {style:{fontSize:12,fontWeight:700,marginBottom:10}}, "\uD83C\uDFAF Meta de Faturamento Mensal"),
+          React.createElement('div', {style:{display:"flex",gap:8,alignItems:"center",marginBottom:10}},
+            React.createElement('input', {
+              style:Object.assign({},FI,{flex:1,fontSize:13}),
+              type:"number",step:"100",placeholder:"Definir meta R$",
+              defaultValue:metaFat||"",
+              onBlur:function(e){ var v=parseFloat(e.target.value||0); localStorage.setItem(META_KEY,String(v)); toast("Meta de faturamento salva!"); }
+            }),
+            React.createElement('div', {style:{fontSize:12,fontWeight:700,color:C.sub,whiteSpace:"nowrap"}}, fmtBRL(metaFat))
+          ),
+          metaFat>0 && (function(){
+            var pMeta = Math.min(110,Math.round((DS.recReal/metaFat)*100));
+            var corMeta = DS.recReal>=metaFat?C.green:DS.recReal/metaFat>=0.7?C.orange:C.red;
+            return React.createElement(React.Fragment,null,
+              React.createElement('div', {style:{display:"flex",justifyContent:"space-between",marginBottom:4}},
+                React.createElement('span', {style:{fontSize:11,color:C.sub}}, fmtBRL(DS.recReal)+" de "+fmtBRL(metaFat)),
+                React.createElement('span', {style:{fontSize:12,fontWeight:800,color:corMeta}}, pMeta+"%")
+              ),
+              React.createElement('div', {style:{background:C.bg,borderRadius:8,height:12,overflow:"hidden"}},
+                React.createElement('div', {style:{height:"100%",width:Math.min(100,pMeta)+"%",background:corMeta,borderRadius:8,transition:"width .4s"}})
+              ),
+              React.createElement('div', {style:{fontSize:11,color:C.sub,marginTop:6}},
+                DS.recReal>=metaFat
+                  ? "\u2705 Meta atingida! Super\u00e1vit de "+fmtBRL(DS.recReal-metaFat)
+                  : "Faltam "+fmtBRL(metaFat-DS.recReal)+" para a meta")
+            );
+          })()
+        ),
+
+        /* ── GRÁFICO RECEITA vs DESPESA 12 MESES ── */
+        React.createElement('div', {className:"lg-card",style:CARD},
+          React.createElement('div', {style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}},
+            React.createElement('div', {style:{fontSize:12,fontWeight:700}}, "\uD83D\uDCCA Receita vs Despesa \u2014 "+anoAtual),
+            React.createElement('div', {style:{display:"flex",gap:10,fontSize:10,color:C.sub}},
+              React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.green,borderRadius:2,marginRight:3}}),"Receita"),
+              React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.red,borderRadius:2,marginRight:3}}),"Despesa")
+            )
+          ),
+          React.createElement('svg', {viewBox:"0 0 360 "+(BAR_H+28),style:{width:"100%",overflow:"visible"}},
+            dreAnual.map(function(d,i){
+              var bw=10; var sp=(360-40)/12; var x=20+i*sp;
+              var hR=d.recReal >0?Math.max(3,Math.round((d.recReal /maxBar)*BAR_H)):0;
+              var hD=d.despReal>0?Math.max(3,Math.round((d.despReal/maxBar)*BAR_H)):0;
+              var isSel3 = d.mes===mesSel;
+              var nc2=new Date(d.mes+"-15").toLocaleString("pt-BR",{month:"short"}).replace(".","").toUpperCase().slice(0,3);
+              return React.createElement(React.Fragment,{key:d.mes},
+                isSel3&&React.createElement('rect',{x:x-3,y:0,width:bw*2+12,height:BAR_H,fill:C.purple+"18",rx:4}),
+                hR>0&&React.createElement('rect',{x:x,y:BAR_H-hR,width:bw,height:hR,fill:C.green,opacity:isSel3?1:0.5,rx:2}),
+                hD>0&&React.createElement('rect',{x:x+bw+2,y:BAR_H-hD,width:bw,height:hD,fill:C.red,opacity:isSel3?1:0.5,rx:2}),
+                React.createElement('text',{x:x+bw,y:BAR_H+14,textAnchor:"middle",fontSize:8,fill:isSel3?"var(--c-text)":C.sub,fontWeight:isSel3?700:400},nc2)
+              );
+            }),
+            React.createElement('line',{x1:20,y1:BAR_H,x2:340,y2:BAR_H,stroke:C.border,strokeWidth:0.5})
+          ),
+          /* Totais anuais */
+          React.createElement('div', {style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:12,paddingTop:12,borderTop:"1px solid "+C.border}},
+            [["Receita Anual",totDRE.rec,C.green],["Despesa Anual",totDRE.desp,C.red],["Resultado Anual",totDRE.liq,totDRE.liq>=0?C.green:C.red]].map(function(row,i){
+              return React.createElement('div', {key:i,style:{textAlign:"center",borderLeft:i>0?"1px solid "+C.border:"none"}},
+                React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:"uppercase",marginBottom:2}}, row[0]),
+                React.createElement('div', {style:{fontSize:13,fontWeight:800,color:row[2]}}, fmtBRL(row[1]))
+              );
+            })
+          )
+        ),
+
+        /* ── ORÇADO vs REALIZADO POR CATEGORIA ── */
+        React.createElement('div', {className:"lg-card",style:CARD},
+          React.createElement('div', {style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}},
+            React.createElement('div', {style:{fontSize:12,fontWeight:700}}, "\uD83C\uDFAF Or\u00e7ado vs. Realizado — "+nomeMesSel),
+            React.createElement('button', {style:{fontSize:10,color:C.sub,background:"transparent",border:"none",cursor:"pointer"},
+              onClick:function(){ if(confirm("Limpar metas de orçamento?")){ localStorage.removeItem(BUD_EMP_KEY); toast("Metas removidas"); }}
+            }, "Limpar")
+          ),
+          React.createElement('div', {style:{fontSize:11,color:C.sub,marginBottom:12}}, "Defina a meta mensal por categoria. \uD83D\uDD34 ultrapassado \u00b7 \uD83D\uDFE1 \u226580%"),
+          CATS_DESP.filter(function(cat){ return (DS.gastoCat[cat]||0)>0 || parseFloat(budEmp[cat]||0)>0; }).map(function(cat){
+            var gasto = DS.gastoCat[cat]||0;
+            var teto  = parseFloat(budEmp[cat]||0);
+            var pct   = teto>0?Math.min(150,Math.round((gasto/teto)*100)):0;
+            var cor   = pct>=100?C.red:pct>=80?C.orange:C.green;
+            return React.createElement('div', {key:cat, style:{marginBottom:12}},
+              React.createElement('div', {style:{display:"flex",alignItems:"center",gap:8,marginBottom:3}},
+                React.createElement('div', {style:{flex:1,fontSize:13,fontWeight:600}},
+                  (pct>=100?"\uD83D\uDD34 ":pct>=80?"\uD83D\uDFE1 ":"\uD83D\uDFE2 ")+cat),
+                React.createElement('input', {
+                  style:Object.assign({},FI,{width:96,fontSize:12,padding:"4px 8px"}),
+                  type:"number",step:"0.01",placeholder:"Meta R$",
+                  defaultValue:budEmp[cat]||"",
+                  onBlur:function(e){ var nb=Object.assign({},budEmp,{[cat]:parseFloat(e.target.value)||""}); localStorage.setItem(BUD_EMP_KEY,JSON.stringify(nb)); toast("Meta salva!"); }
+                }),
+                React.createElement('div', {style:{fontSize:12,fontWeight:700,color:cor,width:108,textAlign:"right",flexShrink:0}},
+                  fmtBRL(gasto)+(teto>0?" / "+fmtBRL(teto):""))
+              ),
+              teto>0&&React.createElement('div', {style:{background:C.bg,borderRadius:4,height:6,overflow:"hidden"}},
+                React.createElement('div', {style:{height:6,width:Math.min(100,pct)+"%",background:cor,transition:"width .3s"}})
+              )
+            );
+          }),
+          /* Botões para adicionar categoria sem gasto */
+          React.createElement('div', {style:{marginTop:10,paddingTop:10,borderTop:"1px solid "+C.border}},
+            React.createElement('div', {style:{fontSize:11,color:C.sub,marginBottom:6}}, "Adicionar meta sem gasto:"),
+            React.createElement('div', {style:{display:"flex",flexWrap:"wrap",gap:6}},
+              CATS_DESP.filter(function(c){ return !(DS.gastoCat[c]||0)&&!(parseFloat(budEmp[c]||0)>0); }).map(function(cat){
+                return React.createElement('button', {key:cat,
+                  style:{fontSize:11,padding:"4px 10px",borderRadius:20,background:"transparent",border:"1px solid "+C.border,color:C.sub,cursor:"pointer"},
+                  onClick:function(){
+                    var v=prompt("Meta mensal para "+cat+" (R$):");
+                    if(v&&parseFloat(v)>0){ var nb=Object.assign({},budEmp,{[cat]:parseFloat(v)}); localStorage.setItem(BUD_EMP_KEY,JSON.stringify(nb)); toast("Meta de "+cat+" salva!"); }
+                  }
+                }, "+ "+cat);
+              })
+            )
+          )
+        ),
+
+        /* ── DRE ANUAL ── */
+        React.createElement('div', {className:"lg-card",style:CARD},
+          React.createElement('div', {style:{fontSize:12,fontWeight:700,marginBottom:10}}, "\uD83D\uDCCB DRE Simplificada \u2014 "+anoAtual),
+          React.createElement('div', {style:{overflowX:"auto",WebkitOverflowScrolling:"touch"}},
+            React.createElement('table', {style:{width:"100%",fontSize:10,borderCollapse:"collapse",minWidth:500}},
+              React.createElement('thead',null,
+                React.createElement('tr',{style:{color:C.sub,fontSize:9}},
+                  React.createElement('th',{style:{textAlign:"left",padding:"4px 3px",fontWeight:700,minWidth:90}},"Linha"),
+                  dreAnual.map(function(d){ return React.createElement('th',{key:d.mes,style:{textAlign:"right",padding:"4px 2px",color:d.mes===mesSel?C.purple:C.sub,fontWeight:d.mes===mesSel?800:400}},d.mes.slice(5)); }),
+                  React.createElement('th',{style:{textAlign:"right",padding:"4px 3px",color:C.blue,fontWeight:800}},"TOTAL")
+                )
+              ),
+              React.createElement('tbody',null,
+                [
+                  ["\uD83D\uDCB0 Receita",    dreAnual.map(function(d){ return d.recReal; }),  totDRE.rec,  C.green,  false],
+                  ["\uD83D\uDD27 (−) Manutenção", dreAnual.map(function(d){ return (manutencoes||[]).filter(function(mn){ return manMesRefGlobal(mn)===d.mes&&(mn.status_financeiro==="pago"||!!mn.data_pagamento); }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0); }), (manutencoes||[]).filter(function(mn){ return (mn.data_pagamento||"").slice(0,4)===String(anoAtual)&&(mn.status_financeiro==="pago"||!!mn.data_pagamento); }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0), C.purple, false],
+                  ["\uD83D\uDCB8 (−) Despesas",  dreAnual.map(function(d){ return d.despReal; }), totDRE.desp, C.orange, false],
+                  ["= Resultado",     dreAnual.map(function(d){ return d.liqReal; }),  totDRE.liq,  totDRE.liq>=0?C.green:C.red, true],
+                ].map(function(row,ri){
+                  return React.createElement('tr',{key:ri,style:{borderTop:"1px solid "+C.border,fontWeight:row[4]?800:400,background:row[4]?"var(--c-bg)":"transparent"}},
+                    React.createElement('td',{style:{padding:"5px 3px",whiteSpace:"nowrap",fontSize:ri===3?11:10}},row[0]),
+                    row[1].map(function(v,j){
+                      return React.createElement('td',{key:j,style:{padding:"5px 2px",textAlign:"right",color:v?row[3]:C.sub,fontWeight:dreAnual[j]&&dreAnual[j].mes===mesSel?700:400}},
+                        v?fmtBRL(v):"—");
+                    }),
+                    React.createElement('td',{style:{padding:"5px 3px",textAlign:"right",fontWeight:800,color:row[3]}},fmtBRL(row[2]))
+                  );
+                })
+              )
+            )
+          )
+        ),
+
+        /* ── LUCRATIVIDADE POR VEÍCULO ── */
+        lucVei.length>0 && React.createElement('div', {className:"lg-card",style:CARD},
+          React.createElement('div', {style:{fontSize:12,fontWeight:700,marginBottom:10}}, "\uD83D\uDE97 Lucratividade por Ve\u00edculo"),
+          React.createElement('div', {style:{fontSize:11,color:C.sub,marginBottom:10}}, "Receita recebida menos manuten\u00e7\u00e3o e multas n\u00e3o recuperadas (hist\u00f3rico geral)"),
+          lucVei.map(function(x,i){
+            var corLiq = x.liq>=0?C.green:C.red;
+            var pctMan = x.rec>0?Math.round((x.man/x.rec)*100):0;
+            var pctBar = x.rec>0?Math.min(100,Math.max(0,Math.round((x.liq/x.rec*100+100)/2))):50;
+            return React.createElement('div',{key:x.v.id,style:{padding:"10px 0",borderBottom:i<lucVei.length-1?"1px solid "+C.border:"none"}},
+              React.createElement('div',{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}},
+                React.createElement('div',{style:{flex:1,minWidth:0}},
+                  React.createElement('div',{style:{fontWeight:600,fontSize:13}},
+                    (x.v.modelo||x.v.marca||"Ve\u00edculo")+(x.v.placa?" \u00b7 "+x.v.placa:"")),
+                  React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:2}},
+                    x.nCts+" ct(s) \u00b7 Rec. "+fmtBRL(x.rec)+" \u00b7 Man. "+fmtBRL(x.man)+(pctMan>0?" ("+pctMan+"%)":"")+(x.mult>0?" \u00b7 Multas "+fmtBRL(x.mult):""))
+                ),
+                React.createElement('div',{style:{fontWeight:800,fontSize:14,color:corLiq,flexShrink:0,marginLeft:8}},
+                  (x.liq>=0?"+":"")+fmtBRL(x.liq))
+              ),
+              React.createElement('div',{style:{marginTop:5,background:C.bg,borderRadius:4,height:4,overflow:"hidden"}},
+                React.createElement('div',{style:{height:4,width:pctBar+"%",background:corLiq,transition:"width .3s"}})
+              )
+            );
+          })
+        ),
+
+        /* ── INSIGHTS ── */
+        React.createElement('div', {className:"lg-card",style:CARD},
+          React.createElement('div', {style:{fontSize:12,fontWeight:700,marginBottom:10}}, "\uD83D\uDCA1 Insights \u2014 "+nomeMesSel),
+          React.createElement('div', {style:{display:"flex",flexDirection:"column",gap:8}},
+            React.createElement('div', {style:{padding:"10px 12px",borderRadius:12,
+              background:(DS.margPrev>=20?C.green:DS.margPrev>=0?C.orange:C.red)+"11",
+              border:"1px solid "+(DS.margPrev>=20?C.green:DS.margPrev>=0?C.orange:C.red)+"33"}},
+              React.createElement('div', {style:{fontWeight:700,fontSize:13,color:DS.margPrev>=20?C.green:DS.margPrev>=0?C.orange:C.red}},
+                DS.margPrev>=20?"\u2705 Margem saud\u00e1vel":DS.margPrev>=0?"\u26a0\ufe0f Margem abaixo do ideal":"\uD83D\uDD34 Resultado negativo"),
+              React.createElement('div', {style:{fontSize:12,color:C.sub,marginTop:2}},
+                "Margem l\u00edquida prevista: "+DS.margPrev+"% \u2014 "+(DS.margPrev>=20?"acima do m\u00ednimo recomendado de 20%":"ideal acima de 20%"))
+            ),
+            DS.percRec<70&&DS.recPrev>0&&React.createElement('div', {style:{padding:"10px 12px",borderRadius:12,background:C.orange+"11",border:"1px solid "+C.orange+"33"}},
+              React.createElement('div', {style:{fontWeight:700,fontSize:13,color:C.orange}}, "\uD83D\uDCC9 Receita abaixo do previsto"),
+              React.createElement('div', {style:{fontSize:12,color:C.sub,marginTop:2}}, "Apenas "+DS.percRec+"% do faturamento previsto realizado. Verifique contratos em aberto.")
+            ),
+            DS.percDesp>90&&DS.despPrev>0&&React.createElement('div', {style:{padding:"10px 12px",borderRadius:12,background:C.red+"11",border:"1px solid "+C.red+"33"}},
+              React.createElement('div', {style:{fontWeight:700,fontSize:13,color:C.red}}, "\uD83D\uDD34 Despesas no limite"),
+              React.createElement('div', {style:{fontSize:12,color:C.sub,marginTop:2}}, "Execu\u00e7\u00e3o de despesas em "+DS.percDesp+"% do or\u00e7ado.")
+            ),
+            DS.liqPrev>0&&DS.margPrev>=20&&DS.percRec>=70&&React.createElement('div', {style:{padding:"10px 12px",borderRadius:12,background:C.green+"11",border:"1px solid "+C.green+"33"}},
+              React.createElement('div', {style:{fontWeight:700,fontSize:13,color:C.green}}, "\uD83D\uDE80 M\u00eas dentro do planejado"),
+              React.createElement('div', {style:{fontSize:12,color:C.sub,marginTop:2}}, "Receita e margem est\u00e3o no caminho certo.")
+            )
+          )
         )
       );
     })()

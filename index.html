@@ -18718,9 +18718,11 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       // Normaliza IDs: "" → null (Postgres bigint rejeita string vazia)
       ["contrato_id","veiculo_id","cliente_id"].forEach(function(k){ if (payload[k] === "" || payload[k] === undefined) payload[k] = null; });
       // Normaliza datas: "" → null
-      ["data","vencimento","data_pagamento","data_notificacao","data_cobranca_cliente"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
+      ["data","vencimento","data_pagamento","data_notificacao","data_cobranca_cliente","data_solicitacao_boleto","data_boleto_recebido","data_cobranca_cliente"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
       // Normaliza números: "" → null
       ["valor","valor_cobrado","pontos"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
+      // Normaliza booleanos de boleto/cobrança: garante boolean ou null
+      ["boleto_orgao_solicitado","boleto_orgao_recebido"].forEach(function(k){ if (payload[k] === undefined || payload[k] === "") payload[k] = false; payload[k] = !!payload[k]; });
       if (edit) { const u = await db.patch("multas", edit, payload); setMultas(p => p.map(m => m.id === edit ? Object.assign({}, m, u) : m)); toast("Atualizado!"); }
       else { const c = await db.post("multas", payload); setMultas(p => [c].concat(p)); toast("Registrada!"); }
       setModal(false);
@@ -23883,6 +23885,13 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setClaudeKey
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3045}}), "alter table clientes add column if not exists comprovante_url text;"
                  , React.createElement('br', {}), "alter table multas add column if not exists cliente_id bigint;"
                  , React.createElement('br', {}), "alter table multas add column if not exists veiculo_id bigint;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists boleto_orgao_solicitado boolean default false;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists boleto_orgao_recebido boolean default false;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists data_solicitacao_boleto date;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists data_boleto_recebido date;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists token_dsv text;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists dsv_assinado_em timestamptz;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists data_cobranca_cliente date;"
                  , React.createElement('br', {}), "-- IMPORTANTE: Se a reserva não é excluída, rode:"
                  , React.createElement('br', {}), "alter table reservas disable row level security;"
                  , React.createElement('br', {}), "grant all on reservas to anon;"
@@ -24787,10 +24796,8 @@ function podeExcluir(usuario) { return usuario && usuario.perfil && usuario.perf
 const TABS = [
   { id: "inicio", label: "Início" },
   { id: "reservas", label: "Reservas" },
-  { id: "contratos", label: "Contratos" },
+  { id: "operacional", label: "Operacional" },
   { id: "financeiro", label: "Financeiro" },
-  { id: "multas", label: "Multas" },
-  { id: "manutencao", label: "Manutenção" },
   { id: "cadastro", label: "Cadastro" },
   { id: "relatorios", label: "Relatórios" },
   { id: "calendario", label: "Calendário" },
@@ -24800,6 +24807,11 @@ const TABS = [
   { id: "config", label: "Config" }
 ];
 const TAB_SUB_TABS = {
+  "operacional": [
+    { id: "contratos",  label: "Contratos" },
+    { id: "multas",     label: "Multas" },
+    { id: "manutencao", label: "Manutenção" }
+  ],
   "cadastro": [
     { id: "frota",    label: "Frota" },
     { id: "clientes", label: "Clientes" },
@@ -24820,6 +24832,7 @@ const ICONS = {
   calendario: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01"/><\/svg>',
   tarifas:   '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/><\/svg>',
   reservas:  '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><circle cx="9" cy="16" r="1.5" fill="currentColor" stroke="none"/><circle cx="15" cy="16" r="1.5" fill="currentColor" stroke="none"/><\/svg>',
+  operacional: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-4 0v2M8 7V5a2 2 0 0 0-4 0v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/><\/svg>',
   simulador: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/><\/svg>',
   linha_do_tempo: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><circle cx="8" cy="6" r="2.5" fill="currentColor" stroke="none"/><line x1="3" y1="12" x2="21" y2="12"/><circle cx="14" cy="12" r="2.5" fill="currentColor" stroke="none"/><line x1="3" y1="18" x2="21" y2="18"/><circle cx="10" cy="18" r="2.5" fill="currentColor" stroke="none"/><\/svg>',
   usuarios: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/><\/svg>'
@@ -27547,11 +27560,22 @@ function App() {
   function handleLogin(usuario) { setUsuarioAtual(usuario); setLogado(true); document.body.classList.add('ag-logado'); }
 
   const [tab, setTab] = useState(function(){
-    var TABS_VALIDAS = ["inicio","cadastro","frota","clientes","contratos","reservas","multas","manutencao","financeiro","relatorios","simulador","config","calendario","linha_do_tempo","usuarios"];
+    var TABS_VALIDAS = ["inicio","cadastro","frota","clientes","contratos","reservas","multas","manutencao","operacional","financeiro","relatorios","simulador","config","calendario","linha_do_tempo","usuarios"];
     try { var p = JSON.parse(localStorage.getItem("ag_prefs_v1") || "{}"); var t = p.homeTab || "inicio"; return TABS_VALIDAS.indexOf(t) >= 0 ? t : "inicio"; } catch(e) { return "inicio"; }
   });
 
   const [cadastroSubTab, setCadastroSubTab] = useState("frota");
+  const [operacionalSubTab, setOperacionalSubTab] = useState("contratos");
+  // Wrapper: redireciona contratos/multas/manutencao para aba Operacional
+  var _setTabReal = setTab;
+  var setTab = React.useCallback(function(t) {
+    if (t === "contratos" || t === "multas" || t === "manutencao") {
+      setOperacionalSubTab(t);
+      _setTabReal("operacional");
+    } else {
+      _setTabReal(t);
+    }
+  }, [_setTabReal]);
 
   // Conecta troca de tab ao window.history para o swipe-back funcionar
   var _tabFromHistory = React.useRef(false);
@@ -27773,6 +27797,11 @@ function App() {
     if (usuarioAtual && !temAcesso(usuarioAtual, tab)) return semPermissao;
     if (tab === "inicio") return React.createElement(Inicio, { ...props, orcItens: orcItens, desktop: !mobile });
     if (tab === "cadastro") return React.createElement(Cadastro, { ...props, subTabProp: cadastroSubTab, setSubTabProp: setCadastroSubTab });
+    if (tab === "operacional") {
+      if (operacionalSubTab === "multas") return React.createElement(Multas, { ...props, veiculos: veiculos });
+      if (operacionalSubTab === "manutencao") return React.createElement(Manutencao, { ...props });
+      return React.createElement(Contratos, { ...props });
+    }
     if (tab === "frota") return React.createElement(Frota, { ...props });
     if (tab === "clientes") return React.createElement(Clientes, { ...props });
     if (tab === "contratos") return React.createElement(Contratos, { ...props });
@@ -27808,10 +27837,13 @@ function App() {
         , (function() {
             var subs = TAB_SUB_TABS[tab];
             if (!subs) return null;
+            var isOper = tab === "operacional";
+            var activeSubTab = isOper ? operacionalSubTab : cadastroSubTab;
+            var setActiveSubTab = isOper ? setOperacionalSubTab : setCadastroSubTab;
             return React.createElement('div', { className: "lg-nav-pill", style: { overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none", WebkitOverflowScrolling: "touch" } }
               , subs.map(function(s) {
-                  var isActive = cadastroSubTab === s.id;
-                  return React.createElement('button', { key: s.id, onClick: function(){ setCadastroSubTab(s.id); }, className: "lg-nav-btn" + (isActive ? " lg-nav-btn-active" : ""), style: { position: "relative" } }
+                  var isActive = activeSubTab === s.id;
+                  return React.createElement('button', { key: s.id, onClick: function(){ setActiveSubTab(s.id); }, className: "lg-nav-btn" + (isActive ? " lg-nav-btn-active" : ""), style: { position: "relative" } }
                     , React.createElement(NavIcon, { id: s.id, active: isActive })
                     , React.createElement('span', { style: { fontSize: 10, fontWeight: isActive ? 700 : 400, color: isActive ? C.blue : C.sub, whiteSpace: "nowrap", position: "relative", zIndex: 1 } }, s.label)
                   );

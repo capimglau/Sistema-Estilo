@@ -23845,183 +23845,349 @@ function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, rese
   var [mtlCliente, setMtlCliente] = React.useState("");
   var [mtlStatus, setMtlStatus] = React.useState("todos");
   var [mtlExpandida, setMtlExpandida] = React.useState(null);
+  var [mtlDe, setMtlDe] = React.useState("");
+  var [mtlAte, setMtlAte] = React.useState("");
 
   // ── Linha do tempo de multas individual ──
   function renderMultasTL() {
     var hoje = new Date().toISOString().split("T")[0];
-    function getCtVeClM(m){
-      var ct=m.contrato_id?(contratos||[]).find(function(x){return x.id==m.contrato_id;}):null;
-      var ve=(ct?(veiculos||[]).find(function(x){return x.id==ct.veiculo_id;}):(veiculos||[]).find(function(x){return x.id==m.veiculo_id;}))||null;
-      var cl=(ct?(clientes||[]).find(function(x){return x.id==ct.cliente_id;}):(clientes||[]).find(function(x){return x.id==m.cliente_id;}))||null;
-      return {ve:ve,cl:cl};
-    }
 
-    // Filtrar multas
-    var todasM = (multas||[]).filter(function(m){ return m.status!=="cancelada"&&m.status!=="cancelado"; });
-    if (mtlAit) todasM = todasM.filter(function(m){ return (m.ait||"").toLowerCase().includes(mtlAit.toLowerCase()); });
-    if (mtlPlaca) {
-      todasM = todasM.filter(function(m){
-        var ref = getCtVeClM(m);
-        var placa = (ref.ve&&ref.ve.placa)||m.placa||"";
-        return placa.toLowerCase().includes(mtlPlaca.toLowerCase());
-      });
+    // helpers locais
+    function getRef(m) {
+      var ct = m.contrato_id ? (contratos||[]).find(function(x){return x.id==m.contrato_id;}) : null;
+      var vid = ct ? ct.veiculo_id : m.veiculo_id;
+      var cid = ct ? ct.cliente_id : m.cliente_id;
+      return { ve:(veiculos||[]).find(function(x){return x.id==vid;})||null, cl:(clientes||[]).find(function(x){return x.id==cid;})||null };
     }
-    if (mtlCliente) {
-      todasM = todasM.filter(function(m){
-        var ref = getCtVeClM(m);
-        var nome = (ref.cl&&ref.cl.nome)||m.cliente_nome||"";
-        return nome.toLowerCase().includes(mtlCliente.toLowerCase());
-      });
-    }
-    if (mtlStatus === "pendente") todasM = todasM.filter(function(m){ return m.status!=="pago"; });
-    if (mtlStatus === "pago") todasM = todasM.filter(function(m){ return m.status==="pago"; });
-    if (mtlStatus === "vencida") todasM = todasM.filter(function(m){ return m.status!=="pago" && m.vencimento && m.vencimento < hoje; });
+    function nomeCl(m){ var r=getRef(m); return (r.cl&&r.cl.nome)||m.cliente_nome||"\u2013"; }
+    function placaVe(m){ var r=getRef(m); return (r.ve&&r.ve.placa)||m.placa||"\u2013"; }
 
-    // Ordenar por data mais recente
-    todasM = todasM.slice().sort(function(a,b){ return (b.data||"").localeCompare(a.data||""); });
+    // ── Filtros ──
+    var lista = (multas||[]).filter(function(m){ return m.status!=="cancelada"&&m.status!=="cancelado"; });
+    if (mtlAit)     lista = lista.filter(function(m){ return (m.ait||"").toLowerCase().includes(mtlAit.toLowerCase()); });
+    if (mtlPlaca)   lista = lista.filter(function(m){ return placaVe(m).toLowerCase().includes(mtlPlaca.toLowerCase()); });
+    if (mtlCliente) lista = lista.filter(function(m){ return nomeCl(m).toLowerCase().includes(mtlCliente.toLowerCase()); });
+    if (mtlStatus==="pendente") lista = lista.filter(function(m){ return m.status!=="pago"; });
+    if (mtlStatus==="pago")     lista = lista.filter(function(m){ return m.status==="pago"; });
+    if (mtlStatus==="vencida")  lista = lista.filter(function(m){ return m.status!=="pago"&&m.vencimento&&m.vencimento<hoje; });
+    if (mtlDe)  lista = lista.filter(function(m){ return (m.data||"")>=mtlDe; });
+    if (mtlAte) lista = lista.filter(function(m){ return (m.data||"")<=mtlAte; });
+    lista = lista.slice().sort(function(a,b){ return (b.data||"").localeCompare(a.data||""); });
 
-    // Gerar eventos de uma multa
-    function getEventosMulta(m) {
-      var evs = [];
-      function addE(date, label, emoji, cor, detalhe, done) {
-        evs.push({ date:date, label:label, emoji:emoji, cor:cor, detalhe:detalhe||"", done:!!done });
+    var temFiltroMtl = mtlAit||mtlPlaca||mtlCliente||mtlDe||mtlAte;
+
+    // ── Gera etapas completas da linha do tempo de uma multa ──
+    function getEtapas(m) {
+      var vencida = m.status!=="pago"&&m.vencimento&&m.vencimento<hoje;
+      var etapas = [];
+      function step(feita, data, label, emoji, cor, detalhe, urgente) {
+        etapas.push({feita:feita,data:data,label:label,emoji:emoji,cor:cor,detalhe:detalhe||"",urgente:!!urgente});
       }
-      // Etapa 0 — recebida
-      addE(m.data, "Multa recebida", "📥", "#32ADE6", (m.ait?"AIT "+m.ait:"")+(m.local?" · "+m.local:"")+(m.tipo?" · "+m.tipo:""), true);
-      // Etapa 1 — DSV enviado
-      if (m.token_dsv) addE(m.data_notificacao||m.data, "DSV enviado ao condutor", "📤", "#AF52DE", m.data_notificacao?"em "+fmtDate(m.data_notificacao):"", true);
-      else addE(null, "DSV ao condutor", "📤", "#AF52DE", "Pendente", false);
-      // Etapa 2 — DSV assinado
-      if (m.dsv_assinado_em) addE(String(m.dsv_assinado_em).slice(0,10), "Condutor assinou DSV", "✍️", "#AF52DE", "em "+fmtDate(String(m.dsv_assinado_em).slice(0,10)), true);
-      else if (m.token_dsv) addE(null, "Aguardando assinatura", "⏳", "#FF9500", "Pendente", false);
-      // Etapa 3 — Órgão notificado
+
+      // 1. Recebida
+      step(true, m.data, "Multa recebida", "📥", "#32ADE6",
+        [(m.ait?"AIT "+m.ait:""),(m.tipo||""),(m.local||"")].filter(Boolean).join(" \u00b7 "));
+
+      // 2. DSV enviado ao condutor
+      if (m.token_dsv)
+        step(true, m.data_notificacao||m.data, "DSV enviado ao condutor", "📤", "#AF52DE",
+          m.data_notificacao?"Enviado em "+fmtDate(m.data_notificacao):"Data de envio não registrada");
+      else
+        step(false, null, "Enviar DSV ao condutor", "📤", "#AF52DE",
+          "Gere e envie o documento de transferência de responsabilidade ao motorista");
+
+      // 3. Condutor assinou DSV
+      if (m.dsv_assinado_em)
+        step(true, String(m.dsv_assinado_em).slice(0,10), "Condutor assinou o DSV", "✍️", "#AF52DE",
+          "Assinatura em "+fmtDate(String(m.dsv_assinado_em).slice(0,10)));
+      else if (m.token_dsv)
+        step(false, null, "Aguardando assinatura do condutor", "⏳", "#FF9500",
+          "DSV enviado \u2014 aguardando o condutor assinar online", true);
+
+      // 4. Indicação / Notificação ao órgão
       var notifOk = m.status_notificacao==="notificado"||m.status_notificacao==="nao_localizou";
-      if (notifOk) addE(m.data_notificacao, "Órgão notificado", m.status_notificacao==="notificado"?"🏛️":"❌", m.status_notificacao==="notificado"?"#34C759":"#FF3B30", m.status_notificacao==="nao_localizou"?"Não identificou condutor":"", true);
-      else addE(null, "Notificar órgão", "🏛️", "#34C759", "Pendente", false);
-      // Etapa 4 — Boleto solicitado
-      if (m.boleto_orgao_solicitado) addE(m.data_solicitacao_boleto, "Boleto solicitado ao órgão", "📋", "#FF9500", m.data_solicitacao_boleto?"em "+fmtDate(m.data_solicitacao_boleto):"", true);
-      else addE(null, "Solicitar boleto", "📋", "#FF9500", "Pendente", false);
-      // Etapa 5 — Boleto recebido
-      if (m.boleto_orgao_recebido) addE(m.data_boleto_recebido, "Boleto recebido", "💳", "#FF9500", m.data_boleto_recebido?"em "+fmtDate(m.data_boleto_recebido):"", true);
-      else if (m.boleto_orgao_solicitado) addE(null, "Aguardando boleto", "💳", "#FF9500", "Pendente", false);
-      // Etapa 6 — Pago ao órgão
-      if (m.status==="pago") addE(m.data_pagamento, "Pago ao órgão", "💰", "#34C759", fmtBRL(parseFloat(m.valor||0))+(m.data_pagamento?" em "+fmtDate(m.data_pagamento):""), true);
-      else addE(null, "Pagar ao órgão", "💰", "#34C759", fmtBRL(parseFloat(m.valor||0))+(m.vencimento?" · venc "+fmtDate(m.vencimento):""), false);
-      // Etapa 7 — Cobrança ao cliente
-      if (m.cobrado_cliente==="pago") addE(m.data_cobranca_cliente, "Cliente pagou", "✅", "#34C759", fmtBRL(parseFloat(m.valor_cobrado||m.valor||0))+(m.data_cobranca_cliente?" em "+fmtDate(m.data_cobranca_cliente):""), true);
-      else if (m.cobrado_cliente==="pendente") addE(m.data_cobranca_cliente, "Cobrado · aguardando", "📬", "#9FBDE6", "Aguardando pagamento do cliente", true);
-      else addE(null, "Cobrar cliente", "📬", "#9FBDE6", m.status==="pago"?"Pendente de cobrança":"Aguardar pagamento", false);
-      return evs;
+      if (notifOk) {
+        if (m.status_notificacao==="notificado")
+          step(true, m.data_notificacao, "Órgão notificado com sucesso", "🏛️", "#34C759",
+            "Indicação do condutor realizada"+(m.data_notificacao?" em "+fmtDate(m.data_notificacao):""));
+        else
+          step(true, m.data_notificacao, "Órgão informou: condutor não identificado", "❌", "#FF3B30",
+            "A multa pode permanecer em nome da locadora. Solicite boleto para pagamento.");
+      } else {
+        step(false, null, "Notificar órgão (indicar condutor)", "🏛️", "#34C759",
+          m.dsv_assinado_em
+            ? "DSV assinado \u2014 envie a indicação ao órgão autuador agora"
+            : "Aguardar DSV assinado para notificar o órgão", !!m.dsv_assinado_em);
+      }
+
+      // 5. Boleto solicitado ao órgão
+      if (m.boleto_orgao_solicitado)
+        step(true, m.data_solicitacao_boleto, "Boleto solicitado ao órgão", "📋", "#FF9500",
+          m.data_solicitacao_boleto?"Solicitado em "+fmtDate(m.data_solicitacao_boleto):"Solicitação registrada");
+      else
+        step(false, null, "Solicitar boleto ao órgão", "📋", "#FF9500",
+          notifOk?"Notificação feita \u2014 solicite o boleto de pagamento ao órgão":"Aguardar notificação do órgão", notifOk);
+
+      // 6. Boleto recebido
+      if (m.boleto_orgao_recebido)
+        step(true, m.data_boleto_recebido, "Boleto recebido do órgão", "💳", "#FF9500",
+          m.data_boleto_recebido?"Recebido em "+fmtDate(m.data_boleto_recebido):"Recebido");
+      else if (m.boleto_orgao_solicitado)
+        step(false, null, "Aguardando boleto do órgão", "💳", "#FF9500",
+          "Boleto solicitado \u2014 aguardando retorno do órgão autuador", true);
+
+      // 7. Pagar ao órgão
+      if (m.status==="pago")
+        step(true, m.data_pagamento, "Multa paga ao órgão", "💰", "#34C759",
+          fmtBRL(parseFloat(m.valor||0))+(m.data_pagamento?" \u2014 pago em "+fmtDate(m.data_pagamento):""));
+      else if (vencida)
+        step(false, m.vencimento, "PAGAMENTO VENCIDO ao órgão", "🚨", "#FF3B30",
+          "Venceu em "+fmtDate(m.vencimento)+" \u2014 "+fmtBRL(parseFloat(m.valor||0))+" \u2014 risco de acréscimos", true);
+      else
+        step(false, m.vencimento, "Pagar multa ao órgão", "💰", "#34C759",
+          fmtBRL(parseFloat(m.valor||0))+(m.vencimento?" \u2014 vence em "+fmtDate(m.vencimento):""), m.boleto_orgao_recebido);
+
+      // 8. Cobrar ao cliente
+      if (m.cobrado_cliente==="pago")
+        step(true, m.data_cobranca_cliente, "Cliente reembolsou a locadora", "✅", "#34C759",
+          fmtBRL(parseFloat(m.valor_cobrado||m.valor||0))+(m.data_cobranca_cliente?" em "+fmtDate(m.data_cobranca_cliente):""));
+      else if (m.cobrado_cliente==="pendente")
+        step(false, m.data_cobranca_cliente, "Cobrado ao cliente \u2014 aguardando pagamento", "📬", "#FF9500",
+          "Valor cobrado: "+fmtBRL(parseFloat(m.valor_cobrado||m.valor||0))+" \u2014 cliente ainda não pagou", true);
+      else
+        step(false, null, "Cobrar cliente pelo valor da multa", "📬", "#9FBDE6",
+          m.status==="pago"
+            ? "Locadora pagou ao órgão \u2014 solicite reembolso ao cliente"
+            : "Realizar após pagamento ao órgão", m.status==="pago");
+
+      // 9. Encerrada
+      var encerrada = m.cobrado_cliente==="pago"&&m.status==="pago";
+      step(encerrada, null, "Processo encerrado", "✅", "#34C759",
+        encerrada?"Todas as etapas concluídas":"Aguardando etapas anteriores");
+
+      return etapas;
     }
 
-    var placasUnicas = [];
-    var placasSet = {};
-    (multas||[]).forEach(function(m){
-      var ref = getCtVeClM(m);
-      var pl = (ref.ve&&ref.ve.placa)||m.placa||"";
-      if (pl && !placasSet[pl]) { placasSet[pl]=true; placasUnicas.push({id:String((ref.ve&&ref.ve.id)||m.veiculo_id||""),placa:pl}); }
-    });
+    // ── Gera resumo de próximos passos ──
+    function getProximosPassos(m) {
+      var passos = [];
+      var hoje2 = new Date().toISOString().split("T")[0];
+      var vencida = m.status!=="pago"&&m.vencimento&&m.vencimento<hoje2;
 
-    return React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:10} }
-      // Filtros
-      , React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:8} }
-        , React.createElement('div', { style:{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"} }
-          , React.createElement('input', { placeholder:"AIT...", value:mtlAit, onChange:function(e){setMtlAit(e.target.value);},
-              style:{flex:1,minWidth:90,fontSize:13,padding:"7px 10px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-card)",color:"var(--c-text)"} })
-          , React.createElement('input', { placeholder:"Placa...", value:mtlPlaca, onChange:function(e){setMtlPlaca(e.target.value);},
-              style:{flex:1,minWidth:90,fontSize:13,padding:"7px 10px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-card)",color:"var(--c-text)"} })
-          , React.createElement('input', { placeholder:"Cliente...", value:mtlCliente, onChange:function(e){setMtlCliente(e.target.value);},
-              style:{flex:1,minWidth:100,fontSize:13,padding:"7px 10px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-card)",color:"var(--c-text)"} })
+      if (vencida)
+        passos.push({urgencia:"critica",emoji:"🚨",texto:"Pagamento VENCIDO em "+fmtDate(m.vencimento)+" \u2014 pague imediatamente ao órgão para evitar acréscimos e juros"});
+      if (!m.token_dsv)
+        passos.push({urgencia:"alta",emoji:"📤",texto:"Gere e envie o DSV ao condutor para iniciar a transferência de responsabilidade"});
+      if (m.token_dsv&&!m.dsv_assinado_em)
+        passos.push({urgencia:"media",emoji:"⏳",texto:"DSV enviado \u2014 acompanhe e pressione o condutor a assinar"});
+      if (m.dsv_assinado_em&&!["notificado","nao_localizou"].includes(m.status_notificacao||""))
+        passos.push({urgencia:"alta",emoji:"🏛️",texto:"DSV assinado! Envie a indicação do condutor ao órgão autuador agora"});
+      if (m.status_notificacao==="notificado"&&!m.boleto_orgao_solicitado)
+        passos.push({urgencia:"media",emoji:"📋",texto:"Órgão notificado \u2014 solicite o boleto de pagamento ao órgão autuador"});
+      if (m.boleto_orgao_solicitado&&!m.boleto_orgao_recebido)
+        passos.push({urgencia:"baixa",emoji:"💳",texto:"Boleto solicitado \u2014 aguarde o retorno do órgão com o boleto"});
+      if (m.boleto_orgao_recebido&&m.status!=="pago"&&!vencida)
+        passos.push({urgencia:"alta",emoji:"💰",texto:"Boleto em mãos \u2014 pague ao órgão antes de "+fmtDate(m.vencimento||"")});
+      if (m.status==="pago"&&m.cobrado_cliente!=="pago"&&m.cobrado_cliente!=="pendente")
+        passos.push({urgencia:"alta",emoji:"📬",texto:"Multa paga! Cobre o cliente "+nomeCl(m)+" pelo reembolso de "+fmtBRL(parseFloat(m.valor||0))});
+      if (m.cobrado_cliente==="pendente")
+        passos.push({urgencia:"media",emoji:"💬",texto:"Cobrança enviada ao cliente \u2014 acompanhe o pagamento e confirme quando receber"});
+      if (m.cobrado_cliente==="pago"&&m.status==="pago")
+        passos.push({urgencia:"ok",emoji:"✅",texto:"Processo 100% concluído \u2014 multa paga ao órgão e cliente reembolsou a locadora"});
+      if (m.status_notificacao==="nao_localizou"&&m.status!=="pago")
+        passos.push({urgencia:"critica",emoji:"❌",texto:"Órgão não identificou o condutor \u2014 a multa ficará em nome da locadora. Solicite boleto e pague ao órgão"});
+
+      return passos;
+    }
+
+    var corUrgencia = {critica:"#FF3B30",alta:"#FF9500",media:"#AF52DE",baixa:"#32ADE6",ok:"#34C759"};
+    var bgUrgencia  = {critica:"rgba(255,59,48,0.10)",alta:"rgba(255,149,0,0.10)",media:"rgba(175,82,222,0.10)",baixa:"rgba(50,173,230,0.10)",ok:"rgba(52,199,89,0.10)"};
+
+    return React.createElement('div', {style:{display:"flex",flexDirection:"column",gap:12}}
+
+      // ══ FILTROS ══
+      , React.createElement('div', {style:{background:"var(--c-card)",borderRadius:16,padding:"12px 14px",display:"flex",flexDirection:"column",gap:8,border:"1px solid var(--c-border)"}}
+        , React.createElement('div', {style:{display:"flex",gap:6,flexWrap:"wrap"}}
+          , React.createElement('input', {placeholder:"AIT...", value:mtlAit, onChange:function(e){setMtlAit(e.target.value);setMtlExpandida(null);},
+              style:{flex:"1 1 80px",minWidth:70,fontSize:13,padding:"8px 11px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)"}})
+          , React.createElement('input', {placeholder:"Placa...", value:mtlPlaca, onChange:function(e){setMtlPlaca(e.target.value);setMtlExpandida(null);},
+              style:{flex:"1 1 80px",minWidth:70,fontSize:13,padding:"8px 11px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)"}})
+          , React.createElement('input', {placeholder:"Cliente...", value:mtlCliente, onChange:function(e){setMtlCliente(e.target.value);setMtlExpandida(null);},
+              style:{flex:"1 1 100px",minWidth:90,fontSize:13,padding:"8px 11px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)"}})
         )
-        , React.createElement('div', { style:{display:"flex",gap:5,flexWrap:"wrap"} }
-          , [["todos","Todas"],["pendente","Pendentes"],["pago","Pagas"],["vencida","Vencidas"]].map(function(pair){
-              var v=pair[0],l=pair[1];
-              return React.createElement('button', { key:v, onClick:function(){setMtlStatus(v);},
-                style:{fontSize:11,fontWeight:600,padding:"5px 12px",borderRadius:20,cursor:"pointer",border:"none",
-                  background:mtlStatus===v?"var(--c-blue)":"var(--c-border)",
-                  color:mtlStatus===v?"#fff":"var(--c-sub)"} }, l);
+        , React.createElement('div', {style:{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}
+          , React.createElement('span', {style:{fontSize:11,color:"var(--c-sub)",flexShrink:0}}, "De:")
+          , React.createElement('input', {type:"date", value:mtlDe, onChange:function(e){setMtlDe(e.target.value);setMtlExpandida(null);},
+              style:{flex:"1 1 120px",fontSize:12,padding:"7px 9px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)"}})
+          , React.createElement('span', {style:{fontSize:11,color:"var(--c-sub)",flexShrink:0}}, "Até:")
+          , React.createElement('input', {type:"date", value:mtlAte, onChange:function(e){setMtlAte(e.target.value);setMtlExpandida(null);},
+              style:{flex:"1 1 120px",fontSize:12,padding:"7px 9px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)"}})
+        )
+        , React.createElement('div', {style:{display:"flex",gap:5,flexWrap:"wrap"}}
+          , [["todos","Todas"],["pendente","Pendentes"],["pago","Pagas"],["vencida","🚨 Vencidas"]].map(function(p){
+              return React.createElement('button',{key:p[0],onClick:function(){setMtlStatus(p[0]);setMtlExpandida(null);},
+                style:{fontSize:11,fontWeight:700,padding:"6px 13px",borderRadius:20,cursor:"pointer",border:"none",
+                  background:mtlStatus===p[0]?"var(--c-blue)":"var(--c-bg)",
+                  color:mtlStatus===p[0]?"#fff":"var(--c-sub)",
+                  boxShadow:mtlStatus===p[0]?"0 2px 8px rgba(0,122,255,0.25)":"none"}},p[1]);
             })
-          , (mtlAit||mtlPlaca||mtlCliente) && React.createElement('button', { onClick:function(){setMtlAit("");setMtlPlaca("");setMtlCliente("");setMtlStatus("todos");},
-              style:{fontSize:11,fontWeight:600,padding:"5px 12px",borderRadius:20,cursor:"pointer",border:"none",background:"rgba(255,59,48,0.12)",color:"#FF3B30"} }, "✕ Limpar")
+          , temFiltroMtl && React.createElement('button',{
+              onClick:function(){setMtlAit("");setMtlPlaca("");setMtlCliente("");setMtlDe("");setMtlAte("");setMtlStatus("todos");setMtlExpandida(null);},
+              style:{fontSize:11,fontWeight:700,padding:"6px 13px",borderRadius:20,cursor:"pointer",border:"none",background:"rgba(255,59,48,0.1)",color:"#FF3B30"}
+            },"✕ Limpar")
         )
-        , React.createElement('div', { style:{fontSize:11,color:"var(--c-sub)",fontWeight:500} }, todasM.length+" multa"+(todasM.length!==1?"s":"")+" encontrada"+(todasM.length!==1?"s":""))
+        , React.createElement('div', {style:{fontSize:11,color:"var(--c-sub)"}}
+          , lista.length+" multa"+(lista.length!==1?"s":"")+" encontrada"+(lista.length!==1?"s":"")
+          , !mtlExpandida && " \u2014 toque em uma para ver a linha do tempo completa"
+        )
       )
 
-      // Cards de multas com linha do tempo
-      , todasM.length === 0 && React.createElement('div', { style:{background:"var(--c-card)",borderRadius:16,padding:24,textAlign:"center",color:"var(--c-sub)",fontSize:13} }
-        , "Nenhuma multa encontrada"
-      )
-      , todasM.map(function(m) {
-          var ref = getCtVeClM(m);
-          var placa = (ref.ve&&ref.ve.placa)||m.placa||"–";
-          var cliente = (ref.cl&&ref.cl.nome)||m.cliente_nome||"–";
-          var vencida = m.status!=="pago" && m.vencimento && m.vencimento < hoje;
-          var stepAtual = typeof getPipelineStep === "function" ? getPipelineStep(m) : 0;
-          var evs = getEventosMulta(m);
-          var isExp = mtlExpandida === m.id;
+      // ══ NENHUMA ══
+      , lista.length===0 && React.createElement('div',{style:{background:"var(--c-card)",borderRadius:16,padding:32,textAlign:"center",color:"var(--c-sub)",fontSize:13}},"Nenhuma multa encontrada")
 
-          // Situações simultâneas — tudo que está em andamento AO MESMO TEMPO
-          var situacoes = [];
-          if (m.status!=="pago") situacoes.push({label:"Pagamento pendente",cor:"#FF3B30",emoji:"💰"});
-          if (m.token_dsv && !m.dsv_assinado_em) situacoes.push({label:"Aguardando assinatura DSV",cor:"#FF9500",emoji:"⏳"});
-          if (m.boleto_orgao_solicitado && !m.boleto_orgao_recebido) situacoes.push({label:"Boleto aguardado",cor:"#FF9500",emoji:"📋"});
-          if ((m.status_notificacao||"nao_notificado")==="nao_notificado") situacoes.push({label:"Condutor não identificado",cor:"#8E8E93",emoji:"○"});
-          if (m.cobrado_cliente==="pendente") situacoes.push({label:"Cliente deve pagar",cor:"#9FBDE6",emoji:"📬"});
+      // ══ LISTA + LINHA DO TEMPO ══
+      , lista.map(function(m) {
+          var placa   = placaVe(m);
+          var cliente = nomeCl(m);
+          var vencida = m.status!=="pago"&&m.vencimento&&m.vencimento<hoje;
+          var stepAtual = getPipelineStep(m);
+          var isSel = mtlExpandida===m.id;
+          var etapas = isSel ? getEtapas(m) : null;
+          var passos = isSel ? getProximosPassos(m) : null;
+          var encerrada = m.cobrado_cliente==="pago"&&m.status==="pago";
 
-          return React.createElement('div', { key:m.id, style:{background:"var(--c-card)",borderRadius:18,border:"1.5px solid "+(vencida?"rgba(255,59,48,0.35)":"var(--c-border)"),overflow:"hidden",transition:"box-shadow .2s"} }
-            // Cabeçalho do card
-            , React.createElement('div', { onClick:function(){setMtlExpandida(isExp?null:m.id);}, style:{padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"flex-start",gap:10} }
-              , React.createElement('div', { style:{flex:1,minWidth:0} }
-                , React.createElement('div', { style:{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:3} }
-                  , vencida && React.createElement('span', { style:{fontSize:10,fontWeight:700,background:"rgba(255,59,48,0.12)",color:"#FF3B30",padding:"2px 7px",borderRadius:8} }, "🚨 VENCIDA")
-                  , m.status==="pago" && React.createElement('span', { style:{fontSize:10,fontWeight:700,background:"rgba(52,199,89,0.12)",color:"#34C759",padding:"2px 7px",borderRadius:8} }, "✅ PAGA")
-                  , m.ait && React.createElement('span', { style:{fontSize:10,fontWeight:700,color:"var(--c-sub)",background:"var(--c-bg)",padding:"2px 7px",borderRadius:8,border:"1px solid var(--c-border)"} }, "AIT "+m.ait)
+          // badges de situações simultâneas em aberto
+          var sits = [];
+          if (m.status!=="pago") sits.push({label:vencida?"PAGAMENTO VENCIDO":"Pagamento pendente",cor:vencida?"#FF3B30":"#FF9500"});
+          if (m.token_dsv&&!m.dsv_assinado_em) sits.push({label:"Aguard. assinatura DSV",cor:"#AF52DE"});
+          if (m.boleto_orgao_solicitado&&!m.boleto_orgao_recebido) sits.push({label:"Aguard. boleto",cor:"#FF9500"});
+          if (!["notificado","nao_localizou"].includes(m.status_notificacao||"")&&m.dsv_assinado_em) sits.push({label:"Notificar órgão",cor:"#34C759"});
+          if (m.cobrado_cliente==="pendente") sits.push({label:"Cliente deve pagar",cor:"#9FBDE6"});
+
+          return React.createElement('div', {key:m.id, style:{
+                background:"var(--c-card)", borderRadius:18,
+                border:"2px solid "+(isSel?"var(--c-blue)":vencida?"rgba(255,59,48,0.35)":encerrada?"rgba(52,199,89,0.25)":"var(--c-border)"),
+                overflow:"hidden", transition:"border-color .2s, box-shadow .2s",
+                boxShadow:isSel?"0 4px 24px rgba(0,122,255,0.12)":"none"
+              }}
+
+            // ── Card header (seletor) ──
+            , React.createElement('div', {
+                onClick:function(){setMtlExpandida(isSel?null:m.id);},
+                style:{padding:"13px 15px",cursor:"pointer",display:"flex",gap:11,alignItems:"flex-start"}
+              }
+              // coluna info
+              , React.createElement('div', {style:{flex:1,minWidth:0}}
+                , React.createElement('div', {style:{display:"flex",flexWrap:"wrap",gap:4,marginBottom:4,alignItems:"center"}}
+                  , vencida   && React.createElement('span',{style:{fontSize:10,fontWeight:800,background:"rgba(255,59,48,0.12)",color:"#FF3B30",padding:"2px 8px",borderRadius:8,letterSpacing:.4}},"🚨 VENCIDA")
+                  , encerrada && React.createElement('span',{style:{fontSize:10,fontWeight:800,background:"rgba(52,199,89,0.12)",color:"#34C759",padding:"2px 8px",borderRadius:8}},"✅ ENCERRADA")
+                  , m.status==="pago"&&!encerrada && React.createElement('span',{style:{fontSize:10,fontWeight:800,background:"rgba(52,199,89,0.12)",color:"#34C759",padding:"2px 8px",borderRadius:8}},"💰 PAGA")
+                  , m.ait && React.createElement('span',{style:{fontSize:10,fontWeight:700,color:"var(--c-sub)",background:"var(--c-bg)",padding:"2px 8px",borderRadius:8,border:"1px solid var(--c-border)"}},"AIT "+m.ait)
                 )
-                , React.createElement('div', { style:{fontSize:14,fontWeight:700,color:"var(--c-text)",marginBottom:1} }, cliente)
-                , React.createElement('div', { style:{fontSize:12,color:"var(--c-sub)",display:"flex",gap:8,flexWrap:"wrap"} }
-                  , React.createElement('span', null, "🚗 "+placa)
-                  , m.tipo && React.createElement('span', null, "· "+m.tipo)
-                  , React.createElement('span', { style:{color:"#FF3B30",fontWeight:600} }, "· "+fmtBRL(parseFloat(m.valor||0)))
-                  , m.vencimento && React.createElement('span', { style:{color:vencida?"#FF3B30":"var(--c-sub)"} }, "· venc. "+fmtDate(m.vencimento))
+                , React.createElement('div',{style:{fontSize:14,fontWeight:800,color:"var(--c-text)",marginBottom:2}}, cliente)
+                , React.createElement('div',{style:{fontSize:12,color:"var(--c-sub)",display:"flex",gap:10,flexWrap:"wrap"}}
+                  , React.createElement('span',null,"\uD83D\uDE97 "+placa)
+                  , m.tipo && React.createElement('span',null,"\u00b7 "+m.tipo)
+                  , React.createElement('span',{style:{fontWeight:700,color:vencida?"#FF3B30":"var(--c-text)"}}
+                    ,"\u00b7 "+fmtBRL(parseFloat(m.valor||0)))
+                  , m.data && React.createElement('span',null,"\u00b7 "+fmtDate(m.data))
                 )
-                // Situações simultâneas em andamento
-                , situacoes.length > 0 && React.createElement('div', { style:{display:"flex",gap:4,flexWrap:"wrap",marginTop:6} }
-                  , situacoes.map(function(s,i){ return React.createElement('span', {key:i, style:{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:20,background:s.cor+"18",color:s.cor,border:"1px solid "+s.cor+"30"} }, s.emoji+" "+s.label); })
+                // situações simultâneas
+                , sits.length>0 && React.createElement('div',{style:{display:"flex",flexWrap:"wrap",gap:3,marginTop:6}}
+                  , sits.map(function(s,i){return React.createElement('span',{key:i,style:{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:14,background:s.cor+"18",color:s.cor,border:"1px solid "+s.cor+"28"}},s.label);})
                 )
               )
-              // Progresso e toggle
-              , React.createElement('div', { style:{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,flexShrink:0} }
-                , React.createElement('div', { style:{fontSize:11,fontWeight:700,color:"var(--c-sub)"} }, (stepAtual+1)+"/9")
-                , React.createElement('div', { style:{display:"flex",gap:2} }
-                  , PIPELINE_MULTA.map(function(step,si){ return React.createElement('div', {key:si, style:{width:5,height:5,borderRadius:"50%",background:si<=stepAtual?step.cor:"var(--c-border)"} }); })
+              // coluna progresso + toggle
+              , React.createElement('div',{style:{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:5,flexShrink:0}}
+                , React.createElement('div',{style:{display:"flex",gap:3}}
+                  , PIPELINE_MULTA.map(function(step,si){
+                      return React.createElement('div',{key:si,style:{
+                        width:7,height:7,borderRadius:"50%",
+                        background:si<=stepAtual?step.cor:"var(--c-border)",
+                        boxShadow:si===stepAtual?"0 0 0 2px "+step.cor+"40":"none"
+                      }});
+                    })
                 )
-                , React.createElement('span', { style:{fontSize:11,color:"var(--c-sub)",marginTop:2} }, isExp?"▲":"▼")
+                , React.createElement('span',{style:{fontSize:10,color:"var(--c-sub)"}},(stepAtual+1)+"/"+PIPELINE_MULTA.length+" etapas")
+                , React.createElement('span',{style:{fontSize:11,fontWeight:700,color:isSel?"var(--c-blue)":"var(--c-sub)"}},isSel?"\u25b2 Fechar":"\u25bc Timeline")
               )
             )
 
-            // Linha do tempo expandida
-            , isExp && React.createElement('div', { style:{padding:"0 14px 14px"} }
-              , React.createElement('div', { style:{borderTop:"1px solid var(--c-border)",paddingTop:12,display:"flex",flexDirection:"column",gap:0} }
-                , evs.map(function(ev, ei) {
-                    var isLast = ei === evs.length - 1;
-                    return React.createElement('div', { key:ei, style:{display:"flex",gap:10,alignItems:"stretch"} }
-                      // Linha vertical + ponto
-                      , React.createElement('div', { style:{display:"flex",flexDirection:"column",alignItems:"center",width:22,flexShrink:0} }
-                        , React.createElement('div', { style:{width:22,height:22,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
-                            background:ev.done?ev.cor+"22":"var(--c-bg)",border:"2px solid "+(ev.done?ev.cor:"var(--c-border)"),
-                            fontSize:11,flexShrink:0,zIndex:1} }, ev.done?ev.emoji:"○")
-                        , !isLast && React.createElement('div', { style:{width:2,flex:1,background:ev.done?ev.cor+"40":"var(--c-border)",minHeight:14,marginTop:2,marginBottom:2} })
+            // ══ LINHA DO TEMPO EXPANDIDA ══
+            , isSel && React.createElement('div', {style:{borderTop:"1px solid var(--c-border)",background:"var(--c-bg)"}}
+
+              // Cabeçalho da TL
+              , React.createElement('div',{style:{padding:"12px 16px 0",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:6}}
+                , React.createElement('div',{style:{fontSize:12,fontWeight:800,color:"var(--c-blue)",textTransform:"uppercase",letterSpacing:.6}},
+                  "\uD83D\uDCCD Linha do Tempo \u00b7 "+cliente+" \u00b7 "+placa)
+                , m.data && React.createElement('div',{style:{fontSize:11,color:"var(--c-sub)"}},"Autuação: "+fmtDate(m.data))
+              )
+
+              // Trilho de etapas
+              , React.createElement('div',{style:{padding:"14px 16px 10px"}}
+                , etapas.map(function(ev,ei){
+                    var isLast = ei===etapas.length-1;
+                    return React.createElement('div',{key:ei,style:{display:"flex",gap:12,alignItems:"stretch"}}
+                      // trilho visual
+                      , React.createElement('div',{style:{display:"flex",flexDirection:"column",alignItems:"center",width:30,flexShrink:0}}
+                        , React.createElement('div',{style:{
+                            width:30,height:30,borderRadius:"50%",
+                            display:"flex",alignItems:"center",justifyContent:"center",
+                            fontSize:14,flexShrink:0,zIndex:1,
+                            background:ev.feita?(ev.urgente?"rgba(255,149,0,0.15)":ev.cor+"18"):(ev.urgente?"rgba(255,149,0,0.08)":"var(--c-card)"),
+                            border:"2px solid "+(ev.feita?(ev.urgente?"#FF9500":ev.cor):(ev.urgente?"rgba(255,149,0,0.5)":"var(--c-border)")),
+                            boxShadow:ev.urgente&&!ev.feita?"0 0 0 4px rgba(255,149,0,0.12)":ev.feita?"0 0 0 2px "+ev.cor+"18":"none"
+                          }}, ev.feita?ev.emoji:(ev.urgente?"\u26a0\ufe0f":"\u25cb"))
+                        , !isLast && React.createElement('div',{style:{
+                            width:2,flex:1,minHeight:16,marginTop:4,marginBottom:4,borderRadius:2,
+                            background:ev.feita?(ev.urgente?"rgba(255,149,0,0.3)":ev.cor+"40"):"var(--c-border)"
+                          }})
                       )
-                      // Conteúdo do evento
-                      , React.createElement('div', { style:{flex:1,paddingBottom:isLast?0:12,paddingTop:1} }
-                        , React.createElement('div', { style:{fontSize:12,fontWeight:ev.done?600:400,color:ev.done?ev.cor:"var(--c-sub)"} }, ev.label)
-                        , ev.detalhe && React.createElement('div', { style:{fontSize:11,color:"var(--c-sub)",marginTop:1} }, ev.detalhe)
-                        , ev.date && React.createElement('div', { style:{fontSize:10,color:"var(--c-sub)",marginTop:2,opacity:0.7} }, fmtDate(ev.date))
+                      // conteúdo da etapa
+                      , React.createElement('div',{style:{flex:1,paddingBottom:isLast?8:18,paddingTop:4}}
+                        , React.createElement('div',{style:{
+                              fontSize:13,fontWeight:ev.feita?700:500,lineHeight:1.3,
+                              color:ev.feita?(ev.urgente?"#FF9500":ev.cor):ev.urgente?"#FF9500":"var(--c-sub)"
+                            }},ev.label)
+                        , ev.detalhe && React.createElement('div',{style:{fontSize:11,color:"var(--c-sub)",marginTop:3,lineHeight:1.5}},ev.detalhe)
+                        , ev.data && React.createElement('div',{style:{fontSize:10,color:"var(--c-sub)",marginTop:3,opacity:.65}},"\uD83D\uDCC5 "+fmtDate(ev.data))
+                        , ev.urgente&&!ev.feita && React.createElement('div',{style:{fontSize:10,fontWeight:700,color:"#FF9500",marginTop:4,padding:"3px 8px",background:"rgba(255,149,0,0.1)",borderRadius:6,display:"inline-block"}},"⚡ Ação necessária agora")
                       )
                     );
                   })
               )
-            )
+
+              // ══ PRÓXIMOS PASSOS ══
+              , passos&&passos.length>0 && React.createElement('div',{style:{margin:"0 14px 14px",padding:"12px 14px",background:"var(--c-card)",borderRadius:14,border:"1px solid var(--c-border)"}}
+                , React.createElement('div',{style:{fontSize:11,fontWeight:800,color:"var(--c-text)",textTransform:"uppercase",letterSpacing:.6,marginBottom:10}},
+                  encerrada?"\u2705 Status Final":"\uD83D\uDEA6 O Que Fazer Agora")
+                , passos.map(function(p,i){
+                    var cor = corUrgencia[p.urgencia]||"#8E8E93";
+                    var bg  = bgUrgencia[p.urgencia]||"transparent";
+                    return React.createElement('div',{key:i,style:{display:"flex",gap:10,alignItems:"flex-start",padding:"8px 10px",borderRadius:10,background:bg,marginBottom:i<passos.length-1?6:0}}
+                      , React.createElement('span',{style:{fontSize:16,flexShrink:0,marginTop:1}},p.emoji)
+                      , React.createElement('div',{style:{flex:1}}
+                        , i===0&&p.urgencia==="critica" && React.createElement('div',{style:{fontSize:9,fontWeight:800,color:cor,letterSpacing:.5,marginBottom:2}},"URGENTE")
+                        , i===0&&p.urgencia==="alta"    && React.createElement('div',{style:{fontSize:9,fontWeight:800,color:cor,letterSpacing:.5,marginBottom:2}},"PRÓXIMO PASSO")
+                        , React.createElement('div',{style:{fontSize:12,color:cor,fontWeight:600,lineHeight:1.5}},p.texto)
+                      )
+                    );
+                  })
+              )
+
+              // Botão abrir em Multas
+              , React.createElement('div',{style:{padding:"0 14px 14px",display:"flex",gap:8,flexWrap:"wrap"}}
+                , React.createElement('button',{onClick:function(){
+                      window.__pendingMultaId=m.id;
+                      window.dispatchEvent(new CustomEvent("openMulta",{detail:{id:m.id}}));
+                      if(typeof setTab==="function")setTab("multas");
+                    },
+                    style:{fontSize:12,fontWeight:700,padding:"8px 16px",borderRadius:12,cursor:"pointer",border:"none",background:"var(--c-blue)",color:"#fff",boxShadow:"0 2px 8px rgba(0,122,255,0.2)"}
+                  },"\u2197 Abrir em Multas")
+                , m.vencimento && React.createElement('div',{style:{display:"flex",alignItems:"center",fontSize:12,color:vencida?"#FF3B30":"var(--c-sub)",fontWeight:vencida?700:400}}
+                  ,(vencida?"\uD83D\uDEA8 Venceu em ":"\uD83D\uDCC5 Vence em ")+fmtDate(m.vencimento))
+              )
+            ) // end expanded
           );
         })
     );

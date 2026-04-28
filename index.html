@@ -16840,10 +16840,13 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
   var anoAtual  = hoje.getFullYear();
   var mesAtual  = hoje.getMonth(); // 0-11
 
-  var [periodo,  setPeriodo]  = React.useState(24);
-  var [mesSel,   setMesSel]   = React.useState(mesAtual);
-  var [anoSel,   setAnoSel]   = React.useState(anoAtual);
-  var [modo,     setModo]     = React.useState('apurado'); // 'apurado' | 'previsto'
+  var [periodo,      setPeriodo]     = React.useState(24);
+  var [mesSel,       setMesSel]      = React.useState(mesAtual);
+  var [anoSel,       setAnoSel]      = React.useState(anoAtual);
+  var [modo,         setModo]        = React.useState('apurado'); // 'apurado' | 'previsto'
+  var [fipeMap,      setFipeMap]     = React.useState({}); // { vehicleId: {valor, valorStr, modelo, codigo} | {loading} | {erro} }
+  var [fipeRefresh,  setFipeRefresh] = React.useState(0);
+  var FIPE_API = 'https://fipe.parallelum.com.br/api/v2/cars';
 
   var chartIds = React.useMemo(function(){
     var s = Math.random().toString(36).slice(2);
@@ -16872,6 +16875,55 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     var d = new Date(c.data_inicio);
     return d.getMonth()===m && d.getFullYear()===a;
   }
+
+  // ── Busca FIPE automática ────────────────────────────────────────────────
+  function normFipe(s) {
+    return (s||'').toLowerCase()
+      .normalize('NFD').replace(/[̀-ͯ]/g,'')
+      .replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+  }
+  function findFipe(list, q) {
+    var n = normFipe(q); if(!n) return null;
+    var ex = (list||[]).find(function(x){ return normFipe(x.name)===n; });
+    if(ex) return ex;
+    var words = n.split(' ');
+    return (list||[]).find(function(x){ var xn=normFipe(x.name); return words.every(function(w){ return xn.includes(w); }); })||null;
+  }
+  React.useEffect(function(){
+    var active = (veiculos||[]).filter(function(v){ return v.status!=='inativo'; });
+    if(!active.length) return;
+    var init = {};
+    active.forEach(function(v){ init[v.id]={loading:true}; });
+    setFipeMap(init);
+    async function loadAll() {
+      try {
+        var brands = await fetch(FIPE_API+'/brands',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
+        await Promise.all(active.map(async function(v) {
+          try {
+            var brand = findFipe(brands, v.marca);
+            if(!brand) throw 0;
+            var mdata = await fetch(FIPE_API+'/brands/'+brand.code+'/models',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
+            var model = findFipe(mdata.models||mdata||[], v.modelo);
+            if(!model) throw 0;
+            var years = await fetch(FIPE_API+'/brands/'+brand.code+'/models/'+model.code+'/years',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
+            var ano = String(v.ano||'');
+            var yr = (years||[]).find(function(y){ return ano && y.code.startsWith(ano); }) || (years||[])[0];
+            if(!yr) throw 0;
+            var price = await fetch(FIPE_API+'/brands/'+brand.code+'/models/'+model.code+'/years/'+yr.code,{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
+            var num = parseFloat((price.price||'').replace(/[^0-9,]/g,'').replace(',','.')) || 0;
+            setFipeMap(function(p){ var u=Object.assign({},p); u[v.id]={valor:num,valorStr:price.price||'',modelo:price.model||'',codigo:price.codeFipe||''}; return u; });
+          } catch(e) {
+            setFipeMap(function(p){ var u=Object.assign({},p); u[v.id]={erro:true}; return u; });
+          }
+        }));
+      } catch(e) {
+        var err={};
+        active.forEach(function(v){ err[v.id]={erro:true}; });
+        setFipeMap(err);
+      }
+    }
+    loadAll();
+  }, [veiculos, fipeRefresh]);
 
   // Despesas gerais (sem vínculo a veículo) — filtradas pelo mês quando apurado
   var nVeicAtivos = Math.max(1, (veiculos||[]).filter(function(v){ return v.status!=='inativo'; }).length);
@@ -17045,15 +17097,21 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
       plugins:Object.assign({},baseP.plugins,{legend:{display:false},
         tooltip:{callback:{label:function(ctx){return ' '+ctx.raw.toFixed(1)+'%';}}}})})});
 
-    // Chart 3 — cenário usa lucroDia histórico, não filtra por mês
+    // Chart 3 — cenário usa lucroDia histórico + FIPE atual
     var el3=document.getElementById(chartIds.c3); if(!el3) return;
     if(r3.current){r3.current.destroy();r3.current=null;}
     r3.current = new Chart(el3,{ type:'bar', data:{ labels:labels, datasets:[
       { label:'Lucro Acum. ('+periodo+'m)', data:dadosVis.map(function(d){return d.lucroHistDia*periodo*30;}),
         backgroundColor:'rgba(52,199,89,0.65)', borderColor:'#34C759', borderWidth:1, borderRadius:5 },
-      { label:'Perda Dep. −20%', data:dadosVis.map(function(d){return d.valorAq>0?d.perdaDep:0;}),
+      { label:'Dep. FIPE −20%', data:dadosVis.map(function(d){
+          var fi=fipeMap[d.v.id]; var base=(fi&&fi.valor)?fi.valor:d.valorAq;
+          return base>0?base*0.20:0;
+        }),
         backgroundColor:'rgba(255,59,48,0.50)', borderColor:'rgba(255,59,48,0.8)', borderWidth:1, borderRadius:5 },
-      { label:'Resultado Líquido', data:dadosVis.map(function(d){return d.valorAq>0?d.lucroHistDia*periodo*30-d.perdaDep:null;}),
+      { label:'Resultado Líquido', data:dadosVis.map(function(d){
+          var fi=fipeMap[d.v.id]; var base=(fi&&fi.valor)?fi.valor:d.valorAq;
+          return base>0?d.lucroHistDia*periodo*30-base*0.20:null;
+        }),
         type:'line', borderColor:'#FFD60A', backgroundColor:'rgba(255,214,10,0.08)',
         pointBackgroundColor:'#FFD60A', pointRadius:4, tension:0.35, fill:true },
     ]}, options:Object.assign({},baseP,{ interaction:{mode:'index'}, scales:{
@@ -17065,7 +17123,8 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
   React.useEffect(function(){
     var t=setTimeout(buildCharts,150); return function(){clearTimeout(t);};
   }, [periodo, mesSel, anoSel, modo,
-      JSON.stringify(dadosVis.map(function(d){return [d.receitaTotal,d.lucroSemManut];}))]);
+      JSON.stringify(dadosVis.map(function(d){return [d.receitaTotal,d.lucroSemManut];})),
+      JSON.stringify(dadosVis.map(function(d){ var fi=fipeMap[d.v.id]; return fi&&fi.valor; }))]);
 
   // ── Estilos utilitários ──────────────────────────────────────────────
   var pill = function(ativo, cor){ return {
@@ -17219,15 +17278,20 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     React.createElement('div',{className:'lg-card',style:Object.assign({},CARD)},
       React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10,marginBottom:4}},
         React.createElement('div',null,
-          React.createElement('div',{style:{fontSize:13,fontWeight:700}},'Cenário Venda com Depreciação −20%'),
+          React.createElement('div',{style:{fontSize:13,fontWeight:700}},'Cenário Venda com Depreciação FIPE −20%'),
           React.createElement('div',{style:{fontSize:11,color:'var(--c-sub)',marginTop:2}},
-            'Usa histórico completo de contratos (não filtra mês). Resultado Líquido = Lucro Acumulado − Perda de 20%.'
+            'Valor FIPE atual buscado automaticamente. Dep./Mês = FIPE × 20% ÷ período. Lucro Líq./Mês = Lucro Hist. − Dep./Mês.'
           )
         ),
-        React.createElement('div',{style:{display:'flex',gap:6}},
+        React.createElement('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
           [12,24,36].map(function(p){
             return React.createElement('button',{key:p,onClick:function(){setPeriodo(p);},style:pill(periodo===p)},p+'m');
-          })
+          }),
+          React.createElement('button',{
+            onClick:function(){ setFipeRefresh(function(n){ return n+1; }); },
+            style:{padding:'4px 11px',borderRadius:980,border:'none',cursor:'pointer',fontSize:11,fontWeight:600,
+              background:'rgba(52,199,89,0.12)',color:C.green,fontFamily:'inherit'}
+          },'↻ Atualizar FIPE')
         )
       ),
       React.createElement('div',{style:{position:'relative',height:220,marginTop:16}},
@@ -17237,25 +17301,49 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
         React.createElement('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
           React.createElement('thead',null,
             React.createElement('tr',{style:{borderBottom:'1px solid var(--c-border)'}},
-              ['Veículo','Valor Aquisição','Venda (−20%)','Result. 12m','Result. 24m','Result. 36m','Diária Mín. 24m'].map(TH)
+              ['Veículo','FIPE Atual','Venda (−20%)','Lucro Hist./Mês','Dep./Mês ('+periodo+'m)','Lucro Líq./Mês','Result. '+periodo+'m'].map(TH)
             )
           ),
           React.createElement('tbody',null,
             dadosVis.map(function(d){
-              var r=function(m){ return d.valorAq>0?d.lucroHistDia*m*30-d.perdaDep:d.lucroHistDia*m*30; };
-              var r12=r(12),r24=r(24),r36=r(36);
+              var fi = fipeMap[d.v.id];
+              var fipeValor = (fi && fi.valor) ? fi.valor : 0;
+              var lucroMes  = d.lucroHistDia * 30;
+              var depMes    = fipeValor > 0 ? fipeValor * 0.20 / periodo : 0;
+              var lucroLiq  = lucroMes - depMes;
+              var resultTot = d.lucroHistDia * periodo * 30 - (fipeValor > 0 ? fipeValor * 0.20 : 0);
+
+              var fipeCell;
+              if(!fi)            fipeCell = React.createElement('span',{style:{color:'var(--c-sub)'}},'—');
+              else if(fi.loading) fipeCell = React.createElement('span',{style:{color:'var(--c-sub)',fontSize:10}},'carregando…');
+              else if(fi.erro)   fipeCell = React.createElement('span',{style:{color:C.orange,fontSize:10}},'não encontrado');
+              else               fipeCell = React.createElement('div',null,
+                React.createElement('div',{style:{fontWeight:700,color:'var(--c-text)',whiteSpace:'nowrap'}},fi.valorStr||fR(fi.valor)),
+                React.createElement('div',{style:{fontSize:10,color:'var(--c-sub)',marginTop:1}},fi.codigo||'')
+              );
+
               return React.createElement('tr',{key:d.v.id,style:{borderBottom:'1px solid var(--c-border)'}},
                 React.createElement('td',{style:{padding:'10px 12px'}},
-                  React.createElement('span',{style:{fontFamily:'monospace',fontSize:11,fontWeight:600,background:'rgba(0,122,255,0.10)',color:C.blue,padding:'2px 7px',borderRadius:5}},d.v.placa||'—')),
-                React.createElement('td',{style:{padding:'10px 12px',color:'var(--c-sub)',whiteSpace:'nowrap'}},d.valorAq>0?fR(d.valorAq):'Não cadastrado'),
-                React.createElement('td',{style:{padding:'10px 12px',color:'var(--c-sub)',whiteSpace:'nowrap'}},d.valorAq>0?fR(d.valorAq*0.80):'—'),
-                React.createElement('td',{style:{padding:'10px 12px',fontWeight:700,color:tCor(r12,0),whiteSpace:'nowrap'}},fR(r12)),
-                React.createElement('td',{style:{padding:'10px 12px',fontWeight:700,color:tCor(r24,0),whiteSpace:'nowrap'}},fR(r24)),
-                React.createElement('td',{style:{padding:'10px 12px',fontWeight:700,color:tCor(r36,0),whiteSpace:'nowrap'}},fR(r36)),
-                React.createElement('td',{style:{padding:'10px 12px',whiteSpace:'nowrap'}},
-                  d.valorAq>0&&d.diariaMin>0
-                    ?React.createElement('span',{style:{fontWeight:700,color:C.blue}},fR(d.diariaMin)+'/dia')
-                    :React.createElement('span',{style:{color:'var(--c-sub)'}},'—')
+                  React.createElement('div',null,
+                    React.createElement('span',{style:{fontFamily:'monospace',fontSize:11,fontWeight:600,background:'rgba(0,122,255,0.10)',color:C.blue,padding:'2px 7px',borderRadius:5}},d.v.placa||'—'),
+                    React.createElement('div',{style:{fontSize:10,color:'var(--c-sub)',marginTop:3}},((d.v.marca||'')+' '+(d.v.modelo||'')).trim())
+                  )
+                ),
+                React.createElement('td',{style:{padding:'10px 12px'}},fipeCell),
+                React.createElement('td',{style:{padding:'10px 12px',color:'var(--c-sub)',whiteSpace:'nowrap'}},
+                  fipeValor>0?fR(fipeValor*0.80):'—'
+                ),
+                React.createElement('td',{style:{padding:'10px 12px',fontWeight:600,color:tCor(lucroMes,0),whiteSpace:'nowrap'}},
+                  fR(lucroMes)
+                ),
+                React.createElement('td',{style:{padding:'10px 12px',color:C.red,whiteSpace:'nowrap'}},
+                  fipeValor>0?fR(depMes):React.createElement('span',{style:{color:'var(--c-sub)'}},'—')
+                ),
+                React.createElement('td',{style:{padding:'10px 12px',fontWeight:700,color:tCor(lucroLiq,0),whiteSpace:'nowrap'}},
+                  fipeValor>0?fR(lucroLiq):fR(lucroMes)
+                ),
+                React.createElement('td',{style:{padding:'10px 12px',fontWeight:700,color:tCor(resultTot,0),whiteSpace:'nowrap'}},
+                  fR(resultTot)
                 )
               );
             })
@@ -17264,7 +17352,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
       ),
       React.createElement('div',{style:{marginTop:14,padding:'10px 14px',background:'rgba(0,122,255,0.06)',borderRadius:10,border:'1px solid rgba(0,122,255,0.15)',fontSize:11,color:'var(--c-sub)',lineHeight:1.7}},
         '⚡ ',React.createElement('strong',{style:{color:C.blue}},'Premissas:'),
-        ' Venda após o período com −20% sobre valor de aquisição. Projeção usa rentabilidade diária histórica de todos os contratos. Veículos sem valor de aquisição não participam da depreciação. Diária mínima 24m = (custos + depreciação÷24) ÷ (70% × 30 dias).'
+        ' FIPE buscada automaticamente por marca/modelo/ano. Dep./Mês = (FIPE × 20%) ÷ período selecionado. Lucro Hist./Mês = rentabilidade média diária × 30 dias (histórico completo de contratos). Resultado Total = Lucro do período − Perda FIPE de 20%.'
       )
     )
   );

@@ -16893,10 +16893,11 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     var rateio = despGeral / nVeicAtivos;
 
     return (veiculos||[]).map(function(v){
-      // contratos do veículo
-      var cts = (contratos||[]).filter(function(c){ return String(c.veiculo_id)===String(v.id); });
-      // contratos do mês selecionado (para gráficos com filtro de mês)
-      var ctsMes = cts.filter(function(c){ return noMes(c, m, a); });
+      // contratos do veículo (exclui cancelados)
+      var cts = (contratos||[]).filter(function(c){ return String(c.veiculo_id)===String(v.id) && c.status!=='cancelado'; });
+      // contratos do mês selecionado: usa data de conclusão/pagamento previsto, não data_inicio
+      var mesFmt = String(a)+'-'+String(m+1).padStart(2,'0');
+      var ctsMes = cts.filter(function(c){ var ref=ctMesRef(c)||mesDe(c.data_inicio); return ref===mesFmt; });
 
       // Receita: apurado = só contratos do mês; previsto = diária * dias do mês * 0.7
       var recMes, recTotal;
@@ -16991,9 +16992,15 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     return despGeral/nVeicAtivos;
   }, [despesas,mesSel,anoSel,modo,nVeicAtivos]);
 
-  var totalReceita = dados.reduce(function(s,d){return s+d.receitaTotal;},0);
-  var totalLucro   = dados.reduce(function(s,d){return s+d.lucroSemManut;},0);
-  var totalManut   = dados.reduce(function(s,d){return s+d.custoManut;},0);
+  // Filtra apenas veículos com atividade no período (exclui inativos sem contrato/receita)
+  var dadosVis = dados.filter(function(d){
+    if(modo==='apurado') return d.nCtsMes>0||d.receitaTotal>0||d.despDiretas>0||d.custoManut>0;
+    return d.nCts>0||d.despDiretas>0||d.custoManut>0;
+  });
+
+  var totalReceita = dadosVis.reduce(function(s,d){return s+d.receitaTotal;},0);
+  var totalLucro   = dadosVis.reduce(function(s,d){return s+d.lucroSemManut;},0);
+  var totalManut   = dadosVis.reduce(function(s,d){return s+d.custoManut;},0);
   var margemGlobal = totalReceita>0?(totalLucro/totalReceita*100):0;
 
   var CORES = ['#34C759','#007AFF','#FF9500','#AF52DE','#FF3B30','#5AC8FA','#FFD60A','#FF6B6B','#30D158','#64D2FF'];
@@ -17002,7 +17009,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
 
   function buildCharts(){
     if(typeof Chart==='undefined') return;
-    var labels = dados.map(function(d){ return d.v.placa||'?'; });
+    var labels = dadosVis.map(function(d){ return d.v.placa||'?'; });
     var grid='rgba(120,120,128,0.12)', tick='var(--c-sub)';
     var fmtK=function(v){ return 'R$'+Math.round(v/1000)+'k'; };
     var baseP={ responsive:true, maintainAspectRatio:false,
@@ -17012,14 +17019,14 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     var el1=document.getElementById(chartIds.c1); if(!el1) return;
     if(r1.current){r1.current.destroy();r1.current=null;}
     r1.current = new Chart(el1,{ type:'bar', data:{ labels:labels, datasets:[
-      { label:'Receita', data:dados.map(function(d){return d.receitaTotal;}),
-        backgroundColor:dados.map(function(_,i){return CORES[i%CORES.length]+'99';}),
-        borderColor:dados.map(function(_,i){return CORES[i%CORES.length];}), borderWidth:1.5, borderRadius:5 },
-      { label:'Custo s/Manut', data:dados.map(function(d){return d.custoSemManut;}),
+      { label:'Receita', data:dadosVis.map(function(d){return d.receitaTotal;}),
+        backgroundColor:dadosVis.map(function(_,i){return CORES[i%CORES.length]+'99';}),
+        borderColor:dadosVis.map(function(_,i){return CORES[i%CORES.length];}), borderWidth:1.5, borderRadius:5 },
+      { label:'Custo s/Manut', data:dadosVis.map(function(d){return d.custoSemManut;}),
         backgroundColor:'rgba(255,59,48,0.45)', borderColor:'rgba(255,59,48,0.8)', borderWidth:1, borderRadius:5 },
-      { label:'Lucro s/Manut', data:dados.map(function(d){return d.lucroSemManut;}),
-        backgroundColor:dados.map(function(d){return d.lucroSemManut>=0?'rgba(52,199,89,0.65)':'rgba(255,59,48,0.55)';}),
-        borderColor:dados.map(function(d){return d.lucroSemManut>=0?'#34C759':'#FF3B30';}), borderWidth:1.5, borderRadius:5 },
+      { label:'Lucro s/Manut', data:dadosVis.map(function(d){return d.lucroSemManut;}),
+        backgroundColor:dadosVis.map(function(d){return d.lucroSemManut>=0?'rgba(52,199,89,0.65)':'rgba(255,59,48,0.55)';}),
+        borderColor:dadosVis.map(function(d){return d.lucroSemManut>=0?'#34C759':'#FF3B30';}), borderWidth:1.5, borderRadius:5 },
     ]}, options:Object.assign({},baseP,{ scales:{
       x:{ticks:{color:tick,font:{size:10}},grid:{color:grid}},
       y:{ticks:{color:tick,font:{size:10},callback:fmtK},grid:{color:grid}}},
@@ -17028,7 +17035,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     // Chart 2
     var el2=document.getElementById(chartIds.c2); if(!el2) return;
     if(r2.current){r2.current.destroy();r2.current=null;}
-    var mgs=dados.map(function(d){return d.margem;});
+    var mgs=dadosVis.map(function(d){return d.margem;});
     r2.current = new Chart(el2,{ type:'bar', data:{ labels:labels, datasets:[{
       label:'Margem %', data:mgs, indexAxis:'y',
       backgroundColor:mgs.map(function(m){return m>=20?'rgba(52,199,89,0.7)':m>=0?'rgba(255,149,0,0.7)':'rgba(255,59,48,0.7)';}), borderRadius:5
@@ -17042,11 +17049,11 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     var el3=document.getElementById(chartIds.c3); if(!el3) return;
     if(r3.current){r3.current.destroy();r3.current=null;}
     r3.current = new Chart(el3,{ type:'bar', data:{ labels:labels, datasets:[
-      { label:'Lucro Acum. ('+periodo+'m)', data:dados.map(function(d){return d.lucroHistDia*periodo*30;}),
+      { label:'Lucro Acum. ('+periodo+'m)', data:dadosVis.map(function(d){return d.lucroHistDia*periodo*30;}),
         backgroundColor:'rgba(52,199,89,0.65)', borderColor:'#34C759', borderWidth:1, borderRadius:5 },
-      { label:'Perda Dep. −20%', data:dados.map(function(d){return d.valorAq>0?d.perdaDep:0;}),
+      { label:'Perda Dep. −20%', data:dadosVis.map(function(d){return d.valorAq>0?d.perdaDep:0;}),
         backgroundColor:'rgba(255,59,48,0.50)', borderColor:'rgba(255,59,48,0.8)', borderWidth:1, borderRadius:5 },
-      { label:'Resultado Líquido', data:dados.map(function(d){return d.valorAq>0?d.lucroHistDia*periodo*30-d.perdaDep:null;}),
+      { label:'Resultado Líquido', data:dadosVis.map(function(d){return d.valorAq>0?d.lucroHistDia*periodo*30-d.perdaDep:null;}),
         type:'line', borderColor:'#FFD60A', backgroundColor:'rgba(255,214,10,0.08)',
         pointBackgroundColor:'#FFD60A', pointRadius:4, tension:0.35, fill:true },
     ]}, options:Object.assign({},baseP,{ interaction:{mode:'index'}, scales:{
@@ -17058,7 +17065,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
   React.useEffect(function(){
     var t=setTimeout(buildCharts,150); return function(){clearTimeout(t);};
   }, [periodo, mesSel, anoSel, modo,
-      JSON.stringify(dados.map(function(d){return [d.receitaTotal,d.lucroSemManut];}))]);
+      JSON.stringify(dadosVis.map(function(d){return [d.receitaTotal,d.lucroSemManut];}))]);
 
   // ── Estilos utilitários ──────────────────────────────────────────────
   var pill = function(ativo, cor){ return {
@@ -17119,7 +17126,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     // KPIs
     React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:10}},
       [{l:'Receita',v:fR(totalReceita),cor:C.green},
-       {l:'Custo s/Manut',v:fR(dados.reduce(function(s,d){return s+d.custoSemManut;},0)),cor:C.red},
+       {l:'Custo s/Manut',v:fR(dadosVis.reduce(function(s,d){return s+d.custoSemManut;},0)),cor:C.red},
        {l:'Lucro s/Manut',v:fR(totalLucro),cor:totalLucro>=0?C.green:C.red},
        {l:'Manutenção',v:fR(totalManut),cor:C.purple},
        {l:'Margem Global',v:(margemGlobal>=0?'+':'')+margemGlobal.toFixed(1)+'%',cor:tCor(margemGlobal,20)},
@@ -17152,7 +17159,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
       React.createElement('div',{style:{fontSize:11,color:'var(--c-sub)',marginBottom:14}},
         '🟢 ≥20% saudável · 🟡 0–20% atenção · 🔴 negativo · '+MS[mesSel]+'/'+anoSel+' ('+modo+')'
       ),
-      React.createElement('div',{style:{position:'relative',height:Math.max(100,dados.length*40)}},
+      React.createElement('div',{style:{position:'relative',height:Math.max(100,dadosVis.length*40)}},
         React.createElement('canvas',{id:chartIds.c2})
       )
     ),
@@ -17175,7 +17182,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
             )
           ),
           React.createElement('tbody',null,
-            dados.slice().sort(function(a,b){return b.lucroSemManut-a.lucroSemManut;}).map(function(d){
+            dadosVis.slice().sort(function(a,b){return b.lucroSemManut-a.lucroSemManut;}).map(function(d){
               var mg=d.margem, mgCor=tCor(mg,20);
               return React.createElement('tr',{key:d.v.id,style:{borderBottom:'1px solid var(--c-border)'}},
                 React.createElement('td',{style:{padding:'10px 12px'}},
@@ -17195,7 +17202,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
             React.createElement('tr',{style:{borderTop:'2px solid var(--c-border)',background:'rgba(120,120,128,0.04)'}},
               React.createElement('td',{colSpan:3,style:{padding:'10px 12px',fontWeight:700,fontSize:12}},'TOTAL'),
               React.createElement('td',{style:{padding:'10px 12px',color:C.green,fontWeight:800}},fR(totalReceita)),
-              React.createElement('td',{style:{padding:'10px 12px',color:C.red,fontWeight:700}},fR(dados.reduce(function(s,d){return s+d.despDiretas;},0))),
+              React.createElement('td',{style:{padding:'10px 12px',color:C.red,fontWeight:700}},fR(dadosVis.reduce(function(s,d){return s+d.despDiretas;},0))),
               React.createElement('td',{style:{padding:'10px 12px',color:C.orange,fontWeight:700}},fR(rateioGeral*nVeicAtivos)),
               React.createElement('td',{style:{padding:'10px 12px',color:C.purple,fontWeight:700}},fR(totalManut)),
               React.createElement('td',{style:{padding:'10px 12px',fontWeight:800,color:totalLucro>=0?C.green:C.red}},fR(totalLucro)),
@@ -17234,7 +17241,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
             )
           ),
           React.createElement('tbody',null,
-            dados.map(function(d){
+            dadosVis.map(function(d){
               var r=function(m){ return d.valorAq>0?d.lucroHistDia*m*30-d.perdaDep:d.lucroHistDia*m*30; };
               var r12=r(12),r24=r(24),r36=r(36);
               return React.createElement('tr',{key:d.v.id,style:{borderBottom:'1px solid var(--c-border)'}},

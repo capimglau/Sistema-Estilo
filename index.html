@@ -23831,6 +23831,7 @@ function NavIcon({ id, active }) {
 
 // ── LINHA DO TEMPO ──────────────────────────────────────────────────────────
 function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, reservas, veiculos, clientes }) {
+  var [mainTab, setMainTab] = React.useState("multas_tl");
   var [filVeiculo, setFilVeiculo] = React.useState("");
   var [filCliente, setFilCliente] = React.useState("");
   var [filDe, setFilDe] = React.useState("");
@@ -23838,6 +23839,193 @@ function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, rese
   var [filTipo, setFilTipo] = React.useState("todos");
   var [sortDir, setSortDir] = React.useState("desc");
   var [mostrarFiltros, setMostrarFiltros] = React.useState(false);
+  // Multas TL filters
+  var [mtlAit, setMtlAit] = React.useState("");
+  var [mtlPlaca, setMtlPlaca] = React.useState("");
+  var [mtlCliente, setMtlCliente] = React.useState("");
+  var [mtlStatus, setMtlStatus] = React.useState("todos");
+  var [mtlExpandida, setMtlExpandida] = React.useState(null);
+
+  // ── Linha do tempo de multas individual ──
+  function renderMultasTL() {
+    var hoje = new Date().toISOString().split("T")[0];
+    function getCtVeClM(m){
+      var ct=m.contrato_id?(contratos||[]).find(function(x){return x.id==m.contrato_id;}):null;
+      var ve=(ct?(veiculos||[]).find(function(x){return x.id==ct.veiculo_id;}):(veiculos||[]).find(function(x){return x.id==m.veiculo_id;}))||null;
+      var cl=(ct?(clientes||[]).find(function(x){return x.id==ct.cliente_id;}):(clientes||[]).find(function(x){return x.id==m.cliente_id;}))||null;
+      return {ve:ve,cl:cl};
+    }
+
+    // Filtrar multas
+    var todasM = (multas||[]).filter(function(m){ return m.status!=="cancelada"&&m.status!=="cancelado"; });
+    if (mtlAit) todasM = todasM.filter(function(m){ return (m.ait||"").toLowerCase().includes(mtlAit.toLowerCase()); });
+    if (mtlPlaca) {
+      todasM = todasM.filter(function(m){
+        var ref = getCtVeClM(m);
+        var placa = (ref.ve&&ref.ve.placa)||m.placa||"";
+        return placa.toLowerCase().includes(mtlPlaca.toLowerCase());
+      });
+    }
+    if (mtlCliente) {
+      todasM = todasM.filter(function(m){
+        var ref = getCtVeClM(m);
+        var nome = (ref.cl&&ref.cl.nome)||m.cliente_nome||"";
+        return nome.toLowerCase().includes(mtlCliente.toLowerCase());
+      });
+    }
+    if (mtlStatus === "pendente") todasM = todasM.filter(function(m){ return m.status!=="pago"; });
+    if (mtlStatus === "pago") todasM = todasM.filter(function(m){ return m.status==="pago"; });
+    if (mtlStatus === "vencida") todasM = todasM.filter(function(m){ return m.status!=="pago" && m.vencimento && m.vencimento < hoje; });
+
+    // Ordenar por data mais recente
+    todasM = todasM.slice().sort(function(a,b){ return (b.data||"").localeCompare(a.data||""); });
+
+    // Gerar eventos de uma multa
+    function getEventosMulta(m) {
+      var evs = [];
+      function addE(date, label, emoji, cor, detalhe, done) {
+        evs.push({ date:date, label:label, emoji:emoji, cor:cor, detalhe:detalhe||"", done:!!done });
+      }
+      // Etapa 0 — recebida
+      addE(m.data, "Multa recebida", "📥", "#32ADE6", (m.ait?"AIT "+m.ait:"")+(m.local?" · "+m.local:"")+(m.tipo?" · "+m.tipo:""), true);
+      // Etapa 1 — DSV enviado
+      if (m.token_dsv) addE(m.data_notificacao||m.data, "DSV enviado ao condutor", "📤", "#AF52DE", m.data_notificacao?"em "+fmtDate(m.data_notificacao):"", true);
+      else addE(null, "DSV ao condutor", "📤", "#AF52DE", "Pendente", false);
+      // Etapa 2 — DSV assinado
+      if (m.dsv_assinado_em) addE(String(m.dsv_assinado_em).slice(0,10), "Condutor assinou DSV", "✍️", "#AF52DE", "em "+fmtDate(String(m.dsv_assinado_em).slice(0,10)), true);
+      else if (m.token_dsv) addE(null, "Aguardando assinatura", "⏳", "#FF9500", "Pendente", false);
+      // Etapa 3 — Órgão notificado
+      var notifOk = m.status_notificacao==="notificado"||m.status_notificacao==="nao_localizou";
+      if (notifOk) addE(m.data_notificacao, "Órgão notificado", m.status_notificacao==="notificado"?"🏛️":"❌", m.status_notificacao==="notificado"?"#34C759":"#FF3B30", m.status_notificacao==="nao_localizou"?"Não identificou condutor":"", true);
+      else addE(null, "Notificar órgão", "🏛️", "#34C759", "Pendente", false);
+      // Etapa 4 — Boleto solicitado
+      if (m.boleto_orgao_solicitado) addE(m.data_solicitacao_boleto, "Boleto solicitado ao órgão", "📋", "#FF9500", m.data_solicitacao_boleto?"em "+fmtDate(m.data_solicitacao_boleto):"", true);
+      else addE(null, "Solicitar boleto", "📋", "#FF9500", "Pendente", false);
+      // Etapa 5 — Boleto recebido
+      if (m.boleto_orgao_recebido) addE(m.data_boleto_recebido, "Boleto recebido", "💳", "#FF9500", m.data_boleto_recebido?"em "+fmtDate(m.data_boleto_recebido):"", true);
+      else if (m.boleto_orgao_solicitado) addE(null, "Aguardando boleto", "💳", "#FF9500", "Pendente", false);
+      // Etapa 6 — Pago ao órgão
+      if (m.status==="pago") addE(m.data_pagamento, "Pago ao órgão", "💰", "#34C759", fmtBRL(parseFloat(m.valor||0))+(m.data_pagamento?" em "+fmtDate(m.data_pagamento):""), true);
+      else addE(null, "Pagar ao órgão", "💰", "#34C759", fmtBRL(parseFloat(m.valor||0))+(m.vencimento?" · venc "+fmtDate(m.vencimento):""), false);
+      // Etapa 7 — Cobrança ao cliente
+      if (m.cobrado_cliente==="pago") addE(m.data_cobranca_cliente, "Cliente pagou", "✅", "#34C759", fmtBRL(parseFloat(m.valor_cobrado||m.valor||0))+(m.data_cobranca_cliente?" em "+fmtDate(m.data_cobranca_cliente):""), true);
+      else if (m.cobrado_cliente==="pendente") addE(m.data_cobranca_cliente, "Cobrado · aguardando", "📬", "#9FBDE6", "Aguardando pagamento do cliente", true);
+      else addE(null, "Cobrar cliente", "📬", "#9FBDE6", m.status==="pago"?"Pendente de cobrança":"Aguardar pagamento", false);
+      return evs;
+    }
+
+    var placasUnicas = [];
+    var placasSet = {};
+    (multas||[]).forEach(function(m){
+      var ref = getCtVeClM(m);
+      var pl = (ref.ve&&ref.ve.placa)||m.placa||"";
+      if (pl && !placasSet[pl]) { placasSet[pl]=true; placasUnicas.push({id:String((ref.ve&&ref.ve.id)||m.veiculo_id||""),placa:pl}); }
+    });
+
+    return React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:10} }
+      // Filtros
+      , React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:8} }
+        , React.createElement('div', { style:{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"} }
+          , React.createElement('input', { placeholder:"AIT...", value:mtlAit, onChange:function(e){setMtlAit(e.target.value);},
+              style:{flex:1,minWidth:90,fontSize:13,padding:"7px 10px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-card)",color:"var(--c-text)"} })
+          , React.createElement('input', { placeholder:"Placa...", value:mtlPlaca, onChange:function(e){setMtlPlaca(e.target.value);},
+              style:{flex:1,minWidth:90,fontSize:13,padding:"7px 10px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-card)",color:"var(--c-text)"} })
+          , React.createElement('input', { placeholder:"Cliente...", value:mtlCliente, onChange:function(e){setMtlCliente(e.target.value);},
+              style:{flex:1,minWidth:100,fontSize:13,padding:"7px 10px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-card)",color:"var(--c-text)"} })
+        )
+        , React.createElement('div', { style:{display:"flex",gap:5,flexWrap:"wrap"} }
+          , [["todos","Todas"],["pendente","Pendentes"],["pago","Pagas"],["vencida","Vencidas"]].map(function(pair){
+              var v=pair[0],l=pair[1];
+              return React.createElement('button', { key:v, onClick:function(){setMtlStatus(v);},
+                style:{fontSize:11,fontWeight:600,padding:"5px 12px",borderRadius:20,cursor:"pointer",border:"none",
+                  background:mtlStatus===v?"var(--c-blue)":"var(--c-border)",
+                  color:mtlStatus===v?"#fff":"var(--c-sub)"} }, l);
+            })
+          , (mtlAit||mtlPlaca||mtlCliente) && React.createElement('button', { onClick:function(){setMtlAit("");setMtlPlaca("");setMtlCliente("");setMtlStatus("todos");},
+              style:{fontSize:11,fontWeight:600,padding:"5px 12px",borderRadius:20,cursor:"pointer",border:"none",background:"rgba(255,59,48,0.12)",color:"#FF3B30"} }, "✕ Limpar")
+        )
+        , React.createElement('div', { style:{fontSize:11,color:"var(--c-sub)",fontWeight:500} }, todasM.length+" multa"+(todasM.length!==1?"s":"")+" encontrada"+(todasM.length!==1?"s":""))
+      )
+
+      // Cards de multas com linha do tempo
+      , todasM.length === 0 && React.createElement('div', { style:{background:"var(--c-card)",borderRadius:16,padding:24,textAlign:"center",color:"var(--c-sub)",fontSize:13} }
+        , "Nenhuma multa encontrada"
+      )
+      , todasM.map(function(m) {
+          var ref = getCtVeClM(m);
+          var placa = (ref.ve&&ref.ve.placa)||m.placa||"–";
+          var cliente = (ref.cl&&ref.cl.nome)||m.cliente_nome||"–";
+          var vencida = m.status!=="pago" && m.vencimento && m.vencimento < hoje;
+          var stepAtual = typeof getPipelineStep === "function" ? getPipelineStep(m) : 0;
+          var evs = getEventosMulta(m);
+          var isExp = mtlExpandida === m.id;
+
+          // Situações simultâneas — tudo que está em andamento AO MESMO TEMPO
+          var situacoes = [];
+          if (m.status!=="pago") situacoes.push({label:"Pagamento pendente",cor:"#FF3B30",emoji:"💰"});
+          if (m.token_dsv && !m.dsv_assinado_em) situacoes.push({label:"Aguardando assinatura DSV",cor:"#FF9500",emoji:"⏳"});
+          if (m.boleto_orgao_solicitado && !m.boleto_orgao_recebido) situacoes.push({label:"Boleto aguardado",cor:"#FF9500",emoji:"📋"});
+          if ((m.status_notificacao||"nao_notificado")==="nao_notificado") situacoes.push({label:"Condutor não identificado",cor:"#8E8E93",emoji:"○"});
+          if (m.cobrado_cliente==="pendente") situacoes.push({label:"Cliente deve pagar",cor:"#9FBDE6",emoji:"📬"});
+
+          return React.createElement('div', { key:m.id, style:{background:"var(--c-card)",borderRadius:18,border:"1.5px solid "+(vencida?"rgba(255,59,48,0.35)":"var(--c-border)"),overflow:"hidden",transition:"box-shadow .2s"} }
+            // Cabeçalho do card
+            , React.createElement('div', { onClick:function(){setMtlExpandida(isExp?null:m.id);}, style:{padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"flex-start",gap:10} }
+              , React.createElement('div', { style:{flex:1,minWidth:0} }
+                , React.createElement('div', { style:{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:3} }
+                  , vencida && React.createElement('span', { style:{fontSize:10,fontWeight:700,background:"rgba(255,59,48,0.12)",color:"#FF3B30",padding:"2px 7px",borderRadius:8} }, "🚨 VENCIDA")
+                  , m.status==="pago" && React.createElement('span', { style:{fontSize:10,fontWeight:700,background:"rgba(52,199,89,0.12)",color:"#34C759",padding:"2px 7px",borderRadius:8} }, "✅ PAGA")
+                  , m.ait && React.createElement('span', { style:{fontSize:10,fontWeight:700,color:"var(--c-sub)",background:"var(--c-bg)",padding:"2px 7px",borderRadius:8,border:"1px solid var(--c-border)"} }, "AIT "+m.ait)
+                )
+                , React.createElement('div', { style:{fontSize:14,fontWeight:700,color:"var(--c-text)",marginBottom:1} }, cliente)
+                , React.createElement('div', { style:{fontSize:12,color:"var(--c-sub)",display:"flex",gap:8,flexWrap:"wrap"} }
+                  , React.createElement('span', null, "🚗 "+placa)
+                  , m.tipo && React.createElement('span', null, "· "+m.tipo)
+                  , React.createElement('span', { style:{color:"#FF3B30",fontWeight:600} }, "· "+fmtBRL(parseFloat(m.valor||0)))
+                  , m.vencimento && React.createElement('span', { style:{color:vencida?"#FF3B30":"var(--c-sub)"} }, "· venc. "+fmtDate(m.vencimento))
+                )
+                // Situações simultâneas em andamento
+                , situacoes.length > 0 && React.createElement('div', { style:{display:"flex",gap:4,flexWrap:"wrap",marginTop:6} }
+                  , situacoes.map(function(s,i){ return React.createElement('span', {key:i, style:{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:20,background:s.cor+"18",color:s.cor,border:"1px solid "+s.cor+"30"} }, s.emoji+" "+s.label); })
+                )
+              )
+              // Progresso e toggle
+              , React.createElement('div', { style:{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,flexShrink:0} }
+                , React.createElement('div', { style:{fontSize:11,fontWeight:700,color:"var(--c-sub)"} }, (stepAtual+1)+"/9")
+                , React.createElement('div', { style:{display:"flex",gap:2} }
+                  , PIPELINE_MULTA.map(function(step,si){ return React.createElement('div', {key:si, style:{width:5,height:5,borderRadius:"50%",background:si<=stepAtual?step.cor:"var(--c-border)"} }); })
+                )
+                , React.createElement('span', { style:{fontSize:11,color:"var(--c-sub)",marginTop:2} }, isExp?"▲":"▼")
+              )
+            )
+
+            // Linha do tempo expandida
+            , isExp && React.createElement('div', { style:{padding:"0 14px 14px"} }
+              , React.createElement('div', { style:{borderTop:"1px solid var(--c-border)",paddingTop:12,display:"flex",flexDirection:"column",gap:0} }
+                , evs.map(function(ev, ei) {
+                    var isLast = ei === evs.length - 1;
+                    return React.createElement('div', { key:ei, style:{display:"flex",gap:10,alignItems:"stretch"} }
+                      // Linha vertical + ponto
+                      , React.createElement('div', { style:{display:"flex",flexDirection:"column",alignItems:"center",width:22,flexShrink:0} }
+                        , React.createElement('div', { style:{width:22,height:22,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
+                            background:ev.done?ev.cor+"22":"var(--c-bg)",border:"2px solid "+(ev.done?ev.cor:"var(--c-border)"),
+                            fontSize:11,flexShrink:0,zIndex:1} }, ev.done?ev.emoji:"○")
+                        , !isLast && React.createElement('div', { style:{width:2,flex:1,background:ev.done?ev.cor+"40":"var(--c-border)",minHeight:14,marginTop:2,marginBottom:2} })
+                      )
+                      // Conteúdo do evento
+                      , React.createElement('div', { style:{flex:1,paddingBottom:isLast?0:12,paddingTop:1} }
+                        , React.createElement('div', { style:{fontSize:12,fontWeight:ev.done?600:400,color:ev.done?ev.cor:"var(--c-sub)"} }, ev.label)
+                        , ev.detalhe && React.createElement('div', { style:{fontSize:11,color:"var(--c-sub)",marginTop:1} }, ev.detalhe)
+                        , ev.date && React.createElement('div', { style:{fontSize:10,color:"var(--c-sub)",marginTop:2,opacity:0.7} }, fmtDate(ev.date))
+                      )
+                    );
+                  })
+              )
+            )
+          );
+        })
+    );
+  }
 
   // --- Linha do tempo horizontal financeira ---
   var _nowTlh = new Date();
@@ -23961,12 +24149,23 @@ function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, rese
   return React.createElement('div',{style:{display:"flex",flexDirection:"column",gap:14}}
     , React.createElement('div',{className:"pg-hdr"}
       , React.createElement('div',{className:"pg-title"},"Linha do Tempo")
-      , React.createElement('div',{style:{display:"flex",gap:6,alignItems:"center"}}
+      , mainTab !== "multas_tl" && React.createElement('div',{style:{display:"flex",gap:6,alignItems:"center"}}
         , React.createElement('button',{className:"lg-pill lg-pill-sm "+(sortDir==="desc"?"lg-blue":"lg-ghost"),style:{fontWeight:300},onClick:function(){setSortDir("desc");}},"↓ Recentes")
         , React.createElement('button',{className:"lg-pill lg-pill-sm "+(sortDir==="asc"?"lg-blue":"lg-ghost"),style:{fontWeight:300},onClick:function(){setSortDir("asc");}},"↑ Antigos")
         , React.createElement('button',{className:"lg-pill lg-pill-sm "+(mostrarFiltros?"lg-orange":"lg-ghost"),style:{fontWeight:300},onClick:function(){setMostrarFiltros(function(p){return !p;});}},temFiltro?"🔶 Filtros ●":"🔍 Filtros")
       )
     )
+    , React.createElement('div',{style:{display:"flex",gap:6,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",paddingBottom:2}}
+      , [["multas_tl","🚦 Multas"],["eventos","📋 Eventos"],["financeiro","📊 Financeiro"]].map(function(pair){
+          var v=pair[0],l=pair[1];
+          return React.createElement('button',{key:v,onClick:function(){setMainTab(v);},
+            style:{background:mainTab===v?"var(--c-blue)":"transparent",color:mainTab===v?"#fff":"var(--c-sub)",
+              border:"1.5px solid "+(mainTab===v?"var(--c-blue)":"var(--c-border)"),borderRadius:10,
+              padding:"8px 14px",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}},l);
+        })
+    )
+    , mainTab === "multas_tl" && renderMultasTL()
+    , mainTab !== "multas_tl" && React.createElement(React.Fragment, null
     // ===== LINHA DO TEMPO HORIZONTAL FINANCEIRA =====
     , React.createElement('div',{className:"lg-card",style:Object.assign({},CARD,{padding:"14px 16px"})}
       // Cabeçalho da seção
@@ -24130,6 +24329,7 @@ function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, rese
           })
       )
     )
+  ) // end Fragment
   );
 }
 

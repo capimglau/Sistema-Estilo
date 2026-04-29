@@ -14375,10 +14375,10 @@ function shareWhatsApp(ct, cl, ve, emp) {
 // -- INICIO ----------------------------------------------------------------─
 // Status efetivo do veículo derivado dos contratos (fonte da verdade)
 function statusEfetivoVeiculo(veiculo, contratos) {
-  var hoje = new Date().toISOString().split("T")[0];
-  // Se está em manutenção ou inativo, respeita o banco
+  // Manutenção e inativo têm prioridade absoluta
   if (veiculo.status === "manutencao" || veiculo.status === "inativo") return veiculo.status;
-  // Verifica se há contrato ativo para este veículo
+  // Alugado apenas se há contrato com status "ativo" vinculado.
+  // Contratos "concluido" (incl. renovados) e "cancelado" não bloqueiam o veículo.
   var temAtivo = contratos.some(function(c) {
     return String(c.veiculo_id) === String(veiculo.id) && c.status === "ativo";
   });
@@ -17459,7 +17459,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
             React.createElement('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
               React.createElement('thead',null,
                 React.createElement('tr',{style:{borderBottom:'1px solid var(--c-border)'}},
-                  ['Veículo','FIPE Atual','Venda (−20%)','Lucro Hist./Mês','Dep./Mês ('+periodo+'m)','Lucro Líq./Mês','Result. '+periodo+'m'].map(TH)
+                  ['Placa','Modelo','FIPE Atual','Venda (−20%)','Lucro Hist./Mês','Dep./Mês ('+periodo+'m)','Lucro Líq./Mês','Result. '+periodo+'m'].map(TH)
                 )
               ),
               React.createElement('tbody',null,
@@ -17475,17 +17475,17 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
                   else if(fi.loading) fipeCell = React.createElement('span',{style:{color:'var(--c-sub)',fontSize:10}},'carregando…');
                   else if(fi.erro)    fipeCell = React.createElement('span',{style:{color:C.orange,fontSize:10}},'não encontrado');
                   else                fipeCell = React.createElement('div',null,
-                    React.createElement('div',{style:{fontWeight:700,color:C.red,whiteSpace:'nowrap'}},fR(fi.valor*0.80)),
+                    React.createElement('div',{style:{fontWeight:700,color:C.blue,whiteSpace:'nowrap'}},fR(fi.valor)),
                     React.createElement('div',{style:{fontSize:10,color:'var(--c-sub)',marginTop:1}},(fi.anoFipe?'Ano FIPE: '+fi.anoFipe+' · ':'')+( fi.codigo||'')+(fi.manual?' ★':''))
                   );
                   return React.createElement('tr',{key:d.v.id,style:{borderBottom:'1px solid var(--c-border)'}},
+                    React.createElement('td',{style:{padding:'10px 12px',whiteSpace:'nowrap'}},
+                      React.createElement('span',{style:{fontFamily:'monospace',fontSize:11,fontWeight:600,background:'rgba(0,122,255,0.10)',color:C.blue,padding:'2px 7px',borderRadius:5}},d.v.placa||'—')
+                    ),
                     React.createElement('td',{style:{padding:'10px 12px'}},
                       React.createElement('div',null,
-                        React.createElement('div',{style:{display:'flex',alignItems:'center',gap:5}},
-                          React.createElement('span',{style:{fontFamily:'monospace',fontSize:11,fontWeight:600,background:'rgba(0,122,255,0.10)',color:C.blue,padding:'2px 7px',borderRadius:5}},d.v.placa||'—'),
-                          d.v.ano && React.createElement('span',{style:{fontSize:11,fontWeight:700,color:'var(--c-text)',background:'rgba(120,120,128,0.12)',borderRadius:5,padding:'2px 6px'}},d.v.ano)
-                        ),
-                        React.createElement('div',{style:{fontSize:10,color:'var(--c-sub)',marginTop:3}},((d.v.marca||'')+' '+(d.v.modelo||'')).trim())
+                        d.v.ano && React.createElement('span',{style:{fontSize:11,fontWeight:700,color:'var(--c-text)',background:'rgba(120,120,128,0.12)',borderRadius:5,padding:'2px 6px',marginRight:5}},d.v.ano),
+                        React.createElement('div',{style:{fontSize:11,color:'var(--c-sub)',marginTop:3}},((d.v.marca||'')+' '+(d.v.modelo||'')).trim())
                       )
                     ),
                     React.createElement('td',{style:{padding:'10px 12px'}},fipeCell),
@@ -17508,6 +17508,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
               React.createElement('tfoot',null,
                 React.createElement('tr',{style:{borderTop:'2px solid var(--c-border)',background:'rgba(120,120,128,0.07)'}},
                   React.createElement('td',{style:{padding:'10px 12px',fontWeight:800,fontSize:11,color:'var(--c-sub)',textTransform:'uppercase',letterSpacing:0.5}},'TOTAL FROTA'),
+                  React.createElement('td',{style:{padding:'10px 12px'}},''),
                   React.createElement('td',{style:{padding:'10px 12px',fontWeight:800,color:'var(--c-text)',whiteSpace:'nowrap'}},hasFipe?fR(totalFipe):'—'),
                   React.createElement('td',{style:{padding:'10px 12px',whiteSpace:'nowrap'}},
                     hasFipe
@@ -18088,7 +18089,22 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     document.addEventListener("autoguest:novo-contrato", abrirNovoContrato);
     return function() { document.removeEventListener("autoguest:novo-contrato", abrirNovoContrato); };
   }, []);
-  async function remove(id) { if (!confirm("Excluir contrato?")) return; await db.del("contratos", id); setContratos(p => p.filter(c => c.id !== id)); toast("Excluído!"); }
+  async function remove(id) {
+    if (!confirm("Excluir contrato?")) return;
+    // Libera o veículo se o contrato era ativo
+    var ct = contratos.find(function(x){ return x.id === id; });
+    await db.del("contratos", id);
+    setContratos(p => p.filter(c => c.id !== id));
+    if (ct && ct.status === "ativo" && ct.veiculo_id) {
+      // Só libera se não há outro contrato ativo para o mesmo veículo
+      var outroAtivo = contratos.some(function(x){ return x.id !== id && String(x.veiculo_id) === String(ct.veiculo_id) && x.status === "ativo"; });
+      if (!outroAtivo) {
+        await db.patch("veiculos", ct.veiculo_id, { status: "disponivel" });
+        setVeiculos(p => p.map(v => v.id == ct.veiculo_id ? Object.assign({}, v, { status: "disponivel" }) : v));
+      }
+    }
+    toast("Excluído!");
+  }
   async function sincronizarRefFatura(c, dtPag) {
     // Mês do pagamento real prevalece sobre previsão
     var mesPag = dtPag ? dtPag.slice(0, 7) : (c.previsao_pagamento || c.data_fim || "").slice(0, 7);
@@ -18170,11 +18186,21 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   }
   function F(k, v) { setForm(p => Object.assign({}, p, { [k]: v })); }
   function veicsDisponiveis() {
-    if (!dispDe || !dispAte) return veiculos;
-    return veiculos.filter(v => {
+    return veiculos.filter(function(v) {
       if (v.status === "manutencao" || v.status === "inativo") return false;
-      var conflito = contratos.filter(c => c.status === "ativo" && c.veiculo_id == v.id).some(c => !(c.data_fim < dispDe || c.data_inicio > dispAte));
-      return !conflito;
+      // Filtra por período de disponibilidade se informado
+      var ctsFiltrar = contratos.filter(function(c) {
+        return c.status === "ativo" && String(c.veiculo_id) == String(v.id);
+      });
+      if (dispDe && dispAte) {
+        // Conflito: contrato ativo que sobrepoe o periodo solicitado
+        var conflito = ctsFiltrar.some(function(c) {
+          return !(c.data_fim < dispDe || c.data_inicio > dispAte);
+        });
+        return !conflito;
+      }
+      // Sem filtro de periodo: disponivel se nao tem nenhum contrato ativo
+      return ctsFiltrar.length === 0;
     });
   }
   async function save() {
@@ -18187,8 +18213,26 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       const valorFinal = form.valor_total !== undefined && form.valor_total !== "" ? parseFloat(form.valor_total).toFixed(2) : (parseFloat(calcValor(form)) - parseFloat(form.desconto||0) + parseFloat(form.acrescimo||0)).toFixed(2);
       const payload = Object.assign({}, form, { valor_total: valorFinal });
       if (edit) {
+        const ctAntes = contratos.find(function(x){ return x.id === edit; });
         const u = await db.patch("contratos", edit, payload);
         setContratos(p => p.map(c => c.id === edit ? Object.assign({}, c, u) : c));
+        // Sincronizar status do veículo ao editar contrato
+        if (ctAntes && payload.veiculo_id) {
+          var statusNovo = payload.status || ctAntes.status;
+          var veId = payload.veiculo_id || ctAntes.veiculo_id;
+          if ((statusNovo === "cancelado" || statusNovo === "concluido") && ctAntes.status === "ativo") {
+            // Contrato deixou de ser ativo: libera o veículo (se não há outro ativo)
+            var outroAtivo = contratos.some(function(x){ return x.id !== edit && String(x.veiculo_id) === String(veId) && x.status === "ativo"; });
+            if (!outroAtivo) {
+              await db.patch("veiculos", veId, { status: "disponivel" });
+              setVeiculos(function(p){ return p.map(function(v){ return String(v.id) == String(veId) ? Object.assign({}, v, { status: "disponivel" }) : v; }); });
+            }
+          } else if (statusNovo === "ativo" && ctAntes.status !== "ativo") {
+            // Contrato voltou a ativo: marca veículo como alugado
+            await db.patch("veiculos", veId, { status: "alugado" });
+            setVeiculos(function(p){ return p.map(function(v){ return String(v.id) == String(veId) ? Object.assign({}, v, { status: "alugado" }) : v; }); });
+          }
+        }
         // Se previsao_pagamento mudou, garantir que existe fatura prevista para o novo mês
         if (payload.previsao_pagamento) { await criarFaturaPrevista(Object.assign({}, u, { id: edit })); }
         // Se data_pagamento foi definida e contrato está pago, sincronizar receita
@@ -19342,9 +19386,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
           ))
           , React.createElement(Lbl, { label: "Data da Notificação", flex: 1 }, React.createElement('input', { style: FI, type: "date", value: form.data_notificacao || "", onChange: function(e){F("data_notificacao", e.target.value);} }))
         )
-        , React.createElement('div', { style: { background: C.purple + "0D", border: "1px solid " + C.purple + "30", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: C.sub } },
-            "Para enviar o Formulário de Indicação de Condutor (DSV) com assinatura online, feche este formulário e clique em ", React.createElement('b', null, "📋 DSV"), " no cartão da multa."
-        )
+
         /* ── Seção: Cobrança ao Cliente ── */
         , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.purple, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid " + C.purple + "40", paddingBottom: 4, marginTop: 4 } }, "Cobrança ao Cliente")
         , React.createElement('div', { style: { display: "flex", gap: 10 } }
@@ -19380,117 +19422,48 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         var nVe = ((veDSV && veDSV.marca) || '') + ' ' + ((veDSV && veDSV.modelo) || '');
         var _s = function(v){ return v || '—'; };
         var _d = function(v){ return v ? fmtDate(v) : '—'; };
-        return React.createElement(Modal, { open: modalDSV, onClose: function(){ setModalDSV(false); setMultaDSV(null); }, title: "Notificação DSV — Formulário de Indicação de Condutor", wide: true }
-          , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 10 } }
-            /* Status + botões de envio */
-            , isSigned && React.createElement('div', { style: { background: "#34C75922", border: "1px solid #34C759", color: "#34C759", borderRadius: 10, padding: "10px 14px", fontWeight: 700, fontSize: 13 } },
-                "✅ Condutor assinou em " + fmtDate(String(mDSV.dsv_assinado_em).slice(0,10)) + " às " + String(mDSV.dsv_assinado_em).slice(11,16)
+        /* ── Função local: enviar notificação da multa (não o DSV) ── */
+        function enviarNotifCliente(via) {
+          var nomeVe = (veDSV && veDSV.placa ? veDSV.placa : "") + (veDSV && veDSV.modelo ? " " + veDSV.modelo : "");
+          var msg = "Olá " + (clDSV && clDSV.nome ? clDSV.nome : "") + "!\n\nInformamos que há uma notificação de infração de trânsito em seu nome referente ao veículo " + nomeVe + ".\n\nAIT: " + (mDSV.ait || "—") + "\nData: " + fmtDate(mDSV.data) + "\nInfração: " + (mDSV.tipo || "—") + "\nLocal: " + (mDSV.local || "—") + "\nVencimento: " + fmtDate(mDSV.vencimento) + "\nValor: " + fmtBRL(mDSV.valor) + "\n\nQualquer dúvida, entre em contato conosco.\n\n" + (emp.nome || "") + (emp.telefone ? "\nTel: " + emp.telefone : "");
+          if (via === "whats") {
+            var tel = String((clDSV && clDSV.telefone) || "").replace(/\D/g, "");
+            if (tel && tel.length < 12) tel = "55" + tel;
+            window.open("https://wa.me/" + tel + "?text=" + encodeURIComponent(msg), "_blank");
+          } else if (via === "email") {
+            var to = (clDSV && clDSV.email) || "";
+            window.open("mailto:" + encodeURIComponent(to) + "?subject=" + encodeURIComponent("Notificação de Infração de Trânsito — AIT " + (mDSV.ait || "")) + "&body=" + encodeURIComponent(msg), "_blank");
+          }
+          setModalDSV(false); setMultaDSV(null);
+        }
+        return React.createElement(Modal, { open: modalDSV, onClose: function(){ setModalDSV(false); setMultaDSV(null); }, title: "📤 Enviar Notificação ao Cliente" }
+          , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } }
+            /* Resumo da multa */
+            , React.createElement('div', { style: { background: "var(--c-bg)", border: "1px solid var(--c-border)", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 4 } }
+              , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: "var(--c-sub)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 } }, "Multa selecionada")
+              , React.createElement('div', { style: { fontSize: 13, fontWeight: 700 } }, (clDSV && clDSV.nome) || "—")
+              , React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)" } }, (veDSV && veDSV.placa ? veDSV.placa + " · " : "") + (mDSV.tipo || "—") + (mDSV.ait ? " · AIT " + mDSV.ait : ""))
+              , React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)" } }, "Venc.: " + fmtDate(mDSV.vencimento) + " · " + fmtBRL(mDSV.valor))
             )
-            , React.createElement('div', { style: { display: "flex", gap: 8, flexWrap: "wrap" } }
-              , !isSigned && React.createElement('button', { style: Object.assign({}, Btn(C.green), { fontSize: 12, padding: "8px 12px" }), onClick: function(){ enviarDSVLink(mDSV, clDSV, veDSV, "whats"); } }, "📲 WhatsApp")
-              , !isSigned && React.createElement('button', { style: Object.assign({}, Btn(C.blue), { fontSize: 12, padding: "8px 12px" }), onClick: function(){ enviarDSVLink(mDSV, clDSV, veDSV, "email"); } }, "📧 E-mail")
-              , !isSigned && React.createElement('button', { style: Object.assign({}, Btn(), { fontSize: 12, padding: "8px 12px" }), onClick: function(){ enviarDSVLink(mDSV, clDSV, veDSV, "copy"); } }, "🔗 Copiar Link")
-              , React.createElement('button', { style: Object.assign({}, Btn(C.teal), { fontSize: 12, padding: "8px 12px" }), onClick: function(){ openPdfPage(buildDSVHtml(mDSV, clDSV, veDSV, emp, mDSV.assinatura_dsv || null)); } }, "🖨️ Imprimir / PDF")
+            /* Informação do destinatário */
+            , React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)", display: "flex", flexDirection: "column", gap: 3 } }
+              , clDSV && clDSV.telefone && React.createElement('div', null, "📱 WhatsApp: ", React.createElement('b', null, clDSV.telefone))
+              , clDSV && clDSV.email && React.createElement('div', null, "📧 E-mail: ", React.createElement('b', null, clDSV.email))
+              , (!clDSV || (!clDSV.telefone && !clDSV.email)) && React.createElement('div', { style: { color: "var(--c-red)", fontWeight: 600 } }, "⚠️ Cliente sem telefone ou e-mail cadastrado")
             )
-            /* Preview tabela oficial */
-            , React.createElement('div', { style: { overflowX: "auto" } }
-              , React.createElement('table', { style: tbl }
-                , React.createElement('tbody', null
-                  /* Cabeçalho */
-                  , React.createElement('tr', null
-                    , React.createElement('td', { style: Object.assign({}, tdB, { width: 180 }) }
-                      , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8 } }
-                        , React.createElement('div', { dangerouslySetInnerHTML: { __html: DSV_LOGO_SVG } })
-                        , React.createElement('div', null
-                          , React.createElement('div', { style: { fontWeight: 800, fontSize: 8, textTransform: "uppercase", letterSpacing: 0.4, lineHeight: 1.6 } }, "PREFEITURA DE SÃO PAULO")
-                          , React.createElement('div', { style: { fontSize: 7, textTransform: "uppercase", letterSpacing: 0.4, lineHeight: 1.6 } }, "MOBILIDADE E TRANSPORTES")
-                        )
-                      )
-                    )
-                    , React.createElement('td', { style: Object.assign({}, tdB, { textAlign: "center", fontSize: 13, fontWeight: 800, letterSpacing: 1.5, textTransform: "uppercase", padding: 12 }) }, "FORMULÁRIO DE INDICAÇÃO DE CONDUTOR")
-                  )
-                  /* Proprietário */
-                  , React.createElement('tr', null
-                    , React.createElement('td', { style: lab }, "PROPRIETÁRIO:")
-                    , React.createElement('td', { style: Object.assign({}, tdB, { fontWeight: 700 }) }, _s(emp.nome))
-                  )
-                  /* Veículo */
-                  , React.createElement('tr', null
-                    , React.createElement('td', { style: lab }, "VEÍCULO:")
-                    , React.createElement('td', { style: tdB }
-                      , React.createElement('div', { style: iRow }, React.createElement('span', { style: iLab }, "RENAVAM:"), React.createElement('span', { style: iVal }, _s(veDSV && veDSV.renavam)))
-                      , React.createElement('div', { style: iRow }, React.createElement('span', { style: iLab }, "PLACA:"), React.createElement('span', { style: iVal }, _s(veDSV && veDSV.placa)))
-                      , React.createElement('div', { style: iRow }, React.createElement('span', { style: iLab }, "MARCA/MODELO:"), React.createElement('span', { style: iVal }, nVe.trim() || '—'))
-                      , React.createElement('div', { style: iRow }, React.createElement('span', { style: iLab }, "ANO:"), React.createElement('span', { style: iVal }, _s(veDSV && veDSV.ano)))
-                    )
-                  )
-                  /* Autuação */
-                  , React.createElement('tr', null
-                    , React.createElement('td', { style: lab }, "AUTUAÇÃO:")
-                    , React.createElement('td', { style: tdB }
-                      , React.createElement('div', { style: iRow }, React.createElement('span', { style: iLab }, "NÚMERO AIT:"), React.createElement('span', { style: iVal }, _s(mDSV.ait)))
-                      , React.createElement('div', { style: iRow }, React.createElement('span', { style: iLab }, "DATA :"), React.createElement('span', { style: iVal }, _d(mDSV.data) + (mDSV.hora_infracao ? ' ' + mDSV.hora_infracao : '')))
-                      , React.createElement('div', { style: iRow }, React.createElement('span', { style: iLab }, "LOCAL:"), React.createElement('span', { style: iVal }, _s(mDSV.local)))
-                      , React.createElement('div', { style: iRow }, React.createElement('span', { style: iLab }, "DESCRIÇÃO:"), React.createElement('span', { style: iVal }, _s(mDSV.descricao || mDSV.tipo)))
-                    )
-                  )
-                  /* Condutor */
-                  , React.createElement('tr', null
-                    , React.createElement('td', { style: lab }, "CONDUTOR:")
-                    , React.createElement('td', { style: tdB }
-                      , React.createElement('div', { style: subH }, "DADOS PESSOAIS")
-                      , React.createElement('div', { style: iRow }
-                        , React.createElement('span', { style: iLab }, "NOME:"), React.createElement('span', { style: Object.assign({}, iVal, { minWidth: 160 }) }, _s(clDSV && clDSV.nome))
-                        , React.createElement('span', { style: Object.assign({}, iLab, { marginLeft: 12 }) }, "E-MAIL:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.email))
-                      )
-                      , React.createElement('div', { style: iRow }
-                        , React.createElement('span', { style: iLab }, "NÚMERO CNH:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.cnh))
-                        , React.createElement('span', { style: Object.assign({}, iLab, { marginLeft: 12 }) }, "UF CNH:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.uf_cnh))
-                      )
-                      , React.createElement('div', { style: iRow }
-                        , React.createElement('span', { style: iLab }, "VALIDADE CNH:"), React.createElement('span', { style: iVal }, _d(clDSV && clDSV.vencimento_cnh))
-                      )
-                      , React.createElement('div', { style: iRow }
-                        , React.createElement('span', { style: iLab }, "CPF:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.cpf))
-                        , React.createElement('span', { style: Object.assign({}, iLab, { marginLeft: 12 }) }, "RG:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.rg))
-                        , React.createElement('span', { style: Object.assign({}, iLab, { marginLeft: 12 }) }, "UF RG:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.uf_rg))
-                      )
-                      , React.createElement('div', { style: subH }, "ENDEREÇO DO CONDUTOR")
-                      , React.createElement('div', { style: iRow }
-                        , React.createElement('span', { style: iLab }, "CEP:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.cep))
-                        , React.createElement('span', { style: Object.assign({}, iLab, { marginLeft: 12 }) }, "ENDEREÇO:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.endereco))
-                      )
-                      , React.createElement('div', { style: iRow }
-                        , React.createElement('span', { style: iLab }, "NÚMERO:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.numero_end))
-                        , React.createElement('span', { style: Object.assign({}, iLab, { marginLeft: 12 }) }, "COMPLEMENTO:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.complemento_end))
-                        , React.createElement('span', { style: Object.assign({}, iLab, { marginLeft: 12 }) }, "BAIRRO:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.bairro))
-                      )
-                      , React.createElement('div', { style: iRow }
-                        , React.createElement('span', { style: iLab }, "MUNICÍPIO:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.municipio))
-                        , React.createElement('span', { style: Object.assign({}, iLab, { marginLeft: 12 }) }, "UF:"), React.createElement('span', { style: iVal }, _s(clDSV && clDSV.uf_end))
-                      )
-                    )
-                  )
-                  /* Assinaturas */
-                  , React.createElement('tr', null
-                    , React.createElement('td', { style: Object.assign({}, tdB, { fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4 }) }, "ASSINATURA CONDUTOR")
-                    , React.createElement('td', { style: Object.assign({}, tdB, { fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4 }) }, "ASSINATURA PROPRIETÁRIO")
-                  )
-                  , React.createElement('tr', null
-                    , React.createElement('td', { style: Object.assign({}, tdB, { textAlign: "center", paddingTop: 8 }) }
-                      , isSigned && mDSV.assinatura_dsv
-                        ? React.createElement('img', { src: mDSV.assinatura_dsv, style: { maxHeight: 50, display: "block", margin: "0 auto 4px" } })
-                        : React.createElement('div', { style: { height: 46, borderBottom: "1px solid #333", marginBottom: 4 } })
-                      , React.createElement('div', { style: { fontWeight: 700, fontSize: 11 } }, _s(clDSV && clDSV.nome))
-                      , React.createElement('div', { style: { fontSize: 10 } }, "CPF: " + _s(clDSV && clDSV.cpf))
-                    )
-                    , React.createElement('td', { style: Object.assign({}, tdB, { paddingTop: 8 }) }
-                      , React.createElement('div', { style: { height: 46, borderBottom: "1px solid #333", marginBottom: 4 } })
-                      , React.createElement('div', { style: { fontWeight: 700, fontSize: 11 } }, _s(emp.nome))
-                      , React.createElement('div', { style: { fontSize: 10 } }, "CPF/CNPJ: " + _s(emp.cnpj))
-                    )
-                  )
-                )
+            /* Botões de envio */
+            , React.createElement('div', { style: { display: "flex", gap: 10, flexDirection: "column" } }
+              , React.createElement('button', { style: Object.assign({}, Btn(C.green), { fontSize: 14, padding: "13px 16px", borderRadius: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }),
+                  onClick: function(){ enviarNotifCliente("whats"); } }
+                , "📲  Enviar por WhatsApp"
+              )
+              , React.createElement('button', { style: Object.assign({}, Btn(C.blue), { fontSize: 14, padding: "13px 16px", borderRadius: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }),
+                  onClick: function(){ enviarNotifCliente("email"); } }
+                , "📧  Enviar por E-mail"
+              )
+              , React.createElement('button', { style: Object.assign({}, Btn(C.teal), { fontSize: 13, padding: "10px 16px", borderRadius: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }),
+                  onClick: function(){ printNotificacao(mDSV, clDSV, veDSV); } }
+                , "🖨️  Imprimir / Salvar PDF"
               )
             )
           )

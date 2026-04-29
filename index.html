@@ -19061,8 +19061,6 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     setLoading(true);
     try {
       var payload = Object.assign({}, form);
-      delete payload.auto_infracao_url;
-      delete payload.cnh_condutor_url;
       // Normaliza IDs: "" → null (Postgres bigint rejeita string vazia)
       ["contrato_id","veiculo_id","cliente_id"].forEach(function(k){ if (payload[k] === "" || payload[k] === undefined) payload[k] = null; });
       // Normaliza datas: "" → null
@@ -19431,14 +19429,17 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         /* ── Função local: enviar notificação da multa (não o DSV) ── */
         function enviarNotifCliente(via) {
           var nomeVe = (veDSV && veDSV.placa ? veDSV.placa : "") + (veDSV && veDSV.modelo ? " " + veDSV.modelo : "");
-          var msg = "Olá " + (clDSV && clDSV.nome ? clDSV.nome : "") + "!\n\nInformamos que há uma notificação de infração de trânsito em seu nome referente ao veículo " + nomeVe + ".\n\nAIT: " + (mDSV.ait || "—") + "\nData: " + fmtDate(mDSV.data) + "\nInfração: " + (mDSV.tipo || "—") + "\nLocal: " + (mDSV.local || "—") + "\nVencimento: " + fmtDate(mDSV.vencimento) + "\nValor: " + fmtBRL(mDSV.valor) + "\n\nQualquer dúvida, entre em contato conosco.\n\n" + (emp.nome || "") + (emp.telefone ? "\nTel: " + emp.telefone : "");
+          var anexoUrl = mDSV.auto_infracao_url || "";
+          var linhaAnexo = anexoUrl ? "\n\n📎 Notificação em anexo:\n" + anexoUrl : "";
+          var msg = "Olá " + (clDSV && clDSV.nome ? clDSV.nome : "") + "!\n\nInformamos que há uma notificação de infração de trânsito em seu nome referente ao veículo " + nomeVe + ".\n\nAIT: " + (mDSV.ait || "—") + "\nData: " + fmtDate(mDSV.data) + "\nInfração: " + (mDSV.tipo || "—") + "\nLocal: " + (mDSV.local || "—") + "\nVencimento: " + fmtDate(mDSV.vencimento) + "\nValor: " + fmtBRL(mDSV.valor) + linhaAnexo + "\n\nQualquer dúvida, entre em contato conosco.\n\n" + (emp.nome || "") + (emp.telefone ? "\nTel: " + emp.telefone : "");
           if (via === "whats") {
             var tel = String((clDSV && clDSV.telefone) || "").replace(/\D/g, "");
             if (tel && tel.length < 12) tel = "55" + tel;
             window.open("https://wa.me/" + tel + "?text=" + encodeURIComponent(msg), "_blank");
           } else if (via === "email") {
             var to = (clDSV && clDSV.email) || "";
-            window.open("mailto:" + encodeURIComponent(to) + "?subject=" + encodeURIComponent("Notificação de Infração de Trânsito — AIT " + (mDSV.ait || "")) + "&body=" + encodeURIComponent(msg), "_blank");
+            var bodyEmail = msg;
+            window.open("mailto:" + encodeURIComponent(to) + "?subject=" + encodeURIComponent("Notificação de Infração de Trânsito — AIT " + (mDSV.ait || "")) + "&body=" + encodeURIComponent(bodyEmail), "_blank");
           }
           setModalDSV(false); setMultaDSV(null);
         }
@@ -19456,6 +19457,19 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
               , clDSV && clDSV.telefone && React.createElement('div', null, "📱 WhatsApp: ", React.createElement('b', null, clDSV.telefone))
               , clDSV && clDSV.email && React.createElement('div', null, "📧 E-mail: ", React.createElement('b', null, clDSV.email))
               , (!clDSV || (!clDSV.telefone && !clDSV.email)) && React.createElement('div', { style: { color: "var(--c-red)", fontWeight: 600 } }, "⚠️ Cliente sem telefone ou e-mail cadastrado")
+            )
+            /* Anexo */
+            , React.createElement('div', { style: { fontSize: 12, display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 10, background: mDSV.auto_infracao_url ? "rgba(52,199,89,0.08)" : "rgba(255,149,0,0.08)", border: "1px solid " + (mDSV.auto_infracao_url ? "rgba(52,199,89,0.30)" : "rgba(255,149,0,0.30)") } }
+              , mDSV.auto_infracao_url
+                ? React.createElement(React.Fragment, null
+                    , React.createElement('span', null, "📎")
+                    , React.createElement('span', { style: { fontWeight: 600, color: "var(--c-green)" } }, "Notificação anexada — será enviada como link")
+                    , React.createElement('a', { href: mDSV.auto_infracao_url, target: "_blank", rel: "noreferrer", style: { marginLeft: "auto", fontSize: 11, color: "var(--c-blue)" } }, "ver arquivo")
+                  )
+                : React.createElement(React.Fragment, null
+                    , React.createElement('span', null, "⚠️")
+                    , React.createElement('span', { style: { color: "var(--c-orange)" } }, "Sem anexo — adicione o Auto de Infração no cadastro da multa")
+                  )
             )
             /* Botões de envio */
             , React.createElement('div', { style: { display: "flex", gap: 10, flexDirection: "column" } }
@@ -24161,6 +24175,8 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setClaudeKey
                  , React.createElement('br', {}), "alter table multas add column if not exists boleto_orgao_recebido boolean default false;"
                  , React.createElement('br', {}), "alter table multas add column if not exists data_solicitacao_boleto date;"
                  , React.createElement('br', {}), "alter table multas add column if not exists data_boleto_recebido date;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists auto_infracao_url text;"
+                 , React.createElement('br', {}), "alter table multas add column if not exists cnh_condutor_url text;"
                  , React.createElement('br', {}), "alter table multas add column if not exists token_dsv text;"
                  , React.createElement('br', {}), "alter table multas add column if not exists dsv_assinado_em timestamptz;"
                  , React.createElement('br', {}), "alter table multas add column if not exists data_cobranca_cliente date;"

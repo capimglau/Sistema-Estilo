@@ -13745,6 +13745,47 @@ function VoiceIA_unused({ setTab, toast, veiculos, clientes, contratos, C }) {
     )
   );
 }
+// ── Dismissed store — completamente fora do React, no localStorage ──────────
+// Chave estável: remove contagem numérica do título
+function _alertStableKey(g) {
+  var t = (g.titulo || "").replace(/\s*\(\d+\)/g, "").trim();
+  return (g.tab || "") + "|" + t;
+}
+function _alertGetDismissed() {
+  try { var s = localStorage.getItem("ag_dismissed_v2"); return s ? JSON.parse(s) : {}; } catch(_){ return {}; }
+}
+function _alertSetDismissed(obj) {
+  try { localStorage.setItem("ag_dismissed_v2", JSON.stringify(obj)); } catch(_){}
+  // Notifica todos os TopBanner montados
+  window.dispatchEvent(new CustomEvent("ag-dismissed-changed"));
+}
+function _alertDismiss(key) {
+  var obj = _alertGetDismissed();
+  obj[key] = Date.now();
+  _alertSetDismissed(obj);
+}
+function _alertRestore(key) {
+  var obj = _alertGetDismissed();
+  delete obj[key];
+  _alertSetDismissed(obj);
+}
+function _alertIsDismissed(key) {
+  return !!_alertGetDismissed()[key];
+}
+// Migração única: converte ag_dismissed (array antigo) para ag_dismissed_v2 (objeto)
+(function migrateOldDismissed() {
+  try {
+    if (localStorage.getItem("ag_dismissed_v2")) return; // já migrado
+    var old = localStorage.getItem("ag_dismissed");
+    if (!old) return;
+    var arr = JSON.parse(old);
+    if (!Array.isArray(arr) || !arr.length) return;
+    var obj = {};
+    arr.forEach(function(k) { if (k) obj[k] = Date.now(); });
+    localStorage.setItem("ag_dismissed_v2", JSON.stringify(obj));
+  } catch(_) {}
+})();
+
 function TopBanner({ alertaGroups, C, setTab, searchBarEl,
                      nomeMes, prevMes, recMes, resultPrev,
                      alugados, totalFrota, contratosAtrasados, cnhVencida, totalAlertas }) {
@@ -13757,33 +13798,13 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl,
   var _open = React.useState(false); var open = _open[0]; var setOpen = _open[1];
   var _cat  = React.useState("todos"); var catFiltro = _cat[0]; var setCatFiltro = _cat[1];
   var _grpExp = React.useState({}); var grpExp = _grpExp[0]; var setGrpExp = _grpExp[1];
-  var _dim = React.useState(function(){
-    try { var s = localStorage.getItem("ag_dismissed"); return s ? JSON.parse(s) : []; } catch(_){ return []; }
-  }); var dismissed = _dim[0]; var setDismissed = _dim[1];
-  // Chave estável: remove contagem numérica do título para que o dismiss persista mesmo quando o número muda
-  function stableKey(g) {
-    var tituloEstavel = (g.titulo || "").replace(/\s*\(\d+\)/g, "").trim();
-    return (g.tab || "") + "|" + tituloEstavel;
-  }
-  function dismiss(key) {
-    setDismissed(function(p) {
-      var n = p.indexOf(key) < 0 ? p.concat([key]) : p;
-      try { localStorage.setItem("ag_dismissed", JSON.stringify(n)); } catch(_){}
-      return n;
-    });
-  }
-  // Auto-limpa dismissed quando o grupo some (items=0): alerta resolvido volta a aparecer se surgir novamente
+  // tick força re-render quando dismissed muda — sem guardar dismissed no state React
+  var _tick = React.useState(0); var tick = _tick[0]; var setTick = _tick[1];
   React.useEffect(function() {
-    var allKeys = (alertaGroups || []).filter(function(g){ return g.items && g.items.length > 0; }).map(function(g){ return stableKey(g); });
-    setDismissed(function(p) {
-      var limpo = p.filter(function(k) { return allKeys.indexOf(k) >= 0; });
-      if (limpo.length !== p.length) {
-        try { localStorage.setItem("ag_dismissed", JSON.stringify(limpo)); } catch(_){}
-        return limpo;
-      }
-      return p;
-    });
-  }, [alertaGroups]);
+    function onChanged() { setTick(function(n){ return n + 1; }); }
+    window.addEventListener("ag-dismissed-changed", onChanged);
+    return function() { window.removeEventListener("ag-dismissed-changed", onChanged); };
+  }, []);
   var _lst  = React.useState(false); var listening = _lst[0]; var setListening = _lst[1];
   var swipeRef = React.useRef(null); var swipeY = React.useRef(null);
   var recognRef = React.useRef(null);
@@ -13820,7 +13841,7 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl,
   }
 
   var groups = (alertaGroups || []).filter(function(g) { return g.items && g.items.length > 0; });
-  var visibleGroups = groups.filter(function(g) { return dismissed.indexOf(stableKey(g)) < 0; });
+  var visibleGroups = groups.filter(function(g) { return !_alertIsDismissed(_alertStableKey(g)); });
   var nAlertas = visibleGroups.length;
   var alertColor = visibleGroups.some(function(g){ return g.cor === C.red; }) ? C.red : visibleGroups.some(function(g){ return g.cor === C.orange; }) ? C.orange : C.green;
   var cats = ["todos"];
@@ -13828,8 +13849,8 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl,
   var catLabels = { todos:"Todos", reservas:"Reservas", contratos:"Contratos", financeiro:"Financeiro", clientes:"Clientes", multas:"Multas", manutencao:"Manutenção", frota:"Frota" };
   var groupsFil = catFiltro === "todos" ? visibleGroups : visibleGroups.filter(function(g) { return g.tab === catFiltro; });
 
-  var statusColor = totalAlertas > 5 ? C.red : totalAlertas > 2 ? C.orange : C.green;
-  var statusLabel = totalAlertas > 5 ? "Atenção" : totalAlertas > 2 ? "Alertas" : "OK";
+  var statusColor = nAlertas > 5 ? C.red : nAlertas > 2 ? C.orange : nAlertas > 0 ? C.orange : C.green;
+  var statusLabel = nAlertas > 5 ? "Atenção" : nAlertas > 2 ? "Alertas" : nAlertas > 0 ? "Alertas" : "OK";
   var taxaOcup = totalFrota > 0 ? Math.round(alugados / totalFrota * 100) : 0;
   var insights = [];
   if (taxaOcup === 100 && totalFrota > 0) insights.push({ icon: "🚗", text: "Frota 100% ocupada — " + alugados + "/" + totalFrota, color: C.green });
@@ -13912,13 +13933,13 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl,
         ),
         groupsFil.map(function(g, i) {
           var gKey = g.tab + "_" + i; var isOpen = grpExp[gKey] !== false;
-          var dimKey = stableKey(g);
+          var dimKey = _alertStableKey(g);
           function onSwipeStart(e) { swipeTouchRef.current[gKey] = e.touches[0].clientX; }
           function onSwipeEnd(e) {
             var startX = swipeTouchRef.current[gKey];
             if (startX == null) return;
             var dx = e.changedTouches[0].clientX - startX; swipeTouchRef.current[gKey] = null;
-            if (dx < -60) dismiss(dimKey);
+            if (dx < -60) _alertDismiss(dimKey);
           }
           return React.createElement('div', { key: i,
             onTouchStart: onSwipeStart, onTouchEnd: onSwipeEnd,
@@ -13931,7 +13952,7 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl,
               React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6 } },
                 g.tab && React.createElement('span', { onClick: function(e) { e.stopPropagation(); setTab(g.tab); }, style: { fontSize: 11, color: g.cor, opacity: 0.7 } }, "Ver →"),
                 React.createElement('span', { style: { fontSize: 10, color: g.cor, background: g.cor + "18", borderRadius: 6, padding: "2px 6px", fontWeight: 700, transition: "transform .2s", transform: isOpen ? "rotate(180deg)" : "rotate(0deg)" } }, "▼"),
-                React.createElement('button', { onClick: function(e) { e.stopPropagation(); dismiss(dimKey); }, style: { border: "none", background: "transparent", color: g.cor, opacity: 0.55, cursor: "pointer", fontSize: 14, padding: "0 0 0 2px", lineHeight: 1, display: "flex", alignItems: "center" } }, "✕")
+                React.createElement('button', { onClick: function(e) { e.stopPropagation(); _alertDismiss(dimKey); }, style: { border: "none", background: "transparent", color: g.cor, opacity: 0.55, cursor: "pointer", fontSize: 14, padding: "0 0 0 2px", lineHeight: 1, display: "flex", alignItems: "center" } }, "✕")
               )
             ),
             isOpen && React.createElement('div', { style: { borderTop: "1px solid " + g.cor + "25", padding: "6px 14px 10px" } },

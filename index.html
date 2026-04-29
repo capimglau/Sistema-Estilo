@@ -17008,41 +17008,39 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
         await Promise.all(active.map(async function(v) {
           try {
             var price; var yr;
+            // Ano do cadastro do veículo — é sempre a fonte de verdade
+            var anoCadastro = String(v.ano_modelo||v.ano||'');
+
+            // Helper: dado a lista de anos da API, retorna o entry que bate com o ano do cadastro
+            function escolherAno(lista) {
+              var rev = (lista||[]).slice().reverse(); // mais recentes primeiro
+              return (anoCadastro ? rev.find(function(y){ return y.code.startsWith(anoCadastro); }) : null)
+                  || (anoCadastro ? rev.find(function(y){ return y.code.startsWith(String(parseInt(anoCadastro)-1)); }) : null)
+                  || rev[0];
+            }
+
             // Normaliza código FIPE: remove não-numéricos, depois formata como XXXXX-X
             var _rawCod = (v.fipe_codigo||'').trim().replace(/[^0-9]/g,'');
             var codigoManual = _rawCod.length === 7
-              ? _rawCod.slice(0,6)+'-'+_rawCod.slice(6)   // 0055387  → 005538-7
-              : (v.fipe_codigo||'').trim().replace(/[^0-9\-]/g,'').replace(/-+$/,'').replace(/-{2,}/g,'-'); // preserva hífen se já presente
+              ? _rawCod.slice(0,6)+'-'+_rawCod.slice(6)
+              : (v.fipe_codigo||'').trim().replace(/[^0-9\-]/g,'').replace(/-+$/,'').replace(/-{2,}/g,'-');
+
             if(codigoManual) {
-              // ── Busca direta pelo código FIPE do cadastro ──────────────────
-              // Endpoint: /cars/fipes/{codigo} → retorna dados atualizados do código exato
-              var fipeByCode = await fetch('https://fipe.parallelum.com.br/api/v2/cars/fipes/'+codigoManual,
-                {headers:{accept:'application/json'}}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
-              if(fipeByCode && fipeByCode.price) {
-                // API retornou direto — usa os dados
-                price = fipeByCode;
-                yr = { code: (fipeByCode.modelYear||String(v.ano||''))+'-1' };
-              } else {
-                // Fallback: busca por marca/modelo/ano com código sobrescrito
-                var brand2 = findFipe(brands, v.marca); if(!brand2) throw 0;
-                var mdata2 = await fetch(FIPE_API+'/brands/'+brand2.code+'/models',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
-                var model2 = findFipe(mdata2.models||mdata2||[], v.modelo); if(!model2) throw 0;
-                var years2 = await fetch(FIPE_API+'/brands/'+brand2.code+'/models/'+model2.code+'/years',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
-                var ano2 = String(v.ano_modelo||v.ano||'');
-                yr = (ano2 ? (years2||[]).find(function(y){ return y.code.startsWith(ano2); }) : null) || (years2||[])[0];
-                if(!yr) throw 0;
-                price = await fetch(FIPE_API+'/brands/'+brand2.code+'/models/'+model2.code+'/years/'+yr.code,{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
-                price = Object.assign({}, price, { codeFipe: codigoManual });
-              }
+              // ── Código FIPE manual: localiza marca/modelo pelo código e busca o ano do cadastro ──
+              var brand2 = findFipe(brands, v.marca); if(!brand2) throw 0;
+              var mdata2 = await fetch(FIPE_API+'/brands/'+brand2.code+'/models',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
+              var model2 = findFipe(mdata2.models||mdata2||[], v.modelo); if(!model2) throw 0;
+              var years2 = await fetch(FIPE_API+'/brands/'+brand2.code+'/models/'+model2.code+'/years',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
+              yr = escolherAno(years2); if(!yr) throw 0;
+              price = await fetch(FIPE_API+'/brands/'+brand2.code+'/models/'+model2.code+'/years/'+yr.code,{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
+              price = Object.assign({}, price, { codeFipe: codigoManual });
             } else {
-              // ── Busca automática por marca/modelo/ano ──────────────────────
+              // ── Busca automática por marca/modelo/ano do cadastro ──────────
               var brand = findFipe(brands, v.marca); if(!brand) throw 0;
               var mdata = await fetch(FIPE_API+'/brands/'+brand.code+'/models',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
               var model = findFipe(mdata.models||mdata||[], v.modelo); if(!model) throw 0;
               var years = await fetch(FIPE_API+'/brands/'+brand.code+'/models/'+model.code+'/years',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
-              var ano = String(v.ano_modelo||v.ano||'');
-              yr = (ano ? (years||[]).find(function(y){ return y.code.startsWith(ano); }) : null) || (years||[])[0];
-              if(!yr) throw 0;
+              yr = escolherAno(years); if(!yr) throw 0;
               price = await fetch(FIPE_API+'/brands/'+brand.code+'/models/'+model.code+'/years/'+yr.code,{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
             }
             var num = parseFloat((price.price||'').replace(/[^0-9,]/g,'').replace(',','.')) || 0;

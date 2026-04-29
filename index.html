@@ -17007,40 +17007,42 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
         var brands = await fetch(FIPE_API+'/brands',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
         await Promise.all(active.map(async function(v) {
           try {
-            var price;
-            if(v.fipe_codigo && v.fipe_codigo.trim()) {
-              // Busca direta pelo código FIPE informado no cadastro
-              var fipeBaseUrl = 'https://fipe.parallelum.com.br/api/v2';
-              var anoParam = v.fipe_ano_codigo || (String(v.ano_modelo||v.ano||'') + '-1');
-              // Tenta buscar via endpoint de consulta por código
-              var allBrands = brands;
-              var brand = findFipe(allBrands, v.marca);
-              if(!brand) throw 0;
-              var mdata = await fetch(FIPE_API+'/brands/'+brand.code+'/models',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
-              var model = findFipe(mdata.models||mdata||[], v.modelo);
-              if(!model) throw 0;
-              var years = await fetch(FIPE_API+'/brands/'+brand.code+'/models/'+model.code+'/years',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
-              // Usa o ano informado ou o mais recente disponível
-              var ano = String(v.ano_modelo||v.ano||'');
-              var yr = (ano ? (years||[]).find(function(y){ return y.code.startsWith(ano); }) : null) || (years||[])[0];
-              if(!yr) throw 0;
-              price = await fetch(FIPE_API+'/brands/'+brand.code+'/models/'+model.code+'/years/'+yr.code,{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
-              // Sobrescreve o código FIPE com o código manual
-              price = Object.assign({}, price, { codeFipe: v.fipe_codigo.trim() });
+            var price; var yr;
+            var codigoManual = (v.fipe_codigo||'').trim().replace(/[^0-9\-]/g,'');
+            if(codigoManual) {
+              // ── Busca direta pelo código FIPE do cadastro ──────────────────
+              // Endpoint: /cars/fipes/{codigo} → retorna dados atualizados do código exato
+              var fipeByCode = await fetch('https://fipe.parallelum.com.br/api/v2/cars/fipes/'+codigoManual,
+                {headers:{accept:'application/json'}}).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
+              if(fipeByCode && fipeByCode.price) {
+                // API retornou direto — usa os dados
+                price = fipeByCode;
+                yr = { code: (fipeByCode.modelYear||String(v.ano||''))+'-1' };
+              } else {
+                // Fallback: busca por marca/modelo/ano com código sobrescrito
+                var brand2 = findFipe(brands, v.marca); if(!brand2) throw 0;
+                var mdata2 = await fetch(FIPE_API+'/brands/'+brand2.code+'/models',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
+                var model2 = findFipe(mdata2.models||mdata2||[], v.modelo); if(!model2) throw 0;
+                var years2 = await fetch(FIPE_API+'/brands/'+brand2.code+'/models/'+model2.code+'/years',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
+                var ano2 = String(v.ano_modelo||v.ano||'');
+                yr = (ano2 ? (years2||[]).find(function(y){ return y.code.startsWith(ano2); }) : null) || (years2||[])[0];
+                if(!yr) throw 0;
+                price = await fetch(FIPE_API+'/brands/'+brand2.code+'/models/'+model2.code+'/years/'+yr.code,{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
+                price = Object.assign({}, price, { codeFipe: codigoManual });
+              }
             } else {
-              var brand = findFipe(brands, v.marca);
-              if(!brand) throw 0;
+              // ── Busca automática por marca/modelo/ano ──────────────────────
+              var brand = findFipe(brands, v.marca); if(!brand) throw 0;
               var mdata = await fetch(FIPE_API+'/brands/'+brand.code+'/models',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
-              var model = findFipe(mdata.models||mdata||[], v.modelo);
-              if(!model) throw 0;
+              var model = findFipe(mdata.models||mdata||[], v.modelo); if(!model) throw 0;
               var years = await fetch(FIPE_API+'/brands/'+brand.code+'/models/'+model.code+'/years',{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
               var ano = String(v.ano_modelo||v.ano||'');
-              var yr = (ano ? (years||[]).find(function(y){ return y.code.startsWith(ano); }) : null) || (years||[])[0];
+              yr = (ano ? (years||[]).find(function(y){ return y.code.startsWith(ano); }) : null) || (years||[])[0];
               if(!yr) throw 0;
               price = await fetch(FIPE_API+'/brands/'+brand.code+'/models/'+model.code+'/years/'+yr.code,{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
             }
             var num = parseFloat((price.price||'').replace(/[^0-9,]/g,'').replace(',','.')) || 0;
-            setFipeMap(function(p){ var u=Object.assign({},p); u[v.id]={valor:num,valorStr:price.price||'',modelo:price.model||'',codigo:price.codeFipe||'',anoFipe:yr.code.split('-')[0]||''}; return u; });
+            setFipeMap(function(p){ var u=Object.assign({},p); u[v.id]={valor:num,valorStr:price.price||'',modelo:price.model||'',codigo:price.codeFipe||codigoManual||'',anoFipe:(yr.code||'').split('-')[0]||'',manual:!!codigoManual}; return u; });
           } catch(e) {
             setFipeMap(function(p){ var u=Object.assign({},p); u[v.id]={erro:true}; return u; });
           }
@@ -17473,24 +17475,23 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
                   else if(fi.loading) fipeCell = React.createElement('span',{style:{color:'var(--c-sub)',fontSize:10}},'carregando…');
                   else if(fi.erro)    fipeCell = React.createElement('span',{style:{color:C.orange,fontSize:10}},'não encontrado');
                   else                fipeCell = React.createElement('div',null,
-                    React.createElement('div',{style:{fontWeight:700,color:'var(--c-text)',whiteSpace:'nowrap'}},fi.valorStr||fR(fi.valor)),
-                    React.createElement('div',{style:{fontSize:10,color:'var(--c-sub)',marginTop:1}},(fi.anoFipe?'Ano FIPE: '+fi.anoFipe+' · ':'')+( fi.codigo||''))
+                    React.createElement('div',{style:{fontWeight:700,color:C.red,whiteSpace:'nowrap'}},fR(fi.valor*0.80)),
+                    React.createElement('div',{style:{fontSize:10,color:'var(--c-sub)',marginTop:1}},(fi.anoFipe?'Ano FIPE: '+fi.anoFipe+' · ':'')+( fi.codigo||'')+(fi.manual?' ★':''))
                   );
                   return React.createElement('tr',{key:d.v.id,style:{borderBottom:'1px solid var(--c-border)'}},
                     React.createElement('td',{style:{padding:'10px 12px'}},
                       React.createElement('div',null,
-                        React.createElement('span',{style:{fontFamily:'monospace',fontSize:11,fontWeight:600,background:'rgba(0,122,255,0.10)',color:C.blue,padding:'2px 7px',borderRadius:5}},d.v.placa||'—'),
+                        React.createElement('div',{style:{display:'flex',alignItems:'center',gap:5}},
+                          React.createElement('span',{style:{fontFamily:'monospace',fontSize:11,fontWeight:600,background:'rgba(0,122,255,0.10)',color:C.blue,padding:'2px 7px',borderRadius:5}},d.v.placa||'—'),
+                          d.v.ano && React.createElement('span',{style:{fontSize:11,fontWeight:700,color:'var(--c-text)',background:'rgba(120,120,128,0.12)',borderRadius:5,padding:'2px 6px'}},d.v.ano)
+                        ),
                         React.createElement('div',{style:{fontSize:10,color:'var(--c-sub)',marginTop:3}},((d.v.marca||'')+' '+(d.v.modelo||'')).trim())
                       )
                     ),
                     React.createElement('td',{style:{padding:'10px 12px'}},fipeCell),
                     React.createElement('td',{style:{padding:'10px 12px',whiteSpace:'nowrap'}},
                       fipeValor>0
-                        ? React.createElement('div',{style:{display:'flex',alignItems:'baseline',gap:6,flexWrap:'wrap'}},
-                            React.createElement('span',{style:{fontWeight:700,color:'var(--c-text)'}},fR(fipeValor)),
-                            React.createElement('span',{style:{fontSize:10,color:'var(--c-sub)'}},'\u2192'),
-                            React.createElement('span',{style:{fontWeight:700,color:C.red}},fR(fipeValor*0.80))
-                          )
+                        ? React.createElement('span',{style:{fontWeight:700,color:C.red}},fR(fipeValor*0.80))
                         : '\u2014'
                     ),
                     React.createElement('td',{style:{padding:'10px 12px',fontWeight:600,color:tCor(lucroMes,0),whiteSpace:'nowrap'}},fR(lucroMes)),

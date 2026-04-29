@@ -18899,9 +18899,9 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
 
 // -- MULTAS ----------------------------------------------------------------─
 var NOTIF_STATUS = [
-  { id: "nao_notificado", label: "Cliente Recusou Assinar",  cor: "#FF6B00", emoji: "🚫" },
   { id: "enviada",        label: "Notificação Enviada",      cor: "#32ADE6", emoji: "📤" },
   { id: "aguardando",     label: "Aguard. Assinatura",       cor: "#FF9500", emoji: "⏳" },
+  { id: "nao_notificado", label: "Cliente Recusou Assinar",  cor: "#FF6B00", emoji: "🚫" },
   { id: "notificado",     label: "Órgão Notificado",         cor: "#34C759", emoji: "🏛️" },
   { id: "nao_localizou",  label: "Órgão: Não Identificou",  cor: "#FF3B30", emoji: "❌" }
 ];
@@ -18924,7 +18924,7 @@ function getPipelineStep(m) {
   if (m.status === "pago")                                                                                    return 6;
   if (m.boleto_orgao_recebido)                                                                                return 5;
   if (m.boleto_orgao_solicitado)                                                                              return 4;
-  if (m.status_notificacao === "notificado" || m.status_notificacao === "nao_localizou")                     return 3;
+  if (m.status_notificacao === "notificado" || m.status_notificacao === "nao_localizou" || m.status_notificacao === "nao_notificado")  return 3;
   if (m.dsv_assinado_em)                                                                                      return 2;
   // Notificação enviada: qualquer evidência — token, status_notificacao, OU data_notificacao preenchida
   if (m.token_dsv || m.status_notificacao === "enviada" || m.status_notificacao === "aguardando" || (m.data_notificacao && m.data_notificacao.length > 0)) return 1;
@@ -19150,13 +19150,15 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     var step = getPipelineStep(m);
     if (step === 0) return { label: "📤 Enviar Notificação ao Cliente", color: "#AF52DE", action: function(){ setMultaDSV(m); setModalDSV(true); } };
     if (step === 1) {
+      // Se cliente recusou assinar, próximo é solicitar boleto
+      if (m.status_notificacao === "nao_notificado") return { label: "📋 Solicitar Boleto ao Órgão (cliente recusou assinar)", color: "#FF9500", action: function(){ solicitarBoleto(m); } };
       // Se tem token_dsv enviado, próximo passo é registrar assinatura
       if (m.token_dsv) return { label: "✍️ Registrar/Aguardar Assinatura do Condutor", color: "#AF52DE", action: function(){ setMultaDSV(m); setModalDSV(true); } };
-      // Se só tem status_notificacao enviada/aguardando ou data_notificacao sem token, próximo é notificar o órgão (pular DSV) ou aguardar
+      // Se só tem status_notificacao enviada/aguardando sem token, próximo é notificar o órgão (pular DSV) ou aguardar
       return { label: "🏛️ Notificar Órgão (condutor já notificado)", color: "#34C759", action: function(){ notificar(m, "notificado"); } };
     }
     if (step === 2) return { label: "🏛️ Notificar Órgão (condutor assinou)", color: "#34C759", action: function(){ notificar(m, "notificado"); } };
-    if (step === 3) return { label: "📋 Solicitar Boleto ao Órgão", color: "#FF9500", action: function(){ solicitarBoleto(m); } };
+    if (step === 3) { if (m.status_notificacao === "nao_notificado") return { label: "📋 Solicitar Boleto ao Órgão (cliente recusou assinar)", color: "#FF9500", action: function(){ solicitarBoleto(m); } }; return { label: "📋 Solicitar Boleto ao Órgão", color: "#FF9500", action: function(){ solicitarBoleto(m); } }; }
     if (step === 4) return { label: "💳 Registrar Boleto Recebido", color: "#FF9500", action: function(){ receberBoleto(m); } };
     if (step === 5) return { label: "💰 Registrar Pagamento ao Órgão", color: "#34C759", action: function(){ pagar(m); } };
     if (step === 6) return { label: "📬 Emitir Cobrança ao Cliente", color: "#9FBDE6", action: function(){ cobrarCliente(m); } };
@@ -19384,11 +19386,12 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
           , isExpanded && React.createElement('div', { style: { margin: "4px 0 8px", padding: "11px 13px", borderRadius: 12, background: C.bg, border: "1px solid " + C.border } }
             , React.createElement('div', { style: { fontSize: 10, fontWeight: 800, color: C.sub, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 9 } }, "\uD83D\uDCCB Status de Notifica\u00e7\u00e3o \u00b7 Todos os Passos")
             , (function() {
+                var recusou = m.status_notificacao === "nao_notificado" && (m.token_dsv || m.status_notificacao);
                 var passosPainel = [
-                  { id: "dsv",    emoji: "\uD83D\uDCE4", label: "Notifica\u00e7\u00e3o enviada ao condutor", feito: !!(m.token_dsv || m.status_notificacao === "enviada" || m.status_notificacao === "aguardando" || (m.data_notificacao && m.data_notificacao.length > 0)), det: m.data_notificacao ? "em " + fmtDate(m.data_notificacao) : (m.token_dsv ? "DSV gerado" : null), cor: "#AF52DE", urgente: !m.token_dsv && !(m.status_notificacao && m.status_notificacao !== "nao_notificado") && !m.data_notificacao },
-                  { id: "ass",    emoji: "\u270d\ufe0f", label: "Condutor assinou o DSV",         feito: !!m.dsv_assinado_em, det: m.dsv_assinado_em ? "em " + fmtDate(String(m.dsv_assinado_em).slice(0,10)) : (m.token_dsv && !m.dsv_assinado_em ? "Aguardando assinatura" : null), cor: "#AF52DE", urgente: !!(m.token_dsv && !m.dsv_assinado_em) },
-                  { id: "orgao",  emoji: "\uD83C\uDFDB\ufe0f", label: "\u00d3rg\u00e3o notificado (indica\u00e7\u00e3o)", feito: m.status_notificacao === "notificado" || m.status_notificacao === "nao_localizou", det: m.status_notificacao === "notificado" ? ("Condutor indicado" + (m.data_notificacao ? " em " + fmtDate(m.data_notificacao) : "")) : m.status_notificacao === "nao_localizou" ? "\u274c \u00d3rg\u00e3o n\u00e3o identificou" : null, cor: m.status_notificacao === "nao_localizou" ? "#FF3B30" : "#34C759", urgente: !!(m.dsv_assinado_em && m.status_notificacao !== "notificado" && m.status_notificacao !== "nao_localizou") },
-                  { id: "boleto", emoji: "\uD83D\uDCCB", label: "Boleto solicitado ao \u00f3rg\u00e3o", feito: !!m.boleto_orgao_solicitado, det: m.data_solicitacao_boleto ? "em " + fmtDate(m.data_solicitacao_boleto) : null, cor: "#FF9500", urgente: !!(( m.status_notificacao === "notificado" || m.status_notificacao === "nao_localizou") && !m.boleto_orgao_solicitado) },
+                  { id: "dsv",    emoji: "\uD83D\uDCE4", label: "Notifica\u00e7\u00e3o enviada ao condutor", feito: !!(m.token_dsv || m.status_notificacao === "enviada" || m.status_notificacao === "aguardando" || m.status_notificacao === "nao_notificado" || (m.data_notificacao && m.data_notificacao.length > 0)), det: m.data_notificacao ? "em " + fmtDate(m.data_notificacao) : (m.token_dsv ? "DSV gerado" : null), cor: "#AF52DE", urgente: !m.token_dsv && !(m.status_notificacao && m.status_notificacao !== "nao_notificado" && m.status_notificacao) && !m.data_notificacao },
+                  { id: "ass",    emoji: "\u270d\ufe0f", label: m.status_notificacao === "nao_notificado" ? "\uD83D\uDEAB Cliente recusou assinar" : "Condutor assinou o DSV", feito: !!m.dsv_assinado_em || m.status_notificacao === "nao_notificado", det: m.status_notificacao === "nao_notificado" ? "Cliente optou por n\u00e3o assinar \u2014 \u00f3rg\u00e3o n\u00e3o ser\u00e1 notificado" : (m.dsv_assinado_em ? "em " + fmtDate(String(m.dsv_assinado_em).slice(0,10)) : (m.token_dsv && !m.dsv_assinado_em ? "Aguardando assinatura" : null)), cor: m.status_notificacao === "nao_notificado" ? "#FF6B00" : "#AF52DE", urgente: !!(m.token_dsv && !m.dsv_assinado_em && m.status_notificacao !== "nao_notificado") },
+                  { id: "orgao",  emoji: "\uD83C\uDFDB\ufe0f", label: m.status_notificacao === "nao_notificado" ? "\u00d3rg\u00e3o n\u00e3o notificado (cliente recusou)" : "\u00d3rg\u00e3o notificado (indica\u00e7\u00e3o)", feito: m.status_notificacao === "notificado" || m.status_notificacao === "nao_localizou" || m.status_notificacao === "nao_notificado", det: m.status_notificacao === "notificado" ? ("Condutor indicado" + (m.data_notificacao ? " em " + fmtDate(m.data_notificacao) : "")) : m.status_notificacao === "nao_localizou" ? "\u274c \u00d3rg\u00e3o n\u00e3o identificou" : m.status_notificacao === "nao_notificado" ? "\uD83D\uDEAB Etapa pulada \u2014 cliente n\u00e3o assinou o DSV" : null, cor: m.status_notificacao === "nao_localizou" ? "#FF3B30" : m.status_notificacao === "nao_notificado" ? "#FF6B00" : "#34C759", urgente: !!(m.dsv_assinado_em && m.status_notificacao !== "notificado" && m.status_notificacao !== "nao_localizou" && m.status_notificacao !== "nao_notificado") },
+                  { id: "boleto", emoji: "\uD83D\uDCCB", label: "Boleto solicitado ao \u00f3rg\u00e3o", feito: !!m.boleto_orgao_solicitado, det: m.data_solicitacao_boleto ? "em " + fmtDate(m.data_solicitacao_boleto) : null, cor: "#FF9500", urgente: !!((m.status_notificacao === "notificado" || m.status_notificacao === "nao_localizou" || m.status_notificacao === "nao_notificado") && !m.boleto_orgao_solicitado) },
                   { id: "breceb", emoji: "\uD83D\uDCB3", label: "Boleto recebido do \u00f3rg\u00e3o",   feito: !!m.boleto_orgao_recebido, det: m.data_boleto_recebido ? "em " + fmtDate(m.data_boleto_recebido) : (m.boleto_orgao_solicitado ? "Aguardando retorno" : null), cor: "#FF9500", urgente: !!(m.boleto_orgao_solicitado && !m.boleto_orgao_recebido) },
                   { id: "pago",   emoji: "\uD83D\uDCB0", label: "Multa paga ao \u00f3rg\u00e3o",        feito: m.status === "pago", det: m.data_pagamento ? "em " + fmtDate(m.data_pagamento) + " \u00b7 " + fmtBRL(parseFloat(m.valor||0)) : (m.boleto_orgao_recebido ? "Boleto em m\u00e3os \u2014 pague!" : null), cor: "#34C759", urgente: !!(m.boleto_orgao_recebido && m.status !== "pago") },
                   { id: "cobcli", emoji: "\uD83D\uDCEC", label: "Cobran\u00e7a enviada ao cliente",  feito: m.cobrado_cliente === "pendente" || m.cobrado_cliente === "pago", det: m.data_cobranca_cliente ? "em " + fmtDate(m.data_cobranca_cliente) : (m.status === "pago" && (!m.cobrado_cliente || m.cobrado_cliente === "nao") ? "Locadora pagou \u2014 cobre o cliente!" : null), cor: "#9FBDE6", urgente: !!(m.status === "pago" && (!m.cobrado_cliente || m.cobrado_cliente === "nao")) },
@@ -24560,17 +24563,25 @@ function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, rese
         step(false, null, "Enviar DSV ao condutor", "📤", "#AF52DE",
           "Gere e envie o documento de transferência de responsabilidade ao motorista");
 
-      // 3. Condutor assinou DSV
-      if (m.dsv_assinado_em)
+      // 3. Condutor assinou DSV / Cliente recusou
+      var clienteRecusou = m.status_notificacao === "nao_notificado" && (m.token_dsv || m.data_notificacao);
+      if (clienteRecusou) {
+        step(true, m.data_notificacao||m.data, "🚫 Cliente recusou assinar o DSV", "🚫", "#FF6B00",
+          "O cliente optou por não assinar \u2014 órgão não será notificado. Processo vai direto para pagamento.");
+      } else if (m.dsv_assinado_em) {
         step(true, String(m.dsv_assinado_em).slice(0,10), "Condutor assinou o DSV", "✍️", "#AF52DE",
           "Assinatura em "+fmtDate(String(m.dsv_assinado_em).slice(0,10)));
-      else if (m.token_dsv)
+      } else if (m.token_dsv) {
         step(false, null, "Aguardando assinatura do condutor", "⏳", "#FF9500",
           "DSV enviado \u2014 aguardando o condutor assinar online", true);
+      }
 
       // 4. Indicação / Notificação ao órgão
       var notifOk = m.status_notificacao==="notificado"||m.status_notificacao==="nao_localizou";
-      if (notifOk) {
+      if (clienteRecusou) {
+        step(true, null, "🚫 Órgão não notificado — cliente recusou assinar", "🚫", "#FF6B00",
+          "Etapa pulada: sem assinatura do DSV, não é possível indicar o condutor ao órgão.");
+      } else if (notifOk) {
         if (m.status_notificacao==="notificado")
           step(true, m.data_notificacao, "Órgão notificado com sucesso", "🏛️", "#34C759",
             "Indicação do condutor realizada"+(m.data_notificacao?" em "+fmtDate(m.data_notificacao):""));
@@ -24642,10 +24653,13 @@ function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, rese
         passos.push({urgencia:"critica",emoji:"🚨",texto:"Pagamento VENCIDO em "+fmtDate(m.vencimento)+" \u2014 pague imediatamente ao órgão para evitar acréscimos e juros"});
       if (!m.token_dsv)
         passos.push({urgencia:"alta",emoji:"📤",texto:"Gere e envie o DSV ao condutor para iniciar a transferência de responsabilidade"});
-      if (m.token_dsv&&!m.dsv_assinado_em)
+      if (m.token_dsv&&!m.dsv_assinado_em&&m.status_notificacao!=="nao_notificado")
         passos.push({urgencia:"media",emoji:"⏳",texto:"DSV enviado \u2014 acompanhe e pressione o condutor a assinar"});
-      if (m.dsv_assinado_em&&!["notificado","nao_localizou"].includes(m.status_notificacao||""))
+      var _recusou = m.status_notificacao === "nao_notificado" && (m.token_dsv || m.data_notificacao);
+      if (m.dsv_assinado_em&&!["notificado","nao_localizou"].includes(m.status_notificacao||"")&&!_recusou)
         passos.push({urgencia:"alta",emoji:"🏛️",texto:"DSV assinado! Envie a indicação do condutor ao órgão autuador agora"});
+      if (_recusou&&!m.boleto_orgao_solicitado)
+        passos.push({urgencia:"alta",emoji:"📋",texto:"Cliente recusou assinar \u2014 solicite o boleto ao órgão para prosseguir com o pagamento"});
       if (m.status_notificacao==="notificado"&&!m.boleto_orgao_solicitado)
         passos.push({urgencia:"media",emoji:"📋",texto:"Órgão notificado \u2014 solicite o boleto de pagamento ao órgão autuador"});
       if (m.boleto_orgao_solicitado&&!m.boleto_orgao_recebido)

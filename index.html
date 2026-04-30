@@ -19892,8 +19892,10 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
       } else {
         const c = await db.post("manutencao", form);
         setManutencoes(p => [c].concat(p));
-        await db.patch("veiculos", form.veiculo_id, { status: "manutencao" });
-        setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: "manutencao" }) : v));
+        // Se cadastrado já como concluida/cancelada, não travar o veículo em manutenção
+        var novoStatusVe = (form.status === "concluida" || form.status === "cancelada") ? "disponivel" : "manutencao";
+        await db.patch("veiculos", form.veiculo_id, { status: novoStatusVe });
+        setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: novoStatusVe }) : v));
         // Lançar automaticamente como despesa se tiver custo
         if (parseFloat(form.custo || 0) > 0) {
           var ve = getVe(form.veiculo_id);
@@ -19902,6 +19904,7 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
           var despPayload = {
             descricao: "Manutenção: " + form.tipo + (ve ? " - " + ve.placa : ""),
             categoria: "Manutenção",
+            veiculo_id: form.veiculo_id || null,
             valor: form.custo,
             data: dataDesp,
             status: "previsto",
@@ -20071,16 +20074,7 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
           )
           , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 10, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch", paddingBottom: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1545}}
             , m.status === "em_andamento" && React.createElement('button', { className: bCls(Ghost(C.green)), style: bStyle(Ghost(C.green)), onClick: () => concluir(m), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1546}}, "✅ Concluir" )
-            , parseFloat(m.custo || 0) > 0 && !financPago && React.createElement('button', { className: bCls(Ghost(C.purple)), style: bStyle(Ghost(C.purple)), onClick: () => { setBaixarItem(m); setBaixarData(new Date().toISOString().split("T")[0]); setBaixarModal(true); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1547}}, "💸 Baixar" )
-            , parseFloat(m.custo || 0) > 0 && financPago && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: async () => {
-              if (!confirm("Reverter pagamento desta manutenção?")) return;
-              try {
-                if (despVinc) { await db.patch("despesas", despVinc.id, { status: "previsto", data_pagamento: null }); setDespesas(p => p.map(x => x.id === despVinc.id ? Object.assign({}, x, { status: "previsto", data_pagamento: null }) : x)); }
-                await db.patch("manutencao", m.id, { status_financeiro: "pendente", data_pagamento: null });
-                setManutencoes(p => p.map(x => x.id === m.id ? Object.assign({}, x, { status_financeiro: "pendente", data_pagamento: null }) : x));
-                toast("↩ Pagamento revertido");
-              } catch(e) { toast("Erro: " + e.message, "error"); }
-            }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1548}}, "↩ Reverter" )
+            /* Pagamento gerenciado pelo Financeiro — botões Baixar/Reverter removidos */
             , React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => { setForm(Object.assign({}, m)); setEdit(m.id); setModal(true); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1557}}, "Editar")
             , React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: () => remove(m.id), "aria-label": "Excluir multa", title: "Excluir", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1558}}, "✕")
           )
@@ -28218,7 +28212,15 @@ function App() {
   function resetDockTimer() { showDock(); }
   React.useEffect(function(){
     showDock();
-    function onScroll() { hideDock(); }
+    var _lastScrollY = window.scrollY || 0;
+    function onScroll(e) {
+      // Ignora scrolls horizontais (ex: filtros, botões com overflow-x)
+      var t = e.target;
+      var isHoriz = t && t !== document && t !== document.documentElement &&
+                    t !== document.body && t.scrollHeight <= t.clientHeight + 4;
+      if (isHoriz) return;
+      hideDock();
+    }
     function onTouchStart() { showDock(); }
     document.addEventListener('scroll', onScroll, { passive: true, capture: true });
     document.addEventListener('touchstart', onTouchStart, { passive: true });

@@ -13681,6 +13681,32 @@ const db = {
       return [];
     }
   },
+  async getAll(t) {
+    var PAGE = 1000;
+    var all = [];
+    var offset = 0;
+    try {
+      while (true) {
+        var r = await fetchWithTimeout(
+          SB_URL + "/rest/v1/" + t + "?order=id.asc&limit=" + PAGE + "&offset=" + offset,
+          { headers: HDR }, 30000
+        );
+        if (!r.ok) break;
+        var batch = await r.json();
+        if (!Array.isArray(batch) || batch.length === 0) break;
+        all = all.concat(batch);
+        if (batch.length < PAGE) break;
+        offset += PAGE;
+      }
+      if (all.length > 0) cache.set(t, all);
+      return all;
+    } catch(e) {
+      console.warn("db.getAll", t, e);
+      var cached = cache.get(t);
+      if (cached && cached.length > 0) return cached;
+      return [];
+    }
+  },
   async _audit(tabela, operacao, registro_id, dados) {
     try {
       if (tabela === "audit_log") return;
@@ -14201,12 +14227,13 @@ function fmtDate(d) { if (!d) return "--"; var p = d.split("-"); if (p.length !=
 function isRetLucro(d) { var c = d.categoria || ""; return c === "Retirada de Lucro" || c === "Ajuste de Saldo"; }
 function despesaVisivelNoMes(d, mes) {
   var dataMes = (d.data || "").slice(0, 7);
+  if (!dataMes) return false;
   if (dataMes === mes) return true;
-  if (d.recorrente && dataMes && dataMes < mes) {
+  if (d.recorrente && dataMes < mes) {
     if (!d.prazo_recorrencia) return true;
     var ini = new Date(dataMes + "-01"), fim = new Date(mes + "-01");
     var diff = (fim.getFullYear() - ini.getFullYear()) * 12 + (fim.getMonth() - ini.getMonth());
-    return diff < parseInt(d.prazo_recorrencia);
+    return diff <= parseInt(d.prazo_recorrencia);
   }
   return false;
 }
@@ -14218,7 +14245,7 @@ function receitaVisivelNoMes(r, mes) {
     if (!r.prazo_recorrencia) return true;
     var ini2 = new Date(dataMes + "-01"), fim2 = new Date(mes + "-01");
     var diff2 = (fim2.getFullYear() - ini2.getFullYear()) * 12 + (fim2.getMonth() - ini2.getMonth());
-    return diff2 < parseInt(r.prazo_recorrencia);
+    return diff2 <= parseInt(r.prazo_recorrencia);
   }
   return false;
 }
@@ -14229,7 +14256,7 @@ function manVisivelNoMes(m, mes) {
     if (!m.prazo_recorrencia) return true;
     var ini = new Date(dataMes + "-01"), fim = new Date(mes + "-01");
     var diff = (fim.getFullYear() - ini.getFullYear()) * 12 + (fim.getMonth() - ini.getMonth());
-    return diff < parseInt(m.prazo_recorrencia);
+    return diff <= parseInt(m.prazo_recorrencia);
   }
   return false;
 }
@@ -14899,7 +14926,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
   ];
   const totalAlertas = alertaGroups.filter(function(g){ return g.items && g.items.length > 0; }).length;
 
-  return React.createElement('div', { className: "inicio-fade-top", style: { display: "flex", flexDirection: "column", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 339}}
+  return React.createElement('div', { className: "inicio-fade-top", style: { display: "flex", flexDirection: "column", gap: 16 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 339}}
 
     , (contratosVencidosSemBaixa.length > 0 || despesasHoje.length > 0 || contratosVencendoHoje.length > 0 || orcHoje.length > 0) && React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 8 } }
       , contratosVencidosSemBaixa.length > 0 && React.createElement('div', { onClick: () => setTab("contratos"), style: { background: "rgba(255,59,48,0.10)", border: "1.5px solid rgba(255,59,48,0.35)", borderRadius: 14, padding: "12px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 } }
@@ -15796,9 +15823,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         );
       }
 
-      return React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:10 } }
-
-        /* ── Card Principal: 3 barras de pipeline ── */
+      return React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:14 } }
         , React.createElement('div', { style:{ background:C.card, borderRadius:20, border:"1px solid "+C.border, overflow:"hidden" } }
 
           /* Cabeçalho */
@@ -28423,8 +28448,7 @@ function App() {
     dockVisibleRef.current = true;
     setDockVisible(true);
     if (dockTimerRef.current) clearTimeout(dockTimerRef.current);
-    var delay = tab === "inicio" ? 5000 : 3000;
-    dockTimerRef.current = setTimeout(function(){ dockVisibleRef.current = false; setDockVisible(false); }, delay);
+    dockTimerRef.current = setTimeout(function(){ dockVisibleRef.current = false; setDockVisible(false); }, 5000);
   }
   function hideDock() {
     if (dockTimerRef.current) clearTimeout(dockTimerRef.current);
@@ -28587,9 +28611,9 @@ function App() {
     db.get("reservas").then(d => setReservas(d || []));
     db.get("multas").then(d => setMultas(d || []));
     db.get("manutencao").then(d => setManutencoes(d || []));
-    db.get("despesas", "limit=5000").then(d => setDespesas(d || []));
-    db.get("receitas", "limit=5000").then(d => setReceitas(d || []));
-    db.get("contas", "limit=5000").then(d => setContas(d || []));
+    db.getAll("despesas").then(d => setDespesas(d || []));
+    db.getAll("receitas").then(d => setReceitas(d || []));
+    db.getAll("contas").then(d => setContas(d || []));
     db.get("usos").then(d => setUsos(d || []));
     db.get("config", "limit=1").then(d => { if (d && d[0]) { setEmpresa(d[0]); if (d[0].claude_api_key) { setClaudeKey(d[0].claude_api_key); try { localStorage.setItem("claude_api_key", d[0].claude_api_key); } catch(e) {} } } });
     var _dm = localStorage.getItem("dm");

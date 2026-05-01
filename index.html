@@ -14368,8 +14368,13 @@ function despesaDoMes(d, mes) {
       if (diff > parseInt(d.prazo_recorrencia)) return false;
     }
     var pg = (d.data_pagamento || "").slice(0, 7);
-    if (pg && pg !== mes) return false; /* pago em outro mês — não aparece aqui */
-    return true; /* previsto ou pago neste mês */
+    /* Se foi pago num mês específico: só aparece naquele mês como "pago".
+       Nos meses seguintes ao pagamento ainda aparece como prevista (nova ocorrência).
+       Se ainda não tem pagamento: aparece em todos os meses seguintes como prevista. */
+    if (pg && pg !== mes && pg > mes) return false; /* pago no futuro — não aparece aqui ainda */
+    if (pg && pg < mes) return true; /* pago anteriormente → aparece como prevista nos meses seguintes */
+    if (pg && pg === mes) return true; /* pago neste mês */
+    return true; /* sem pagamento → prevista em todos os meses seguintes */
   }
   return false;
 }
@@ -14401,8 +14406,8 @@ function manDoMes(m, mes) {
       if (diff3 > parseInt(m.prazo_recorrencia)) return false;
     }
     var pg3 = (m.data_pagamento || "").slice(0, 7);
-    if (pg3 && pg3 !== mes) return false;
-    return true;
+    if (pg3 && pg3 > mes) return false; /* pago no futuro — não aparece aqui ainda */
+    return true; /* prevista ou paga neste mês / meses anteriores já pagos → nova ocorrência prevista */
   }
   return false;
 }
@@ -21454,6 +21459,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   const [budgetsState, setBudgetsState] = useState(function(){ try { return JSON.parse(localStorage.getItem("ag_budgets_v1") || "{}"); } catch(e) { return {}; } });
   const [modalFat, setModalFat] = useState(null); // { tipo:"emitir"|"pagar", fat:{...}, dtInput:"" }
   const [filtroStatusFat, setFiltroStatusFat] = useState("todas");
+  /* Seletor previstas/pagas — conciliação (despesas + manutenção) */
+  const [filtroStatusConc, setFiltroStatusConc] = useState("todas");
+  /* Seletor previstas/pagas — aba despesas */
+  const [filtroStatusDesp, setFiltroStatusDesp] = useState("todas");
   const [sortRec, setSortRec] = useState("pendentes");
   const [sortDesp, setSortDesp] = useState("pendentes");
   const [filtroCatRec, setFiltroCatRec] = useState("");
@@ -21763,12 +21772,13 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       _mn: mn
     };
   });
-  var despExibidas = (filtroCatDesp
+  var despExibidasBase = (filtroCatDesp
     ? despFiltradas.filter(function(d){ return (d.categoria||"") === filtroCatDesp; })
     : despFiltradas.filter(function(d){ return !isRetLucro(d); })
   ).concat(manSemDesp.filter(function(x){
     return !filtroCatDesp || filtroCatDesp === "Manutenção";
   }));
+  var despExibidas = despExibidasBase;
   // Multas do mês
   var multasMes = multas.filter(m => (m.data||"").slice(0,7) === filtroMes);
   var multasMesPago = multasMes.filter(m => m.status === "pago").reduce((s,m) => s+parseFloat(m.valor||0),0);
@@ -21903,7 +21913,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
     , tab === "despesas" && React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2255}}
       , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2256}}
-        , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2257}}
+        , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2257}}
           , React.createElement('select', { style: Object.assign({}, FI, { width: "auto", fontSize: 13, padding: "6px 8px", flexShrink: 0, cursor: "pointer" }), value: filtroCatDesp, onChange: function(e){setFiltroCatDesp(e.target.value);} }
             , React.createElement('option', { value: "" }, "Todas as categorias")
             , (CATS_DESP||["Combustivel","Impostos","Manutenção","Financiamento","Internet","Contabilidade","IPVA","Outros"]).map(function(c){ return React.createElement('option',{key:c,value:c},c); })
@@ -21914,6 +21924,21 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             , React.createElement('option', { value: "data_desc" }, "Data ↓")
             , React.createElement('option', { value: "valor_desc" }, "Valor ↓")
           )
+          /* ── Seletor Previstas / Pagas / Todas ── */
+          , React.createElement('div', { style: { display: "flex", background: C.border + "60", borderRadius: 10, padding: 2, gap: 2 } },
+            [["todas","Todas"],["previstas","Previstas"],["pagas","Pagas"]].map(function(pair) {
+              var active = filtroStatusDesp === pair[0];
+              var activeColor = pair[0] === "pagas" ? C.green : pair[0] === "previstas" ? C.orange : C.blue;
+              return React.createElement('button', {
+                key: pair[0],
+                onClick: function(){ setFiltroStatusDesp(pair[0]); },
+                style: { fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 8, border: "none", cursor: "pointer",
+                  background: active ? activeColor : "transparent",
+                  color: active ? "#fff" : C.sub,
+                  transition: "all 0.18s ease" }
+              }, pair[1]);
+            })
+          )
         )
         , React.createElement('div', { style: { display: "flex", gap: 6 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2260}}
           , React.createElement('button', { className: bCls(Btn(C.red)) + " ag-add-btn", style: bStyle(Btn(C.red)), onClick: () => openDesp(null), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2266}}, "+ Despesa" )
@@ -21921,18 +21946,18 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       )
       /* Totalizadores */
       , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2270}}
-        , React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2271}}
+        , React.createElement('div', { style: { background: filtroStatusDesp === "previstas" ? C.orange+"18" : C.card, borderRadius: 14, padding: "12px 14px", border: filtroStatusDesp === "previstas" ? "1.5px solid "+C.orange+"60" : "none", cursor: "pointer" }, onClick: function(){ setFiltroStatusDesp(filtroStatusDesp==="previstas"?"todas":"previstas"); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2271}}
           , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2272}}, "Previsto")
           , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.orange, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2273}}, fmtBRL(despExibidas.reduce((s,d)=>s+parseFloat(d.valor||0),0)))
         )
-        , React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2275}}
+        , React.createElement('div', { style: { background: filtroStatusDesp === "pagas" ? C.green+"18" : C.card, borderRadius: 14, padding: "12px 14px", border: filtroStatusDesp === "pagas" ? "1.5px solid "+C.green+"60" : "none", cursor: "pointer" }, onClick: function(){ setFiltroStatusDesp(filtroStatusDesp==="pagas"?"todas":"pagas"); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2275}}
           , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2276}}, "Pago")
-          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.red, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2277}}, fmtBRL(despExibidas.filter(d=>d.status==="pago").reduce((s,d)=>s+parseFloat(d.valor||0),0)))
+          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.green, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2277}}, fmtBRL(despExibidas.filter(d=>d.status==="pago").reduce((s,d)=>s+parseFloat(d.valor||0),0)))
         )
       )
       , React.createElement('div', { className: "lg-card", style: CARD, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2280}}
-        , despExibidas.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2281}}, "Nenhuma despesa neste período"   )
-        , despExibidas.map((d, i) => {
+        , (filtroStatusDesp === "pagas" ? despExibidas.filter(d=>d.status==="pago") : filtroStatusDesp === "previstas" ? despExibidas.filter(d=>d.status!=="pago") : despExibidas).length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2281}}, "Nenhuma despesa neste período"   )
+        , (filtroStatusDesp === "pagas" ? despExibidas.filter(d=>d.status==="pago") : filtroStatusDesp === "previstas" ? despExibidas.filter(d=>d.status!=="pago") : despExibidas).map((d, i) => {
           var isRec = (d.data||"").slice(0,7) !== filtroMes && d.recorrente;
           var isHighlight = d.id === highlightDespId;
           return React.createElement('div', { key: d.id, ref: isHighlight ? function(el){ if(el) el.scrollIntoView({behavior:"smooth",block:"center"}); } : null, style: { padding: "12px 0", borderBottom: i < despExibidas.length - 1 ? "1px solid " + C.border : "none", background: isHighlight ? C.red + "15" : "transparent", borderRadius: isHighlight ? 8 : 0, transition: "background 0.5s" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2284}}
@@ -23333,14 +23358,29 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           })
         )
         , React.createElement('div', { className: "lg-card", style: CARD },
-          React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", marginBottom:10 } }, "📤 Despesas do mês"),
-          despMesConc.length === 0 && React.createElement('div', { style: { color:C.sub, fontSize:13, textAlign:"center", padding:12 } }, "Nenhuma despesa neste mês"),
-          despMesConc.map(function(d,i) {
+          /* Header com título + seletor Previstas/Pagas */
+          React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 } },
+            React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase" } }, "📤 Despesas do mês"),
+            React.createElement('div', { style: { display:"flex", background: C.border+"60", borderRadius:8, padding:2, gap:2 } },
+              [["todas","Todas"],["previstas","Prev."],["pagas","Pagas"]].map(function(pair) {
+                var active = filtroStatusConc === pair[0];
+                var activeColor = pair[0]==="pagas" ? C.green : pair[0]==="previstas" ? C.orange : C.blue;
+                return React.createElement('button', { key: pair[0], onClick: function(){ setFiltroStatusConc(pair[0]); },
+                  style: { fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:6, border:"none", cursor:"pointer",
+                    background: active ? activeColor : "transparent",
+                    color: active ? "#fff" : C.sub, transition:"all 0.18s ease" }
+                }, pair[1]);
+              })
+            )
+          ),
+          (filtroStatusConc === "pagas" ? despMesConc.filter(function(d){return d.status==="pago";}) : filtroStatusConc === "previstas" ? despMesConc.filter(function(d){return d.status!=="pago";}) : despMesConc).length === 0 && React.createElement('div', { style: { color:C.sub, fontSize:13, textAlign:"center", padding:12 } }, filtroStatusConc==="pagas" ? "Nenhuma despesa paga neste mês" : filtroStatusConc==="previstas" ? "Nenhuma despesa prevista neste mês" : "Nenhuma despesa neste mês"),
+          (filtroStatusConc === "pagas" ? despMesConc.filter(function(d){return d.status==="pago";}) : filtroStatusConc === "previstas" ? despMesConc.filter(function(d){return d.status!=="pago";}) : despMesConc).map(function(d,i) {
+            var listDesp = filtroStatusConc === "pagas" ? despMesConc.filter(function(x){return x.status==="pago";}) : filtroStatusConc === "previstas" ? despMesConc.filter(function(x){return x.status!=="pago";}) : despMesConc;
             var pago = d.status === "pago";
-            return React.createElement('div', { key: d.id, style: { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"9px 0", borderBottom: i<despMesConc.length-1?"1px solid "+C.border:"none", gap:8 } },
+            return React.createElement('div', { key: d.id, style: { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"9px 0", borderBottom: i<listDesp.length-1?"1px solid "+C.border:"none", gap:8 } },
               React.createElement('div', { style: { flex:1 } },
                 React.createElement('div', { style: { fontSize:13, fontWeight:600 } }, d.descricao||"--"),
-                React.createElement('div', { style: { fontSize:11, color:C.sub } }, (d.categoria||"") + (d.data ? " · " + fmtDate(d.data) : "") + (d.recorrente ? " · ↻ Recorrente" : ""))
+                React.createElement('div', { style: { fontSize:11, color:C.sub } }, (d.categoria||"") + (d.data ? " · " + fmtDate(d.data) : "") + (d.recorrente ? " · ↻ Recorrente" : "") + (d.fixo ? " · 📌 Fixo" : ""))
               ),
               React.createElement('div', { style: { textAlign:"right" } },
                 React.createElement('div', { style: { fontWeight:700, color:C.red } }, fmtBRL(d.valor)),
@@ -23350,13 +23390,28 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           })
         )
         , React.createElement('div', { className: "lg-card", style: CARD },
-          React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", marginBottom:10 } }, "🔧 Manutenção do mês"),
-          manutMesConc.length === 0 && React.createElement('div', { style: { color:C.sub, fontSize:13, textAlign:"center", padding:12 } }, "Nenhuma manutenção neste mês"),
-          manutMesConc.map(function(m,i) {
+          /* Header com título + seletor Previstas/Pagas (compartilha filtroStatusConc) */
+          React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 } },
+            React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase" } }, "🔧 Manutenção do mês"),
+            React.createElement('div', { style: { display:"flex", background: C.border+"60", borderRadius:8, padding:2, gap:2 } },
+              [["todas","Todas"],["previstas","Prev."],["pagas","Pagas"]].map(function(pair) {
+                var active = filtroStatusConc === pair[0];
+                var activeColor = pair[0]==="pagas" ? C.green : pair[0]==="previstas" ? C.orange : C.blue;
+                return React.createElement('button', { key: pair[0], onClick: function(){ setFiltroStatusConc(pair[0]); },
+                  style: { fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:6, border:"none", cursor:"pointer",
+                    background: active ? activeColor : "transparent",
+                    color: active ? "#fff" : C.sub, transition:"all 0.18s ease" }
+                }, pair[1]);
+              })
+            )
+          ),
+          (filtroStatusConc === "pagas" ? manutMesConc.filter(function(m){return m.status_financeiro==="pago"||!!m.data_pagamento;}) : filtroStatusConc === "previstas" ? manutMesConc.filter(function(m){return m.status_financeiro!=="pago"&&!m.data_pagamento;}) : manutMesConc).length === 0 && React.createElement('div', { style: { color:C.sub, fontSize:13, textAlign:"center", padding:12 } }, filtroStatusConc==="pagas" ? "Nenhuma manutenção paga neste mês" : filtroStatusConc==="previstas" ? "Nenhuma manutenção prevista neste mês" : "Nenhuma manutenção neste mês"),
+          (filtroStatusConc === "pagas" ? manutMesConc.filter(function(m){return m.status_financeiro==="pago"||!!m.data_pagamento;}) : filtroStatusConc === "previstas" ? manutMesConc.filter(function(m){return m.status_financeiro!=="pago"&&!m.data_pagamento;}) : manutMesConc).map(function(m,i) {
+            var listMan = filtroStatusConc === "pagas" ? manutMesConc.filter(function(x){return x.status_financeiro==="pago"||!!x.data_pagamento;}) : filtroStatusConc === "previstas" ? manutMesConc.filter(function(x){return x.status_financeiro!=="pago"&&!x.data_pagamento;}) : manutMesConc;
             var ve = (veiculos||[]).find(function(v){return v.id==m.veiculo_id;})||{};
-            var pago = m.status_financeiro === "pago";
+            var pago = m.status_financeiro === "pago" || !!m.data_pagamento;
             var dataRef = m.data_previsao_pagamento || m.data_pagamento || m.data_entrada;
-            return React.createElement('div', { key: m.id, style: { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"9px 0", borderBottom: i<manutMesConc.length-1?"1px solid "+C.border:"none", gap:8 } },
+            return React.createElement('div', { key: m.id, style: { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"9px 0", borderBottom: i<listMan.length-1?"1px solid "+C.border:"none", gap:8 } },
               React.createElement('div', { style: { flex:1 } },
                 React.createElement('div', { style: { fontSize:13, fontWeight:600 } }, m.tipo||"--"),
                 React.createElement('div', { style: { fontSize:11, color:C.sub } }, (ve.placa||"--") + " " + (ve.modelo||"") + (dataRef ? " · " + fmtDate(dataRef) : ""))

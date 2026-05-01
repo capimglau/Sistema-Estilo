@@ -30147,32 +30147,51 @@ var _pendingEvent = null;
 var _pendingTimer = null;
 function modalAberto(){
   // Detecta qualquer modal/overlay aberto no DOM
-  return !!(
-    document.querySelector('.lg-modal') ||
-    document.querySelector('[class*="modal"][style*="flex"]') ||
-    document.querySelector('[class*="modal"].open') ||
-    document.querySelector('dialog[open]')
+  // Seletores ampliados para cobrir modais React com display:flex/block inline
+  var els = document.querySelectorAll(
+    '.lg-modal, dialog[open], [class*="modal"], [class*="Modal"], [role="dialog"]'
   );
+  for(var i=0;i<els.length;i++){
+    var el = els[i];
+    var st = window.getComputedStyle(el);
+    if(st.display !== 'none' && st.visibility !== 'hidden' && st.opacity !== '0'){
+      return true;
+    }
+  }
+  return false;
 }
 function fireEvent(evName, retries){
   retries = retries||0;
   clearTimeout(_pendingTimer);
   _pendingEvent = evName;
-  document.dispatchEvent(new CustomEvent(evName));
-  if(retries < 12){
+
+  // Só dispara o evento se ainda não há modal aberto (evita toggle acidental)
+  if(retries === 0 || !modalAberto()){
+    document.dispatchEvent(new CustomEvent(evName));
+  }
+
+  // Para de tentar assim que um modal aparecer, ou após 8 tentativas (960ms)
+  if(retries < 8){
     _pendingTimer = setTimeout(function(){
-      if(!modalAberto() && _pendingEvent === evName){
-        fireEvent(evName, retries+1);
+      if(_pendingEvent !== evName) return; // outra ação assumiu
+      if(modalAberto()){
+        _pendingEvent = null; // modal abriu com sucesso — para
       } else {
-        _pendingEvent = null;
+        fireEvent(evName, retries+1);
       }
     }, 120);
+  } else {
+    _pendingEvent = null;
   }
 }
 
 /* ── Dispara ação: navega e abre modal ── */
 function dispatchAction(action){
   closeMenu();
+  // Cancela qualquer retry pendente de ação anterior
+  clearTimeout(_pendingTimer);
+  _pendingEvent = null;
+
   // Navega via React state — dispara click no nav btn correto
   function doNav(){
     // Clica no botão do dock
@@ -30196,7 +30215,9 @@ function dispatchAction(action){
     // Clica na sub-aba se necessário
     if(action.subtab){
       // Tenta clicar na sub-aba em múltiplos momentos para garantir que o componente montou
+      var _subtabClicked = false;
       function clickSubtab(){
+        if(_subtabClicked) return; // evita cliques duplos
         var subBtns = document.querySelectorAll('[class*="sub-tab"], [class*="subtab"], .lg-pill, [class*="tab-btn"], button');
         subBtns.forEach(function(b){
           var id  = b.dataset.subtabId || b.dataset.tabId || '';
@@ -30207,11 +30228,14 @@ function dispatchAction(action){
             (action.subtab==='manutencao' && (txt.includes('manuten')||txt.includes('manutenção'))) ||
             (action.subtab==='frota'      && txt.includes('frota'))   ||
             (action.subtab==='clientes'   && txt.includes('client'));
-          if(matches) b.click();
+          if(matches && !_subtabClicked){
+            _subtabClicked = true;
+            b.click();
+          }
         });
       }
       setTimeout(clickSubtab, 80);
-      setTimeout(clickSubtab, 200);
+      setTimeout(function(){ if(!_subtabClicked) clickSubtab(); }, 280);
     }
   }
 

@@ -28823,7 +28823,7 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
       if (ct0) cl = (clientes||[]).find(function(x){ return x.id === ct0.cliente_id; });
     }
     if (cl) { setTelefone((cl.telefone||"").replace(/\D/g,"")); setEmail(cl.email||""); }
-    if (tipo === "contrato" || tipo === "fatura") {
+    if ((tipo === "contrato" || tipo === "fatura") && !mesRef) {
       var pp = sel.previsao_pagamento;
       if (pp) { setMesRef(pp.slice(0, 7)); }
       else { var hj = new Date(); setMesRef(hj.getFullYear()+"-"+String(hj.getMonth()+1).padStart(2,"0")); }
@@ -29050,30 +29050,26 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
     if (!sel) { alert("Selecione um item."); return; }
     if (!emailOk) { alert("Informe o e-mail do destinatário."); return; }
     setEnviandoEmail(true);
-    var usouShare = false;
     try {
       var html = getDocHtml();
+      if (!html) { alert("Erro ao gerar o documento. Verifique os dados selecionados."); setEnviandoEmail(false); return; }
       var htmlComPrint = html + "<scr"+"ipt>window.print();</"+"script>";
       var blob = new Blob([htmlComPrint], {type:"text/html;charset=utf-8"});
       var prefix = getDocPrefix();
-      var filename = prefix+"_"+numCt(sel.id)+(mesRef?"_"+mesRef:"")+".html";
-      var file = new File([blob], filename, {type:"text/html"});
-      if (navigator.canShare && navigator.canShare({files:[file]})) {
-        await navigator.share({ files:[file], title:prefix+" #"+numCt(sel.id) });
-        setEnviandoEmail(false);
-        return;
-      }
+      var mesStr = mesRef ? mesRef.replace(/-/g,"_") : "";
+      var filename = prefix + "_" + numCt(sel.id) + (mesStr ? "_" + mesStr : "") + ".html";
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a');
       a.href = url; a.download = filename;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
-      usouShare = true;
-    } catch(e) { if (e && e.name === "AbortError") { setEnviandoEmail(false); return; } }
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 3000);
+    } catch(e2) { alert("Erro ao gerar arquivo: " + (e2&&e2.message||e2)); setEnviandoEmail(false); return; }
     var href = getEmailHref();
     if (href) window.open(href, "_blank");
-    if (usouShare) alert("📎 Arquivo baixado!\n\nAnexe o arquivo ao e-mail que foi aberto.");
-    setEnviandoEmail(false);
+    setTimeout(function(){
+      alert("📎 Arquivo baixado!\n\nAbra o e-mail que foi criado e anexe o arquivo da pasta Downloads.");
+      setEnviandoEmail(false);
+    }, 400);
   }
 
   var fone = telefone.replace(/\D/g,"");
@@ -29093,25 +29089,35 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
             style:{flex:1,padding:"9px 4px",borderRadius:12,border:"1.5px solid "+(tipo===t.k?"var(--c-blue)":"var(--c-border)"),background:tipo===t.k?"rgba(0,122,255,0.1)":"transparent",color:tipo===t.k?"var(--c-blue)":"var(--c-text)",fontSize:12,fontWeight:600,cursor:"pointer"} }, t.l);
         })
       ),
-      React.createElement('select', { value:itemId, onChange:function(e){setItemId(e.target.value);},
-        style:{padding:"10px 14px",borderRadius:12,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)",fontSize:14,outline:"none",width:"100%"} },
-        React.createElement('option', { value:"" }, "Selecione "+(tipo==="multa"?"uma multa":"um contrato")+"…"),
-        items.slice(0,60).map(function(item) {
-          var cl = (clientes||[]).find(function(x){return x.id===item.cliente_id;});
-          var nm = cl ? cl.nome : ("#"+item.id);
-          var sfx = tipo==="multa" ? (item.descricao?" — "+item.descricao.slice(0,25):"") : (function(){ var ve=(veiculos||[]).find(function(x){return x.id===item.veiculo_id;}); return ve?" — "+ve.placa:""; }());
-          return React.createElement('option', { key:item.id, value:item.id }, "#"+numCt(item.id)+" · "+nm+sfx);
-        })
-      ),
       temMes && React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:4} },
         React.createElement('label', { style:{fontSize:12,fontWeight:600,color:"var(--c-sub)"} }, tipo==="fatura" ? "Mês de referência / Período" : "Mês do pagamento"),
-        React.createElement('select', { value:mesRef, onChange:function(e){setMesRef(e.target.value);},
+        React.createElement('select', { value:mesRef, onChange:function(e){ setMesRef(e.target.value); setItemId(""); setTelefone(""); setEmail(""); },
           style:{padding:"10px 14px",borderRadius:12,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)",fontSize:14,outline:"none"} },
-          React.createElement('option', { value:"" }, "Selecione o mês…"),
+          React.createElement('option', { value:"" }, "Selecione o mês para filtrar…"),
           getMesesOpcoes().map(function(m) {
             return React.createElement('option', { key:m.key, value:m.key }, m.label);
           })
         )
+      ),
+      React.createElement('select', { value:itemId, onChange:function(e){setItemId(e.target.value);},
+        style:{padding:"10px 14px",borderRadius:12,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)",fontSize:14,outline:"none",width:"100%"} },
+        React.createElement('option', { value:"" }, "Selecione "+(tipo==="multa"?"uma multa":"um contrato")+(temMes&&mesRef?" de "+new Date(mesRef+"-02").toLocaleDateString("pt-BR",{month:"short",year:"numeric"}):"")+"…"),
+        (function() {
+          var lista = items;
+          if (temMes && mesRef) {
+            lista = items.filter(function(ct) {
+              if (ct.previsao_pagamento && ct.previsao_pagamento.slice(0,7) === mesRef) return true;
+              var mS = mesRef+"-01"; var mE = mesRef+"-31";
+              return (ct.data_inicio||"") <= mE && (ct.data_fim||"9999-12") >= mS;
+            });
+          }
+          return lista.slice(0,80).map(function(item) {
+            var cl = (clientes||[]).find(function(x){return x.id===item.cliente_id;});
+            var nm = cl ? cl.nome : ("#"+item.id);
+            var sfx = tipo==="multa" ? (item.descricao?" — "+item.descricao.slice(0,25):"") : (function(){ var ve=(veiculos||[]).find(function(x){return x.id===item.veiculo_id;}); return ve?" — "+ve.placa:""; }());
+            return React.createElement('option', { key:item.id, value:item.id }, "#"+numCt(item.id)+" · "+nm+sfx);
+          });
+        })()
       ),
       React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:4} },
         React.createElement('label', { style:{fontSize:12,fontWeight:600,color:"var(--c-sub)"} }, "WhatsApp (com DDD, só números)"),
@@ -29131,7 +29137,7 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
               style:{display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"13px",borderRadius:14,border:"1.5px solid rgba(0,122,255,0.2)",background:"rgba(0,122,255,0.1)",color:sel&&emailOk?"var(--c-blue)":"var(--c-sub)",fontSize:14,fontWeight:700,cursor:sel&&emailOk?"pointer":"not-allowed",opacity:enviandoEmail?0.6:1} },
               enviandoEmail ? "⏳ Preparando…" : "✉️ Enviar por E-mail (com arquivo)"),
             React.createElement('div', { style:{fontSize:11,color:"var(--c-sub)",textAlign:"center",marginTop:-6} },
-              navigator.canShare ? "📱 Celular: arquivo compartilhado direto" : "💻 Desktop: arquivo será baixado — anexe ao e-mail/WhatsApp"),
+              "💾 Arquivo baixado automaticamente — anexe ao e-mail ou WhatsApp"),
             sel && React.createElement('button', { onClick:function(){
               try { openPdfPage(getDocHtml()+"<scr"+"ipt>window.print();</"+"script>"); } catch(e){ alert("Erro ao gerar PDF: "+e.message); }
             }, style:{padding:"13px",borderRadius:14,border:"none",background:"rgba(255,149,0,0.12)",color:"#FF9500",fontSize:14,fontWeight:700,cursor:"pointer"} },

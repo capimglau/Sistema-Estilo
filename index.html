@@ -28818,6 +28818,10 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
   React.useEffect(function() {
     if (!sel) return;
     var cl = (clientes||[]).find(function(x){ return x.id === sel.cliente_id; });
+    if (!cl && sel.contrato_id) {
+      var ct0 = (contratos||[]).find(function(x){ return x.id === sel.contrato_id; });
+      if (ct0) cl = (clientes||[]).find(function(x){ return x.id === ct0.cliente_id; });
+    }
     if (cl) { setTelefone((cl.telefone||"").replace(/\D/g,"")); setEmail(cl.email||""); }
     if (tipo === "contrato" || tipo === "fatura") {
       var pp = sel.previsao_pagamento;
@@ -28901,6 +28905,38 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
     return h;
   }
 
+  function buildMultaHtml() {
+    var m = sel; if (!m) return "";
+    var emp = empresa || {};
+    var cl = (clientes||[]).find(function(x){return x.id===m.cliente_id;})||null;
+    if (!cl && m.contrato_id) { var ct0=(contratos||[]).find(function(x){return x.id===m.contrato_id;}); if(ct0) cl=(clientes||[]).find(function(x){return x.id===ct0.cliente_id;})||null; }
+    cl = cl || {};
+    var ve = null; if (m.contrato_id) { var ct1=(contratos||[]).find(function(x){return x.id===m.contrato_id;}); if(ct1) ve=(veiculos||[]).find(function(x){return x.id===ct1.veiculo_id;})||null; }
+    var placa = (ve&&ve.placa)||m.placa||"--";
+    var _slug = function(s){ return (s||"").trim().replace(/\s+/g,"_").replace(/[^\w\-]/g,""); };
+    var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Multa_'+_slug(cl.nome)+'_'+_slug(placa)+'</title><style>body{font-family:Arial,sans-serif;max-width:700px;margin:30px auto;font-size:13px}.s{margin:12px 0;border:1px solid #ddd;border-radius:8px;overflow:hidden}.st{background:#fff3cd;padding:8px 14px;font-weight:700;font-size:11px;text-transform:uppercase;color:#856404}table{width:100%;border-collapse:collapse}td{padding:9px 14px;border-bottom:1px solid #eee}td:first-child{color:#666;width:40%}.vb{background:#fff3cd;padding:16px;text-align:center;font-size:28px;font-weight:800;color:#FF9500}.obs{padding:12px 14px;font-size:12px;line-height:1.8;color:#555}@media print{body{margin:0}}</style></head><body>';
+    h += buildHeader(emp);
+    h += '<div style="display:flex;justify-content:space-between;margin-bottom:12px"><div style="font-size:18px;font-weight:800;color:#FF3B30">⚠️ NOTIFICAÇÃO DE MULTA</div><div style="font-size:12px;color:#666">Emitido: '+new Date().toLocaleDateString("pt-BR")+'</div></div>';
+    h += '<div class="s"><div class="st">Dados da Infração</div><table>';
+    if (m.ait) h += '<tr><td>Nº AIT</td><td><b>'+m.ait+'</b></td></tr>';
+    h += '<tr><td>Tipo</td><td>'+(m.tipo||"—")+'</td></tr>';
+    if (m.descricao) h += '<tr><td>Descrição</td><td>'+m.descricao+'</td></tr>';
+    h += '<tr><td>Data</td><td>'+fmtDate(m.data||m.vencimento)+'</td></tr>';
+    if (m.local) h += '<tr><td>Local</td><td>'+m.local+'</td></tr>';
+    if (m.vencimento) h += '<tr><td>Vencimento</td><td style="font-weight:700;color:#FF3B30">'+fmtDate(m.vencimento)+'</td></tr>';
+    h += '</table></div>';
+    h += '<div class="s"><div class="st">Veículo / Condutor</div><table>';
+    h += '<tr><td>Placa</td><td><b>'+placa+'</b></td></tr>';
+    if (ve) h += '<tr><td>Veículo</td><td>'+(ve.marca||"")+" "+(ve.modelo||"")+'</td></tr>';
+    h += '<tr><td>Responsável</td><td>'+(cl.nome||m.cliente_nome||"—")+'</td></tr>';
+    if (cl.cpf) h += '<tr><td>CPF/CNPJ</td><td>'+cl.cpf+'</td></tr>';
+    h += '</table></div>';
+    h += '<div class="s"><div class="st">Valor</div><div class="vb">'+fmtBRL(m.valor_cobrado||m.valor)+'</div></div>';
+    h += '<div class="s"><div class="st">Observações</div><div class="obs">Esta notificação é emitida para ciência do responsável pela infração registrada acima. Caso queira contestar, proceda dentro do prazo legal indicado no AIT original.'+(m.descricao?'<br/><br/>'+m.descricao:'')+'</div></div>';
+    h += '<p style="text-align:center;font-size:10px;color:#aaa;margin-top:20px">'+(emp.nome||"")+(emp.cnpj?" — CNPJ "+emp.cnpj:"")+'<br/>AutoGest Pro — '+new Date().toLocaleString("pt-BR")+'</p>';
+    return h;
+  }
+
   function textoWA() {
     var cl = sel ? (clientes||[]).find(function(x){return x.id===sel.cliente_id;}) : null;
     var nm = cl ? cl.nome.split(" ")[0] : "";
@@ -28927,7 +28963,23 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
       txt2 += "\nQualquer dúvida, estamos à disposição! 😊";
       return encodeURIComponent(txt2);
     }
-    if (tipo==="multa" && sel) return encodeURIComponent("Olá"+(nm?" "+nm:"")+"! Informamos sobre a multa #"+sel.id+": "+(sel.descricao||"")+". Valor: R$ "+parseFloat(sel.valor||0).toFixed(2).replace(".",",")+". Por favor entre em contato.");
+    if (tipo==="multa" && sel) {
+      var clM = cl || (function(){ var ct0=(contratos||[]).find(function(x){return x.id===sel.contrato_id;}); return ct0?(clientes||[]).find(function(x){return x.id===ct0.cliente_id;}):null; }()) || {};
+      var nmM = clM.nome ? clM.nome.split(" ")[0] : nm;
+      var ct1 = sel.contrato_id ? (contratos||[]).find(function(x){return x.id===sel.contrato_id;})||{} : {};
+      var veM = ct1.veiculo_id ? (veiculos||[]).find(function(x){return x.id===ct1.veiculo_id;})||{} : {};
+      var txt3 = "Olá"+(nmM?" "+nmM:"")+"! ⚠️ Notificação de multa de trânsito.\n\n";
+      if (sel.ait) txt3 += "*AIT:* "+sel.ait+"\n";
+      txt3 += "*Tipo:* "+(sel.tipo||"—")+"\n";
+      if (sel.data) txt3 += "*Data:* "+fmtDate(sel.data)+"\n";
+      if (sel.local) txt3 += "*Local:* "+sel.local+"\n";
+      var plcM = veM.placa||sel.placa||"";
+      if (plcM) txt3 += "*Veículo:* "+plcM+(veM.marca?" — "+veM.marca+" "+veM.modelo:"")+"\n";
+      txt3 += "*Valor:* "+fmtBRL(sel.valor_cobrado||sel.valor)+"\n";
+      if (sel.vencimento) txt3 += "*Vencimento:* "+fmtDate(sel.vencimento)+"\n";
+      txt3 += "\nQualquer dúvida, entre em contato. 🙏";
+      return encodeURIComponent(txt3);
+    }
     return encodeURIComponent("Olá! Segue documento da AutoGest Pro.");
   }
 
@@ -28946,7 +28998,28 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
       var body3 = "Olá!\n\nSegue o contrato de locação"+(ml?" referente a "+ml:"")+".\n\nContrato: #"+numCt(sel.id)+"\nVeículo: "+(ve3.placa||"--")+(ve3.marca?" — "+ve3.marca+" "+ve3.modelo:"")+"\nPeríodo: "+fmtDate(sel.data_inicio)+" a "+fmtDate(sel.data_fim)+"\nValor: "+fmtBRL(sel.valor_total)+(sel.previsao_pagamento?"\nVencimento: "+fmtDate(sel.previsao_pagamento):"")+"\n\nQualquer dúvida, entre em contato.\n\nAtenciosamente,\n"+((empresa||{}).nome||"AutoGest Pro");
       return "mailto:"+email+"?subject="+encodeURIComponent(subj3)+"&body="+encodeURIComponent(body3);
     }
-    return "mailto:"+email+"?subject=Documento AutoGest Pro %23"+(sel?sel.id:"")+"&body=Ol%C3%A1! Segue documento referente ao registro de multa %23"+(sel?sel.id:"")+".";
+    if (tipo === "multa" && sel) {
+      var ct2 = sel.contrato_id ? (contratos||[]).find(function(x){return x.id===sel.contrato_id;})||{} : {};
+      var veM2 = ct2.veiculo_id ? (veiculos||[]).find(function(x){return x.id===ct2.veiculo_id;})||{} : {};
+      var plcM2 = veM2.placa||sel.placa||"--";
+      var subj4 = "Notificação de Multa"+(sel.ait?" — AIT "+sel.ait:"")+" · "+plcM2;
+      var body4 = "Olá!\n\nSegue a notificação de multa de trânsito.\n\n"+(sel.ait?"AIT: "+sel.ait+"\n":"")+"Tipo: "+(sel.tipo||"—")+"\nData: "+fmtDate(sel.data||sel.vencimento)+(sel.local?"\nLocal: "+sel.local:"")+"\nVeículo: "+plcM2+"\nValor: "+fmtBRL(sel.valor_cobrado||sel.valor)+(sel.vencimento?"\nVencimento: "+fmtDate(sel.vencimento):"")+"\n\nQualquer dúvida, entre em contato.\n\nAtenciosamente,\n"+((empresa||{}).nome||"AutoGest Pro");
+      return "mailto:"+email+"?subject="+encodeURIComponent(subj4)+"&body="+encodeURIComponent(body4);
+    }
+    return "mailto:"+email+"?subject=Documento AutoGest Pro %23"+(sel?sel.id:"")+"&body=Ol%C3%A1! Segue documento da AutoGest Pro.";
+  }
+
+  function getDocHtml() {
+    if (tipo === "fatura") return buildFaturaHtml();
+    if (tipo === "contrato") return buildContratoHtml();
+    if (tipo === "multa") return buildMultaHtml();
+    return "";
+  }
+
+  function getDocPrefix() {
+    if (tipo === "fatura") return "Fatura";
+    if (tipo === "contrato") return "Contrato";
+    return "Multa";
   }
 
   async function compartilharDocWA() {
@@ -28955,20 +29028,20 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
     if (!waOk) { alert("Informe o WhatsApp do destinatário."); return; }
     setCompartilhando(true);
     try {
-      var html = tipo === "fatura" ? buildFaturaHtml() : buildContratoHtml();
+      var html = getDocHtml();
       if (html) {
         var htmlComPrint = html + "<scr"+"ipt>window.print();</"+"script>";
         var blob = new Blob([htmlComPrint], {type:"text/html;charset=utf-8"});
-        var prefix = tipo === "fatura" ? "Fatura" : "Contrato";
+        var prefix = getDocPrefix();
         var file = new File([blob], prefix+"_"+numCt(sel.id)+(mesRef?"_"+mesRef:"")+".html", {type:"text/html"});
         if (navigator.canShare && navigator.canShare({files:[file]})) {
-          await navigator.share({ files:[file], title:prefix+" de Locação #"+numCt(sel.id), text:decodeURIComponent(textoWA()) });
+          await navigator.share({ files:[file], title:prefix+" #"+numCt(sel.id), text:decodeURIComponent(textoWA()) });
           setCompartilhando(false);
           return;
         }
       }
     } catch(e) { if (e && e.name === "AbortError") { setCompartilhando(false); return; } }
-    try { openPdfPage((tipo==="fatura"?buildFaturaHtml():buildContratoHtml())+"<scr"+"ipt>window.print();</"+"script>"); } catch(e2){}
+    try { openPdfPage(getDocHtml()+"<scr"+"ipt>window.print();</"+"script>"); } catch(e2){}
     setTimeout(function(){ window.open("https://wa.me/55"+fone+"?text="+textoWA(),"_blank"); }, 700);
     setCompartilhando(false);
   }
@@ -28976,18 +29049,17 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
   async function enviarDocEmail() {
     if (!sel) { alert("Selecione um item."); return; }
     if (!emailOk) { alert("Informe o e-mail do destinatário."); return; }
-    if (!temDoc) { var h0 = getEmailHref(); if (h0) window.open(h0, "_blank"); return; }
     setEnviandoEmail(true);
     var usouShare = false;
     try {
-      var html = tipo==="fatura" ? buildFaturaHtml() : buildContratoHtml();
+      var html = getDocHtml();
       var htmlComPrint = html + "<scr"+"ipt>window.print();</"+"script>";
       var blob = new Blob([htmlComPrint], {type:"text/html;charset=utf-8"});
-      var prefix = tipo==="fatura" ? "Fatura" : "Contrato";
+      var prefix = getDocPrefix();
       var filename = prefix+"_"+numCt(sel.id)+(mesRef?"_"+mesRef:"")+".html";
       var file = new File([blob], filename, {type:"text/html"});
       if (navigator.canShare && navigator.canShare({files:[file]})) {
-        await navigator.share({ files:[file], title:prefix+" de Locação #"+numCt(sel.id) });
+        await navigator.share({ files:[file], title:prefix+" #"+numCt(sel.id) });
         setEnviandoEmail(false);
         return;
       }
@@ -29008,7 +29080,8 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
   var waOk = fone.length >= 10;
   var emailOk = !!email && email.includes("@");
   var TIPOS = [{k:"contrato",l:"📋 Contrato"},{k:"fatura",l:"🧾 Fatura"},{k:"multa",l:"🚨 Multa"}];
-  var temDoc = tipo === "contrato" || tipo === "fatura";
+  var temDoc = true;
+  var temMes = tipo === "contrato" || tipo === "fatura";
 
   return React.createElement('div', { style:{position:"fixed",inset:0,zIndex:9501,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"flex-end"}, onClick:onClose },
     React.createElement('div', { style:{background:"var(--c-card)",borderRadius:"20px 20px 0 0",padding:"20px 16px 40px",width:"100%",maxHeight:"85vh",overflowY:"auto",display:"flex",flexDirection:"column",gap:14}, onClick:function(e){e.stopPropagation();} },
@@ -29030,7 +29103,7 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
           return React.createElement('option', { key:item.id, value:item.id }, "#"+numCt(item.id)+" · "+nm+sfx);
         })
       ),
-      temDoc && React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:4} },
+      temMes && React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:4} },
         React.createElement('label', { style:{fontSize:12,fontWeight:600,color:"var(--c-sub)"} }, tipo==="fatura" ? "Mês de referência / Período" : "Mês do pagamento"),
         React.createElement('select', { value:mesRef, onChange:function(e){setMesRef(e.target.value);},
           style:{padding:"10px 14px",borderRadius:12,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)",fontSize:14,outline:"none"} },
@@ -29050,30 +29123,19 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
         React.createElement('input', { type:"email",placeholder:"cliente@email.com",value:email,onChange:function(e){setEmail(e.target.value);},
           style:{padding:"10px 14px",borderRadius:12,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)",fontSize:14,outline:"none"} })
       ),
-      temDoc
-        ? React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:10} },
+      React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:10} },
             React.createElement('button', { onClick:compartilharDocWA, disabled:compartilhando||!sel,
               style:{display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"13px",borderRadius:14,border:"none",background:sel&&waOk?"#25D366":"rgba(37,211,102,0.2)",color:sel&&waOk?"#fff":"#25D366",fontSize:14,fontWeight:700,cursor:sel&&waOk?"pointer":"not-allowed",opacity:compartilhando?0.6:1} },
-              compartilhando ? "⏳ Preparando…" : "💬 Enviar via WhatsApp"+(tipo==="fatura"?" (com arquivo)":"")),
+              compartilhando ? "⏳ Preparando…" : "💬 Enviar via WhatsApp (com arquivo)"),
             React.createElement('button', { onClick:enviarDocEmail, disabled:enviandoEmail||!sel,
               style:{display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"13px",borderRadius:14,border:"1.5px solid rgba(0,122,255,0.2)",background:"rgba(0,122,255,0.1)",color:sel&&emailOk?"var(--c-blue)":"var(--c-sub)",fontSize:14,fontWeight:700,cursor:sel&&emailOk?"pointer":"not-allowed",opacity:enviandoEmail?0.6:1} },
               enviandoEmail ? "⏳ Preparando…" : "✉️ Enviar por E-mail (com arquivo)"),
             React.createElement('div', { style:{fontSize:11,color:"var(--c-sub)",textAlign:"center",marginTop:-6} },
-              navigator.canShare ? "📱 Arquivo compartilhado direto pelo celular" : "💻 Arquivo será baixado — anexe ao e-mail"),
+              navigator.canShare ? "📱 Celular: arquivo compartilhado direto" : "💻 Desktop: arquivo será baixado — anexe ao e-mail/WhatsApp"),
             sel && React.createElement('button', { onClick:function(){
-              try {
-                var html = tipo==="fatura" ? buildFaturaHtml() : buildContratoHtml();
-                openPdfPage(html+"<scr"+"ipt>window.print();</"+"script>");
-              } catch(e){ alert("Erro ao gerar PDF: "+e.message); }
-            }, style:{padding:"13px",borderRadius:14,border:"none",background:"rgba(255,149,0,0.12)",color:"#FF9500",fontSize:14,fontWeight:700,cursor:"pointer"} }, tipo==="fatura"?"📄 Abrir PDF da Fatura":"📄 Abrir PDF do Contrato")
-          )
-        : React.createElement('div', { style:{display:"flex",gap:10} },
-            React.createElement('a', { href:waOk?"https://wa.me/55"+fone+"?text="+textoWA():undefined, target:"_blank", rel:"noopener noreferrer",
-              onClick:!waOk?function(e){e.preventDefault();alert("Informe o WhatsApp do destinatário.");}:undefined,
-              style:{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"13px",borderRadius:14,background:waOk?"#25D366":"rgba(37,211,102,0.2)",color:waOk?"#fff":"#25D366",fontSize:14,fontWeight:700,textDecoration:"none",cursor:waOk?"pointer":"not-allowed"} }, "💬 WhatsApp"),
-            React.createElement('a', { href:getEmailHref(),
-              onClick:!emailOk?function(e){e.preventDefault();alert("Informe o e-mail do destinatário.");}:undefined,
-              style:{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"13px",borderRadius:14,background:"rgba(0,122,255,0.1)",color:"var(--c-blue)",fontSize:14,fontWeight:700,textDecoration:"none",cursor:emailOk?"pointer":"not-allowed",border:"1.5px solid rgba(0,122,255,0.2)"} }, "✉️ E-mail")
+              try { openPdfPage(getDocHtml()+"<scr"+"ipt>window.print();</"+"script>"); } catch(e){ alert("Erro ao gerar PDF: "+e.message); }
+            }, style:{padding:"13px",borderRadius:14,border:"none",background:"rgba(255,149,0,0.12)",color:"#FF9500",fontSize:14,fontWeight:700,cursor:"pointer"} },
+              tipo==="fatura"?"📄 Abrir PDF da Fatura":tipo==="multa"?"📄 Abrir PDF da Multa":"📄 Abrir PDF do Contrato")
           ),
       React.createElement('button', { onClick:onClose, style:{padding:"12px",borderRadius:14,border:"1px solid var(--c-border)",background:"transparent",color:"var(--c-sub)",fontSize:14,fontWeight:600,cursor:"pointer"} }, "Cancelar")
     )

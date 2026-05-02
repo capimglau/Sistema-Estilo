@@ -18402,6 +18402,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   // Cria automaticamente uma receita "prevista" vinculada ao contrato (fatura prevista)
   async function criarFaturaPrevista(c) {
     if (!c.previsao_pagamento) return;
+    // Parcelado no cartão — tratado em criarParcelasCC
+    if (/Cartao Credito \d+x/.test(c.forma_pagamento||"")) { await criarParcelasCC(c); return; }
     var mes = c.previsao_pagamento.slice(0,7);
     var refKey = "fat_" + c.id + "_" + mes;
     if ((receitas||[]).find(function(r){ return r.ref_fatura && (r.ref_fatura === refKey || r.ref_fatura.startsWith("fat_" + c.id + "_")); })) return;
@@ -18416,6 +18418,36 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       });
       setReceitas(function(p){ return [nova].concat(p); });
     } catch(e) { console.warn(e); }
+  }
+  async function criarParcelasCC(c) {
+    if (!c.previsao_pagamento) return;
+    var mCC = (c.forma_pagamento||"").match(/Cartao Credito (\d+)x/);
+    var nParc = mCC ? parseInt(mCC[1]) : 1;
+    if (nParc <= 1) return;
+    // Evita duplicar se já existirem parcelas para este contrato
+    var jaExiste = (receitas||[]).some(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_cc_p"); });
+    if (jaExiste) return;
+    var cl = getCl(c.cliente_id); var ve = getVe(c.veiculo_id);
+    var totalCents = Math.round(parseFloat(c.valor_total||0) * 100);
+    var valorParcela = Math.floor(totalCents / nParc);
+    for (var i = 0; i < nParc; i++) {
+      var vlr = i === nParc-1 ? totalCents - valorParcela*(nParc-1) : valorParcela; // última parcela absorve centavos
+      var d = new Date(c.previsao_pagamento + "T12:00:00");
+      d.setDate(d.getDate() + i*30);
+      var dtVenc = d.toISOString().split("T")[0];
+      var mes = dtVenc.slice(0,7);
+      var refKey = "fat_"+c.id+"_cc_p"+(i+1);
+      try {
+        var nova = await db.post("receitas", {
+          descricao: "Parcela "+(i+1)+"/"+nParc+" | "+(cl?cl.nome:"")+" | "+(ve?ve.placa:"")+" | "+fmtComp(mes),
+          valor: (vlr/100).toFixed(2),
+          data: dtVenc, data_vencimento: dtVenc,
+          status: "prevista", tipo: "locacao",
+          cliente_id: c.cliente_id, ref_fatura: refKey
+        });
+        setReceitas(function(p){ return [nova].concat(p); });
+      } catch(e) { console.warn("parcela CC", i+1, e); }
+    }
   }
   function dias(fm) { if (!fm.data_inicio || !fm.data_fim) return 0; return Math.max(1, Math.ceil((new Date(fm.data_fim) - new Date(fm.data_inicio)) / 86400000)); }
   function calcValor(fm) {
@@ -19032,9 +19064,42 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         )
         , React.createElement(Lbl, { label: "Status", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, React.createElement('select', { style: FI, value: form.status || "ativo", onChange: e => F("status", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, React.createElement('option', { value: "ativo", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, "Ativo"), React.createElement('option', { value: "concluido", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, "Concluido"), React.createElement('option', { value: "cancelado", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, "Cancelado")))
         , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1148}}
-          , React.createElement(Lbl, { label: "Forma de Pagamento"  , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, React.createElement('select', { style: FI, value: form.forma_pagamento || "", onChange: e => F("forma_pagamento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, React.createElement('option', { value: "", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Selecione..."), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Pix"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Dinheiro"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Cartao Debito" ), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Cartao Credito" ), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Transferencia"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Boleto"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "A Prazo" )))
+          , React.createElement(Lbl, { label: "Forma de Pagamento"  , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, React.createElement('select', { style: FI, value: (function(){ var fp=form.forma_pagamento||""; return fp.startsWith("Cartao Credito ")?"Cartao Credito":fp; })(), onChange: function(e){ F("forma_pagamento", e.target.value); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, React.createElement('option', { value: "", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Selecione..."), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Pix"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Dinheiro"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Cartao Debito" ), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Cartao Credito" ), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Transferencia"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "Boleto"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 1149}}, "A Prazo" )))
           , React.createElement(Lbl, { label: "Status Pagamento" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1150}}, React.createElement('select', { style: FI, value: form.status_pagamento || "pendente", onChange: e => F("status_pagamento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1150}}, React.createElement('option', { value: "pendente", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1150}}, "Pendente"), React.createElement('option', { value: "parcial", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1150}}, "Parcial"), React.createElement('option', { value: "pago", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1150}}, "Pago"), React.createElement('option', { value: "isento", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1150}}, "Isento")))
         )
+        , (form.forma_pagamento === "Cartao Credito" || (form.forma_pagamento||"").startsWith("Cartao Credito ")) && (function(){
+            var mParcCC = (form.forma_pagamento||"").match(/Cartao Credito (\d+)x/);
+            var nAtual = mParcCC ? mParcCC[1] : "1";
+            return React.createElement('div', { style:{ background:"rgba(159,189,230,0.08)", borderRadius:12, padding:"12px 14px", border:"1px solid rgba(159,189,230,0.3)", marginBottom:4 } }
+              , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:"#9FBDE6", marginBottom:10 } }, "💳 Parcelamento no Cartão de Crédito")
+              , React.createElement('div', { style:{ display:"flex", gap:10, alignItems:"flex-end" } }
+                , React.createElement(Lbl, { label:"Número de parcelas", flex:1 }
+                  , React.createElement('select', { style:FI, value:nAtual,
+                      onChange:function(e){
+                        var n=parseInt(e.target.value);
+                        F("forma_pagamento", n===1 ? "Cartao Credito" : "Cartao Credito "+n+"x");
+                      }
+                    }
+                    , React.createElement('option',{value:"1"},"1x — À vista")
+                    , [2,3,4,5,6,7,8,9,10,11,12].map(function(n){ return React.createElement('option',{key:n,value:String(n)},n+"x sem juros"); })
+                  )
+                )
+                , nAtual > 1 && form.previsao_pagamento && React.createElement('div', { style:{ flex:1, paddingBottom:2 } }
+                  , React.createElement('div', { style:{ fontSize:11, color:"var(--c-sub)", marginBottom:6, fontWeight:600, textTransform:"uppercase", letterSpacing:0.3 } }, "Previsão das parcelas")
+                  , [].concat(Array.apply(null,{length:parseInt(nAtual)})).map(function(_,i){
+                      var d = new Date(form.previsao_pagamento + "T12:00:00");
+                      d.setDate(d.getDate() + i*30);
+                      var dt = d.toISOString().split("T")[0];
+                      var vlr = (parseFloat(form.valor_total||0) / parseInt(nAtual)).toFixed(2);
+                      return React.createElement('div', { key:i, style:{ fontSize:11, color:"var(--c-sub)", marginBottom:2 } }
+                        , (i+1)+"ª: "+fmtDate(dt)+" · "+fmtBRL(vlr)
+                      );
+                    })
+                )
+              )
+            );
+          })()
+
         , form.status_pagamento === "parcial" && (
           React.createElement('div', { style: { background: C.orange + "10", borderRadius: 12, padding: "12px 14px", border: "1px solid " + C.orange + "40" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1153}}
             , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: C.orange, marginBottom: 8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1154}}, "Pagamento Parcial" )

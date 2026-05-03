@@ -187,6 +187,35 @@ const VEICULOS=[
 ];
 const GITHUB_RAW='https://raw.githubusercontent.com/capimglau/autoguest/main/';
 let veiculo=null;
+
+// Busca tarifas atualizadas do Supabase e sincroniza com VEICULOS
+(async function syncTarifas(){
+  try{
+    const r=await fetch(SUPABASE_URL+'/rest/v1/veiculos?select=marca,modelo,valor_diaria,valor_mensal&order=valor_diaria',{
+      headers:{'apikey':SUPABASE_KEY,'Authorization':'Bearer '+SUPABASE_KEY}
+    });
+    if(!r.ok)return;
+    const rows=await r.json();
+    const match=[
+      {idx:0,keys:['kwid']},
+      {idx:1,keys:['polo']},
+      {idx:2,keys:['saveiro']},
+      {idx:3,keys:['t-cross','tcross','t cross']},
+      {idx:4,keys:['spin']}
+    ];
+    match.forEach(function(m){
+      const found=rows.filter(function(row){
+        const nome=(row.marca+' '+row.modelo).toLowerCase();
+        return m.keys.some(function(k){return nome.includes(k);});
+      });
+      if(!found.length)return;
+      const diaria=Math.min.apply(null,found.map(function(r){return parseFloat(r.valor_diaria)||Infinity;}));
+      const mensal=Math.min.apply(null,found.map(function(r){return parseFloat(r.valor_mensal)||Infinity;}));
+      if(isFinite(diaria))VEICULOS[m.idx].diaria=diaria;
+      if(isFinite(mensal))VEICULOS[m.idx].mensal=mensal;
+    });
+  }catch(e){}
+})();
 function fmtBRL(v){return 'R$ '+v.toLocaleString('pt-BR',{minimumFractionDigits:2});}
 function fmtDate(d){return d?d.split('-').reverse().join('/'):'–';}
 
@@ -273,7 +302,18 @@ function calcDias(){
 }
 function calcTotal(dias){
   if(!veiculo||!veiculo.diaria)return null;
-  return dias>=30?veiculo.mensal:veiculo.diaria*dias;
+  if(dias<30)return veiculo.diaria*dias;
+  const meses=Math.floor(dias/30);
+  const diasExtra=dias%30;
+  return meses*veiculo.mensal+diasExtra*(veiculo.mensal/30);
+}
+function totalTxtDesc(dias,total){
+  if(total===null)return'A consultar';
+  if(dias<30)return fmtBRL(total)+' ('+dias+' dia'+(dias>1?'s':'')+')';
+  const meses=Math.floor(dias/30);const extra=dias%30;
+  let desc=meses+'× mensal';
+  if(extra>0)desc+=' + '+extra+' dia'+(extra>1?'s':'')+' extra';
+  return fmtBRL(total)+' ('+desc+')';
 }
 function irParaPagina2(){
   const loja=document.getElementById('lojaRetirada').value;
@@ -289,7 +329,7 @@ function irParaPagina2(){
   const dias=calcDias();
   const total=calcTotal(dias);
   const isMensal=dias>=30&&total!==null;
-  const totalTxt=total!==null?fmtBRL(total)+(isMensal?' (pacote mensal)':' ('+dias+' dia'+(dias>1?'s':'')+')'):'A consultar';
+  const totalTxt=totalTxtDesc(dias,total);
   document.getElementById('resumoContent').innerHTML=
     '<div class="summary-row"><span class="slabel">Veículo</span><span class="svalue">'+veiculo.nome+'</span></div>'+
     '<div class="summary-row"><span class="slabel">Loja</span><span class="svalue">'+loja+'</span></div>'+
@@ -324,7 +364,7 @@ async function confirmarReserva(){
   const hd=document.getElementById('horaDevolucao').value;
   const dias=calcDias();const total=calcTotal(dias);
   const isMensal=dias>=30&&total!==null;
-  const totalTxt=total!==null?fmtBRL(total)+(isMensal?' (pacote mensal)':' ('+dias+' dias)'):'A consultar';
+  const totalTxt=totalTxtDesc(dias,total);
   // ── WhatsApp EMPRESA (abre antes do await para não ser bloqueado pelo browser) ──
   const wppEmpresa=encodeURIComponent('🚗 *Nova Pré-Reserva – Estilo Rent a Car*\n\n👤 *Cliente:* '+nome+'\n📱 *Tel:* '+tel+'\n📧 *Email:* '+mail+'\n🪪 *CPF:* '+cpf+'\n\n🚙 *Veículo:* '+veiculo.nome+'\n📍 *Loja:* '+loja+'\n📅 *Retirada:* '+fmtDate(dr)+' às '+hr+'\n📅 *Devolução:* '+fmtDate(dd)+' às '+hd+'\n📆 *Dias:* '+dias+(isMensal?' (Pacote Mensal)':'')+ '\n💰 *Total:* '+totalTxt+'\n\n_estilorentacar.com.br_');
   window.open('https://wa.me/'+WHATSAPP+'?text='+wppEmpresa,'_blank');

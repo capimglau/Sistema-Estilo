@@ -16165,8 +16165,9 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 , React.createElement('span', { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Multas · Pipeline")
                 , React.createElement('span', { onClick:function(){setTab("multas");}, style:{ fontSize:11, color:C.blue, fontWeight:600, cursor:"pointer", flexShrink:0 } }, "Ver todas →")
               )
-              , (vencidasNaoPagas.length > 0 || nNotifFail.length > 0 || emProcessoNotif.length > 0) && React.createElement('div', { style:{ display:"flex", gap:4, flexWrap:"wrap" } }
+              , (vencidasNaoPagas.length > 0 || cliAtrasados.length > 0 || nNotifFail.length > 0 || emProcessoNotif.length > 0) && React.createElement('div', { style:{ display:"flex", gap:4, flexWrap:"wrap" } }
                 , vencidasNaoPagas.length > 0 && React.createElement('span', { style:{ fontSize:10, fontWeight:700, background:"rgba(255,59,48,0.12)", color:C.red, padding:"2px 7px", borderRadius:8 } }, "🚨 "+vencidasNaoPagas.length+" vencida"+(vencidasNaoPagas.length>1?"s":""))
+                , cliAtrasados.length > 0 && React.createElement('span', { style:{ fontSize:10, fontWeight:700, background:"rgba(255,59,48,0.12)", color:C.red, padding:"2px 7px", borderRadius:8 } }, "🚨 "+cliAtrasados.length+" cobrança"+(cliAtrasados.length>1?"s":"")+" em atraso")
                 , nNotifFail.length > 0 && React.createElement('span', { style:{ fontSize:10, fontWeight:700, background:"rgba(255,59,48,0.12)", color:C.red, padding:"2px 7px", borderRadius:8 } }, "❌ "+nNotifFail.length+" s/ identif.")
                 , emProcessoNotif.length > 0 && React.createElement('span', { style:{ fontSize:10, fontWeight:700, background:"rgba(255,149,0,0.12)", color:C.orange, padding:"2px 7px", borderRadius:8 } }, "⚠️ "+emProcessoNotif.length+" indicação pend.")
               )
@@ -16366,12 +16367,13 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
 
         /* ── Funil de Pipeline — cronológico ── */
         , (function() {
-            // Dados por etapa: lista, vencidas, valor total
+            // Dados por etapa: lista, vencidas, cobranças de cliente em atraso, valor total
             var stepData = PIPELINE_MULTA.map(function(step, si) {
               var lista = todasAtivas.filter(function(m){ return getPipelineStep(m) === si; });
               var venc  = lista.filter(function(m){ return m.vencimento && m.vencimento < hoje && m.status !== "pago"; });
+              var cobAtras = lista.filter(function(m){ var cc=m.cobrado_cliente||"nao"; return cc==="pendente" && ((m.vencimento&&m.vencimento<hoje)||(m.data_cobranca_cliente&&m.data_cobranca_cliente<_30diasAtras)); });
               var totalVal = lista.reduce(function(s,m){ return s+parseFloat(m.valor||0); }, 0);
-              return { step:step, si:si, lista:lista, cnt:lista.length, venc:venc.length, totalVal:totalVal };
+              return { step:step, si:si, lista:lista, cnt:lista.length, venc:venc.length, cobAtras:cobAtras.length, totalVal:totalVal };
             });
             var totalAtivas  = todasAtivas.length;
             var maxC         = Math.max.apply(null, stepData.map(function(d){return d.cnt;}).concat([1]));
@@ -16380,10 +16382,10 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             var totalVenc    = stepData.reduce(function(s,d){return s+d.venc;}, 0);
             var totalValTodas= todasAtivas.reduce(function(s,m){return s+parseFloat(m.valor||0);},0);
 
-            // Cor por urgência: vencidas → vermelho, boleto → laranja, finalizado → verde, início → azul
+            // Cor por urgência: vencidas ou cobranças em atraso → vermelho, finalizado → verde, início → azul
             function corEtapa(d) {
               if (d.cnt === 0) return C.border;
-              if (d.venc > 0)             return "#FF3B30";
+              if (d.venc > 0 || d.cobAtras > 0) return "#FF3B30";
               if (d.si === 8)             return "#34C759";
               if (d.si === 6 || d.si===7) return "#34C759";
               if (d.si === 4 || d.si===5) return "#FF9500";
@@ -19882,9 +19884,10 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         var cliCor = cc === "pago" ? C.green : (cobCliAtrasado ? C.red : (cc === "pendente" ? C.orange : C.gray));
         var cliLabel = cc === "pago" ? "Cliente PAGOU" : (cobCliAtrasado ? "COBRANÇA EM ATRASO" : (cc === "pendente" ? "Cliente: AGUARDANDO PAGAMENTO" : "Cliente: NÃO COBRADO"));
         var valorCli = m.valor_cobrado ? fmtBRL(m.valor_cobrado) : null;
-        var _pipeLen = _pipeline.length; var _bCor = (stepIdx >= _pipeLen - 2) ? C.green : stepIdx >= (_pipeLen - 4) ? C.orange : (isContestado ? C.purple : (vencida ? C.red : C.orange));
+        var _temAtraso = vencida || cobCliAtrasado;
+        var _pipeLen = _pipeline.length; var _bCor = _temAtraso ? C.red : ((stepIdx >= _pipeLen - 2) ? C.green : stepIdx >= (_pipeLen - 4) ? C.orange : (isContestado ? C.purple : C.orange));
         var isExpanded = expandedMulId === m.id;
-        var cardStyle = { padding: "14px 16px", marginBottom: i < fil.length - 1 ? 10 : 0, borderRadius: 16, border: "1px solid " + (isExpanded ? _bCor+"80" : C.border), background: C.card, boxShadow: isExpanded ? "0 4px 18px rgba(0,0,0,0.10)" : "0 1px 4px rgba(0,0,0,0.06)", borderLeft: "5px solid " + _bCor, cursor: "pointer", transition: "box-shadow .2s, border-color .2s" };
+        var cardStyle = { padding: "14px 16px", marginBottom: i < fil.length - 1 ? 10 : 0, borderRadius: 16, border: "1px solid " + (_temAtraso ? C.red+"70" : isExpanded ? _bCor+"80" : C.border), background: C.card, boxShadow: isExpanded ? "0 4px 18px rgba(0,0,0,0.10)" : "0 1px 4px rgba(0,0,0,0.06)", borderLeft: "5px solid " + _bCor, cursor: "pointer", transition: "box-shadow .2s, border-color .2s" };
         var chipStyle = function(cor) { return { display: "inline-flex", alignItems: "center", gap: 6, background: cor + "18", color: cor, padding: "6px 11px", borderRadius: 10, fontSize: 12, fontWeight: 700, border: "1px solid " + cor + "30" }; };
         return React.createElement('div', { key: m.id, className: (vencida || cobCliAtrasado) ? "ag-urgent" : "", style: cardStyle, onClick: function(e){ if(e.target.closest('button,a,select,input')) return; setExpandedMulId(isExpanded ? null : m.id); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1329}}
           , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1330}}

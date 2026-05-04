@@ -18691,6 +18691,12 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (!confirm("Excluir contrato?")) return;
     // Libera o veículo se o contrato era ativo
     var ct = contratos.find(function(x){ return x.id === id; });
+    // Cascade: exclui receitas vinculadas (evita registros órfãos com ref_fatura inválido)
+    var recVinc = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + id + "_"); });
+    for (var _ri = 0; _ri < recVinc.length; _ri++) {
+      try { await db.del("receitas", recVinc[_ri].id); } catch(e) { console.warn("cascade receita:", e); }
+    }
+    if (recVinc.length > 0) setReceitas(function(p){ return p.filter(function(r){ return !r.ref_fatura || !r.ref_fatura.startsWith("fat_" + id + "_"); }); });
     await db.del("contratos", id);
     setContratos(p => p.filter(c => c.id !== id));
     if (ct && ct.status === "ativo" && ct.veiculo_id) {
@@ -22060,6 +22066,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     }
     return d;
   });
+  // IDs dos contratos existentes — usado para filtrar receitas órfãs
+  var _ctIdsExistentes = new Set((contratos||[]).map(function(c){ return String(c.id); }));
   var recFiltradas = receitas.filter(r => receitaDoMes(r, filtroMes)).map(r => {
     if (r.ref_fatura && r.status !== "recebido") {
       var m = r.ref_fatura.match(/^fat_(\d+)_/);
@@ -22076,6 +22084,12 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       return Object.assign({}, r, { status: recebiuEsteMes ? r.status : "previsto", data_pagamento: recebiuEsteMes ? r.data_pagamento : null, data: filtroMes + "-" + diaR });
     }
     return r;
+  }).filter(function(r) {
+    // Remove receitas órfãs: ref_fatura aponta para contrato excluído
+    if (!r.ref_fatura) return true;
+    var _mfO = r.ref_fatura.match(/^fat_(\d+)_/);
+    if (_mfO && !_ctIdsExistentes.has(_mfO[1])) return false;
+    return true;
   });
   // Deduplica ref_fatura — mantém o de status mais avançado
   var _refPrio = { "recebido": 4, "emitida": 3, "prevista": 2, "cancelada": 1 };

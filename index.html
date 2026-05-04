@@ -16077,6 +16077,9 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       var vencidasNaoPagas = locPendente.filter(function(m){ return m.vencimento && m.vencimento < hoje; });
       /* em processo de notificação = enviada ao cliente mas órgão não notificado */
       var emProcessoNotif = todasAtivas.filter(function(m){ return (m.cobrado_cliente==="pendente"||m.cobrado_cliente==="pago") && notifStatus(m)==="nao_notificado"; });
+      /* cobrança ao cliente em atraso: pendente e (vencida junto ao órgão OU enviada há +30 dias) */
+      var _30diasAtras = new Date(Date.now()-30*86400000).toISOString().split("T")[0];
+      var cliAtrasados = cliPend.filter(function(m){ return (m.vencimento && m.vencimento < hoje) || (m.data_cobranca_cliente && m.data_cobranca_cliente < _30diasAtras); });
 
       var _mSelState  = React.useState(null); var mSel = _mSelState[0]; var setMSel = _mSelState[1];
       var _mTipState  = React.useState(null); var tipBarM = _mTipState[0]; var setTipBarM = _mTipState[1];
@@ -16319,7 +16322,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             )
             , React.createElement('div', { style:{ display:"flex", gap:8, marginTop:5, alignItems:"center", flexWrap:"wrap" } }
               , cliNao.length  > 0 && React.createElement('span', { style:{ fontSize:10, color:"#8E8E93", fontWeight:600 } }, "○ Não cobrado: "+cliNao.length)
-              , cliPend.length > 0 && React.createElement('span', { style:{ fontSize:10, color:C.orange, fontWeight:600 } }, "⏳ Aguardando: "+cliPend.length)
+              , cliAtrasados.length > 0 && React.createElement('span', { style:{ fontSize:10, color:C.red, fontWeight:700, background:C.red+"18", borderRadius:6, padding:"1px 6px" } }, "🚨 Em atraso: "+cliAtrasados.length)
+              , cliPend.length - cliAtrasados.length > 0 && React.createElement('span', { style:{ fontSize:10, color:C.orange, fontWeight:600 } }, "⏳ Aguardando: "+(cliPend.length-cliAtrasados.length))
               , cliPago.length > 0 && React.createElement('span', { style:{ fontSize:10, color:C.green, fontWeight:600 } }, "✅ Recebido: "+cliPago.length)
               , React.createElement('span', { style:{ fontSize:10, color: mSel==="cli" ? C.green : C.sub, marginLeft:"auto", fontWeight: mSel==="cli"?700:400 } }, mSel==="cli" ? "▲ fechar" : "▼ ver detalhes")
             )
@@ -16329,9 +16333,13 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 , React.createElement('span', { style:{ color:"#8E8E93" } }, "○ Não cobrado")
                 , React.createElement('span', { style:{ fontWeight:700 } }, String(cliNao.length)+" multa"+(cliNao.length!==1?"s":""))
               )
-              , cliPend.length > 0 && React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", gap:20 } }
+              , cliAtrasados.length > 0 && React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", gap:20, background:C.red+"12", borderRadius:6, padding:"3px 6px", margin:"2px 0" } }
+                , React.createElement('span', { style:{ color:C.red, fontWeight:700 } }, "🚨 Cobrado · ATRASADO")
+                , React.createElement('span', { style:{ fontWeight:800, color:C.red } }, String(cliAtrasados.length))
+              )
+              , (cliPend.length - cliAtrasados.length) > 0 && React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", gap:20 } }
                 , React.createElement('span', { style:{ color:C.orange } }, "⏳ Cobrado · aguardando")
-                , React.createElement('span', { style:{ fontWeight:700 } }, String(cliPend.length))
+                , React.createElement('span', { style:{ fontWeight:700 } }, String(cliPend.length-cliAtrasados.length))
               )
               , cliPago.length > 0 && React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", gap:20 } }
                 , React.createElement('span', { style:{ color:C.green } }, "✅ Cliente pagou")
@@ -19869,14 +19877,16 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         var locLabel = locStatus === "pago" ? "Locadora PAGOU" : (locStatus === "contestado" ? "Em recurso" : (locStatus === "vencida" ? "VENCIDA" : "A PAGAR"));
         // Status Cliente (foi cobrado do cliente?)
         var cc = m.cobrado_cliente || "nao";
-        var cliCor = cc === "pago" ? C.green : (cc === "pendente" ? C.orange : C.gray);
-        var cliLabel = cc === "pago" ? "Cliente PAGOU" : (cc === "pendente" ? "Cliente: AGUARDANDO PAGAMENTO" : "Cliente: NÃO COBRADO");
+        var _30d = new Date(Date.now()-30*86400000).toISOString().split("T")[0];
+        var cobCliAtrasado = cc === "pendente" && ((m.vencimento && m.vencimento < hoje) || (m.data_cobranca_cliente && m.data_cobranca_cliente < _30d));
+        var cliCor = cc === "pago" ? C.green : (cobCliAtrasado ? C.red : (cc === "pendente" ? C.orange : C.gray));
+        var cliLabel = cc === "pago" ? "Cliente PAGOU" : (cobCliAtrasado ? "COBRANÇA EM ATRASO" : (cc === "pendente" ? "Cliente: AGUARDANDO PAGAMENTO" : "Cliente: NÃO COBRADO"));
         var valorCli = m.valor_cobrado ? fmtBRL(m.valor_cobrado) : null;
         var _pipeLen = _pipeline.length; var _bCor = (stepIdx >= _pipeLen - 2) ? C.green : stepIdx >= (_pipeLen - 4) ? C.orange : (isContestado ? C.purple : (vencida ? C.red : C.orange));
         var isExpanded = expandedMulId === m.id;
         var cardStyle = { padding: "14px 16px", marginBottom: i < fil.length - 1 ? 10 : 0, borderRadius: 16, border: "1px solid " + (isExpanded ? _bCor+"80" : C.border), background: C.card, boxShadow: isExpanded ? "0 4px 18px rgba(0,0,0,0.10)" : "0 1px 4px rgba(0,0,0,0.06)", borderLeft: "5px solid " + _bCor, cursor: "pointer", transition: "box-shadow .2s, border-color .2s" };
         var chipStyle = function(cor) { return { display: "inline-flex", alignItems: "center", gap: 6, background: cor + "18", color: cor, padding: "6px 11px", borderRadius: 10, fontSize: 12, fontWeight: 700, border: "1px solid " + cor + "30" }; };
-        return React.createElement('div', { key: m.id, className: vencida ? "ag-urgent" : "", style: cardStyle, onClick: function(e){ if(e.target.closest('button,a,select,input')) return; setExpandedMulId(isExpanded ? null : m.id); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1329}}
+        return React.createElement('div', { key: m.id, className: (vencida || cobCliAtrasado) ? "ag-urgent" : "", style: cardStyle, onClick: function(e){ if(e.target.closest('button,a,select,input')) return; setExpandedMulId(isExpanded ? null : m.id); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1329}}
           , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1330}}
             , React.createElement('div', { style: { flex: 1, minWidth: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1331}}
               , React.createElement('div', { style: { fontWeight: 800, fontSize: 17, lineHeight: 1.2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1332}}, m.ait && React.createElement('span', { style: Object.assign({}, Badge(C.orange), { fontWeight: 700 }) }, "AIT " + m.ait))
@@ -19919,12 +19929,13 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
                 , (isPago && m.data_pagamento ? "Pago em "+fmtDate(m.data_pagamento) : m.vencimento ? "Venc. "+fmtDate(m.vencimento) : "") && React.createElement('div', { style: { fontSize: 9, color: C.sub, marginTop: 1 } }, isPago && m.data_pagamento ? "Pago em "+fmtDate(m.data_pagamento) : "Venc. "+fmtDate(m.vencimento))
               )
             )
-            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 7, background: cliCor+"14", border: "1.5px solid "+cliCor+"40", borderRadius: 10, padding: "6px 11px", flex: "1 1 auto", minWidth: 0 } }
-              , React.createElement('span', { style: { fontSize: 16, lineHeight: 1, flexShrink: 0 } }, cc==="pago"?"💵":cc==="pendente"?"⏳":"⚠️")
+            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 7, background: cliCor+"14", border: "1.5px solid "+cliCor+(cobCliAtrasado?"80":"40"), borderRadius: 10, padding: "6px 11px", flex: "1 1 auto", minWidth: 0 } }
+              , React.createElement('span', { style: { fontSize: 16, lineHeight: 1, flexShrink: 0 } }, cc==="pago"?"💵":cobCliAtrasado?"🚨":cc==="pendente"?"⏳":"⚠️")
               , React.createElement('div', { style: { minWidth: 0 } }
                 , React.createElement('div', { style: { fontSize: 9, color: C.sub, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, lineHeight: 1, marginBottom: 2 } }, "Cliente → Reembolso")
                 , React.createElement('div', { style: { fontSize: 12, fontWeight: 800, color: cliCor, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, cliLabel)
                 , valorCli && React.createElement('div', { style: { fontSize: 9, color: C.sub, marginTop: 1 } }, cc==="pago" ? "Recebido "+valorCli : "A receber "+valorCli)
+                , cobCliAtrasado && m.data_cobranca_cliente && React.createElement('div', { style: { fontSize: 9, color: C.red, marginTop: 1, fontWeight: 700 } }, "Cobrado em "+fmtDate(m.data_cobranca_cliente)+" · sem retorno")
               )
             )
           )

@@ -19609,6 +19609,189 @@ function buildDSVHtml(m, cl, ve, emp, assSvg) {
   return h;
 }
 
+function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos }) {
+  var [gmPlaca, setGmPlaca] = React.useState("");
+  var [gmStatus, setGmStatus] = React.useState("todos");
+  var [gmAIT, setGmAIT] = React.useState("");
+  var [gmSelected, setGmSelected] = React.useState("");
+  var [gmTooltip, setGmTooltip] = React.useState(null);
+  var hojeStr = new Date().toISOString().split("T")[0];
+  function getMVe(m) {
+    var ct = (contratos||[]).find(function(c){return c.id==m.contrato_id;});
+    return (veiculos||[]).find(function(v){return v.id==(ct?ct.veiculo_id:m.veiculo_id);});
+  }
+  var fil = (allMultas||[]).filter(function(m) {
+    if (gmStatus !== "todos") {
+      var venc = m.status !== "pago" && m.vencimento && m.vencimento < hojeStr;
+      if (gmStatus === "pago" && m.status !== "pago") return false;
+      if (gmStatus === "pendente" && m.status !== "pendente") return false;
+      if (gmStatus === "vencida" && !venc) return false;
+    }
+    if (gmPlaca) { var ve = getMVe(m); if (!ve || String(ve.id) !== gmPlaca) return false; }
+    if (gmAIT && (m.ait||"") !== gmAIT) return false;
+    if (gmSelected && String(m.id) !== gmSelected) return false;
+    return true;
+  });
+  var EV = [
+    { key:"data",     label:"Infração",        emoji:"📥", color:"#FF3B30", isDeadline:false },
+    { key:"notif",    label:"Notif. Enviada",  emoji:"📤", color:"#AF52DE", isDeadline:false },
+    { key:"assinado", label:"DSV Assinado",    emoji:"✍️", color:"#9B59B6", isDeadline:false },
+    { key:"prazo",    label:"Prazo Órgão",     emoji:"⏰", color:"#FF9500", isDeadline:true  },
+    { key:"vencto",   label:"Vencimento",      emoji:"⚠️", color:"#FF3B30", isDeadline:true  },
+    { key:"bsolic",   label:"Bol. Solicitado", emoji:"📋", color:"#FF9500", isDeadline:false },
+    { key:"brec",     label:"Bol. Recebido",   emoji:"💳", color:"#FFCC00", isDeadline:false },
+    { key:"pgto",     label:"Pago ao Órgão",   emoji:"💰", color:"#34C759", isDeadline:false },
+    { key:"cobra",    label:"Cobrado Cliente", emoji:"📬", color:"#007AFF", isDeadline:false },
+  ];
+  function getEvs(m) {
+    var raw = [
+      ["data",     m.data],
+      ["notif",    m.data_notificacao],
+      ["assinado", m.dsv_assinado_em ? String(m.dsv_assinado_em).slice(0,10) : null],
+      ["prazo",    m.prazo_notificacao_orgao],
+      ["vencto",   m.vencimento],
+      ["bsolic",   m.data_solicitacao_boleto],
+      ["brec",     m.data_boleto_recebido],
+      ["pgto",     m.data_pagamento],
+      ["cobra",    m.data_cobranca_cliente],
+    ];
+    return raw.filter(function(r){return r[1]&&r[1].length>=10;}).map(function(r){
+      return Object.assign({}, EV.find(function(d){return d.key===r[0];}), {date:r[1]});
+    });
+  }
+  var allDates = [hojeStr];
+  fil.forEach(function(m){ getEvs(m).forEach(function(e){ allDates.push(e.date); }); });
+  allDates.sort();
+  var startD = new Date(allDates[0]+"T12:00:00"); startD.setMonth(startD.getMonth()-1);
+  var endD   = new Date(allDates[allDates.length-1]+"T12:00:00"); endD.setMonth(endD.getMonth()+1);
+  var totalDays = Math.round((endD - startD)/86400000)+1;
+  var isMob = typeof window!=="undefined"&&window.innerWidth<600;
+  var colW=isMob?16:20, rowH=48, labH=44, yW=isMob?90:120;
+  var totalW=totalDays*colW, svgH=Math.max(1,fil.length)*rowH+labH;
+  function dx(ds){ return Math.round((new Date(ds+"T12:00:00")-startD)/86400000)*colW+colW/2; }
+  var todayX = dx(hojeStr);
+  var mSeps=[], prevMk="";
+  for (var di=0;di<totalDays;di++){
+    var _td=new Date(startD.getTime()+di*86400000);
+    var _mk=_td.getFullYear()+"-"+String(_td.getMonth()+1).padStart(2,"0");
+    if(_mk!==prevMk){mSeps.push({x:di*colW,label:_td.toLocaleString("pt-BR",{month:"short"}).replace(".","").toUpperCase()+"/"+String(_td.getFullYear()).slice(2),isFirst:di===0});prevMk=_mk;}
+  }
+  var dLbls=[];
+  for(var di2=0;di2<totalDays;di2++){
+    var _dd=new Date(startD.getTime()+di2*86400000),_dn=_dd.getDate();
+    if(_dn!==1&&_dn!==8&&_dn!==15&&_dn!==22) continue;
+    var _isT=_dd.toISOString().split("T")[0]===hojeStr;
+    dLbls.push({x:di2*colW+colW/2,day:_dn,mo:_dd.toLocaleString("pt-BR",{month:"short"}).replace(".","").toUpperCase(),isToday:_isT});
+  }
+  var placasMap={};
+  (allMultas||[]).forEach(function(m){var ve=getMVe(m);if(ve)placasMap[ve.id]=ve;});
+  var placas=Object.values(placasMap);
+  var aitsArr=[...new Set((allMultas||[]).filter(function(m){return m.ait;}).map(function(m){return m.ait;}))].sort();
+  var multaOpts=(allMultas||[]).filter(function(m){return m.ait||m.data;}).sort(function(a,b){return (a.data||"").localeCompare(b.data||"");});
+  var selSt={border:"1px solid "+C.border,borderRadius:8,padding:"4px 7px",fontSize:12,background:C.card,color:"var(--c-text)",cursor:"pointer",flex:1,minWidth:0};
+  return React.createElement(React.Fragment, null
+    , React.createElement("div",{style:{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginTop:4,marginBottom:8}}
+      , React.createElement("div",{style:{fontSize:12,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:0.5,flexShrink:0,marginRight:2}},"Cronograma")
+      , React.createElement("select",{value:gmPlaca,onChange:function(e){setGmPlaca(e.target.value);},style:selSt}
+        , React.createElement("option",{value:""},"Todas as placas")
+        , placas.map(function(v){return React.createElement("option",{key:v.id,value:String(v.id)},v.placa+(v.modelo?" · "+v.modelo:""));})
+      )
+      , React.createElement("select",{value:gmStatus,onChange:function(e){setGmStatus(e.target.value);},style:selSt}
+        , React.createElement("option",{value:"todos"},"Todos status")
+        , React.createElement("option",{value:"pendente"},"Pendente")
+        , React.createElement("option",{value:"vencida"},"Vencida")
+        , React.createElement("option",{value:"pago"},"Pago")
+      )
+      , React.createElement("select",{value:gmSelected,onChange:function(e){setGmSelected(e.target.value);},style:selSt}
+        , React.createElement("option",{value:""},"Todas as multas")
+        , multaOpts.map(function(m){var ve=getMVe(m);return React.createElement("option",{key:m.id,value:String(m.id)},(m.ait||"#"+m.id)+(ve?" · "+ve.placa:"")+(m.data?" ("+fmtDate(m.data)+")":""));})
+      )
+      , React.createElement("select",{value:gmAIT,onChange:function(e){setGmAIT(e.target.value);},style:selSt}
+        , React.createElement("option",{value:""},"Todos AIT")
+        , aitsArr.map(function(a){return React.createElement("option",{key:a,value:a},a);})
+      )
+    )
+    , fil.length===0
+      ? React.createElement("div",{style:{background:C.card,borderRadius:16,border:"1px solid "+C.border,padding:24,textAlign:"center",color:C.sub,fontSize:13}},"Nenhuma multa encontrada")
+      : React.createElement("div",{style:{background:C.card,borderRadius:16,border:"1px solid "+C.border,overflow:"hidden"}}
+          , React.createElement("div",{style:{display:"flex",paddingTop:14}}
+              , React.createElement("div",{style:{width:yW,flexShrink:0,borderRight:"1px solid "+C.border}}
+                , fil.map(function(m,i){
+                    var ve=getMVe(m);
+                    var isVenc=m.status!=="pago"&&m.vencimento&&m.vencimento<hojeStr;
+                    var cor=m.status==="pago"?"#34C759":isVenc?"#FF3B30":C.sub;
+                    return React.createElement("div",{key:m.id,style:{height:rowH,display:"flex",flexDirection:"column",justifyContent:"center",padding:"0 8px 0 10px",borderBottom:i<fil.length-1?"1px solid "+C.border+"40":"none"}}
+                      , React.createElement("div",{style:{fontSize:11,fontWeight:700,color:"var(--c-text)",lineHeight:1.2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},m.ait||"AIT —")
+                      , React.createElement("div",{style:{fontSize:10,color:cor,marginTop:2}},ve?ve.placa:"—")
+                    );
+                  })
+                , React.createElement("div",{style:{height:labH}})
+              )
+              , React.createElement("div",{
+                  ref:function(el){if(el&&!el._gmSc){el._gmSc=true;el.scrollLeft=Math.max(0,todayX-140);}},
+                  style:{flex:1,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"thin"}
+                }
+                , React.createElement("svg",{width:totalW,height:svgH,viewBox:"0 0 "+totalW+" "+svgH,style:{display:"block",shapeRendering:"geometricPrecision"}}
+                  , fil.map(function(m,i){return React.createElement("rect",{key:"bg"+i,x:0,y:i*rowH,width:totalW,height:rowH,fill:i%2===0?"rgba(120,120,128,0.04)":"transparent"});})
+                  , fil.slice(0,-1).map(function(m,i){return React.createElement("line",{key:"rl"+i,x1:0,y1:(i+1)*rowH,x2:totalW,y2:(i+1)*rowH,stroke:C.border,strokeWidth:0.5,opacity:0.5});})
+                  , mSeps.map(function(sep,si){
+                      return React.createElement("g",{key:"ms"+si}
+                        , !sep.isFirst&&React.createElement("line",{x1:sep.x,y1:0,x2:sep.x,y2:svgH-labH,stroke:C.border,strokeWidth:0.8,strokeDasharray:"3,4"})
+                        , React.createElement("text",{x:sep.x+(sep.isFirst?2:5),y:13,fontSize:11,fill:C.sub,fontWeight:700,fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif"},sep.label)
+                      );
+                    })
+                  , React.createElement("line",{x1:todayX,y1:0,x2:todayX,y2:svgH-labH,stroke:"#007AFF",strokeWidth:1.5,strokeDasharray:"5,4",opacity:0.55})
+                  , fil.map(function(m,i){
+                      var cy=i*rowH+rowH/2;
+                      var evs=getEvs(m); if(!evs.length) return null;
+                      var exs=evs.map(function(e){return dx(e.date);});
+                      var minX=Math.min.apply(null,exs), maxX=Math.max.apply(null,exs);
+                      return React.createElement("g",{key:"row"+m.id}
+                        , minX<maxX&&React.createElement("line",{x1:minX,y1:cy,x2:maxX,y2:cy,stroke:"rgba(120,120,128,0.22)",strokeWidth:1.5})
+                        , evs.map(function(e){
+                            var ex=dx(e.date);
+                            var isPast=e.date<=hojeStr;
+                            var isAct=gmTooltip&&gmTooltip.mid===m.id&&gmTooltip.key===e.key;
+                            var op=isPast?0.90:0.50;
+                            var oc=function(ev){ev.stopPropagation();setGmTooltip(isAct?null:{mid:m.id,key:e.key,e:e,m:m});};
+                            if(e.isDeadline){var s=7;return React.createElement("path",{key:e.key,d:"M "+ex+","+(cy-s)+" L "+(ex+s)+","+cy+" L "+ex+","+(cy+s)+" L "+(ex-s)+","+cy+" Z",fill:isPast?e.color:"none",stroke:e.color,strokeWidth:2,opacity:op,onClick:oc,style:{cursor:"pointer"}});}
+                            return React.createElement("circle",{key:e.key,cx:ex,cy:cy,r:6,fill:isPast?e.color:"none",stroke:e.color,strokeWidth:2,opacity:op,onClick:oc,style:{cursor:"pointer"}});
+                          })
+                      );
+                    })
+                  , dLbls.map(function(dl,li){
+                      return React.createElement("g",{key:"dl"+li}
+                        , React.createElement("text",{x:dl.x,y:svgH-labH+20,textAnchor:"middle",fontSize:dl.isToday?13:11,fontWeight:dl.isToday?800:600,fill:dl.isToday?"#007AFF":"var(--c-text)",fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif"},dl.day)
+                        , React.createElement("text",{x:dl.x,y:svgH-labH+34,textAnchor:"middle",fontSize:9,fontWeight:dl.isToday?700:400,fill:dl.isToday?"#007AFF":C.sub,fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif"},dl.mo)
+                        , dl.isToday&&React.createElement("circle",{cx:dl.x,cy:svgH-labH+8,r:3,fill:"#007AFF"})
+                      );
+                    })
+                )
+              )
+            )
+          , gmTooltip&&React.createElement("div",{style:{margin:"0 12px 12px",background:"var(--fi-bg,"+C.card+")",border:"1.5px solid "+gmTooltip.e.color+"50",borderRadius:12,padding:"10px 14px",cursor:"pointer"},onClick:function(){setGmTooltip(null);}}
+              , React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:4}}
+                , React.createElement("span",{style:{fontSize:18}},gmTooltip.e.emoji)
+                , React.createElement("span",{style:{fontSize:13,fontWeight:700,color:gmTooltip.e.color}},gmTooltip.e.label)
+                , React.createElement("span",{style:{fontSize:11,color:C.sub,marginLeft:"auto"}},fmtDate(gmTooltip.e.date))
+              )
+              , React.createElement("div",{style:{fontSize:12,color:"var(--c-text)",fontWeight:600}},"AIT: ",(gmTooltip.m.ait||"—")," · ",fmtBRL(gmTooltip.m.valor))
+              , React.createElement("div",{style:{fontSize:10,color:C.sub,marginTop:2}},"Toque para fechar")
+            )
+          , React.createElement("div",{style:{display:"flex",flexWrap:"wrap",gap:"5px 8px",padding:"8px 12px",borderTop:"1px solid "+C.border}}
+            , EV.map(function(def){
+                return React.createElement("div",{key:def.key,style:{display:"flex",alignItems:"center",gap:4,fontSize:10,color:C.sub}}
+                  , def.isDeadline
+                    ? React.createElement("svg",{width:14,height:14},React.createElement("path",{d:"M7,1 L13,7 L7,13 L1,7 Z",fill:"none",stroke:def.color,strokeWidth:1.8}))
+                    : React.createElement("svg",{width:14,height:14},React.createElement("circle",{cx:7,cy:7,r:5,fill:"none",stroke:def.color,strokeWidth:1.8}))
+                  ,def.emoji," ",def.label
+                );
+              })
+          )
+        )
+  );
+}
+
 function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toast }) {
   var isMobile = typeof window !== "undefined" && window.innerWidth < 768;
   const [modal, setModal] = useState(false);
@@ -19626,6 +19809,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   const [modalDSV, setModalDSV] = useState(false);
   const [multaDSV, setMultaDSV] = useState(null);
   const [expandedMulId, setExpandedMulId] = useState(null);
+  const [viewMode, setViewMode] = useState("lista");
 
   React.useEffect(function() {
     function handleOpen(e) {
@@ -19850,8 +20034,9 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1292}}
       , React.createElement('div', { className: "pg-title", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1293}}, "Multas")
       , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1294}}
-        , React.createElement('button', { className: bCls(Ghost(temFiltro ? C.orange : C.teal)), style: bStyle(Ghost(temFiltro ? C.orange : C.teal)), onClick: () => setMostrarFiltros(p => !p), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1295}}, temFiltro ? "🔶" : "🔍", " Filtros" , temFiltro ? " ●" : "")
-        , React.createElement('select', { style: Object.assign({}, FI, { width: "auto", fontSize: 13, padding: "6px 8px", flexShrink: 0, cursor: "pointer" }), value: sortMul, onChange: function(e){setSortMul(e.target.value);} }
+        , React.createElement('button', { className: bCls(viewMode==="cronograma"?Btn(C.blue):Ghost(C.blue)), style: bStyle(viewMode==="cronograma"?Btn(C.blue):Ghost(C.blue)), onClick: function(){ setViewMode(function(v){return v==="cronograma"?"lista":"cronograma";}); } }, "📅")
+        , viewMode==="lista" && React.createElement('button', { className: bCls(Ghost(temFiltro ? C.orange : C.teal)), style: bStyle(Ghost(temFiltro ? C.orange : C.teal)), onClick: () => setMostrarFiltros(p => !p), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1295}}, temFiltro ? "🔶" : "🔍", " Filtros" , temFiltro ? " ●" : "")
+        , viewMode==="lista" && React.createElement('select', { style: Object.assign({}, FI, { width: "auto", fontSize: 13, padding: "6px 8px", flexShrink: 0, cursor: "pointer" }), value: sortMul, onChange: function(e){setSortMul(e.target.value);} }
           , React.createElement('option', { value: "data_asc" }, "Data ↑")
           , React.createElement('option', { value: "data_desc" }, "Data ↓")
           , React.createElement('option', { value: "valor_desc" }, "Valor ↓")
@@ -19859,7 +20044,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         , React.createElement('button', { className: bCls(Btn(C.red)) + " ag-add-btn", style: bStyle(Btn(C.red)), onClick: () => { setForm({ status: "pendente", data: new Date().toISOString().split("T")[0] }); setEdit(null); setModal(true); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1296}}, "+ Multa" )
       )
     )
-    , mostrarFiltros && React.createElement('div', { className: CARD_CLS, style: Object.assign({},CARD,{ display: "flex", flexDirection: "column", gap: 10 }), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1299}}
+    , viewMode==="lista" && mostrarFiltros && React.createElement('div', { className: CARD_CLS, style: Object.assign({},CARD,{ display: "flex", flexDirection: "column", gap: 10 }), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1299}}
       , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1300}}, "Filtrar multas — descubra quem estava com o carro"        )
       , React.createElement('div', { style: { display: "flex", gap: 10, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1301}}
         , React.createElement(Lbl, { label: "Data da multa (de)"   , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1302}}, React.createElement('input', { style: FI, type: "date", value: filDe, onChange: e => setFilDe(e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1302}} ))
@@ -19875,7 +20060,8 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       )
     )
 
-    , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap", paddingBottom: 2 } },
+    , viewMode === "cronograma" && React.createElement(GraficoMultas, { multas: multas, veiculos: veiculos, clientes: clientes, contratos: contratos })
+    , viewMode === "lista" && React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap", paddingBottom: 2 } },
       React.createElement('select', { value: filterNotif, onChange: function(e){setFilterNotif(e.target.value);},
         style: Object.assign({}, FI, { flex: 1, minWidth: 0, fontSize: 13, padding: "6px 8px", cursor: "pointer", fontWeight: 600 }) },
         [{ id: "todos", label: "Todos", emoji: "" }].concat(NOTIF_STATUS).map(function(ns) {
@@ -19895,7 +20081,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         })
       ),
     )
-    , React.createElement('div', { style: { display: "flex", flexDirection: "column" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1318}}
+    , viewMode === "lista" && React.createElement('div', { style: { display: "flex", flexDirection: "column" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1318}}
       , fil.length === 0 && React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, { color: C.sub, textAlign: "center", padding: 30 }), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1319}}, "Nenhuma multa" )
       , fil.map((m, i) => {
         var ct = getCt(m.contrato_id); var cl = ct ? getCl(ct.cliente_id) : getCl(m.cliente_id); var ve = ct ? getVeByContrato(m.contrato_id) : (m.veiculo_id ? veiculos.find(function(v){return v.id==m.veiculo_id;}) : null);

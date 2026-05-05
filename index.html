@@ -24372,6 +24372,9 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   const [sortFat, setSortFat] = useState("data_desc");
   const [sortVei, setSortVei] = useState("receita_desc");
   const [sortInad, setSortInad] = useState("dias_desc");
+  const [fatClientes, setFatClientes] = useState([]);
+  const [fatSits, setFatSits] = useState(["prevista","emitida","paga","vencida"]);
+  const [fatCliExpand, setFatCliExpand] = useState(false);
 
   var receita = contratos.reduce((s, c) => {
     if (c.status === "concluido" || c.status_pagamento === "pago") return s + parseFloat(c.valor_total || 0);
@@ -24389,23 +24392,38 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   var lucro = receita - totalDesp - custoMan;
   var porStatus = ["disponivel", "alugado", "manutencao", "inativo"].map(st => ({ label: st, count: veiculos.filter(v => statusEfetivoVeiculo(v, contratos) === st).length }));
 
-  var faturasFil = contratos.filter(c => {
-    if (c.status !== "concluido") return false;
-    if (de && c.data_fim && c.data_fim < de) return false;
-    if (ate && c.data_fim && c.data_fim > ate) return false;
+  var _hojeRelat = new Date().toISOString().split("T")[0];
+  var _fatList = (contratos || []).filter(function(c){ return c.status !== "cancelado"; }).map(function(c) {
+    var cl = (clientes||[]).find(function(x){ return x.id == c.cliente_id; }) || {};
+    var ve = (veiculos||[]).find(function(x){ return x.id == c.veiculo_id; }) || {};
+    var recs = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
+    var recPrinc = recs.find(function(r){ return r.status==="recebido"; }) || recs.find(function(r){ return r.status==="emitida"; }) || recs[0] || null;
+    var dtRef = c.previsao_pagamento || c.data_fim || "";
+    var dtPag = (recPrinc && recPrinc.data_pagamento) || c.data_pagamento || null;
+    var sit;
+    if (c.status_pagamento === "pago" || (recPrinc && recPrinc.status === "recebido")) { sit = "paga"; }
+    else if (recPrinc && recPrinc.status === "emitida") { sit = "emitida"; }
+    else if (dtRef && dtRef < _hojeRelat) { sit = "vencida"; }
+    else { sit = "prevista"; }
+    /* Para filtro de período: paga usa data_pagamento, demais usa previsao/vencimento */
+    var dtFiltro = (sit === "paga" && dtPag) ? dtPag : dtRef;
+    return { c:c, cl:cl, ve:ve, sit:sit, dtFiltro:dtFiltro, dtPag:dtPag, dtRef:dtRef,
+             valor: parseFloat(c.valor_total||0), numeroFatura: recPrinc ? recPrinc.numero_fatura : null };
+  });
+  var faturasFil = _fatList.filter(function(f) {
+    if (de && f.dtFiltro && f.dtFiltro < de) return false;
+    if (ate && f.dtFiltro && f.dtFiltro > ate) return false;
+    if (fatClientes.length > 0 && fatClientes.indexOf(String(f.c.cliente_id)) < 0) return false;
+    if (fatSits.length > 0 && fatSits.indexOf(f.sit) < 0) return false;
     return true;
   }).sort(function(a, b) {
-    if (sortFat === "data_asc") return (a.data_fim || "").localeCompare(b.data_fim || "");
-    if (sortFat === "valor_desc") return parseFloat(b.valor_total||0) - parseFloat(a.valor_total||0);
-    if (sortFat === "valor_asc") return parseFloat(a.valor_total||0) - parseFloat(b.valor_total||0);
-    if (sortFat === "cliente_asc") {
-      var na = (clientes.find(function(x){return x.id==a.cliente_id;})||{}).nome || "";
-      var nb = (clientes.find(function(x){return x.id==b.cliente_id;})||{}).nome || "";
-      return na.localeCompare(nb);
-    }
-    return (b.data_fim || "").localeCompare(a.data_fim || "");
+    if (sortFat === "data_asc") return (a.dtFiltro||"").localeCompare(b.dtFiltro||"");
+    if (sortFat === "valor_desc") return b.valor - a.valor;
+    if (sortFat === "valor_asc") return a.valor - b.valor;
+    if (sortFat === "cliente_asc") return (a.cl.nome||"").localeCompare(b.cl.nome||"");
+    return (b.dtFiltro||"").localeCompare(a.dtFiltro||"");
   });
-  var totalFaturas = faturasFil.reduce((s, c) => s + parseFloat(c.valor_total || 0), 0);
+  var totalFaturas = faturasFil.reduce(function(s,f){ return s + f.valor; }, 0);
 
   function imprimirGeral() {
     var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Relatorio Geral</title><style>body{font-family:Arial,sans-serif;max-width:850px;margin:30px auto;font-size:13px}h2{border-bottom:1px solid #ddd;padding-bottom:6px;margin:20px 0 10px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #ddd}th{background:#f5f5f7}.g{color:#34C759;font-weight:800}.r{color:#FF3B30}@media print{body{margin:0}}</style></head><body>';
@@ -24442,22 +24460,22 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     exportarCSV("contratos", linhas);
   }
   function csvFaturas() {
-    var linhas = faturasFil.map(function(c) {
-      var cl = clientes.find(function(x){return x.id==c.cliente_id;}) || {};
-      var ve = veiculos.find(function(x){return x.id==c.veiculo_id;}) || {};
-      return { numero: numCt(c.id), cliente: cl.nome||"", veiculo: (ve.placa||"") + " " + (ve.modelo||""), retirada: c.data_inicio||"", devolucao: c.data_fim||"", valor: c.valor_total||0 };
+    var linhas = faturasFil.map(function(f) {
+      return { numero: numCt(f.c.id), cliente: f.cl.nome||"", veiculo: (f.ve.placa||"") + " " + (f.ve.modelo||""), retirada: f.c.data_inicio||"", devolucao: f.c.data_fim||"", vencimento: f.dtRef||"", data_pagamento: f.dtPag||"", situacao: f.sit, valor: f.valor };
     });
     exportarCSV("faturas", linhas);
   }
+  var _SIT_LABEL = { prevista:"Prevista", emitida:"Emitida", paga:"Paga", vencida:"Vencida" };
   function imprimirFaturas() {
-    var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Relatorio de Faturas</title><style>body{font-family:Arial,sans-serif;max-width:850px;margin:30px auto;font-size:13px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #ddd}th{background:#f5f5f7}.tot{font-weight:800;font-size:15px;color:#34C759}@media print{body{margin:0}}</style></head><body>';
+    var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Relatorio de Faturas</title><style>body{font-family:Arial,sans-serif;max-width:850px;margin:30px auto;font-size:13px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #ddd}th{background:#f5f5f7}.tot{font-weight:800;font-size:15px;color:#34C759}.paga{color:#34C759}.emitida{color:#007AFF}.vencida{color:#FF3B30}.prevista{color:#888}@media print{body{margin:0}}</style></head><body>';
     h += buildHeader(empresa);
     h += '<div style="margin-bottom:16px"><div style="font-size:18px;font-weight:800">RELATORIO DE FATURAS</div>';
-    if (de || ate) h += '<div style="font-size:13px;color:#666">Periodo: ' + (de || "--") + ' a ' + (ate || "--") + '</div>';
+    if (de || ate) h += '<div style="font-size:13px;color:#666">Período: ' + (de ? fmtDate(de) : "--") + ' a ' + (ate ? fmtDate(ate) : "--") + ' (por data de pagamento/vencimento)</div>';
+    if (fatSits.length < 4) h += '<div style="font-size:12px;color:#666">Situação: ' + fatSits.map(function(s){return _SIT_LABEL[s]||s;}).join(", ") + '</div>';
     h += '</div>';
-    h += '<table><tr><th>No</th><th>Cliente</th><th>Veiculo</th><th>Retirada</th><th>Devolucao</th><th>Valor</th></tr>';
-    faturasFil.forEach(function(c) { var cl = clientes.find(function(x) { return x.id == c.cliente_id; }); var ve = veiculos.find(function(x) { return x.id == c.veiculo_id; }); h += '<tr><td>' + numCt(c.id) + '</td><td>' + (cl && cl.nome || "--") + '</td><td>' + (ve && ve.placa || "--") + ' ' + (ve && ve.modelo || "") + '</td><td>' + (c.data_inicio || "--") + '</td><td>' + (c.data_fim || "--") + '</td><td>' + fmtBRL(c.valor_total) + '</td></tr>'; });
-    h += '<tr><td colspan="5" class="tot">TOTAL</td><td class="tot">' + fmtBRL(totalFaturas) + '</td></tr></table>';
+    h += '<table><tr><th>No</th><th>Cliente</th><th>Veículo</th><th>Vencimento</th><th>Dt.Pagamento</th><th>Situação</th><th>Valor</th></tr>';
+    faturasFil.forEach(function(f) { h += '<tr><td>' + numCt(f.c.id) + '</td><td>' + (f.cl.nome||"--") + '</td><td>' + (f.ve.placa||"--") + ' ' + (f.ve.modelo||"") + '</td><td>' + fmtDate(f.dtRef) + '</td><td>' + (f.dtPag ? fmtDate(f.dtPag) : "--") + '</td><td class="' + f.sit + '">' + (_SIT_LABEL[f.sit]||f.sit) + '</td><td>' + fmtBRL(f.valor) + '</td></tr>'; });
+    h += '<tr><td colspan="6" class="tot">TOTAL (' + faturasFil.length + ')</td><td class="tot">' + fmtBRL(totalFaturas) + '</td></tr></table>';
     h += '<p style="text-align:center;font-size:10px;color:#aaa;margin-top:20px">AutoGest Pro - ' + new Date().toLocaleString("pt-BR") + '</p>';
     h += '<scr' + 'ipt>window.print();</scr' + 'ipt></body></html>';
     openPdfPage(h);
@@ -24496,35 +24514,81 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     )
 
     , tab === "faturas" && React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 } }
+      /* ── Período ── */
       , React.createElement('div', { style: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" } }
-        , React.createElement(Lbl, { label: "De", style: { flex: 1, minWidth: 130 } }, React.createElement('input', { style: FI, type: "date", value: de, onChange: e => setDe(e.target.value) }))
-        , React.createElement(Lbl, { label: "Até", style: { flex: 1, minWidth: 130 } }, React.createElement('input', { style: FI, type: "date", value: ate, onChange: e => setAte(e.target.value) }))
-        , React.createElement(Lbl, { label: "Ordenar", style: { flex: 1, minWidth: 160 } }
+        , React.createElement(Lbl, { label: "De (pagto/venc.)", style: { flex: 1, minWidth: 130 } }, React.createElement('input', { style: FI, type: "date", value: de, onChange: function(e){ setDe(e.target.value); } }))
+        , React.createElement(Lbl, { label: "Até", style: { flex: 1, minWidth: 130 } }, React.createElement('input', { style: FI, type: "date", value: ate, onChange: function(e){ setAte(e.target.value); } }))
+        , React.createElement(Lbl, { label: "Ordenar", style: { flex: 1, minWidth: 150 } }
           , React.createElement('select', { style: Object.assign({}, FI, { cursor: "pointer" }), value: sortFat, onChange: function(e){ setSortFat(e.target.value); } }
-            , React.createElement('option', { value: "data_desc" }, "Devolução (mais recente)")
-            , React.createElement('option', { value: "data_asc" }, "Devolução (mais antigo)")
+            , React.createElement('option', { value: "data_desc" }, "Data ↓")
+            , React.createElement('option', { value: "data_asc" }, "Data ↑")
             , React.createElement('option', { value: "valor_desc" }, "Valor ↓")
             , React.createElement('option', { value: "valor_asc" }, "Valor ↑")
             , React.createElement('option', { value: "cliente_asc" }, "Cliente A→Z")
           )
         )
-        , React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: () => { setDe(""); setAte(""); } }, "Limpar")
+        , React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: function(){ setDe(""); setAte(""); setFatClientes([]); setFatSits(["prevista","emitida","paga","vencida"]); } }, "Limpar")
       )
+      /* ── Situação (checkboxes) ── */
+      , React.createElement('div', { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }
+        , React.createElement('span', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, marginRight: 2 } }, "Situação:")
+        , [["prevista","Prevista",C.sub],["emitida","Emitida",C.blue],["paga","Paga",C.green],["vencida","Vencida",C.red]].map(function(s) {
+            var sel = fatSits.indexOf(s[0]) >= 0;
+            return React.createElement('button', { key: s[0],
+              onClick: function(){ setFatSits(function(prev){ return sel ? prev.filter(function(x){ return x !== s[0]; }) : prev.concat([s[0]]); }); },
+              style: { fontSize: 11, fontWeight: 700, padding: "4px 12px", borderRadius: 20, border: "1.5px solid " + s[2], background: sel ? s[2]+"22" : "transparent", color: sel ? s[2] : C.sub, cursor: "pointer" }
+            }, sel ? "✓ " : "", s[1]);
+          })
+      )
+      /* ── Clientes (checkboxes colapsáveis) ── */
+      , React.createElement('div', { style: { background: C.card, borderRadius: 12, border: "1px solid " + C.border, overflow: "hidden" } }
+        , React.createElement('button', { onClick: function(){ setFatCliExpand(function(v){ return !v; }); },
+            style: { width: "100%", background: "none", border: "none", padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", color: "var(--c-text)" } }
+          , React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5 } }
+            , "Clientes", fatClientes.length > 0 ? " (" + fatClientes.length + " selecionado" + (fatClientes.length > 1 ? "s" : "") + ")" : " — todos"
+          )
+          , React.createElement('span', { style: { fontSize: 12, color: C.sub } }, fatCliExpand ? "▲" : "▼")
+        )
+        , fatCliExpand && React.createElement('div', { style: { padding: "0 14px 12px", display: "flex", flexDirection: "column", gap: 6, maxHeight: 240, overflowY: "auto" } }
+          , React.createElement('button', { onClick: function(){ setFatClientes([]); },
+              style: { alignSelf: "flex-start", fontSize: 11, padding: "3px 10px", borderRadius: 8, border: "1px solid " + C.border, background: fatClientes.length === 0 ? C.blue+"22" : "transparent", color: fatClientes.length === 0 ? C.blue : C.sub, cursor: "pointer" }
+            }, "Todos")
+          , clientes.slice().sort(function(a,b){ return (a.nome||"").localeCompare(b.nome||""); }).map(function(cli) {
+              var sel = fatClientes.indexOf(String(cli.id)) >= 0;
+              return React.createElement('label', { key: cli.id, style: { display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "3px 0" } }
+                , React.createElement('input', { type: "checkbox", checked: sel,
+                    onChange: function(){ setFatClientes(function(prev){ return sel ? prev.filter(function(x){ return x !== String(cli.id); }) : prev.concat([String(cli.id)]); }); },
+                    style: { width: 16, height: 16, accentColor: C.blue, cursor: "pointer" }
+                  })
+                , React.createElement('span', { style: { fontSize: 13, color: "var(--c-text)" } }, cli.nome)
+              );
+            })
+        )
+      )
+      /* ── Lista de faturas ── */
       , React.createElement('div', { className: "lg-card", style: CARD }
-        , faturasFil.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 } }, "Nenhum contrato encontrado no período")
-        , faturasFil.map(function(c, i) {
-            var cl = clientes.find(function(x) { return x.id == c.cliente_id; }) || {};
-            var ve = veiculos.find(function(x) { return x.id == c.veiculo_id; }) || {};
-            return React.createElement('div', { key: c.id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: i < faturasFil.length - 1 ? "1px solid " + C.border : "none" } }
-              , React.createElement('div', null
-                , React.createElement('div', { style: { fontWeight: 600, fontSize: 13 } }, cl.nome || "--", " — ", React.createElement('span', { style: { color: C.sub, fontWeight: 400 } }, ve.placa || "--", " ", ve.modelo || ""))
-                , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 2 } }, fmtDate(c.data_inicio), " → ", fmtDate(c.data_fim))
+        , faturasFil.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 } }, "Nenhuma fatura encontrada com os filtros selecionados")
+        , faturasFil.map(function(f, i) {
+            var sitCor = { prevista: C.sub, emitida: C.blue, paga: C.green, vencida: C.red }[f.sit] || C.sub;
+            return React.createElement('div', { key: f.c.id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: i < faturasFil.length - 1 ? "1px solid " + C.border : "none", gap: 8 } }
+              , React.createElement('div', { style: { minWidth: 0, flex: 1 } }
+                , React.createElement('div', { style: { fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }
+                  , f.cl.nome || "--"
+                  , React.createElement('span', { style: { color: C.sub, fontWeight: 400 } }, " · ", f.ve.placa || "--")
+                )
+                , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }
+                  , f.dtRef ? "Venc: " + fmtDate(f.dtRef) : ""
+                  , f.dtPag ? " · Pago: " + fmtDate(f.dtPag) : ""
+                )
               )
-              , React.createElement('div', { style: { fontWeight: 800, color: C.green, fontSize: 14 } }, fmtBRL(c.valor_total))
+              , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 } }
+                , React.createElement('div', { style: { fontWeight: 800, fontSize: 14, color: sitCor } }, fmtBRL(f.valor))
+                , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: sitCor, textTransform: "uppercase", marginTop: 1 } }, _SIT_LABEL[f.sit] || f.sit)
+              )
             );
           })
         , faturasFil.length > 0 && React.createElement('div', { style: { display: "flex", justifyContent: "space-between", paddingTop: 12, borderTop: "2px solid " + C.border, fontWeight: 800 } }
-          , React.createElement('span', null, "TOTAL (", faturasFil.length, " contrato(s))")
+          , React.createElement('span', null, "TOTAL (", faturasFil.length, ")")
           , React.createElement('span', { style: { color: C.green } }, fmtBRL(totalFaturas))
         )
       )

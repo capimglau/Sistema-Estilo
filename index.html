@@ -13793,6 +13793,37 @@ const { useState, useEffect, useRef } = React;
 
 const SB_URL = "https://jsyiriqtzpbuqvjrkwin.supabase.co";
 const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpzeWlyaXF0enBidXF2anJrd2luIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMDEyNjksImV4cCI6MjA4ODU3NzI2OX0.BCeCKcwLGnrRhfaFryeTbbCRoGyt3wRPlZzfsxuV0mM";
+
+var __viewerMode = false;
+(function() {
+  var p = new URLSearchParams(window.location.search);
+  if (p.get("viewer") !== "fatura") return;
+  var id = p.get("id"); var mes = p.get("mes") || "";
+  if (!id) return;
+  __viewerMode = true;
+  document.body.innerHTML = '<div style="font-family:Arial,sans-serif;text-align:center;padding:60px;color:#888">Carregando fatura...</div>';
+  var hdrs = { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY };
+  var base = SB_URL + "/rest/v1/";
+  Promise.all([
+    fetch(base + "contratos?id=eq." + id + "&select=*", {headers: hdrs}).then(function(r){ return r.json(); }),
+    fetch(base + "empresas?select=*&limit=1", {headers: hdrs}).then(function(r){ return r.json(); })
+  ]).then(function(res) {
+    var ct = res[0][0]; var emp = res[1][0] || {};
+    if (!ct) { document.body.innerHTML = '<div style="text-align:center;padding:60px;color:red">Fatura não encontrada.</div>'; return; }
+    return Promise.all([
+      fetch(base + "clientes?id=eq." + ct.cliente_id + "&select=*", {headers: hdrs}).then(function(r){ return r.json(); }),
+      fetch(base + "veiculos?id=eq." + ct.veiculo_id + "&select=*", {headers: hdrs}).then(function(r){ return r.json(); })
+    ]).then(function(res2) {
+      var cl = res2[0][0] || {}; var ve = res2[1][0] || {};
+      var html = buildFaturaHtmlViewer(ct, cl, ve, emp, mes);
+      document.open("text/html", "replace");
+      document.write(html);
+      document.close();
+    });
+  }).catch(function(e) {
+    document.body.innerHTML = '<div style="text-align:center;padding:60px;color:red">Erro ao carregar: ' + e.message + '</div>';
+  });
+})();
 const HDR = { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": "application/json" };
 
 const cache = {
@@ -14808,6 +14839,36 @@ function buildHeader(emp) {
   if (emp.telefone) info += "<div>Tel: " + emp.telefone + "</div>";
   if (emp.email) info += "<div>" + emp.email + "</div>";
   return '<div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:18px;border-bottom:3px solid #007AFF;margin-bottom:24px"><div>' + logo + '</div><div style="text-align:right;font-size:13px;color:#444;line-height:2">' + info + '</div></div>';
+}
+
+function buildFaturaHtmlViewer(ct, cl, ve, emp, mesRef) {
+  ct = ct||{}; cl = cl||{}; ve = ve||{}; emp = emp||{};
+  var dias = 0; if (ct.data_inicio && ct.data_fim) dias = Math.max(1, Math.ceil((new Date(ct.data_fim) - new Date(ct.data_inicio)) / 86400000));
+  var kmExc = 0; if (ct.km_franquia && ct.km_final && ct.km_inicial) { var kmRod = ct.km_final - ct.km_inicial; if (kmRod > ct.km_franquia) kmExc = (kmRod - ct.km_franquia) * parseFloat(ct.valor_km_excedente||0); }
+  var extras = []; try { extras = ct.despesas_extras ? JSON.parse(ct.despesas_extras) : []; } catch(e) {}
+  var extrasSum = extras.reduce(function(s,x){ return s+parseFloat(x.valor||0); }, 0);
+  var valorTotal = parseFloat(ct.valor_total||0);
+  var locBase = Math.max(0, valorTotal - kmExc - extrasSum + parseFloat(ct.desconto||0));
+  var vd = dias > 0 ? locBase/dias : 0;
+  var mesLabel = mesRef ? " — Ref: " + new Date(mesRef+"-02").toLocaleDateString("pt-BR",{month:"long",year:"numeric"}) : "";
+  var css = 'body{font-family:Arial,sans-serif;max-width:700px;margin:30px auto;font-size:13px}table{width:100%;border-collapse:collapse}th{background:#f5f5f7;padding:10px 14px;text-align:left;font-size:11px;text-transform:uppercase;border-bottom:2px solid #ddd}td{padding:10px 14px;border-bottom:1px solid #eee}.tot td{font-size:18px;font-weight:800;color:#34C759;border-top:2px solid #ddd;border-bottom:none}.ib{background:#f5f5f7;border-radius:8px;padding:14px;margin:12px 0;font-size:12px;line-height:2}.sig{display:flex;gap:40px;margin-top:100px}.sl{flex:1;border-top:2px solid #333;padding-top:8px;text-align:center;color:#555;font-size:12px}.np{display:flex;gap:10px;margin-bottom:20px}@media print{.np{display:none}body{margin:0}}';
+  var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><title>Fatura #'+numCt(ct.id)+'</title><style>'+css+'</style></head><body>';
+  h += '<div class="np"><button onclick="window.print()" style="flex:1;background:#007AFF;color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:700;cursor:pointer">Imprimir / Salvar PDF</button></div>';
+  h += buildHeader(emp);
+  h += '<div style="display:flex;justify-content:space-between;margin-bottom:16px"><div><div style="font-size:22px;font-weight:800">FATURA DE LOCAÇÃO</div><div style="font-size:13px;color:#666">nº '+numCt(ct.id)+' — Contrato nº '+numCt(ct.id)+mesLabel+'</div></div><div style="font-size:12px;color:#666">Emissão: '+new Date().toLocaleDateString("pt-BR")+'</div></div>';
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px"><div class="ib"><b>Cliente</b><br/>'+(cl.nome||"--")+'<br/>CPF/CNPJ: '+(cl.cpf||"--")+'<br/>Tel: '+(cl.telefone||"--")+'</div><div class="ib"><b>Veículo</b><br/>'+(ve.placa||"--")+' — '+(ve.marca||"")+" "+(ve.modelo||"")+'<br/>Período: '+fmtDate(ct.data_inicio)+' a '+fmtDate(ct.data_fim)+'</div></div>';
+  h += '<table><tr><th>Descrição</th><th>Qtd</th><th>Unit.</th><th>Total</th></tr>';
+  h += '<tr><td>Locação — '+fmtDate(ct.data_inicio)+' a '+fmtDate(ct.data_fim)+'</td><td>'+dias+' dia(s)</td><td>'+fmtBRL(vd)+'</td><td>'+fmtBRL(locBase)+'</td></tr>';
+  if (kmExc > 0) h += '<tr><td>KM Excedente</td><td>—</td><td>—</td><td style="color:#FF3B30">'+fmtBRL(kmExc)+'</td></tr>';
+  extras.forEach(function(ex){ if (parseFloat(ex.valor||0)>0) h += '<tr><td>'+(ex.tipo||"Extra")+(ex.obs?' — '+ex.obs:'')+'</td><td>1</td><td>'+fmtBRL(ex.valor)+'</td><td>'+fmtBRL(ex.valor)+'</td></tr>'; });
+  if (parseFloat(ct.desconto||0)>0) h += '<tr><td colspan="3" style="color:#34C759">Desconto</td><td style="color:#34C759">- '+fmtBRL(ct.desconto)+'</td></tr>';
+  if (ct.observacoes) h += '<tr><td colspan="4" style="color:#666;font-size:12px">Obs: '+ct.observacoes+'</td></tr>';
+  h += '<tr class="tot"><td colspan="3"><b>TOTAL</b></td><td><b>'+fmtBRL(valorTotal)+'</b></td></tr></table>';
+  if (ct.previsao_pagamento) h += '<p style="text-align:center;margin-top:18px;font-size:14px"><b>Vencimento: '+fmtDate(ct.previsao_pagamento)+'</b></p>';
+  h += '<div class="sig"><div class="sl">Assinatura do Locatário<br/><span style="font-size:11px;color:#aaa">'+(cl.nome||"")+'</span></div><div class="sl">Assinatura da Locadora<br/><span style="font-size:11px;color:#aaa">'+(emp.nome||"")+'</span></div></div>';
+  h += '<p style="text-align:center;font-size:11px;color:#aaa;margin-top:20px">'+(emp.nome||"")+(emp.cnpj?" — CNPJ "+emp.cnpj:"")+(emp.telefone?" — Tel "+emp.telefone:"")+'<br/>AutoGest Pro — '+new Date().toLocaleString("pt-BR")+'</p>';
+  h += '</body></html>';
+  return h;
 }
 
 var _PDF_CLOSE_BTN = 'onclick="if(window.parent&&window.parent._closePdfOverlay){window.parent._closePdfOverlay();}else{window.close();}"';
@@ -29874,17 +29935,21 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
        Depois do upload, redireciona para o wa.me com o link. */
     var waWin = window.open("about:blank", "_blank");
     var linkUrl = null;
-    try {
-      var html = getDocHtml();
-      if (html && html.length >= 100) {
-        var blob = new Blob([html], {type:"text/html;charset=utf-8"});
-        var prefix = getDocPrefix();
-        var mesStr = mesRef ? mesRef.replace(/-/g,"_") : "";
-        var filename = prefix+"_"+numCt(sel.id)+(mesStr?"_"+mesStr:"")+".html";
-        var uploadFile = new File([blob], filename, {type:"text/html;charset=utf-8"});
-        linkUrl = await db.upload("pdfs/"+filename, uploadFile);
-      }
-    } catch(e) {}
+    if (tipo === "fatura") {
+      linkUrl = window.location.href.split("?")[0] + "?viewer=fatura&id=" + sel.id + (mesRef ? "&mes=" + mesRef : "");
+    } else {
+      try {
+        var html = getDocHtml();
+        if (html && html.length >= 100) {
+          var blob = new Blob([html], {type:"text/html;charset=utf-8"});
+          var prefix = getDocPrefix();
+          var mesStr = mesRef ? mesRef.replace(/-/g,"_") : "";
+          var filename = prefix+"_"+numCt(sel.id)+(mesStr?"_"+mesStr:"")+".html";
+          var uploadFile = new File([blob], filename, {type:"text/html;charset=utf-8"});
+          linkUrl = await db.upload("pdfs/"+filename, uploadFile);
+        }
+      } catch(e) {}
+    }
     var txtBase = decodeURIComponent(textoWA());
     var txtFinal = linkUrl ? txtBase.replace(/\n\nAtenciosamente,/, "\n\n📎 "+linkUrl+"\n\nAtenciosamente,") : txtBase;
     var waUrl = "https://wa.me/55"+fone+"?text="+encodeURIComponent(txtFinal);
@@ -29902,17 +29967,19 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
       alert("Erro ao gerar o documento. Verifique os dados selecionados.");
       setEnviandoEmail(false); return;
     }
-    var blob = new Blob([html], {type:"text/html;charset=utf-8"});
-    var htmlComPrint = html + "<scr"+"ipt>window.print();</"+"script>";
     var prefix = getDocPrefix();
     var mesStr = mesRef ? mesRef.replace(/-/g,"_") : "";
-    var filename = prefix + "_" + numCt(sel.id) + (mesStr?"_"+mesStr:"") + ".html";
-    // Upload ao Storage → envia link público no corpo do e-mail
     var linkUrl = null;
-    try {
-      var uploadFile = new File([blob], filename, {type:"text/html;charset=utf-8"});
-      linkUrl = await db.upload("pdfs/"+filename, uploadFile);
-    } catch(e) {}
+    if (tipo === "fatura") {
+      linkUrl = window.location.href.split("?")[0] + "?viewer=fatura&id=" + sel.id + (mesRef ? "&mes=" + mesRef : "");
+    } else {
+      try {
+        var blob = new Blob([html], {type:"text/html;charset=utf-8"});
+        var filename = prefix + "_" + numCt(sel.id) + (mesStr?"_"+mesStr:"") + ".html";
+        var uploadFile = new File([blob], filename, {type:"text/html;charset=utf-8"});
+        linkUrl = await db.upload("pdfs/"+filename, uploadFile);
+      } catch(e) {}
+    }
     if (linkUrl) {
       var veL = (veiculos||[]).find(function(x){return x.id===sel.veiculo_id;})||{};
       var veStr = [(veL.marca||""),(veL.modelo||"")].filter(Boolean).join(" ")+(veL.placa?" — "+veL.placa:"");
@@ -30733,7 +30800,7 @@ class ErrBoundary extends React.Component {
     return this.props.children;
   }
 }
-window.ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ErrBoundary, null, React.createElement(App, {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3252}} )));
+if (!__viewerMode) { window.ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ErrBoundary, null, React.createElement(App, {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3252}} ))); }
 
 // PWA Safari swipe-back — navega pelo estado React, nunca usa history.back()
 (function(){

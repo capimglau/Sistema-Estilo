@@ -18189,8 +18189,11 @@ function Frota({ veiculos, setVeiculos, contratos, toast }) {
     if (!form.placa || !form.modelo) return toast("Placa e Modelo obrigatorios", "error");
     setLoading(true);
     try {
-      if (edit) { const u = await db.patch("veiculos", edit, form); setVeiculos(p => p.map(v => v.id === edit ? Object.assign({}, v, u) : v)); toast("Atualizado!"); }
-      else { const c = await db.post("veiculos", form); setVeiculos(p => [c].concat(p)); toast("Cadastrado!"); }
+      // Remove alugado/disponivel do payload — esses valores são calculados por statusEfetivoVeiculo()
+      var payload = Object.assign({}, form);
+      if (payload.status === "alugado" || payload.status === "disponivel") delete payload.status;
+      if (edit) { const u = await db.patch("veiculos", edit, payload); setVeiculos(p => p.map(v => v.id === edit ? Object.assign({}, v, u) : v)); toast("Atualizado!"); }
+      else { const c = await db.post("veiculos", payload); setVeiculos(p => [c].concat(p)); toast("Cadastrado!"); }
       setModal(false);
     } catch(e) { toast("Erro: " + e.message, "error"); }
     setLoading(false);
@@ -30798,6 +30801,33 @@ function App() {
     db.get("clientes").then(d => setClientes(d || []));
     db.get("contratos", "limit=500").then(function(cts) {
       setContratos(cts || []);
+
+      // ── MIGRAÇÃO: corrige status "alugado"/"disponivel" inconsistentes no banco ──
+      // Roda uma vez por sessão. Veículos com status errado são normalizados para
+      // "disponivel" (neutro), permitindo que statusEfetivoVeiculo() calcule corretamente.
+      db.get("veiculos").then(function(veics) {
+        if (!veics || !veics.length) return;
+        var jaRodou = sessionStorage.getItem("ag_status_migrated");
+        if (jaRodou) return;
+        sessionStorage.setItem("ag_status_migrated", "1");
+        var ctMap = {};
+        (cts || []).forEach(function(c){ ctMap[c.id] = c; });
+        veics.forEach(function(v) {
+          // Só corrige alugado/disponivel — nunca toca em manutencao/inativo
+          if (v.status !== "alugado" && v.status !== "disponivel") return;
+          var statusCorreto = statusEfetivoVeiculo(v, cts || []);
+          // Se o banco tem "alugado" mas não tem contrato ativo → corrige para "disponivel"
+          if (v.status === "alugado" && statusCorreto !== "alugado") {
+            db.patch("veiculos", v.id, { status: "disponivel" }).then(function() {
+              setVeiculos(function(p) { return p.map(function(x) { return x.id === v.id ? Object.assign({}, x, { status: "disponivel" }) : x; }); });
+              console.log("[AutoGest] Migração: " + v.placa + " alugado→disponivel (sem contrato ativo)");
+            }).catch(function(e){ console.warn("[AutoGest] Migração erro:", v.placa, e); });
+          }
+          // Se o banco tem "disponivel" mas tem contrato ativo → não precisamos gravar alugado,
+          // pois statusEfetivoVeiculo já retorna "alugado" corretamente via contratos
+        });
+      });
+      // ── FIM MIGRAÇÃO ──
       // Snapshot diário de ocupação — usa statusEfetivoVeiculo para dados corretos
       db.get("veiculos").then(function(d) {
         try {

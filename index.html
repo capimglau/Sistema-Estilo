@@ -15099,10 +15099,21 @@ function shareWhatsApp(ct, cl, ve, emp) {
 function statusEfetivoVeiculo(veiculo, contratos) {
   // Manutenção e inativo têm prioridade absoluta
   if (veiculo.status === "manutencao" || veiculo.status === "inativo") return veiculo.status;
-  // Alugado apenas se há contrato com status "ativo" vinculado.
-  // Contratos "concluido" (incl. renovados) e "cancelado" não bloqueiam o veículo.
+  // Alugado se há contrato "ativo" vinculado ao veículo
+  // OU se há contrato "concluido" com renovado_para cujo filho também está "ativo"
+  // (renovação em cadeia — veículo continua ocupado)
+  var idsContratos = {};
+  contratos.forEach(function(c){ idsContratos[c.id] = c; });
   var temAtivo = contratos.some(function(c) {
-    return String(c.veiculo_id) === String(veiculo.id) && c.status === "ativo";
+    if (String(c.veiculo_id) !== String(veiculo.id)) return false;
+    // Contrato diretamente ativo
+    if (c.status === "ativo") return true;
+    // Contrato concluído/renovado cujo filho ainda está ativo = veículo ocupado
+    if (c.renovado_para) {
+      var filho = idsContratos[c.renovado_para];
+      if (filho && filho.status === "ativo") return true;
+    }
+    return false;
   });
   return temAtivo ? "alugado" : "disponivel";
 }
@@ -18968,11 +18979,16 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           var statusNovo = payload.status || ctAntes.status;
           var veId = payload.veiculo_id || ctAntes.veiculo_id;
           if ((statusNovo === "cancelado" || statusNovo === "concluido") && ctAntes.status === "ativo") {
-            // Contrato deixou de ser ativo: libera o veículo (se não há outro ativo)
+            // Contrato deixou de ser ativo: libera o veículo apenas se não há outro ativo
             var outroAtivo = contratos.some(function(x){ return x.id !== edit && String(x.veiculo_id) === String(veId) && x.status === "ativo"; });
             if (!outroAtivo) {
               await db.patch("veiculos", veId, { status: "disponivel" });
               setVeiculos(function(p){ return p.map(function(v){ return String(v.id) == String(veId) ? Object.assign({}, v, { status: "disponivel" }) : v; }); });
+            }
+            // Se há outro ativo, garante que veículo permaneça como alugado
+            else {
+              await db.patch("veiculos", veId, { status: "alugado" });
+              setVeiculos(function(p){ return p.map(function(v){ return String(v.id) == String(veId) ? Object.assign({}, v, { status: "alugado" }) : v; }); });
             }
           } else if (statusNovo === "ativo" && ctAntes.status !== "ativo") {
             // Contrato voltou a ativo: marca veículo como alugado
@@ -19066,10 +19082,15 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (kmFinalInput) patchData.km_final = parseFloat(kmFinalInput);
     if (obsInput) patchData.observacoes = (ct.observacoes ? ct.observacoes + "\n" : "") + "Encerramento: " + obsInput;
     await db.patch("contratos", ct.id, patchData);
-    await db.patch("veiculos", ct.veiculo_id, { status: "disponivel" });
+    // Só libera veículo se não há outro contrato ativo para o mesmo veículo
+    var outroAtivoEncerrar = contratos.some(function(x){
+      return x.id !== ct.id && String(x.veiculo_id) === String(ct.veiculo_id) && x.status === "ativo";
+    });
+    var statusAposEncerrar = outroAtivoEncerrar ? "alugado" : "disponivel";
+    await db.patch("veiculos", ct.veiculo_id, { status: statusAposEncerrar });
     setContratos(p => p.map(c => c.id === ct.id ? Object.assign({}, c, patchData) : c));
-    setVeiculos(p => p.map(v => v.id == ct.veiculo_id ? Object.assign({}, v, { status: "disponivel" }) : v));
-    toast("Encerrado! Veículo liberado.");
+    setVeiculos(p => p.map(v => v.id == ct.veiculo_id ? Object.assign({}, v, { status: statusAposEncerrar }) : v));
+    toast(outroAtivoEncerrar ? "Encerrado! Veículo ainda possui contrato ativo." : "Encerrado! Veículo liberado.");
   }
   const SC = { ativo: C.blue, concluido: C.green, cancelado: C.red };
   var veicsDisp = veicsDisponiveis();
@@ -19104,20 +19125,39 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     });
     return result;
   }, [contratos]);
-  // Auto-fix: sincroniza status dos veiculos — so libera se ha contrato ativo com encerramento explicito
-  // NAO libera automaticamente veiculos alugados sem contrato ativo (pode ser bug de status)
-  // O usuario deve corrigir manualmente via Acoes > Encerrar no contrato
+  // Auto-fix: sincroniza status dos veiculos
   React.useEffect(function() {
     if (!veiculos || !veiculos.length || !contratos) return;
-    // Marca como alugado veiculos que tem contrato ativo mas estao como disponivel
+    // Índice de contratos por id para checagem de cadeias de renovação
+    var ctMap = {};
+    contratos.forEach(function(c){ ctMap[c.id] = c; });
     veiculos.forEach(function(v) {
-      var temAtivo = contratos.some(function(c) { return c.status === "ativo" && String(c.veiculo_id) === String(v.id); });
-      if (temAtivo && v.status !== "alugado" && v.status !== "manutencao" && v.status !== "inativo") {
+      if (v.status === "manutencao" || v.status === "inativo") return; // não interfere nestes
+      // Um veículo está OCUPADO se possui contrato ativo OU contrato concluído/renovado
+      // cujo filho (renovado_para) ainda está ativo
+      var temAtivo = contratos.some(function(c) {
+        if (String(c.veiculo_id) !== String(v.id)) return false;
+        if (c.status === "ativo") return true;
+        if (c.renovado_para) {
+          var filho = ctMap[c.renovado_para];
+          if (filho && filho.status === "ativo") return true;
+        }
+        return false;
+      });
+      if (temAtivo && v.status !== "alugado") {
+        // Corrige: estava como disponivel mas tem contrato ativo → alugado
         db.patch("veiculos", v.id, { status: "alugado" })
           .then(function() {
             setVeiculos(function(p) { return p.map(function(x) { return x.id === v.id ? Object.assign({}, x, { status: "alugado" }) : x; }); });
           })
           .catch(function(e) { console.warn("Auto-fix veiculo->alugado erro", v.placa, e); });
+      } else if (!temAtivo && v.status === "alugado") {
+        // Corrige: estava como alugado mas não tem nenhum contrato ativo → disponivel
+        db.patch("veiculos", v.id, { status: "disponivel" })
+          .then(function() {
+            setVeiculos(function(p) { return p.map(function(x) { return x.id === v.id ? Object.assign({}, x, { status: "disponivel" }) : x; }); });
+          })
+          .catch(function(e) { console.warn("Auto-fix veiculo->disponivel erro", v.placa, e); });
       }
     });
   }, [veiculos, contratos]);
@@ -20984,7 +21024,11 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
       if (edit) {
         const u = await db.patch("manutencao", edit, form);
         setManutencoes(p => p.map(m => m.id === edit ? Object.assign({}, m, u) : m));
-        var ns = form.status === "em_andamento" ? "manutencao" : "disponivel";
+        var manutConcluida = (form.status !== "em_andamento");
+        var temContratoAtivoManut = manutConcluida && contratos.some(function(c){
+          return c.status === "ativo" && String(c.veiculo_id) === String(form.veiculo_id);
+        });
+        var ns = form.status === "em_andamento" ? "manutencao" : (temContratoAtivoManut ? "alugado" : "disponivel");
         await db.patch("veiculos", form.veiculo_id, { status: ns });
         setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: ns }) : v));
         // Sincronizar despesa vinculada ao editar manutenção
@@ -21034,7 +21078,11 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
         const c = await db.post("manutencao", form);
         setManutencoes(p => [c].concat(p));
         // Se cadastrado já como concluida/cancelada, não travar o veículo em manutenção
-        var novoStatusVe = (form.status === "concluida" || form.status === "cancelada") ? "disponivel" : "manutencao";
+        var manutJaConcluida = (form.status === "concluida" || form.status === "cancelada");
+        var temContratoAtivoNova = manutJaConcluida && contratos.some(function(c){
+          return c.status === "ativo" && String(c.veiculo_id) === String(form.veiculo_id);
+        });
+        var novoStatusVe = form.status === "em_andamento" ? "manutencao" : (temContratoAtivoNova ? "alugado" : "disponivel");
         await db.patch("veiculos", form.veiculo_id, { status: novoStatusVe });
         setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: novoStatusVe }) : v));
         // Lançar automaticamente como despesa se tiver custo
@@ -21079,9 +21127,13 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
     if (!confirm("Concluir e liberar veiculo?")) return;
     var hoje = new Date().toISOString().split("T")[0];
     await db.patch("manutencao", m.id, { status: "concluida", data_saida: hoje });
-    await db.patch("veiculos", m.veiculo_id, { status: "disponivel" });
+    var temContratoAtivoConcluir = contratos.some(function(c){
+      return c.status === "ativo" && String(c.veiculo_id) === String(m.veiculo_id);
+    });
+    var statusAposConcluir = temContratoAtivoConcluir ? "alugado" : "disponivel";
+    await db.patch("veiculos", m.veiculo_id, { status: statusAposConcluir });
     setManutencoes(p => p.map(x => x.id === m.id ? Object.assign({}, x, { status: "concluida", data_saida: hoje }) : x));
-    setVeiculos(p => p.map(v => v.id == m.veiculo_id ? Object.assign({}, v, { status: "disponivel" }) : v));
+    setVeiculos(p => p.map(v => v.id == m.veiculo_id ? Object.assign({}, v, { status: statusAposConcluir }) : v));
     // Garantir que existe despesa vinculada
     var despVincConc = despesas.find(d => String(d.manutencao_id) === String(m.id));
     if (!despVincConc && parseFloat(m.custo || 0) > 0) {
@@ -29552,8 +29604,12 @@ function ClaudeAssistant(props) {
         await db.patch("contratos", inp.contrato_id, patch);
         setContratos(function(p){return p.map(function(c){return String(c.id)===String(inp.contrato_id)?Object.assign({},c,patch):c;});});
         if (ctr.veiculo_id) {
-          await db.patch("veiculos", ctr.veiculo_id, { status: "disponivel" });
-          setVeiculos(function(p){return p.map(function(v){return String(v.id)===String(ctr.veiculo_id)?Object.assign({},v,{status:"disponivel"}):v;});});
+          var outroAtivoIA = (d.contratos||[]).some(function(x){
+            return String(x.id) !== String(inp.contrato_id) && String(x.veiculo_id) === String(ctr.veiculo_id) && x.status === "ativo";
+          });
+          var statusAposIA = outroAtivoIA ? "alugado" : "disponivel";
+          await db.patch("veiculos", ctr.veiculo_id, { status: statusAposIA });
+          setVeiculos(function(p){return p.map(function(v){return String(v.id)===String(ctr.veiculo_id)?Object.assign({},v,{status:statusAposIA}):v;});});
         }
         toast("Contrato #" + inp.contrato_id + " encerrado!");
         return JSON.stringify({ sucesso: true, contrato_id: inp.contrato_id, veiculo_liberado: ctr.veiculo_id || null });

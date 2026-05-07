@@ -19005,7 +19005,11 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         toast("Contrato nº " + numCt(c.id) + " criado!");
       }
       setModal(false);
-    } catch(e) { toast("Erro ao salvar: " + (e.message || "Tente novamente"), "error"); }
+    } catch(e) {
+      console.error("ERRO AO SALVAR CONTRATO:", e);
+      var msg = e && e.message ? e.message : (e && e.error ? e.error : JSON.stringify(e));
+      alert("Erro ao salvar: " + msg);
+    }
     finally { setLoading(false); }
   }
   async function renovar(ct) {
@@ -19097,23 +19101,21 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     });
     return result;
   }, [contratos]);
-  // Auto-fix: sincroniza status dos veiculos com base nos contratos ativos reais
+  // Auto-fix: sincroniza status dos veiculos — so libera se ha contrato ativo com encerramento explicito
+  // NAO libera automaticamente veiculos alugados sem contrato ativo (pode ser bug de status)
+  // O usuario deve corrigir manualmente via Acoes > Encerrar no contrato
   React.useEffect(function() {
     if (!veiculos || !veiculos.length || !contratos) return;
-    var veicsParaCorrigir = veiculos.filter(function(v) {
+    // Marca como alugado veiculos que tem contrato ativo mas estao como disponivel
+    veiculos.forEach(function(v) {
       var temAtivo = contratos.some(function(c) { return c.status === "ativo" && String(c.veiculo_id) === String(v.id); });
-      // veiculo marcado como alugado mas sem contrato ativo = status desatualizado
-      if (v.status === "alugado" && !temAtivo) return true;
-      return false;
-    });
-    if (!veicsParaCorrigir.length) return;
-    veicsParaCorrigir.forEach(function(v) {
-      db.patch("veiculos", v.id, { status: "disponivel" })
-        .then(function() {
-          setVeiculos(function(p) { return p.map(function(x) { return x.id === v.id ? Object.assign({}, x, { status: "disponivel" }) : x; }); });
-          console.log("Auto-fix veiculo", v.placa, "disponivel");
-        })
-        .catch(function(e) { console.warn("Auto-fix veiculo erro", v.placa, e); });
+      if (temAtivo && v.status !== "alugado" && v.status !== "manutencao" && v.status !== "inativo") {
+        db.patch("veiculos", v.id, { status: "alugado" })
+          .then(function() {
+            setVeiculos(function(p) { return p.map(function(x) { return x.id === v.id ? Object.assign({}, x, { status: "alugado" }) : x; }); });
+          })
+          .catch(function(e) { console.warn("Auto-fix veiculo->alugado erro", v.placa, e); });
+      }
     });
   }, [veiculos, contratos]);
 
@@ -19520,8 +19522,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         , React.createElement(Lbl, { label: "Veiculo *" , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, React.createElement('select', { style: FI, value: form.veiculo_id || "", onChange: e => F("veiculo_id", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, React.createElement('option', { value: "", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, "Selecione..."), veiculos.filter(v => {
           // Sempre inclui o veiculo ja selecionado (edicao)
           if (v.id == form.veiculo_id) return true;
-          // Exclui manutencao e inativo
-          if (v.status === "manutencao" || v.status === "inativo") return false;
+          // Exclui manutencao, inativo e alugado
+          if (v.status === "manutencao" || v.status === "inativo" || v.status === "alugado") return false;
           // Exclui veiculos com contrato ativo — independente do periodo
           var temContratoAtivo = contratos.some(function(c) {
             return c.status === "ativo" && String(c.veiculo_id) === String(v.id) && c.id !== edit;

@@ -31691,6 +31691,56 @@ function getAllTabs(){
   return tabs;
 }
 
+/* ── Sub-abas conhecidas por seção principal ── */
+var SUBTABS_MAP = {
+  relatorios: [
+    {id:'geral',          label:'Geral'},
+    {id:'faturas',        label:'Faturas'},
+    {id:'veiculos',       label:'Por Veículo'},
+    {id:'graficos',       label:'📊 Gráficos'},
+    {id:'projecao',       label:'Projeção'},
+    {id:'inadimplencia',  label:'Inadimplência'},
+    {id:'ocupacao',       label:'Ocupação'},
+    {id:'auditoria',      label:'Auditoria'},
+  ],
+  financeiro: [
+    {id:'conciliacao',        label:'Conciliação'},
+    {id:'receitas',           label:'Receitas'},
+    {id:'despesas',           label:'Despesas'},
+    {id:'fluxo',              label:'Fluxo de Caixa'},
+    {id:'analise',            label:'Análise'},
+    {id:'orcamento_empresa',  label:'Orçamento'},
+    {id:'contas_rec',         label:'Fixas'},
+    {id:'faturas',            label:'Faturas'},
+    {id:'pessoal',            label:'Orç. Pessoal'},
+  ],
+  operacional: [
+    {id:'contratos',  label:'Contratos'},
+    {id:'multas',     label:'Multas'},
+    {id:'manutencao', label:'Manutenção'},
+  ],
+  config: [
+    {id:'config_geral', label:'Configurações'},
+    {id:'empresa',      label:'Empresa'},
+    {id:'usuarios',     label:'Usuários'},
+  ],
+};
+
+/* Navega para sub-aba via <select> após a aba principal já ter carregado */
+function navigateSubTab(subTabId) {
+  var selects = document.querySelectorAll('select');
+  for (var i = 0; i < selects.length; i++) {
+    var sel = selects[i];
+    var opts = Array.from(sel.options);
+    if (opts.some(function(o){ return o.value === subTabId; })) {
+      sel.value = subTabId;
+      sel.dispatchEvent(new Event('change', {bubbles:true}));
+      return true;
+    }
+  }
+  return false;
+}
+
 /* ── Pending clone: stored when duplicating to another tab ── */
 var _pendingClone = null;
 
@@ -31741,13 +31791,26 @@ function openMenu(wrapper, e){
     }));
   });
 
-  // Todas as abas do sistema
+  // Todas as abas do sistema (com sub-abas)
   allTabs.forEach(function(t){
     // Skip if it's the current active tab (already shown as "zones" above)
     if(t.btn && t.btn.classList.contains('lg-nav-btn-active')) return;
-    m.appendChild(mkBtn('cm-sub-item', '🔀 '+t.label, function(){
-      duplicateToTab(wrapper, t);
-    }));
+    var subTabs = SUBTABS_MAP[t.id] || [];
+    if(subTabs.length > 0) {
+      // Aba principal como cabeçalho + sub-abas
+      m.appendChild(mkDiv('cm-sub-label', '🔀 '+t.label));
+      subTabs.forEach(function(s){
+        (function(tab, sub){
+          m.appendChild(mkBtn('cm-sub-item', '&nbsp;&nbsp;↳ '+sub.label, function(){
+            duplicateToTabSub(wrapper, tab, sub);
+          }));
+        })(t, s);
+      });
+    } else {
+      m.appendChild(mkBtn('cm-sub-item', '🔀 '+t.label, function(){
+        duplicateToTab(wrapper, t);
+      }));
+    }
   });
 
   m.appendChild(mkDiv('cm-divider'));
@@ -31755,17 +31818,33 @@ function openMenu(wrapper, e){
   // ── MOVER ──
   var moveTargets = [];
   zones.forEach(function(z){ if(z!==myZone) moveTargets.push({lbl:z.dataset.cmLabel||'Seção',fn:function(){moveTo(wrapper,z);}}); });
-  allTabs.forEach(function(t){
-    if(t.btn&&t.btn.classList.contains('lg-nav-btn-active')) return;
-    moveTargets.push({lbl:'→ '+t.label,fn:function(){moveToTab(wrapper,t);}});
-  });
   if(moveTargets.length>0){
-    m.appendChild(mkDiv('cm-sub-label', I.move+' Mover para:'));
+    m.appendChild(mkDiv('cm-sub-label', I.move+' Mover para (seção atual):'));
     moveTargets.forEach(function(x){
       m.appendChild(mkBtn('cm-sub-item', I.tab+' '+x.lbl, x.fn));
     });
-    m.appendChild(mkDiv('cm-divider'));
   }
+  // Abas com sub-abas para mover
+  var hasMoveTargets = false;
+  allTabs.forEach(function(t){
+    if(t.btn&&t.btn.classList.contains('lg-nav-btn-active')) return;
+    var subTabs = SUBTABS_MAP[t.id] || [];
+    if(subTabs.length > 0) {
+      if(!hasMoveTargets){ m.appendChild(mkDiv('cm-sub-label', I.move+' Mover para outra aba:')); hasMoveTargets=true; }
+      m.appendChild(mkDiv('cm-sub-label', '  '+t.label));
+      subTabs.forEach(function(s){
+        (function(tab, sub){
+          m.appendChild(mkBtn('cm-sub-item', '&nbsp;&nbsp;↳ '+sub.label, function(){
+            moveToTabSub(wrapper, tab, sub);
+          }));
+        })(t, s);
+      });
+    } else {
+      if(!hasMoveTargets){ m.appendChild(mkDiv('cm-sub-label', I.move+' Mover para:')); hasMoveTargets=true; }
+      m.appendChild(mkBtn('cm-sub-item', I.tab+' → '+t.label, function(){moveToTab(wrapper,t);}));
+    }
+  });
+  if(hasMoveTargets || moveTargets.length>0) m.appendChild(mkDiv('cm-divider'));
 
   // ── REMOVER ──
   m.appendChild(mkBtn('cm-item cm-red', I.trash+' Remover card', function(){
@@ -31788,6 +31867,36 @@ function openMenu(wrapper, e){
   m.style.maxHeight=mh+'px';
   m.style.left=Math.min(mx, vw-240)+'px';
   m.style.top =Math.min(my+4, vh-mh-10)+'px';
+}
+
+/* Duplicar para aba + sub-aba */
+function duplicateToTabSub(wrapper, tab, sub){
+  _pendingClone={
+    html: wrapper.querySelector('.cm-body').innerHTML,
+    title: (wrapper.dataset.cmTitle||'Gráfico')+' (cópia)',
+    tabId: tab.id, tabLabel: tab.label+' › '+sub.label,
+    subTabId: sub.id
+  };
+  if(tab.btn) tab.btn.click();
+  toast('🔀 Indo para '+tab.label+' › '+sub.label+'...');
+  setTimeout(function(){ navigateSubTab(sub.id); injectPendingClone(); }, 700);
+  setTimeout(function(){ navigateSubTab(sub.id); injectPendingClone(); }, 1500);
+}
+
+/* Mover para aba + sub-aba */
+function moveToTabSub(wrapper, tab, sub){
+  _pendingClone={
+    html: wrapper.querySelector('.cm-body').innerHTML,
+    title: wrapper.dataset.cmTitle||'Gráfico',
+    tabId: tab.id, tabLabel: tab.label+' › '+sub.label,
+    subTabId: sub.id
+  };
+  wrapper.style.transition='opacity .22s'; wrapper.style.opacity='0';
+  setTimeout(function(){ wrapper.remove(); },250);
+  if(tab.btn) tab.btn.click();
+  toast('📦 Movendo para '+tab.label+' › '+sub.label+'...');
+  setTimeout(function(){ navigateSubTab(sub.id); injectPendingClone(); }, 700);
+  setTimeout(function(){ navigateSubTab(sub.id); injectPendingClone(); }, 1500);
 }
 
 function div(cls){ var d=document.createElement('div'); d.className=cls; return d; }
@@ -31848,6 +31957,11 @@ function duplicateToTab(wrapper, tab){
 function injectPendingClone(){
   if(!_pendingClone) return;
   var pc=_pendingClone;
+  // Navega para sub-aba se especificada
+  if(pc.subTabId) {
+    var ok = navigateSubTab(pc.subTabId);
+    if(!ok) { /* sub-tab select ainda não renderizado, retry no próximo timeout */ }
+  }
   // Find first cm-zone in the newly rendered tab
   var zone=document.querySelector('.cm-zone');
   if(!zone){

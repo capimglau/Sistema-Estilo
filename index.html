@@ -18938,6 +18938,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   }
   async function save() {
     if (!form.cliente_id || !form.veiculo_id) return toast("Cliente e Veiculo obrigatorios", "error");
+    if (!edit && (!form.data_inicio || !form.data_fim)) return toast("Informe as datas de retirada e devolucao!", "error");
+    if (!edit && form.data_fim <= form.data_inicio) return toast("Data de devolucao deve ser apos a retirada!", "error");
     var cl = getCl(form.cliente_id);
     if (cl && cl.bloqueado) return toast("Cliente bloqueado: " + (cl.motivo_bloqueio || ""), "error");
     if (cl && cl.vencimento_cnh && cl.vencimento_cnh < hoje) { if (!confirm("CNH do cliente VENCIDA em " + cl.vencimento_cnh + ". Continuar mesmo assim?")) return; }
@@ -19094,6 +19096,26 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     });
     return result;
   }, [contratos]);
+  // Auto-fix: sincroniza status dos veiculos com base nos contratos ativos reais
+  React.useEffect(function() {
+    if (!veiculos || !veiculos.length || !contratos) return;
+    var veicsParaCorrigir = veiculos.filter(function(v) {
+      var temAtivo = contratos.some(function(c) { return c.status === "ativo" && String(c.veiculo_id) === String(v.id); });
+      // veiculo marcado como alugado mas sem contrato ativo = status desatualizado
+      if (v.status === "alugado" && !temAtivo) return true;
+      return false;
+    });
+    if (!veicsParaCorrigir.length) return;
+    veicsParaCorrigir.forEach(function(v) {
+      db.patch("veiculos", v.id, { status: "disponivel" })
+        .then(function() {
+          setVeiculos(function(p) { return p.map(function(x) { return x.id === v.id ? Object.assign({}, x, { status: "disponivel" }) : x; }); });
+          console.log("Auto-fix veiculo", v.placa, "disponivel");
+        })
+        .catch(function(e) { console.warn("Auto-fix veiculo erro", v.placa, e); });
+    });
+  }, [veiculos, contratos]);
+
   // Auto-fix: patch renewed contracts still "ativo" -> "concluido" automatically on load
   // IMPORTANTE: so age se renovado_para esta preenchido - nunca por deteccao de data,
   // pois contratos com periodo expirado sem acao devem permanecer "ativo" e disparar alerta.
@@ -19495,13 +19517,16 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1132}}
         , React.createElement(Lbl, { label: "Cliente *" , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1133}}, React.createElement('select', { style: FI, value: form.cliente_id || "", onChange: e => F("cliente_id", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1133}}, React.createElement('option', { value: "", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1133}}, "Selecione..."), clientes.map(c => React.createElement('option', { key: c.id, value: c.id, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1133}}, c.nome, c.bloqueado ? " [BLOQUEADO]" : ""))))
         , React.createElement(Lbl, { label: "Veiculo *" , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, React.createElement('select', { style: FI, value: form.veiculo_id || "", onChange: e => F("veiculo_id", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, React.createElement('option', { value: "", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, "Selecione..."), veiculos.filter(v => {
+          // Sempre inclui o veiculo ja selecionado (edicao)
           if (v.id == form.veiculo_id) return true;
+          // Exclui manutencao e inativo
           if (v.status === "manutencao" || v.status === "inativo") return false;
-          if (!form.data_inicio || !form.data_fim) return true;
-          var conflito = contratos.filter(c => c.status === "ativo" && String(c.veiculo_id) === String(v.id) && c.id !== edit)
-            .some(c => !(c.data_fim <= form.data_inicio || c.data_inicio >= form.data_fim));
-          return !conflito;
-        }).map(v => { var stEf = statusEfetivoVeiculo(v, contratos); var temConflito = stEf === "alugado" && form.data_inicio && form.data_fim; return React.createElement('option', { key: v.id, value: v.id, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, v.placa, " - ", v.marca, " ", v.modelo, " - ", fmtBRL(v.valor_diaria), "/dia", temConflito ? " ⚠ alugado (período OK)" : stEf !== "disponivel" ? " (" + stEf + ")" : ""); })))
+          // Exclui veiculos com contrato ativo — independente do periodo
+          var temContratoAtivo = contratos.some(function(c) {
+            return c.status === "ativo" && String(c.veiculo_id) === String(v.id) && c.id !== edit;
+          });
+          return !temContratoAtivo;
+        }).map(v => React.createElement('option', { key: v.id, value: v.id, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1134}}, v.placa, " - ", v.marca, " ", v.modelo, " - ", fmtBRL(v.valor_diaria), "/dia"))))
         , React.createElement(Lbl, { label: "Tipo de Locação" }
           , React.createElement('div', { style: { display: "flex", gap: 8 } }
             , ["diaria", "mensal"].map(function(t) {

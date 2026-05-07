@@ -18299,7 +18299,7 @@ function Frota({ veiculos, setVeiculos, contratos, toast }) {
         )
         , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 563}}
           , React.createElement(Lbl, { label: "Diaria (R$)" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 564}}, React.createElement('input', { style: FI, type: "number", step: "0.01", value: form.valor_diaria || "", onChange: e => F("valor_diaria", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 564}} ))
-          , React.createElement(Lbl, { label: "Status", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, React.createElement('select', { style: FI, value: form.status || "disponivel", onChange: e => F("status", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, React.createElement('option', { value: "disponivel", __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, "Disponivel"), React.createElement('option', { value: "alugado", __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, "Alugado"), React.createElement('option', { value: "manutencao", __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, "Manutencao"), React.createElement('option', { value: "inativo", __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, "Inativo")))
+          , React.createElement(Lbl, { label: "Status", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, React.createElement('select', { style: FI, value: (form.status === "manutencao" || form.status === "inativo") ? form.status : "manutencao", onChange: e => F("status", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, React.createElement('option', { value: "manutencao", __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, "Manutencao"), React.createElement('option', { value: "inativo", __self: this, __source: {fileName: _jsxFileName, lineNumber: 565}}, "Inativo")))
         )
         , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 566}}
           , React.createElement(Lbl, { label: "Mensal (R$)", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 566}}, React.createElement('input', { style: FI, type: "number", step: "1", value: form.valor_mensal || "", onChange: e => F("valor_mensal", e.target.value), placeholder: "Ex: 2500", __self: this, __source: {fileName: _jsxFileName, lineNumber: 566}} ))
@@ -18802,13 +18802,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (recVinc.length > 0) setReceitas(function(p){ return p.filter(function(r){ return !r.ref_fatura || !r.ref_fatura.startsWith("fat_" + id + "_"); }); });
     await db.del("contratos", id);
     setContratos(p => p.filter(c => c.id !== id));
-    if (ct && ct.status === "ativo" && ct.veiculo_id) {
-      var outroAtivo = contratos.some(function(x){ return x.id !== id && String(x.veiculo_id) === String(ct.veiculo_id) && x.status === "ativo"; });
-      if (!outroAtivo) {
-        await db.patch("veiculos", ct.veiculo_id, { status: "disponivel" });
-        setVeiculos(p => p.map(v => v.id == ct.veiculo_id ? Object.assign({}, v, { status: "disponivel" }) : v));
-      }
-    }
+    // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
     toast("Excluído!");
   }
   async function sincronizarRefFatura(c, dtPag) {
@@ -18981,28 +18975,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         const ctAntes = contratos.find(function(x){ return x.id === edit; });
         const u = await db.patch("contratos", edit, payload);
         setContratos(p => p.map(c => c.id === edit ? Object.assign({}, c, u) : c));
-        // Sincronizar status do veículo ao editar contrato
-        if (ctAntes && payload.veiculo_id) {
-          var statusNovo = payload.status || ctAntes.status;
-          var veId = payload.veiculo_id || ctAntes.veiculo_id;
-          if ((statusNovo === "cancelado" || statusNovo === "concluido") && ctAntes.status === "ativo") {
-            // Contrato deixou de ser ativo: libera o veículo apenas se não há outro ativo
-            var outroAtivo = contratos.some(function(x){ return x.id !== edit && String(x.veiculo_id) === String(veId) && x.status === "ativo"; });
-            if (!outroAtivo) {
-              await db.patch("veiculos", veId, { status: "disponivel" });
-              setVeiculos(function(p){ return p.map(function(v){ return String(v.id) == String(veId) ? Object.assign({}, v, { status: "disponivel" }) : v; }); });
-            }
-            // Se há outro ativo, garante que veículo permaneça como alugado
-            else {
-              await db.patch("veiculos", veId, { status: "alugado" });
-              setVeiculos(function(p){ return p.map(function(v){ return String(v.id) == String(veId) ? Object.assign({}, v, { status: "alugado" }) : v; }); });
-            }
-          } else if (statusNovo === "ativo" && ctAntes.status !== "ativo") {
-            // Contrato voltou a ativo: marca veículo como alugado
-            await db.patch("veiculos", veId, { status: "alugado" });
-            setVeiculos(function(p){ return p.map(function(v){ return String(v.id) == String(veId) ? Object.assign({}, v, { status: "alugado" }) : v; }); });
-          }
-        }
+        // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
         // Se previsao_pagamento mudou, garantir que existe fatura prevista para o novo mês
         if (payload.previsao_pagamento) { await criarFaturaPrevista(Object.assign({}, u, { id: edit })); }
         // Se data_pagamento foi definida e contrato está pago, sincronizar receita
@@ -19025,8 +18998,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       } else {
         const c = await db.post("contratos", payload);
         setContratos(p => [c].concat(p));
-        await db.patch("veiculos", form.veiculo_id, { status: "alugado" });
-        setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: "alugado" }) : v));
+        // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
         await criarFaturaPrevista(c);
         toast("Contrato nº " + numCt(c.id) + " criado!");
       }
@@ -19089,14 +19061,11 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (kmFinalInput) patchData.km_final = parseFloat(kmFinalInput);
     if (obsInput) patchData.observacoes = (ct.observacoes ? ct.observacoes + "\n" : "") + "Encerramento: " + obsInput;
     await db.patch("contratos", ct.id, patchData);
-    // Só libera veículo se não há outro contrato ativo para o mesmo veículo
+    // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
     var outroAtivoEncerrar = contratos.some(function(x){
       return x.id !== ct.id && String(x.veiculo_id) === String(ct.veiculo_id) && x.status === "ativo";
     });
-    var statusAposEncerrar = outroAtivoEncerrar ? "alugado" : "disponivel";
-    await db.patch("veiculos", ct.veiculo_id, { status: statusAposEncerrar });
     setContratos(p => p.map(c => c.id === ct.id ? Object.assign({}, c, patchData) : c));
-    setVeiculos(p => p.map(v => v.id == ct.veiculo_id ? Object.assign({}, v, { status: statusAposEncerrar }) : v));
     toast(outroAtivoEncerrar ? "Encerrado! Veículo ainda possui contrato ativo." : "Encerrado! Veículo liberado.");
   }
   const SC = { ativo: C.blue, concluido: C.green, cancelado: C.red };
@@ -19132,42 +19101,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     });
     return result;
   }, [contratos]);
-  // Auto-fix: sincroniza status dos veiculos
-  React.useEffect(function() {
-    if (!veiculos || !veiculos.length || !contratos) return;
-    // Índice de contratos por id para checagem de cadeias de renovação
-    var ctMap = {};
-    contratos.forEach(function(c){ ctMap[c.id] = c; });
-    veiculos.forEach(function(v) {
-      if (v.status === "manutencao" || v.status === "inativo") return; // não interfere nestes
-      // Um veículo está OCUPADO se possui contrato ativo OU contrato concluído/renovado
-      // cujo filho (renovado_para) ainda está ativo
-      var temAtivo = contratos.some(function(c) {
-        if (String(c.veiculo_id) !== String(v.id)) return false;
-        if (c.status === "ativo") return true;
-        if (c.renovado_para) {
-          var filho = ctMap[c.renovado_para];
-          if (filho && filho.status === "ativo") return true;
-        }
-        return false;
-      });
-      if (temAtivo && v.status !== "alugado") {
-        // Corrige: estava como disponivel mas tem contrato ativo → alugado
-        db.patch("veiculos", v.id, { status: "alugado" })
-          .then(function() {
-            setVeiculos(function(p) { return p.map(function(x) { return x.id === v.id ? Object.assign({}, x, { status: "alugado" }) : x; }); });
-          })
-          .catch(function(e) { console.warn("Auto-fix veiculo->alugado erro", v.placa, e); });
-      } else if (!temAtivo && v.status === "alugado") {
-        // Corrige: estava como alugado mas não tem nenhum contrato ativo → disponivel
-        db.patch("veiculos", v.id, { status: "disponivel" })
-          .then(function() {
-            setVeiculos(function(p) { return p.map(function(x) { return x.id === v.id ? Object.assign({}, x, { status: "disponivel" }) : x; }); });
-          })
-          .catch(function(e) { console.warn("Auto-fix veiculo->disponivel erro", v.placa, e); });
-      }
-    });
-  }, [veiculos, contratos]);
+  // Status de veículos é calculado dinamicamente por statusEfetivoVeiculo() — sem auto-fix necessário
 
   // Auto-fix: patch renewed contracts still "ativo" -> "concluido" automatically on load
   // IMPORTANTE: so age se renovado_para esta preenchido - nunca por deteccao de data,
@@ -19435,9 +19369,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                   (async function(){
                     if (!confirm("Reabrir contrato como ativo?")) return;
                     await db.patch("contratos", c.id, { status: "ativo" });
-                    await db.patch("veiculos", c.veiculo_id, { status: "alugado" });
+                    // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
                     setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status: "ativo" }) : x));
-                    setVeiculos(p => p.map(v => v.id == c.veiculo_id ? Object.assign({}, v, { status: "alugado" }) : v));
                     toast("↩ Contrato reaberto");
                   })();
                 }
@@ -21033,12 +20966,16 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
         const u = await db.patch("manutencao", edit, form);
         setManutencoes(p => p.map(m => m.id === edit ? Object.assign({}, m, u) : m));
         var manutConcluida = (form.status !== "em_andamento");
-        var temContratoAtivoManut = manutConcluida && contratos.some(function(c){
-          return c.status === "ativo" && String(c.veiculo_id) === String(form.veiculo_id);
-        });
-        var ns = form.status === "em_andamento" ? "manutencao" : (temContratoAtivoManut ? "alugado" : "disponivel");
-        await db.patch("veiculos", form.veiculo_id, { status: ns });
-        setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: ns }) : v));
+        // Só grava "manutencao" no banco — alugado/disponivel são calculados por statusEfetivoVeiculo()
+        var ns = form.status === "em_andamento" ? "manutencao" : null;
+        if (ns) {
+          await db.patch("veiculos", form.veiculo_id, { status: ns });
+          setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: ns }) : v));
+        } else {
+          // Manutenção concluída: limpa o status "manutencao" do banco para que statusEfetivoVeiculo() calcule corretamente
+          await db.patch("veiculos", form.veiculo_id, { status: "disponivel" });
+          setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: "disponivel" }) : v));
+        }
         // Sincronizar despesa vinculada ao editar manutenção
         var despExist = despesas.find(d => String(d.manutencao_id) === String(edit));
         if (despExist) {
@@ -21085,12 +21022,9 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
       } else {
         const c = await db.post("manutencao", form);
         setManutencoes(p => [c].concat(p));
-        // Se cadastrado já como concluida/cancelada, não travar o veículo em manutenção
-        var manutJaConcluida = (form.status === "concluida" || form.status === "cancelada");
-        var temContratoAtivoNova = manutJaConcluida && contratos.some(function(c){
-          return c.status === "ativo" && String(c.veiculo_id) === String(form.veiculo_id);
-        });
-        var novoStatusVe = form.status === "em_andamento" ? "manutencao" : (temContratoAtivoNova ? "alugado" : "disponivel");
+        // Só grava "manutencao" para travar veículo; se já concluída/cancelada, limpa para "disponivel"
+        // Nunca grava "alugado" — statusEfetivoVeiculo() calcula isso dinamicamente
+        var novoStatusVe = form.status === "em_andamento" ? "manutencao" : "disponivel";
         await db.patch("veiculos", form.veiculo_id, { status: novoStatusVe });
         setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: novoStatusVe }) : v));
         // Lançar automaticamente como despesa se tiver custo
@@ -21135,13 +21069,10 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
     if (!confirm("Concluir e liberar veiculo?")) return;
     var hoje = new Date().toISOString().split("T")[0];
     await db.patch("manutencao", m.id, { status: "concluida", data_saida: hoje });
-    var temContratoAtivoConcluir = contratos.some(function(c){
-      return c.status === "ativo" && String(c.veiculo_id) === String(m.veiculo_id);
-    });
-    var statusAposConcluir = temContratoAtivoConcluir ? "alugado" : "disponivel";
-    await db.patch("veiculos", m.veiculo_id, { status: statusAposConcluir });
+    // Limpa status "manutencao" → "disponivel" para que statusEfetivoVeiculo() calcule alugado/disponivel dinamicamente
+    await db.patch("veiculos", m.veiculo_id, { status: "disponivel" });
     setManutencoes(p => p.map(x => x.id === m.id ? Object.assign({}, x, { status: "concluida", data_saida: hoje }) : x));
-    setVeiculos(p => p.map(v => v.id == m.veiculo_id ? Object.assign({}, v, { status: statusAposConcluir }) : v));
+    setVeiculos(p => p.map(v => v.id == m.veiculo_id ? Object.assign({}, v, { status: "disponivel" }) : v));
     // Garantir que existe despesa vinculada
     var despVincConc = despesas.find(d => String(d.manutencao_id) === String(m.id));
     if (!despVincConc && parseFloat(m.custo || 0) > 0) {
@@ -29452,7 +29383,7 @@ function ClaudeAssistant(props) {
       "Você é o assistente pessoal do AutoGest Pro, sistema de gestão de locadora de veículos.",
       "Data de hoje: " + hoje,
       "",
-      "Estado atual: Veículos=" + v.length + " (disp=" + v.filter(function(x){return x.status==="disponivel";}).length + " alug=" + v.filter(function(x){return x.status==="alugado";}).length + ")",
+      "Estado atual: Veículos=" + v.length + " (disp=" + v.filter(function(x){return statusEfetivoVeiculo(x,co)==="disponivel";}).length + " alug=" + v.filter(function(x){return statusEfetivoVeiculo(x,co)==="alugado";}).length + ")",
       "Clientes=" + cl.length + " | Contratos=" + co.length + " (ativos=" + co.filter(function(x){return x.status==="ativo";}).length + ")",
       "Reservas=" + res.length + " (pend=" + res.filter(function(x){return x.status==="pendente";}).length + ") | Multas=" + mul.length + " | Manutenções=" + man.length,
       "Despesas do mês=" + dep.filter(function(x){return x.data&&x.data.slice(0,7)===mes;}).length + " | Receitas do mês=" + rec.filter(function(x){return x.data&&x.data.slice(0,7)===mes;}).length,
@@ -29611,14 +29542,7 @@ function ClaudeAssistant(props) {
         if (inp.valor_pago != null) patch.valor_pago = inp.valor_pago;
         await db.patch("contratos", inp.contrato_id, patch);
         setContratos(function(p){return p.map(function(c){return String(c.id)===String(inp.contrato_id)?Object.assign({},c,patch):c;});});
-        if (ctr.veiculo_id) {
-          var outroAtivoIA = (d.contratos||[]).some(function(x){
-            return String(x.id) !== String(inp.contrato_id) && String(x.veiculo_id) === String(ctr.veiculo_id) && x.status === "ativo";
-          });
-          var statusAposIA = outroAtivoIA ? "alugado" : "disponivel";
-          await db.patch("veiculos", ctr.veiculo_id, { status: statusAposIA });
-          setVeiculos(function(p){return p.map(function(v){return String(v.id)===String(ctr.veiculo_id)?Object.assign({},v,{status:statusAposIA}):v;});});
-        }
+        // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
         toast("Contrato #" + inp.contrato_id + " encerrado!");
         return JSON.stringify({ sucesso: true, contrato_id: inp.contrato_id, veiculo_liberado: ctr.veiculo_id || null });
       }
@@ -30209,7 +30133,8 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, set
         results.push({ type:"cliente", label:cl.nome||"", sub:(cl.cpf_cnpj||cl.telefone||cl.email||""), tab:"cadastro", subtab:null });
     });
     (veiculos||[]).forEach(function(v) {
-      if (match(v.placa, v.marca, v.modelo, v.cor, v.ano, v.renavam, v.chassi, v.status))
+      var stEf = statusEfetivoVeiculo(v, contratos||[]);
+      if (match(v.placa, v.marca, v.modelo, v.cor, v.ano, v.renavam, v.chassi, stEf))
         results.push({ type:"veiculo", label:(v.marca||"")+" "+(v.modelo||"")+(v.ano?" "+v.ano:""), sub:v.placa||"", tab:"cadastro", subtab:null });
     });
     (multas||[]).forEach(function(m) {
@@ -30869,26 +30794,30 @@ function App() {
     db.get("veiculos").then(d => {
       marcarAcordado();
       setVeiculos(d || []);
-      // Snapshot diário de ocupação (best-effort, não bloqueia UI)
-      try {
-        var hojeIso = new Date().toISOString().slice(0, 10);
-        var lastSnap = localStorage.getItem("ocup_last");
-        if (lastSnap !== hojeIso && d && d.length) {
-          var total = d.length;
-          var alug = d.filter(function(v){ return v.status === "alugado"; }).length;
-          var man = d.filter(function(v){ return v.status === "manutencao"; }).length;
-          var disp = d.filter(function(v){ return v.status === "disponivel"; }).length;
-          var taxa = total > 0 ? Math.round((alug / total) * 100) : 0;
-          fetch(SB_URL + "/rest/v1/ocupacao_historico?on_conflict=dia", {
-            method: "POST",
-            headers: Object.assign({}, HDR, { Prefer: "resolution=merge-duplicates,return=minimal" }),
-            body: JSON.stringify({ dia: hojeIso, total: total, alugados: alug, disponiveis: disp, manutencao: man, taxa: taxa })
-          }).then(function(r){ if (r.ok) localStorage.setItem("ocup_last", hojeIso); }).catch(function(){});
-        }
-      } catch(e) { /* best-effort */ }
     });
     db.get("clientes").then(d => setClientes(d || []));
-    db.get("contratos", "limit=500").then(d => setContratos(d || []));
+    db.get("contratos", "limit=500").then(function(cts) {
+      setContratos(cts || []);
+      // Snapshot diário de ocupação — usa statusEfetivoVeiculo para dados corretos
+      db.get("veiculos").then(function(d) {
+        try {
+          var hojeIso = new Date().toISOString().slice(0, 10);
+          var lastSnap = localStorage.getItem("ocup_last");
+          if (lastSnap !== hojeIso && d && d.length) {
+            var total = d.length;
+            var alug = d.filter(function(v){ return statusEfetivoVeiculo(v, cts || []) === "alugado"; }).length;
+            var man = d.filter(function(v){ return statusEfetivoVeiculo(v, cts || []) === "manutencao"; }).length;
+            var disp = d.filter(function(v){ return statusEfetivoVeiculo(v, cts || []) === "disponivel"; }).length;
+            var taxa = total > 0 ? Math.round((alug / total) * 100) : 0;
+            fetch(SB_URL + "/rest/v1/ocupacao_historico?on_conflict=dia", {
+              method: "POST",
+              headers: Object.assign({}, HDR, { Prefer: "resolution=merge-duplicates,return=minimal" }),
+              body: JSON.stringify({ dia: hojeIso, total: total, alugados: alug, disponiveis: disp, manutencao: man, taxa: taxa })
+            }).then(function(r){ if (r.ok) localStorage.setItem("ocup_last", hojeIso); }).catch(function(){});
+          }
+        } catch(e) { /* best-effort */ }
+      });
+    });
     db.get("reservas").then(d => setReservas(d || []));
     db.get("multas").then(d => setMultas(d || []));
     db.get("manutencao").then(d => setManutencoes(d || []));

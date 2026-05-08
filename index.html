@@ -14136,6 +14136,21 @@ function _alertRestore(key) {
 function _alertIsDismissed(key) {
   return !!_alertGetDismissed()[key];
 }
+function _alertItemKey(groupKey, ref) {
+  if (!ref || !ref.id || !ref.type) return null;
+  return groupKey + "|item|" + ref.type + "|" + ref.id;
+}
+function _alertItemIsDismissed(groupKey, ref) {
+  var k = _alertItemKey(groupKey, ref);
+  return k ? !!_alertGetDismissed()[k] : false;
+}
+function _alertItemDismiss(groupKey, ref) {
+  var k = _alertItemKey(groupKey, ref);
+  if (!k) return;
+  var obj = _alertGetDismissed();
+  obj[k] = Date.now();
+  _alertSetDismissed(obj);
+}
 // Migração única: converte ag_dismissed (array antigo) para ag_dismissed_v2 (objeto)
 (function migrateOldDismissed() {
   try {
@@ -14332,7 +14347,13 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl, onItemNav,
   }
 
   var groups = (alertaGroups || []).filter(function(g) { return g.items && g.items.length > 0; });
-  var visibleGroups = groups.filter(function(g) { return !_alertIsDismissed(_alertStableKey(g)); });
+  var visibleGroups = groups.filter(function(g) {
+    if (_alertIsDismissed(_alertStableKey(g))) return false;
+    // Se todos os itens com ref forem dismissed individualmente, some o grupo
+    var refs = (g.itemRefs || []).filter(function(r){ return r && r.id && r.type; });
+    if (refs.length > 0 && refs.every(function(r){ return _alertItemIsDismissed(_alertStableKey(g), r); })) return false;
+    return true;
+  });
   var nAlertas = visibleGroups.length;
   var alertColor = visibleGroups.some(function(g){ return g.cor === C.red; }) ? C.red : visibleGroups.some(function(g){ return g.cor === C.orange; }) ? C.orange : C.green;
   var cats = ["todos"];
@@ -14480,14 +14501,20 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl, onItemNav,
                 )
               ),
               isOpen && React.createElement('div', { style: { borderTop: "1px solid " + g.cor + "25", padding: "6px 14px 10px" } },
-                g.items.map(function(it, j) {
-                  var ref = g.itemRefs && g.itemRefs[j];
-                  var hasNav = !!(ref && onItemNav);
-                  return React.createElement('div', { key: j, onClick: hasNav ? function(){ onItemNav(ref, g.tab); setOpen(false); } : undefined, style: { fontSize: 12, color: "var(--c-text)", paddingTop: 5, borderTop: j > 0 ? "1px solid " + g.cor + "20" : "none", marginTop: j > 0 ? 5 : 0, cursor: hasNav ? "pointer" : "default", display: "flex", alignItems: "center", gap: 4 } },
-                    hasNav && React.createElement('span', { style: { fontSize: 10, color: g.cor, flexShrink: 0 } }, "↗"),
-                    it
-                  );
-                }),
+                (function(){
+                  var visItems = g.items.map(function(it, j){ return { it: it, j: j, ref: g.itemRefs && g.itemRefs[j] }; })
+                    .filter(function(x){ return !_alertItemIsDismissed(dimKey, x.ref); });
+                  if (visItems.length === 0) return React.createElement('div', { style:{ fontSize:12, color: g.cor, opacity:0.6, padding:"4px 0" } }, "Todos os itens foram dispensados.");
+                  var firstVis = 0;
+                  return visItems.map(function(x, vi) {
+                    var hasNav = !!(x.ref && onItemNav);
+                    return React.createElement('div', { key: x.j, style: { fontSize: 12, color: "var(--c-text)", paddingTop: 5, borderTop: vi > 0 ? "1px solid " + g.cor + "20" : "none", marginTop: vi > 0 ? 5 : 0, display: "flex", alignItems: "center", gap: 4 } },
+                      hasNav && React.createElement('span', { onClick: function(){ onItemNav(x.ref, g.tab); setOpen(false); }, style: { fontSize: 10, color: g.cor, flexShrink: 0, cursor: "pointer" } }, "↗"),
+                      React.createElement('span', { onClick: hasNav ? function(){ onItemNav(x.ref, g.tab); setOpen(false); } : undefined, style: { flex: 1, cursor: hasNav ? "pointer" : "default" } }, x.it),
+                      x.ref && React.createElement('button', { onClick: function(e){ e.stopPropagation(); _alertItemDismiss(dimKey, x.ref); setTick(function(n){ return n+1; }); }, style: { border: "none", background: "transparent", color: g.cor, opacity: 0.45, cursor: "pointer", fontSize: 13, padding: "0 0 0 4px", lineHeight: 1, flexShrink: 0 } }, "✕")
+                    );
+                  });
+                })(),
                 g.sub && React.createElement('div', { style: { fontSize: 11, color: g.cor, marginTop: 6, fontWeight: 600 } }, g.sub)
               )
             );
@@ -14588,14 +14615,20 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab, searchBarEl, onItemNav }
           ),
           // Itens do grupo
           isOpen && React.createElement('div', { style:{ borderTop:"1px solid "+g.cor+"25", padding:"6px 14px 10px" } },
-            g.items.map(function(it, j){
-              var ref = g.itemRefs && g.itemRefs[j];
-              var hasNav = !!(ref && onItemNav);
-              return React.createElement('div', { key:j, onClick: hasNav ? function(){ onItemNav(ref, g.tab); } : undefined, style:{ fontSize:12, color:"var(--c-text)", paddingTop:5, borderTop: j>0?"1px solid "+g.cor+"20":"none", marginTop: j>0?5:0, cursor: hasNav?"pointer":"default", display:"flex", alignItems:"center", gap:4 } },
-                hasNav && React.createElement('span', { style:{ fontSize:10, color:g.cor, flexShrink:0 } }, "↗"),
-                it
-              );
-            }),
+            (function(){
+              var _dKey = _alertStableKey(g);
+              var visItems = g.items.map(function(it,j){ return { it:it, j:j, ref:g.itemRefs&&g.itemRefs[j] }; })
+                .filter(function(x){ return !_alertItemIsDismissed(_dKey, x.ref); });
+              if (visItems.length === 0) return React.createElement('div', { style:{ fontSize:12, color:g.cor, opacity:0.6, padding:"4px 0" } }, "Todos os itens foram dispensados.");
+              return visItems.map(function(x, vi){
+                var hasNav = !!(x.ref && onItemNav);
+                return React.createElement('div', { key:x.j, style:{ fontSize:12, color:"var(--c-text)", paddingTop:5, borderTop:vi>0?"1px solid "+g.cor+"20":"none", marginTop:vi>0?5:0, display:"flex", alignItems:"center", gap:4 } },
+                  hasNav && React.createElement('span', { onClick:function(){ onItemNav(x.ref, g.tab); }, style:{ fontSize:10, color:g.cor, flexShrink:0, cursor:"pointer" } }, "↗"),
+                  React.createElement('span', { onClick: hasNav ? function(){ onItemNav(x.ref, g.tab); } : undefined, style:{ flex:1, cursor:hasNav?"pointer":"default" } }, x.it),
+                  x.ref && React.createElement('button', { onClick:function(e){ e.stopPropagation(); _alertItemDismiss(_dKey, x.ref); window.dispatchEvent(new CustomEvent("ag-dismissed-changed")); }, style:{ border:"none", background:"transparent", color:g.cor, opacity:0.45, cursor:"pointer", fontSize:13, padding:"0 0 0 4px", lineHeight:1, flexShrink:0 } }, "✕")
+                );
+              });
+            })(),
             g.sub && React.createElement('div', { style:{ fontSize:11, color:g.cor, marginTop:6, fontWeight:600 } }, g.sub)
           )
         );
@@ -15103,7 +15136,9 @@ function statusEfetivoVeiculo(veiculo, contratos) {
   // alugado/disponivel: SEMPRE calculado pelos contratos — ignora veiculo.status
   var temAtivo = (contratos || []).some(function(c) {
     if (String(c.veiculo_id) !== String(veiculo.id)) return false;
+    if (c.status === "cancelado") return false;
     if (c.status === "ativo") return true;
+    if (c.status === "concluido" && c.renovado_para) return true;
     return false;
   });
   return temAtivo ? "alugado" : "disponivel";
@@ -16334,7 +16369,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 , React.createElement('span', { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Status por Multa — "+todasAtivas.length)
                 , React.createElement('span', { onClick:function(){setTab("multas");}, style:{ fontSize:11, color:C.blue, fontWeight:600, cursor:"pointer" } }, "Ver todas →")
               )
-              , React.createElement('div', { ref: _statusMultaBannerRef, style:{ display:"flex", gap:10, overflowX:"auto", padding:"12px 16px 14px", scrollSnapType:"x mandatory", WebkitOverflowScrolling:"touch" } }
+              , React.createElement('div', { ref: _statusMultaBannerRef, style:{ display:"flex", gap:10, overflowX:"auto", paddingTop:12, paddingBottom:14, paddingLeft:0, paddingRight:16, scrollSnapType:"x mandatory", scrollPaddingLeft:16, WebkitOverflowScrolling:"touch" } }
+                , React.createElement('div', { style:{ flexShrink:0, width:16 } })
                 , sorted.map(function(m){
                     var ref = mClVe(m);
                     var pipe = getEffectivePipeline(m);
@@ -16400,6 +16436,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                           : React.createElement('div', { style:{ fontSize:10, color:C.green, fontWeight:700 } }, si >= pipe.length-2 ? "✅ Concluída" : "Sem prazo cadastrado")
                     );
                   })
+                , React.createElement('div', { style:{ flexShrink:0, width:6 } })
               )
             );
           })()

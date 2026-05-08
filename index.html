@@ -30825,18 +30825,21 @@ function App() {
       var veics = results[0] || [];
       var cts = results[1] || [];
       marcarAcordado();
-      setVeiculos(veics);
       setContratos(cts);
-      // ── MIGRAÇÃO: corrige status "alugado" podre no banco ──
+      // Aplica statusEfetivoVeiculo nos dados do banco antes de setar o state
+      var veicsCorrigidos = veics.map(function(v) {
+        if (v.status !== "alugado" && v.status !== "disponivel") return v;
+        var stEf = statusEfetivoVeiculo(v, cts);
+        return stEf !== v.status ? Object.assign({}, v, { status: stEf }) : v;
+      });
+      setVeiculos(veicsCorrigidos);
+      // Persiste correções no banco (background)
       veics.forEach(function(v) {
-        if (v.status !== "alugado") return; // só corrige alugado — manutencao/inativo intocados
-        var statusCorreto = statusEfetivoVeiculo(v, cts);
-        if (statusCorreto !== "alugado") {
-          // Banco diz alugado mas não há contrato ativo → corrige para disponivel
-          db.patch("veiculos", v.id, { status: "disponivel" }).then(function() {
-            setVeiculos(function(p){ return p.map(function(x){ return x.id === v.id ? Object.assign({}, x, { status: "disponivel" }) : x; }); });
-            console.log("[AutoGest] Corrigido: " + v.placa + " alugado→disponivel");
-          }).catch(function(){});
+        if (v.status !== "alugado") return;
+        if (statusEfetivoVeiculo(v, cts) !== "alugado") {
+          db.patch("veiculos", v.id, { status: "disponivel" })
+            .then(function(){ console.log("[AutoGest] Banco corrigido: " + v.placa); })
+            .catch(function(){});
         }
       });
       // ── Snapshot diário de ocupação ──

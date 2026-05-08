@@ -13927,7 +13927,7 @@ const db = {
   async patch(t, id, d) {
     const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
     if (!r.ok) { const e = await r.json(); throw new Error(e.message || "Erro"); }
-    const j = await r.json(); const rec = Array.isArray(j) ? j[0] : j;
+    const j = await r.json(); const rec = Array.isArray(j) ? (j[0] || d) : (j || d);
     this._audit(t, "update", id, d);
     return rec;
   },
@@ -19025,7 +19025,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       if (edit) {
         const ctAntes = contratos.find(function(x){ return x.id === edit; });
         const u = await db.patch("contratos", edit, payload);
-        setContratos(p => p.map(c => c.id === edit ? Object.assign({}, c, u) : c));
+        setContratos(p => p.map(c => c.id === edit ? Object.assign({}, c, payload, u && typeof u === "object" ? u : {}) : c));
         // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
         // Se previsao_pagamento mudou, garantir que existe fatura prevista para o novo mês
         if (payload.previsao_pagamento) { await criarFaturaPrevista(Object.assign({}, u, { id: edit })); }
@@ -27897,6 +27897,12 @@ function LoginScreen({ onLogin }) {
     async function carregar() {
       try {
         var cfg = await db.get("config", "limit=1");
+        var empresa = cfg && cfg[0];
+        if (empresa) {
+          var iconUrl = empresa.pwa_icon_url || empresa.logo_url || "";
+          if (iconUrl) setLogoUrl(iconUrl);
+          if (empresa.nome) setNomeEmpresa(empresa.nome);
+        }
         var pfs = await db.get("perfis");
         var usrs = await db.get("usuarios", "ativo=eq.true&order=nome.asc");
         setPerfis(pfs || []);
@@ -30857,10 +30863,17 @@ function App() {
     // para calcular badge correto já no primeiro render
     Promise.all([
       db.get("veiculos"),
-      db.get("contratos", "limit=500")
+      db.get("contratos", "limit=500"),
+      db.get("contratos", "status=eq.ativo")
     ]).then(function(results) {
       var veics = results[0] || [];
-      var cts = results[1] || [];
+      var ctsRecentes = results[1] || [];
+      var ctsAtivos = results[2] || [];
+      // Merge: recentes + ativos, sem duplicatas
+      var idsVistos = {};
+      var cts = [];
+      ctsRecentes.forEach(function(c){ if (!idsVistos[c.id]){ idsVistos[c.id]=true; cts.push(c); } });
+      ctsAtivos.forEach(function(c){ if (!idsVistos[c.id]){ idsVistos[c.id]=true; cts.push(c); } });
       marcarAcordado();
       setContratos(cts);
       // Aplica statusEfetivoVeiculo nos dados do banco antes de setar o state

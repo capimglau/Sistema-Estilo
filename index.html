@@ -18858,7 +18858,18 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (recVinc.length > 0) setReceitas(function(p){ return p.filter(function(r){ return !r.ref_fatura || !r.ref_fatura.startsWith("fat_" + id + "_"); }); });
     await db.del("contratos", id);
     setContratos(p => p.filter(c => c.id !== id));
-    // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
+    // Se o veículo deste contrato não tem outro contrato ativo, marca como disponível no banco
+    if (ct && ct.veiculo_id) {
+      var outroAtivo = contratos.some(function(x) {
+        return x.id !== id && String(x.veiculo_id) === String(ct.veiculo_id) && x.status === "ativo";
+      });
+      if (!outroAtivo) {
+        try {
+          await db.patch("veiculos", ct.veiculo_id, { status: "disponivel" });
+          setVeiculos(function(p) { return p.map(function(v) { return String(v.id) === String(ct.veiculo_id) ? Object.assign({}, v, { status: "disponivel" }) : v; }); });
+        } catch(e) { console.warn("status veiculo:", e); }
+      }
+    }
     toast("Excluído!");
   }
   async function sincronizarRefFatura(c, dtPag) {
@@ -18885,9 +18896,10 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       }
     }
     if (recExist) {
-      if (recExist.status !== "recebido" || recExist.data_pagamento !== dtPag) {
+      if (recExist.status !== "recebido" || recExist.data_pagamento !== dtPag || parseFloat(recExist.valor) !== parseFloat(c.valor_total||0)) {
         try {
-          var upd2 = await db.patch("receitas", recExist.id, { status: "recebido", data_pagamento: dtPag });
+          var patchSinc = { status: "recebido", data_pagamento: dtPag, valor: parseFloat(c.valor_total||0).toFixed(2) };
+          var upd2 = await db.patch("receitas", recExist.id, patchSinc);
           setReceitas(function(p) { return p.map(function(r) { return r.id === recExist.id ? Object.assign({}, r, upd2) : r; }); });
         } catch(e) { console.warn(e); }
       }
@@ -18916,8 +18928,23 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (/Cartao Credito \d+x/.test(c.forma_pagamento||"")) { await criarParcelasCC(c); return; }
     var mes = c.previsao_pagamento.slice(0,7);
     var refKey = "fat_" + c.id + "_" + mes;
-    if ((receitas||[]).find(function(r){ return r.ref_fatura && (r.ref_fatura === refKey || r.ref_fatura.startsWith("fat_" + c.id + "_")); })) return;
+    // Receita já existe exatamente neste mês — nada a fazer
+    var recExata = (receitas||[]).find(function(r){ return r.ref_fatura === refKey; });
+    if (recExata) return;
+    // Existe receita de outro mês (mês antigo) — migrar data e ref_fatura
+    var recAntiga = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + c.id + "_") && !r.ref_fatura.includes("_cc_p"); });
     var cl = getCl(c.cliente_id); var ve = getVe(c.veiculo_id);
+    if (recAntiga) {
+      // Só migra se ainda não está recebida — pagamento já feito permanece no mês original
+      if (recAntiga.status !== "recebido") {
+        try {
+          var migPatch = { ref_fatura: refKey, data: c.previsao_pagamento, data_vencimento: c.previsao_pagamento, valor: parseFloat(c.valor_total||0).toFixed(2), cliente_id: c.cliente_id };
+          var migUpd = await db.patch("receitas", recAntiga.id, migPatch);
+          setReceitas(function(p){ return p.map(function(r){ return r.id === recAntiga.id ? Object.assign({}, r, migUpd, migPatch) : r; }); });
+        } catch(e) { console.warn("migrar fatura:", e); }
+      }
+      return;
+    }
     try {
       var nova = await db.post("receitas", {
         descricao: "Fatura | Contrato " + getRenLabel(c) + " | " + (cl ? cl.nome : "") + " | " + (ve ? ve.placa : "") + " | Comp. " + fmtComp(mes),
@@ -19034,6 +19061,48 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
         // Se previsao_pagamento mudou, garantir que existe fatura prevista para o novo mês
         if (payload.previsao_pagamento) { await criarFaturaPrevista(Object.assign({}, u, { id: edit })); }
+        // ── SINCRONIZAR VALOR, CLIENTE E VENCIMENTO DA RECEITA ao editar contrato ──
+        // Atualiza TODAS as receitas vinculadas a este contrato (ref_fatura)
+        if (valorFinal) {
+          var recsVinculadas = (receitas || []).filter(function(r) {
+            return r.ref_fatura && r.ref_fatura.startsWith("fat_" + edit + "_") && !r.ref_fatura.includes("_cc_p");
+          });
+          for (var _i = 0; _i < recsVinculadas.length; _i++) {
+            var _rec = recsVinculadas[_i];
+            var _patchR = {};
+            if (parseFloat(_rec.valor) !== parseFloat(valorFinal)) _patchR.valor = valorFinal;
+            if (payload.cliente_id && String(_rec.cliente_id) !== String(payload.cliente_id)) _patchR.cliente_id = payload.cliente_id;
+            if (payload.previsao_pagamento && _rec.data_vencimento !== payload.previsao_pagamento) _patchR.data_vencimento = payload.previsao_pagamento;
+            if (Object.keys(_patchR).length > 0) {
+              try {
+                var _upd = await db.patch("receitas", _rec.id, _patchR);
+                setReceitas(function(p) { return p.map(function(r) { return r.id === _rec.id ? Object.assign({}, r, _upd, _patchR) : r; }); });
+              } catch(e) { console.warn("Erro ao atualizar receita:", e); }
+            }
+          }
+          // Parcelas CC: recalcula valor proporcional
+          var recsCC = (receitas || []).filter(function(r) {
+            return r.ref_fatura && r.ref_fatura.startsWith("fat_" + edit + "_cc_p");
+          });
+          if (recsCC.length > 1) {
+            var totalCentsUpd = Math.round(parseFloat(valorFinal) * 100);
+            var vlrParcUpd = Math.floor(totalCentsUpd / recsCC.length);
+            for (var _j = 0; _j < recsCC.length; _j++) {
+              var _vlrJ = _j === recsCC.length - 1 ? (totalCentsUpd - vlrParcUpd * (recsCC.length - 1)) : vlrParcUpd;
+              var _novoVlr = (_vlrJ / 100).toFixed(2);
+              var _recCC = recsCC[_j];
+              var _patchCC = {};
+              if (parseFloat(_recCC.valor) !== parseFloat(_novoVlr)) _patchCC.valor = _novoVlr;
+              if (payload.cliente_id && String(_recCC.cliente_id) !== String(payload.cliente_id)) _patchCC.cliente_id = payload.cliente_id;
+              if (Object.keys(_patchCC).length > 0) {
+                try {
+                  var _updCC = await db.patch("receitas", _recCC.id, _patchCC);
+                  setReceitas(function(p) { return p.map(function(r) { return r.id === _recCC.id ? Object.assign({}, r, _updCC, _patchCC) : r; }); });
+                } catch(e) { console.warn("Erro ao atualizar parcela CC:", e); }
+              }
+            }
+          }
+        }
         // Se data_pagamento foi definida e contrato está pago, sincronizar receita
         if (payload.data_pagamento && (payload.status_pagamento === "pago" || u.status_pagamento === "pago")) {
           var dtPagNovo = payload.data_pagamento;
@@ -19042,12 +19111,27 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           // Busca receita existente para este contrato (qualquer mês)
           var recLinked = (receitas || []).find(function(r) { return r.ref_fatura && r.ref_fatura.startsWith("fat_" + edit + "_"); });
           if (recLinked) {
-            var patchRec = { data_pagamento: dtPagNovo, status: "recebido" };
+            var patchRec = { data_pagamento: dtPagNovo, status: "recebido", valor: valorFinal };
             if (recLinked.ref_fatura !== refKeyNovo) patchRec.ref_fatura = refKeyNovo;
             var updRec = await db.patch("receitas", recLinked.id, patchRec);
             setReceitas(function(p) { return p.map(function(r) { return r.id === recLinked.id ? Object.assign({}, r, updRec) : r; }); });
           } else {
             await sincronizarRefFatura(Object.assign({}, u, { id: edit }), dtPagNovo);
+          }
+        }
+        // Se contrato foi cancelado ou concluído, liberar o veículo no banco se não houver outro ativo
+        if (payload.status === "cancelado" || payload.status === "concluido") {
+          var veicId = payload.veiculo_id || (ctAntes && ctAntes.veiculo_id);
+          if (veicId) {
+            var outroAtivoCanc = contratos.some(function(x) {
+              return x.id !== edit && String(x.veiculo_id) === String(veicId) && x.status === "ativo";
+            });
+            if (!outroAtivoCanc) {
+              try {
+                await db.patch("veiculos", veicId, { status: "disponivel" });
+                setVeiculos(function(p) { return p.map(function(v) { return String(v.id) === String(veicId) ? Object.assign({}, v, { status: "disponivel" }) : v; }); });
+              } catch(e) { console.warn("status veiculo cancelado:", e); }
+            }
           }
         }
         toast("Atualizado!");
@@ -19434,9 +19518,16 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                   (async function(){
                     if (!confirm("Desfazer renovação? O contrato renovado (#" + numCt(c.renovado_para) + ") será excluído e este voltará a 'ativo'.")) return;
                     try {
-                      await db.del("contratos", c.renovado_para);
+                      var filhoId = c.renovado_para;
+                      // Cascade: exclui receitas vinculadas ao contrato filho
+                      var recFilho = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + filhoId + "_"); });
+                      for (var _rfi = 0; _rfi < recFilho.length; _rfi++) {
+                        try { await db.del("receitas", recFilho[_rfi].id); } catch(e) { console.warn(e); }
+                      }
+                      if (recFilho.length > 0) setReceitas(function(p){ return p.filter(function(r){ return !r.ref_fatura || !r.ref_fatura.startsWith("fat_" + filhoId + "_"); }); });
+                      await db.del("contratos", filhoId);
                       await db.patch("contratos", c.id, { status: "ativo", renovado_para: null });
-                      setContratos(p => p.filter(x => x.id !== c.renovado_para).map(x => x.id === c.id ? Object.assign({}, x, { status: "ativo", renovado_para: null }) : x));
+                      setContratos(p => p.filter(x => x.id !== filhoId).map(x => x.id === c.id ? Object.assign({}, x, { status: "ativo", renovado_para: null }) : x));
                       toast("↩ Renovação desfeita. Contrato restaurado.");
                     } catch(e) { toast("Erro ao desfazer: " + e.message, "error"); }
                   })();
@@ -30866,17 +30957,10 @@ function App() {
     // para calcular badge correto já no primeiro render
     Promise.all([
       db.get("veiculos"),
-      db.get("contratos", "limit=500"),
-      db.get("contratos", "status=eq.ativo")
+      db.getAll("contratos"),
     ]).then(function(results) {
       var veics = results[0] || [];
-      var ctsRecentes = results[1] || [];
-      var ctsAtivos = results[2] || [];
-      // Merge: recentes + ativos, sem duplicatas
-      var idsVistos = {};
-      var cts = [];
-      ctsRecentes.forEach(function(c){ if (!idsVistos[c.id]){ idsVistos[c.id]=true; cts.push(c); } });
-      ctsAtivos.forEach(function(c){ if (!idsVistos[c.id]){ idsVistos[c.id]=true; cts.push(c); } });
+      var cts = results[1] || [];
       marcarAcordado();
       setContratos(cts);
       // Aplica statusEfetivoVeiculo nos dados do banco antes de setar o state
@@ -30914,12 +30998,12 @@ function App() {
       } catch(e) { /* best-effort */ }
     });
     db.get("reservas").then(d => setReservas(d || []));
-    db.get("multas").then(d => setMultas(d || []));
-    db.get("manutencao").then(d => setManutencoes(d || []));
+    db.getAll("multas").then(d => setMultas(d || []));
+    db.getAll("manutencao").then(d => setManutencoes(d || []));
     db.getAll("despesas").then(d => setDespesas(d || []));
     db.getAll("receitas").then(d => setReceitas(d || []));
     db.getAll("contas").then(d => setContas(d || []));
-    db.get("usos").then(d => setUsos(d || []));
+    db.getAll("usos").then(d => setUsos(d || []));
     db.get("config", "limit=1").then(d => { if (d && d[0]) { setEmpresa(d[0]); if (d[0].claude_api_key) { setClaudeKey(d[0].claude_api_key); try { localStorage.setItem("claude_api_key", d[0].claude_api_key); } catch(e) {} } } });
   }, [refreshTick]);
 

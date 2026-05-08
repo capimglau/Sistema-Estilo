@@ -15097,23 +15097,29 @@ function shareWhatsApp(ct, cl, ve, emp) {
 
 // -- INICIO ----------------------------------------------------------------─
 // Status efetivo do veículo derivado dos contratos (fonte da verdade)
+// Regras:
+//   1. Manutenção e inativo têm prioridade absoluta
+//   2. Alugado se há contrato "ativo"
+//   3. Alugado se há contrato "concluido" COM renovado_para apontando para outro contrato ativo (renovação em cadeia)
+//   4. Encerrado / Cancelado / Concluído sem renovação ativa = disponível
 function statusEfetivoVeiculo(veiculo, contratos) {
-  // Manutenção e inativo têm prioridade absoluta
   if (veiculo.status === "manutencao" || veiculo.status === "inativo") return veiculo.status;
-  // Alugado se há contrato "ativo" vinculado ao veículo
-  // OU se há contrato "concluido" com renovado_para cujo filho também está "ativo"
-  // (renovação em cadeia — veículo continua ocupado)
   var idsContratos = {};
   contratos.forEach(function(c){ idsContratos[c.id] = c; });
   var temAtivo = contratos.some(function(c) {
     if (String(c.veiculo_id) !== String(veiculo.id)) return false;
-    // Contrato diretamente ativo
+    // "encerrado" sempre libera o veículo, independente de renovado_para
+    if (c.status === "encerrado") return false;
+    // Cancelado libera
+    if (c.status === "cancelado") return false;
+    // Ativo = ocupado
     if (c.status === "ativo") return true;
-    // Contrato concluído/renovado cujo filho ainda está ativo = veículo ocupado
-    if (c.renovado_para) {
+    // Concluído com renovação: ocupa apenas se o filho ainda está ativo
+    if (c.status === "concluido" && c.renovado_para) {
       var filho = idsContratos[c.renovado_para];
-      if (filho && filho.status === "ativo") return true;
+      return filho && filho.status === "ativo";
     }
+    // Concluído sem renovação = disponível
     return false;
   });
   return temAtivo ? "alugado" : "disponivel";
@@ -15224,7 +15230,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
   const manMesBanner = manutencoes.filter(m => manVisivelNoMes(m, dashMes)).reduce((s,m)=>s+parseFloat(m.custo||0),0);
   const resultPrevBanner = prevMes - despMesBanner - manMesBanner;
 
-  const receitaContratos = contratos.filter(c => c.status === "concluido").reduce((s, c) => s + parseFloat(c.valor_total || 0), 0);
+  const receitaContratos = contratos.filter(c => c.status === "concluido" || c.status === "encerrado").reduce((s, c) => s + parseFloat(c.valor_total || 0), 0);
   const receitaManual = (receitas || []).filter(r => !r.ref_fatura).reduce((s, r) => s + parseFloat(r.valor || 0), 0);
   const totalDesp = despesas.reduce((s, d) => s + parseFloat(d.valor || 0), 0);
   const lucro = receitaContratos + receitaManual - totalDesp;
@@ -18433,7 +18439,7 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
       , fil.map((c, i) => {
         var ctsCli = contratos.filter(x => x.cliente_id == c.id);
         var totalContratos = ctsCli.length;
-        var inadimplentes = ctsCli.filter(x => x.status === "concluido" && x.status_pagamento !== "pago" && x.status_pagamento !== "isento").length;
+        var inadimplentes = ctsCli.filter(x => ( x.status === "concluido" || x.status === "encerrado") && x.status_pagamento !== "pago" && x.status_pagamento !== "isento").length;
         var score = totalContratos === 0 ? null : Math.round(((totalContratos - inadimplentes) / totalContratos) * 100);
         var scoreCor = score === null ? C.gray : score >= 90 ? C.green : score >= 70 ? C.orange : C.red;
         return (
@@ -18518,7 +18524,7 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
               )
               , React.createElement('div', { style: { textAlign: "right" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 693}}
                 , React.createElement('div', { style: { fontWeight: 600, color: C.green, fontSize: 13 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 694}}, fmtBRL(c.valor_total))
-                , React.createElement('span', { style: Badge(c.status === "ativo" ? C.blue : c.status === "concluido" ? C.green : C.red), __self: this, __source: {fileName: _jsxFileName, lineNumber: 695}}, c.status)
+                , React.createElement('span', { style: Badge(c.status === "ativo" ? C.blue : c.status === "concluido" ? C.green : c.status === "encerrado" ? C.purple : C.red), __self: this, __source: {fileName: _jsxFileName, lineNumber: 695}}, c.status)
                 , c.status_pagamento && React.createElement('div', { style: { marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 696}}, React.createElement('span', { style: Badge(c.status_pagamento === "pago" ? C.green : C.orange), __self: this, __source: {fileName: _jsxFileName, lineNumber: 696}}, c.status_pagamento))
               )
             )
@@ -18527,7 +18533,7 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
         , histContratos.length > 0 && (() => {
           var total = histContratos.reduce((s, c) => s + parseFloat(c.valor_total || 0), 0);
           var pagos = histContratos.filter(c => c.status_pagamento === "pago").reduce((s, c) => s + parseFloat(c.valor_total || 0), 0);
-          var inadimpl = histContratos.filter(c => c.status === "concluido" && c.status_pagamento !== "pago" && c.status_pagamento !== "isento").length;
+          var inadimpl = histContratos.filter(c => (c.status === "concluido" || c.status === "encerrado") && c.status_pagamento !== "pago" && c.status_pagamento !== "isento").length;
           return React.createElement('div', { style: { marginTop: 12, paddingTop: 10, borderTop: "1px solid " + C.border, display: "flex", gap: 16, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 705}}
             , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 706}}, React.createElement('div', { style: { fontSize: 10, color: C.sub, textTransform: "uppercase" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 706}}, "Total contratos" ), React.createElement('div', { style: { fontWeight: 700, color: C.blue }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 706}}, fmtBRL(total)))
             , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 707}}, React.createElement('div', { style: { fontSize: 10, color: C.sub, textTransform: "uppercase" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 707}}, "Recebido"), React.createElement('div', { style: { fontWeight: 700, color: C.green }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 707}}, fmtBRL(pagos)))
@@ -19081,7 +19087,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (kmFinalInput === null) return;
     var obsInput = prompt("Observações do encerramento (opcional):", "");
     if (obsInput === null) return;
-    var patchData = { status: "concluido" };
+    var patchData = { status: "encerrado" };
     if (kmFinalInput) patchData.km_final = parseFloat(kmFinalInput);
     if (obsInput) patchData.observacoes = (ct.observacoes ? ct.observacoes + "\n" : "") + "Encerramento: " + obsInput;
     await db.patch("contratos", ct.id, patchData);
@@ -19092,7 +19098,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     setContratos(p => p.map(c => c.id === ct.id ? Object.assign({}, c, patchData) : c));
     toast(outroAtivoEncerrar ? "Encerrado! Veículo ainda possui contrato ativo." : "Encerrado! Veículo liberado.");
   }
-  const SC = { ativo: C.blue, concluido: C.green, cancelado: C.red };
+  const SC = { ativo: C.blue, concluido: C.green, cancelado: C.red, encerrado: C.purple };
   var veicsDisp = veicsDisponiveis();
   var mesAtual = new Date().toISOString().slice(0, 7);
   var proxMesDate = new Date(); proxMesDate.setMonth(proxMesDate.getMonth() + 1);
@@ -19101,7 +19107,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   function filtrarContratos(lista) {
     return lista.filter(c => {
       if (filter === "todos") {}
-      else if (filter === "ativo" || filter === "concluido") { if (c.status !== filter) return false; }
+      else if (filter === "ativo" || filter === "concluido" || filter === "encerrado") { if (c.status !== filter) return false; }
       else if (filter === "mes") { if (!c.previsao_pagamento || c.previsao_pagamento.slice(0,7) !== filtroMesCt) return false; }
       else if (filter === "a_receber") { if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false; if (!c.previsao_pagamento || c.previsao_pagamento.slice(0,7) !== filtroMesCt) return false; }
       else if (filter === "parcial") { if (c.status_pagamento !== "parcial") return false; }
@@ -19246,6 +19252,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         , React.createElement('option', { value: "parcial" }, "Parcial")
         , React.createElement('option', { value: "ativo" }, "Todos Ativos")
         , React.createElement('option', { value: "concluido" }, "Concluídos")
+        , React.createElement('option', { value: "encerrado" }, "Encerrados")
         , React.createElement('option', { value: "todos" }, "Todos")
       )
       , React.createElement('select', { style: Object.assign({}, FI, { width: "auto", fontSize: 13, padding: "6px 8px", flexShrink: 0, cursor: "pointer" }), value: sortCt, onChange: function(e){setSortCt(e.target.value);} }
@@ -19577,7 +19584,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             )
           )
         )
-        , React.createElement(Lbl, { label: "Status", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, React.createElement('select', { style: FI, value: form.status || "ativo", onChange: e => F("status", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, React.createElement('option', { value: "ativo", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, "Ativo"), React.createElement('option', { value: "concluido", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, "Concluido"), React.createElement('option', { value: "cancelado", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, "Cancelado")))
+        , React.createElement(Lbl, { label: "Status", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, React.createElement('select', { style: FI, value: form.status || "ativo", onChange: e => F("status", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, React.createElement('option', { value: "ativo" }, "Ativo"), React.createElement('option', { value: "concluido" }, "Concluido"), React.createElement('option', { value: "cancelado" }, "Cancelado"), React.createElement('option', { value: "encerrado" }, "Encerrado")))
         , React.createElement('div', { style: { background: "rgba(143,203,163,0.08)", borderRadius: 12, padding: "12px 14px", border: "1px solid rgba(143,203,163,0.3)" } }
           , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: "#8FCBA3", marginBottom: 10 } }, "🛡️ Seguro / Proteção")
           , React.createElement('div', { style: { display: "flex", gap: 10 } }

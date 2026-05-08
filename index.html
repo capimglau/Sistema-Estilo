@@ -15140,9 +15140,9 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
   const nomeMes = new Date(dashMes + "-15").toLocaleString("pt-BR", { month: "long", year: "numeric" });
   const em1dia = new Date(); em1dia.setDate(em1dia.getDate() + 1); const str1 = em1dia.toISOString().split("T")[0];
   const em7dias = new Date(); em7dias.setDate(em7dias.getDate() + 7); const str7 = em7dias.toISOString().split("T")[0];
-  const em17dias = new Date(); em17dias.setDate(em17dias.getDate() + 1); const str17 = em17dias.toISOString().split("T")[0];
+  const em17dias = new Date(); em17dias.setDate(em17dias.getDate() + 17); const str17 = em17dias.toISOString().split("T")[0];
   const em30dias = new Date(); em30dias.setDate(em30dias.getDate() + 30); const str30 = em30dias.toISOString().split("T")[0];
-  const em3dias = new Date(); em3dias.setDate(em3dias.getDate() + 1); const str3 = em3dias.toISOString().split("T")[0];
+  const em3dias = new Date(); em3dias.setDate(em3dias.getDate() + 3); const str3 = em3dias.toISOString().split("T")[0];
   const [despExpanded, setDespExpanded] = React.useState(false);
   const [despDashFilter, setDespDashFilter] = React.useState(null); // null | "previstas" | "pagas"
   const [manExpanded, setManExpanded] = React.useState(false);
@@ -15266,7 +15266,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
   });
   const contratosVencendo = contratos.filter(c => c.status === "ativo" && c.data_fim && c.data_fim >= hoje && c.data_fim <= str1 && !renovadosIds.has(c.id));
   const contratosParaFaturar = contratos.filter(c => {
-    if (c.status === "cancelado" || c.status === "concluido") return false;
+    if (c.status === "cancelado" || c.status === "concluido" || c.status === "encerrado") return false;
     if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false;
     if (!c.previsao_pagamento) return false;
     if (!(c.previsao_pagamento > hoje && c.previsao_pagamento <= str1)) return false;
@@ -15313,7 +15313,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     return !paga;
   });
   var faturasAEmitir = (contratos || []).filter(function(c) {
-    if (c.status === "cancelado" || c.status === "concluido") return false;
+    if (c.status === "cancelado" || c.status === "concluido" || c.status === "encerrado") return false;
     if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false;
     if (!c.previsao_pagamento || c.previsao_pagamento < hoje || c.previsao_pagamento > str1) return false;
     return !(receitas || []).some(function(r) { return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
@@ -17751,7 +17751,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
       var recMes, recTotal;
       if(md==='apurado') {
         recMes = ctsMes.reduce(function(s,c){
-          if(c.status==='concluido'||c.status_pagamento==='pago') return s+parseFloat(c.valor_total||0);
+          if(c.status==='concluido'||c.status==='encerrado'||c.status_pagamento==='pago') return s+parseFloat(c.valor_total||0);
           if(c.status_pagamento==='parcial'&&c.valor_pago) return s+parseFloat(c.valor_pago||0);
           return s+parseFloat(c.valor_total||0); // conta contratos ativos do mês tb
         }, 0);
@@ -17800,12 +17800,12 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
       var ctsAll = cts;
       var diasRodados = ctsAll.reduce(function(s,c){
         if(!c.data_inicio) return s;
-        var ini=new Date(c.data_inicio), fim=c.status==='concluido'&&c.data_fim?new Date(c.data_fim):new Date();
+        var ini=new Date(c.data_inicio), fim=(c.status==='concluido'||c.status==='encerrado')&&c.data_fim?new Date(c.data_fim):new Date();
         return s+Math.max(0,Math.floor((fim-ini)/86400000));
       },0);
       var lucroHistDia = diasRodados>0
         ? ctsAll.reduce(function(s,c){
-            if(c.status==='concluido'||c.status_pagamento==='pago') return s+parseFloat(c.valor_total||0);
+            if(c.status==='concluido'||c.status==='encerrado'||c.status_pagamento==='pago') return s+parseFloat(c.valor_total||0);
             return s;
           },0) / diasRodados
         : parseFloat(v.valor_diaria||0)*0.70/30;
@@ -19073,7 +19073,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     try {
       // Cria o filho primeiro — só marca o pai como concluido após sucesso
       const novo = await db.post("contratos", payload);
-      // grava o id do novo contrato no original para rastreamento
+      // Se o pai tinha renovado_para órfão (filho excluído), limpa antes de reescrever
       await db.patch("contratos", ct.id, { status: "concluido", renovado_para: novo.id });
       setContratos(p => p.map(c => c.id === ct.id ? Object.assign({}, c, { status: "concluido", renovado_para: novo.id }) : c).concat([novo]));
       await criarFaturaPrevista(novo);
@@ -19399,9 +19399,10 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                 else if (action === "reabrir") {
                   (async function(){
                     if (!confirm("Reabrir contrato como ativo?")) return;
-                    await db.patch("contratos", c.id, { status: "ativo" });
-                    // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
-                    setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status: "ativo" }) : x));
+                    var filhoExiste = c.renovado_para && contratos.find(function(x){ return x.id === c.renovado_para; });
+                    var patch = filhoExiste ? { status: "ativo" } : { status: "ativo", renovado_para: null };
+                    await db.patch("contratos", c.id, patch);
+                    setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, patch) : x));
                     toast("↩ Contrato reaberto");
                   })();
                 }
@@ -19427,15 +19428,15 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             }
             , React.createElement('option', { value: "" }, "— Ações —")
             , React.createElement('option', { value: "editar" }, "✏ Editar")
-            , c.status === "ativo" && !foiRenovado ? React.createElement('option', { value: "renovar" }, "↻ Renovar") : null
+            , (c.status === "ativo" && !foiRenovado) || (c.status === "concluido" && c.renovado_para && !contratos.find(function(x){ return x.id === c.renovado_para; })) ? React.createElement('option', { value: "renovar" }, "↻ Renovar") : null
             , isPendente ? React.createElement('option', { value: "receber" }, "💰 Receber") : null
             , isParcial ? React.createElement('option', { value: "editar_parcial" }, "✏ Editar parcial") : null
             , isParcial ? React.createElement('option', { value: "completar_pgto" }, "✅ Completar pgto") : null
             , isParcial ? React.createElement('option', { value: "reverter_parcial" }, "↩ Reverter parcial") : null
             , isPago ? React.createElement('option', { value: "reverter_pgto" }, "↩ Reverter pgto") : null
             , c.status === "ativo" ? React.createElement('option', { value: "encerrar" }, "Encerrar") : null
-            , c.status === "concluido" ? React.createElement('option', { value: "reabrir" }, "↩ Reabrir") : null
-            , c.status === "concluido" && c.renovado_para ? React.createElement('option', { value: "desfazer_renovacao" }, "↩ Desfazer renovação") : null
+            , (c.status === "concluido" || c.status === "encerrado") ? React.createElement('option', { value: "reabrir" }, "↩ Reabrir") : null
+            , c.status === "concluido" && c.renovado_para && contratos.find(function(x){ return x.id === c.renovado_para; }) ? React.createElement('option', { value: "desfazer_renovacao" }, "↩ Desfazer renovação") : null
             , React.createElement('option', { value: "contrato" }, "📄 Contrato")
             , React.createElement('option', { value: "fatura" }, "🧾 Fatura")
             , c.status === "ativo" ? React.createElement('option', { value: "uso" }, "📍 Uso") : null
@@ -22299,7 +22300,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
   // Totais gerais acumulados — contratos pagos integralmente + valor_pago dos parciais
   var receitaContratos = contratos.reduce((s, c) => {
-    if (c.status_pagamento === "pago" || c.status === "concluido" && c.status_pagamento === "pago") return s + parseFloat(c.valor_total || 0);
+    if (c.status_pagamento === "pago" || (c.status === "concluido" || c.status === "encerrado") && c.status_pagamento === "pago") return s + parseFloat(c.valor_total || 0);
     if (c.status_pagamento === "parcial" && c.valor_pago) return s + parseFloat(c.valor_pago || 0);
     return s;
   }, 0);
@@ -22362,7 +22363,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   // Mostra todos independente de status_pagamento — igual às despesas
   var ctsDoMes = contratos.filter(c => {
     if (!c.previsao_pagamento) return false;
-    if (c.status === "cancelado" || c.status === "concluido") return false;
+    if (c.status === "cancelado" || c.status === "concluido" || c.status === "encerrado") return false;
     if (c.renovado_para) return false;
 
     if (c.previsao_pagamento.slice(0,7) !== filtroMes) return false;
@@ -24964,7 +24965,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   const [fatSit, setFatSit] = useState("");
 
   var receita = contratos.reduce((s, c) => {
-    if (c.status === "concluido" || c.status_pagamento === "pago") return s + parseFloat(c.valor_total || 0);
+    if (c.status === "concluido" || c.status === "encerrado" || c.status_pagamento === "pago") return s + parseFloat(c.valor_total || 0);
     if (c.status_pagamento === "parcial" && c.valor_pago) return s + parseFloat(c.valor_pago || 0);
     return s;
   }, 0);
@@ -25175,7 +25176,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
       var porVeiculo = veiculos.map(v => {
         var cts = contratos.filter(c => c.veiculo_id == v.id);
         var receitaContratos = cts.reduce((s,c) => {
-        if (c.status === "concluido" || c.status_pagamento === "pago") return s + parseFloat(c.valor_total||0);
+        if (c.status === "concluido" || c.status === "encerrado" || c.status_pagamento === "pago") return s + parseFloat(c.valor_total||0);
         if (c.status_pagamento === "parcial" && c.valor_pago) return s + parseFloat(c.valor_pago||0);
         return s;
       }, 0);
@@ -25193,7 +25194,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
         var diasRodados = cts.reduce(function(s,c){
           if (!c.data_inicio) return s;
           var ini = new Date(c.data_inicio);
-          var fim = c.status === "concluido" && c.data_fim ? new Date(c.data_fim) : new Date();
+          var fim = (c.status === "concluido" || c.status === "encerrado") && c.data_fim ? new Date(c.data_fim) : new Date();
           var d = Math.max(0, Math.floor((fim - ini) / 86400000));
           return s + d;
         }, 0);
@@ -27093,7 +27094,7 @@ function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, rese
     var pl=ve?ve.placa:(c.veiculo_placa||""); var nm=cl?cl.nome:(c.cliente_nome||"Cliente");
     var sub=nm+(pl?" · "+pl:"");
     if(c.data_inicio) addEv({id:"ct_i_"+c.id,date:c.data_inicio,type:"contrato",icon:"📄",color:C.blue,titulo:"Contrato iniciado #"+c.id,sub:sub,detalhe:fmtBRL(c.valor_total)+" · "+fmtDate(c.data_inicio)+" → "+fmtDate(c.data_fim),vid:c.veiculo_id,cid:c.cliente_id});
-    if(c.status==="concluido"&&c.data_fim) addEv({id:"ct_f_"+c.id,date:c.data_fim,type:"contrato_fim",icon:"🏁",color:C.teal,titulo:"Contrato concluído #"+c.id,sub:sub,detalhe:fmtDate(c.data_inicio)+" → "+fmtDate(c.data_fim),vid:c.veiculo_id,cid:c.cliente_id});
+    if((c.status==="concluido"||c.status==="encerrado")&&c.data_fim) addEv({id:"ct_f_"+c.id,date:c.data_fim,type:"contrato_fim",icon:"🏁",color:C.teal,titulo:"Contrato concluído #"+c.id,sub:sub,detalhe:fmtDate(c.data_inicio)+" → "+fmtDate(c.data_fim),vid:c.veiculo_id,cid:c.cliente_id});
     if(c.status_pagamento==="pago"&&c.data_pagamento) addEv({id:"ct_p_"+c.id,date:c.data_pagamento,type:"pagamento",icon:"💰",color:C.green,titulo:"Pagamento recebido",sub:sub,detalhe:fmtBRL(c.valor_total),vid:c.veiculo_id,cid:c.cliente_id});
     if(c.status_pagamento==="parcial"&&c.valor_pago) addEv({id:"ct_par_"+c.id,date:c.data_pagamento||c.data_fim||c.data_inicio||"",type:"pagamento",icon:"💵",color:C.orange,titulo:"Pagamento parcial #"+c.id,sub:sub,detalhe:fmtBRL(c.valor_pago)+" de "+fmtBRL(c.valor_total),vid:c.veiculo_id,cid:c.cliente_id});
   });
@@ -29428,7 +29429,7 @@ function ClaudeAssistant(props) {
       "- Para fechar contratos: use fechar_contrato (libera o veículo automaticamente).",
       "- Para deletar: só execute se o usuário confirmar explicitamente (confirmacao=true).",
       "- Datas: YYYY-MM-DD para banco, DD/MM/YYYY nas respostas.",
-      "- Status contratos: 'ativo','concluido','cancelado'. Status veículos: 'disponivel','alugado','manutencao'.",
+      "- Status contratos: 'ativo','concluido' (renovado/em cadeia),'encerrado' (finalizado, libera veículo),'cancelado'. Status veículos: 'disponivel','alugado','manutencao'.",
       "- Formate valores monetários como R$ X.XXX,XX."
     ].join("\n");
   }
@@ -29474,7 +29475,7 @@ function ClaudeAssistant(props) {
     },
     {
       name: "fechar_contrato",
-      description: "Encerra um contrato ativo: muda status para 'concluido' e libera o veículo (status→'disponivel'). Use sempre esta ferramenta para fechar contratos.",
+      description: "Encerra um contrato ativo: muda status para 'encerrado' e libera o veículo automaticamente. Use sempre esta ferramenta para fechar contratos.",
       input_schema: {
         type: "object",
         properties: {
@@ -29568,8 +29569,7 @@ function ClaudeAssistant(props) {
       if (name === "fechar_contrato") {
         var ctr = (d.contratos||[]).find(function(c){return String(c.id)===String(inp.contrato_id);});
         if (!ctr) return JSON.stringify({ erro: "Contrato #" + inp.contrato_id + " não encontrado" });
-        var patch = { status: "concluido" };
-        if (inp.observacoes_encerramento) patch.observacoes_encerramento = inp.observacoes_encerramento;
+        var patch = { status: "encerrado" };
         if (inp.valor_pago != null) patch.valor_pago = inp.valor_pago;
         await db.patch("contratos", inp.contrato_id, patch);
         setContratos(function(p){return p.map(function(c){return String(c.id)===String(inp.contrato_id)?Object.assign({},c,patch):c;});});

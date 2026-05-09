@@ -16907,7 +16907,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         }
       });
       var despData = meses6.map(function(m){
-        var dTotal = despesas.filter(function(d){ return despesaVisivelNoMes(d,m) && !isRetLucro(d); }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
+        var dTotal = resolverDespesasDoMes(despesas.filter(function(d){ return !isRetLucro(d); }), m).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
         // Manutenções sem despesa vinculada (evita dupla contagem)
         var mTotal = (manutencoes||[]).filter(function(mn){
           if (!manVisivelNoMes(mn,m)) return false;
@@ -16922,14 +16922,11 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         var isTodas = catSel === "Todas";
         var isManCat = isTodas || catSel === "Manutencao" || catSel === "Manutenção";
 
-        // Despesas normais + despesas vinculadas a manutenção com categoria própria
-        var totalDesp = despesas.filter(function(d){
-          if (!despesaVisivelNoMes(d, m)) return false;
-          // Retirada de Lucro nunca conta como despesa operacional
-          if (isRetLucro(d)) return false;
+        // Despesas deduplciadas (pai+filha) + sem Retirada de Lucro
+        var _catResolvidas = resolverDespesasDoMes(despesas.filter(function(d){ return !isRetLucro(d); }), m);
+        var totalDesp = _catResolvidas.filter(function(d){
           var dcat = d.categoria||"Outros";
           // Despesas vinculadas à manutenção com categoria Manutenção: só inclui se catSel é Todas ou Manutenção
-          // (evita dupla contagem com totalMan abaixo)
           if (d.manutencao_id && (dcat === "Manutenção" || dcat === "Manutencao")) {
             if (!isManCat) return false;
           }
@@ -16938,8 +16935,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             var match = dcat === catSel || (isManCat && (dcat === "Manutencao" || dcat === "Manutenção"));
             if (!match) return false;
           }
-          if (catMode === "pagas") {
-            if (d.recorrente && (d.data||"").slice(0,7) < m) return (d.data_pagamento||"").slice(0,7) === m;
+          if (catMode === "efetivadas") {
             return d.status === "pago" || !!d.data_pagamento;
           }
           return true;
@@ -16953,7 +16949,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             // Só inclui se não há despesa vinculada (evita dupla contagem)
             var hasDesp = (despesas||[]).some(function(d){ return String(d.manutencao_id) === String(mn.id); });
             if (hasDesp) return false;
-            if (catMode === "pagas") {
+            if (catMode === "efetivadas") {
               if (mn.recorrente && (mn.data_previsao_pagamento||mn.data_entrada||"").slice(0,7) < m) return (mn.data_pagamento||"").slice(0,7) === m;
               return mn.status_financeiro === "pago" || !!mn.data_pagamento;
             }
@@ -17035,7 +17031,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 +(receitas||[]).filter(function(r){ return !r.ref_fatura&&receitaVisivelNoMes(r,m); }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
             });
             var desp6L = mL.map(function(m){
-              var dT = despesas.filter(function(d){ return despesaVisivelNoMes(d,m)&&!isRetLucro(d); }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
+              var dT = resolverDespesasDoMes(despesas.filter(function(d){ return !isRetLucro(d); }), m).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
               var mT = (manutencoes||[]).filter(function(mn){ if(!manVisivelNoMes(mn,m))return false; return !(despesas||[]).some(function(d){return String(d.manutencao_id)===String(mn.id);}); }).reduce(function(s,mn){return s+parseFloat(mn.custo||0);},0);
               return dT+mT;
             });
@@ -17181,7 +17177,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             ),
             React.createElement('select', { value:catMode, onChange:function(e){ setCatMode(e.target.value); setCatClickedMes(null); }, style:{ background:"rgba(120,120,128,0.10)", border:"1px solid "+C.border, borderRadius:10, padding:"7px 10px", fontSize:12, fontWeight:600, color:"var(--c-text)", outline:"none" } },
               React.createElement('option', { value:"previstas" }, "Previstas"),
-              React.createElement('option', { value:"pagas" }, "Pagas")
+              React.createElement('option', { value:"efetivadas" }, "Efetivadas")
             )
           ),
           React.createElement('div', { style:{ fontSize:10, color:C.sub, marginBottom:6, textAlign:"center" } }, "Toque em uma barra para ver a análise detalhada"),
@@ -17209,9 +17205,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
           var isManCat = isTodas || catSel === "Manutencao" || catSel === "Manutenção";
           // Busca despesas do mês clicado e do mês anterior
           function getDespMes(mes) {
-            var list = despesas.filter(function(d){
-              if (!despesaVisivelNoMes(d, mes)) return false;
-              if (isRetLucro(d)) return false;
+            var _resolvidas = resolverDespesasDoMes(despesas.filter(function(d){ return !isRetLucro(d); }), mes);
+            var list = _resolvidas.filter(function(d){
               var dcat = d.categoria||"Outros";
               // Despesas vinculadas a manutenção com categoria Manutenção: só conta se isManCat (evita dupla contagem)
               if (d.manutencao_id && (dcat === "Manutenção" || dcat === "Manutencao")) {
@@ -17222,8 +17217,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 var match = dcat === catSel || (isManCat && (dcat === "Manutencao" || dcat === "Manutenção"));
                 if (!match) return false;
               }
-              if (catMode === "pagas") {
-                if (d.recorrente && (d.data||"").slice(0,7) < mes) return (d.data_pagamento||"").slice(0,7) === mes;
+              if (catMode === "efetivadas") {
                 return d.status === "pago" || !!d.data_pagamento;
               }
               return true;
@@ -17234,7 +17228,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 if (!manVisivelNoMes(mn, mes)) return false;
                 var hasDesp = (despesas||[]).some(function(d){ return String(d.manutencao_id) === String(mn.id); });
                 if (hasDesp) return false;
-                if (catMode === "pagas") {
+                if (catMode === "efetivadas") {
                   if (mn.recorrente && (mn.data_previsao_pagamento||mn.data_entrada||"").slice(0,7) < mes) return (mn.data_pagamento||"").slice(0,7) === mes;
                   return mn.status_financeiro === "pago" || !!mn.data_pagamento;
                 }
@@ -17293,7 +17287,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             // Resumo geral
             React.createElement('div', { style:{ display:"flex", gap:8, marginBottom:14 } },
               React.createElement('div', { style:{ flex:1, background:"rgba(0,122,255,0.08)", borderRadius:12, padding:"10px 12px" } },
-                React.createElement('div', { style:{ fontSize:10, color:C.sub, fontWeight:600 } }, "TOTAL " + (catMode==="pagas"?"PAGO":"PREVISTO")),
+                React.createElement('div', { style:{ fontSize:10, color:C.sub, fontWeight:600 } }, "TOTAL " + (catMode==="efetivadas"?"EFETIVADO":"PREVISTO")),
                 React.createElement('div', { style:{ fontSize:16, fontWeight:800, color:C.blue, marginTop:2 } }, fmtBRL(valCl))
               ),
               idxAnt >= 0 ? React.createElement('div', { style:{ flex:1, background: diff > 0 ? "rgba(255,59,48,0.08)" : "rgba(52,199,89,0.08)", borderRadius:12, padding:"10px 12px" } },
@@ -17407,13 +17401,11 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       var [catFiltro, setCatFiltro] = React.useState("previstas");
       var [listaAberta, setListaAberta] = React.useState(false);
 
-      // Calcula despesas agrupadas por categoria — respeita filtro previstas/pagas
+      // Calcula despesas agrupadas por categoria — respeita filtro previstas/efetivadas
       var catMap = {};
-      despesas.filter(function(d){
-        if (!despesaVisivelNoMes(d, dashMes) || isRetLucro(d)) return false;
-        if (catFiltro === "pagas") {
-          if (d.recorrente && (d.data||"").slice(0,7) < dashMes) return (d.data_pagamento||"").slice(0,7) === dashMes;
-          return d.status === "pago";
+      resolverDespesasDoMes(despesas.filter(function(d){ return !isRetLucro(d); }), dashMes).filter(function(d){
+        if (catFiltro === "efetivadas") {
+          return d.status === "pago" || !!d.data_pagamento;
         }
         return true;
       }).forEach(function(d){
@@ -17425,7 +17417,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         if (!manVisivelNoMes(m, dashMes)) return false;
         var hasDesp = despesas.some(function(d){ return String(d.manutencao_id) === String(m.id); });
         if (hasDesp) return false;
-        if (catFiltro === "pagas") return m.status_financeiro === "pago" || !!m.data_pagamento;
+        if (catFiltro === "efetivadas") return m.status_financeiro === "pago" || !!m.data_pagamento;
         return true;
       });
       var manTotal = manFiltradas.reduce(function(s,m){ return s+parseFloat(m.custo||0); },0);
@@ -17435,7 +17427,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         .sort(function(a,b){ return b.val-a.val; });
       var totalCat = catArr.reduce(function(s,x){ return s+x.val; },0);
 
-      if (catArr.length === 0 && catFiltro === "pagas") {
+      if (catArr.length === 0 && catFiltro === "efetivadas") {
         // ainda mostra o card com filtro mas avisa vazio
       }
 
@@ -17463,7 +17455,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             , React.createElement('select', { value: catFiltro, onClick: function(e){ e.stopPropagation(); }, onChange: function(e){ e.stopPropagation(); setCatFiltro(e.target.value); },
                 style: { background:"rgba(120,120,128,0.10)", border:"1px solid "+C.border, borderRadius:10, padding:"5px 9px", fontSize:11, fontWeight:600, color:"var(--c-text)", outline:"none", cursor:"pointer", flexShrink:0 } }
               , React.createElement('option', { value:"previstas" }, "Previstas")
-              , React.createElement('option', { value:"pagas" }, "Pagas")
+              , React.createElement('option', { value:"efetivadas" }, "Efetivadas")
             )
           )
 

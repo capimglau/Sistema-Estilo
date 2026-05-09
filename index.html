@@ -19496,6 +19496,24 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                     toast("✅ Pagamento registrado!");
                   })();
                 }
+                else if (action === "receber_parcial") {
+                  (async function(){
+                    var valStr = prompt("Valor recebido parcialmente (R$):", "");
+                    if (!valStr) return;
+                    var valParcial = parseFloat(valStr.replace(",","."));
+                    if (!valParcial || valParcial <= 0) { toast("Valor inválido!"); return; }
+                    var dtPag = prompt("Data do recebimento (AAAA-MM-DD):", new Date().toISOString().split("T")[0]);
+                    if (!dtPag) return;
+                    await db.patch("contratos", c.id, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag });
+                    setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag }) : x));
+                    // Sincronizar receita vinculada
+                    var recParcial = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
+                    if (recParcial) {
+                      try { var updRP = await db.patch("receitas", recParcial.id, { status: "parcial", data_pagamento: dtPag }); setReceitas(p=>p.map(x=>x.id===recParcial.id?Object.assign({},x,updRP):x)); } catch(e){ console.warn(e); }
+                    }
+                    toast("💵 Parcial de " + fmtBRL(valParcial) + " registrado!");
+                  })();
+                }
                 else if (action === "editar_parcial") { setForm(Object.assign({}, c, { _edicaoParcial: true })); setEdit(c.id); setModal(true); }
                 else if (action === "completar_pgto") {
                   (async function(){
@@ -19512,6 +19530,12 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                     if (!confirm("Reverter pagamento parcial para 'a receber'? O valor pago será apagado.")) return;
                     await db.patch("contratos", c.id, { status_pagamento: "pendente", valor_pago: null });
                     setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pendente", valor_pago: null }) : x));
+                    // Reverter receita vinculada (parcial → emitida ou prevista)
+                    var recParcRev = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_") && r.status==="parcial"; });
+                    if (recParcRev) {
+                      var novoSt = recParcRev.numero_fatura ? "emitida" : "prevista";
+                      try { var updRev = await db.patch("receitas", recParcRev.id, { status: novoSt, data_pagamento: null }); setReceitas(p=>p.map(x=>x.id===recParcRev.id?Object.assign({},x,updRev):x)); } catch(e){ console.warn(e); }
+                    }
                     toast("↩ Pagamento parcial revertido");
                   })();
                 }
@@ -19570,6 +19594,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             , React.createElement('option', { value: "editar" }, "✏ Editar")
             , c.status === "ativo" && !foiRenovado ? React.createElement('option', { value: "renovar" }, "↻ Renovar") : null
             , isPendente ? React.createElement('option', { value: "receber" }, "💰 Receber") : null
+            , (isPendente || isParcial) ? React.createElement('option', { value: "receber_parcial" }, "💵 Receber parcial") : null
             , isParcial ? React.createElement('option', { value: "editar_parcial" }, "✏ Editar parcial") : null
             , isParcial ? React.createElement('option', { value: "completar_pgto" }, "✅ Completar pgto") : null
             , isParcial ? React.createElement('option', { value: "reverter_parcial" }, "↩ Reverter parcial") : null
@@ -22789,7 +22814,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               , !r._fromContrato && r.status === "recebido" && !isRec && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
                 var upd = await db.patch("receitas", r.id, { status: "previsto", data_pagamento: null });
                 setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
-                if (r.ref_fatura) { var mE = r.ref_fatura.match(/^fat_(\d+)_/); if (mE) { var ctE = contratos.find(function(c){return String(c.id)===mE[1];}); if (ctE && ctE.status_pagamento === "pago") { try { await db.patch("contratos", ctE.id, { status_pagamento: "pendente", data_pagamento: null }); setContratos(p => p.map(x => x.id==ctE.id ? Object.assign({},x,{status_pagamento:"pendente",data_pagamento:null}) : x)); } catch(e){ console.warn(e); } } } }
+                if (r.ref_fatura) { var mE = r.ref_fatura.match(/^fat_(\d+)_/); if (mE) { var ctE = contratos.find(function(c){return String(c.id)===mE[1];}); if (ctE && (ctE.status_pagamento === "pago" || ctE.status_pagamento === "parcial")) { try { var _pRev = ctE.status_pagamento === "parcial" ? { status_pagamento: "pendente", data_pagamento: null, valor_pago: null } : { status_pagamento: "pendente", data_pagamento: null }; await db.patch("contratos", ctE.id, _pRev); setContratos(p => p.map(x => x.id==ctE.id ? Object.assign({},x,_pRev) : x)); } catch(e){ console.warn(e); } } } }
                 toast("Estornado!");
               }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2242}}, "↩ Estornar" )
               , !r._fromContrato && !isRec && React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => openRec(r), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2247}}, "Editar")
@@ -22805,6 +22830,20 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 else { var ct = contratos.find(function(cx){return cx.id==r.contrato_id;}); if (ct) { var nova = await db.post("receitas", { descricao: "Comp. "+fmtComp(mes)+" | "+r.descricao, valor: parseFloat(r.valor||0).toFixed(2), data: dt, data_pagamento: dt, data_vencimento: r.data, status: "recebido", tipo: "locacao", cliente_id: ct.cliente_id, ref_fatura: refKey }); setReceitas(p => p.concat([nova])); } }
                 toast("✅ Recebido!");
               }}, "💰 Receber")
+              , r._fromContrato && r.status !== "recebido" && React.createElement('button', { className: bCls(Ghost(C.orange)), style: bStyle(Ghost(C.orange)), onClick: async () => {
+                var valStr = prompt("Valor recebido parcialmente (R$):", "");
+                if (!valStr) return;
+                var valParcial = parseFloat(valStr.replace(",","."));
+                if (!valParcial || valParcial <= 0) return;
+                var dt = prompt("Data do recebimento (AAAA-MM-DD):", new Date().toISOString().split("T")[0]);
+                if (!dt) return;
+                await db.patch("contratos", r.contrato_id, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dt });
+                setContratos(p => p.map(x => x.id == r.contrato_id ? Object.assign({}, x, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dt }) : x));
+                var mes = (r.data||"").slice(0,7); var refKey = "fat_" + r.contrato_id + "_" + mes;
+                var recEx2 = (receitas||[]).find(function(rx){ return rx.ref_fatura === refKey; });
+                if (recEx2) { var upd2 = await db.patch("receitas", recEx2.id, { status: "parcial", data_pagamento: dt }); setReceitas(p => p.map(x => x.id===recEx2.id ? Object.assign({},x,upd2) : x)); }
+                toast("💵 Parcial de " + fmtBRL(valParcial) + " registrado!");
+              }}, "💵 Parcial")
               , r._fromContrato && r.status === "recebido" && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
                 if (!confirm("Estornar pagamento?")) return;
                 await db.patch("contratos", r.contrato_id, { status_pagamento: "pendente", data_pagamento: null });
@@ -22814,6 +22853,15 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 if (recEx) { var upd2 = await db.patch("receitas", recEx.id, { status: "previsto", data_pagamento: null }); setReceitas(p => p.map(x => x.id===recEx.id ? Object.assign({},x,upd2) : x)); }
                 toast("↩ Estornado!");
               }}, "↩ Estornar")
+              , r._fromContrato && r.status === "parcial" && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
+                if (!confirm("Reverter recebimento parcial para 'a receber'?")) return;
+                await db.patch("contratos", r.contrato_id, { status_pagamento: "pendente", valor_pago: null, data_pagamento: null });
+                setContratos(p => p.map(x => x.id == r.contrato_id ? Object.assign({}, x, { status_pagamento: "pendente", valor_pago: null, data_pagamento: null }) : x));
+                var mes = (r.data||"").slice(0,7); var refKey = "fat_" + r.contrato_id + "_" + mes;
+                var recExP = (receitas||[]).find(function(rx){ return rx.ref_fatura === refKey && rx.status === "parcial"; });
+                if (recExP) { var novoStP = recExP.numero_fatura ? "emitida" : "prevista"; var updP = await db.patch("receitas", recExP.id, { status: novoStP, data_pagamento: null }); setReceitas(p => p.map(x => x.id===recExP.id ? Object.assign({},x,updP) : x)); }
+                toast("↩ Parcial revertido!");
+              }}, "↩ Reverter parcial")
               , r._fromContrato && React.createElement('button', { className: bCls(Ghost(C.blue)), style: bStyle(Ghost(C.blue)), onClick: () => setTab("contratos") }, "Ver Contrato")
             )
           );
@@ -24490,6 +24538,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           numeroFatura: recExist ? recExist.numero_fatura : null,
           foiEmitida: !!(recExist && recExist.data_emissao),
           status: status, recId: recExist ? recExist.id : null,
+          recStatus: recExist ? recExist.status : null,
           contrato: c
         };
       });
@@ -24521,6 +24570,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
       function marcarPaga(fat) {
         setModalFat({ tipo: "pagar", fat: fat, dtInput: new Date().toISOString().split("T")[0] });
+      }
+
+      function marcarParcial(fat) {
+        setModalFat({ tipo: "parcial", fat: fat, dtInput: new Date().toISOString().split("T")[0], valorInput: "" });
       }
 
       function printFaturaComp(fat) {
@@ -24579,6 +24632,32 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               catch(e) { toast("Erro ao emitir"); }
             }
           }
+        } else if (modalFat.tipo === "parcial") {
+          var dtPag = modalFat.dtInput;
+          var valParcial = parseFloat((modalFat.valorInput||"0").replace(",","."));
+          if (!valParcial || valParcial <= 0) { alert("Informe o valor recebido parcialmente!"); return; }
+          if (valParcial > fat.valorFatura) { alert("Valor parcial não pode ser maior que o total da fatura!"); return; }
+          if (fat.recId) {
+            try {
+              var u = await db.patch("receitas", fat.recId, { status: "parcial", data_pagamento: dtPag });
+              setReceitas(function(p){return p.map(function(r){return r.id===fat.recId?Object.assign({},r,u):r;});});
+              try { await db.patch("contratos", fat.contratoId, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag }); setContratos(function(p){return p.map(function(cx){return cx.id==fat.contratoId?Object.assign({},cx,{status_pagamento:"parcial",valor_pago:valParcial,data_pagamento:dtPag}):cx;});}); } catch(e2){}
+              toast("Recebimento parcial de " + fmtBRL(valParcial) + " registrado!");
+            } catch(e) { toast("Erro ao registrar parcial!"); }
+          } else {
+            var numP = numFatura(fat.contratoId);
+            var payloadP = {
+              descricao: numP+" | "+fat.cliente+" | "+fat.placa+" | Comp. "+fmtComp(mesFat)+" (parcial)",
+              valor: fat.valorFatura.toFixed(2),
+              data: dtPag, data_pagamento: dtPag, data_vencimento: fat.vencimento,
+              status: "parcial", tipo: "locacao", cliente_id: fat.contrato.cliente_id, ref_fatura: fat.refKey
+            };
+            try {
+              var rP = await db.post("receitas", payloadP); setReceitas(function(p){return [rP].concat(p);});
+              try { await db.patch("contratos", fat.contratoId, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag }); setContratos(function(p){return p.map(function(cx){return cx.id==fat.contratoId?Object.assign({},cx,{status_pagamento:"parcial",valor_pago:valParcial,data_pagamento:dtPag}):cx;});}); } catch(e2){}
+              toast("Recebimento parcial de " + fmtBRL(valParcial) + " registrado!");
+            } catch(e) { toast("Erro ao registrar parcial!"); }
+          }
         } else {
           var dtPag = modalFat.dtInput;
           if (fat.recId) {
@@ -24635,10 +24714,13 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         try {
           await db.del("receitas", fat.recId);
           setReceitas(function(p){return p.filter(function(r){return r.id!==fat.recId;});});
-          if (fat.status === "paga" && fat.contratoId) {
-            try { await db.patch("contratos", fat.contratoId, { status_pagamento: "pendente", data_pagamento: null }); setContratos(function(p){return p.map(function(cx){return cx.id==fat.contratoId?Object.assign({},cx,{status_pagamento:"pendente",data_pagamento:null}):cx;});}); } catch(e2) {}
+          if ((fat.status === "paga" || fat.recStatus === "parcial") && fat.contratoId) {
+            var _pCancel = fat.recStatus === "parcial"
+              ? { status_pagamento: "pendente", data_pagamento: null, valor_pago: null }
+              : { status_pagamento: "pendente", data_pagamento: null };
+            try { await db.patch("contratos", fat.contratoId, _pCancel); setContratos(function(p){return p.map(function(cx){return cx.id==fat.contratoId?Object.assign({},cx,_pCancel):cx;});}); } catch(e2) {}
           }
-          toast(fat.status==="paga" ? "↩ Estornado e excluído!" : "Fatura excluída.");
+          toast(fat.status==="paga" ? "↩ Estornado e excluído!" : fat.recStatus==="parcial" ? "↩ Parcial cancelado!" : "Fatura excluída.");
         } catch(e) { toast("Erro!"); }
       }
 
@@ -24651,13 +24733,20 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         /* Modal emitir/pagar fatura */
         , modalFat && React.createElement('div', { style:{ position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.45)",backdropFilter:"blur(6px)",WebkitBackdropFilter:"blur(6px)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:"16px 12px",boxSizing:"border-box" }, onClick:function(e){if(e.target===e.currentTarget)setModalFat(null); } }
           , React.createElement('div', { style:{ background:C.card,borderRadius:24,padding:"24px 28px 28px",width:"100%",maxWidth:440,boxShadow:"0 20px 60px rgba(0,0,0,0.30)" } }
-            , React.createElement('div', { style:{ fontSize:16,fontWeight:700,marginBottom:6 } }, modalFat.tipo==="emitir" ? "Emitir Fatura" : "Registrar Pagamento")
+            , React.createElement('div', { style:{ fontSize:16,fontWeight:700,marginBottom:6 } }, modalFat.tipo==="emitir" ? "Emitir Fatura" : modalFat.tipo==="parcial" ? "💵 Receber Parcial" : "Registrar Pagamento")
             , React.createElement('div', { style:{ fontSize:13,color:C.sub,marginBottom:16 } }, modalFat.fat.cliente + " · " + modalFat.fat.placa + " · " + fmtBRL(modalFat.fat.valorFatura))
+            , modalFat.tipo==="parcial" && React.createElement(React.Fragment, null
+              , React.createElement('label', { style:{ fontSize:12,color:C.sub,fontWeight:600,textTransform:"uppercase",letterSpacing:.5 } }, "Valor Recebido Parcialmente")
+              , React.createElement('input', { type:"number", min:"0", step:"0.01", placeholder:"0,00", value: modalFat.valorInput||"", onChange:function(e){ setModalFat(function(p){ return Object.assign({},p,{valorInput:e.target.value}); }); }, style:{ width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid "+C.border,fontSize:15,marginTop:6,marginBottom:16 } })
+              , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginBottom:12, padding:"8px 10px", background:"rgba(255,149,0,0.08)", borderRadius:8, border:"1px solid rgba(255,149,0,0.20)" } }
+                , "⚠️ O saldo restante (" + fmtBRL(Math.max(0, modalFat.fat.valorFatura - parseFloat((modalFat.valorInput||"0").replace(",",".")))) + ") permanecerá como pendente."
+              )
+            )
             , React.createElement('label', { style:{ fontSize:12,color:C.sub,fontWeight:600,textTransform:"uppercase",letterSpacing:.5 } }, modalFat.tipo==="emitir" ? "Data de Vencimento" : "Data de Pagamento")
             , React.createElement('input', { type:"date", value: modalFat.dtInput, onChange:function(e){ setModalFat(function(p){ return Object.assign({},p,{dtInput:e.target.value}); }); }, style:{ width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid "+C.border,fontSize:15,marginTop:6,marginBottom:20 } })
             , React.createElement('div', { style:{ display:"flex",gap:10 } }
               , React.createElement('button', { onClick:function(){ setModalFat(null); }, style:{ flex:1,padding:"11px 0",borderRadius:12,border:"1px solid "+C.border,background:C.card,fontSize:14,cursor:"pointer" } }, "Cancelar")
-              , React.createElement('button', { onClick: confirmarModalFat, style:{ flex:1,padding:"11px 0",borderRadius:12,border:"none",background: modalFat.tipo==="emitir" ? C.blue : C.green,color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer" } }, modalFat.tipo==="emitir" ? "Emitir" : "Confirmar Pagamento")
+              , React.createElement('button', { onClick: confirmarModalFat, style:{ flex:1,padding:"11px 0",borderRadius:12,border:"none",background: modalFat.tipo==="emitir" ? C.blue : modalFat.tipo==="parcial" ? C.orange : C.green,color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer" } }, modalFat.tipo==="emitir" ? "Emitir" : modalFat.tipo==="parcial" ? "Confirmar Parcial" : "Confirmar Pagamento")
             )
           )
         )
@@ -24922,6 +25011,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                             React.createElement('button', { className:"lg-pill lg-pill-sm lg-blue", style:{ fontWeight:600 }, onClick:function(){emitirFatura(fat);} }, "📤 Emitir")
                           , (fat.status==="prevista"||fat.status==="emitida"||fat.status==="vencida") &&
                             React.createElement('button', { className:"lg-pill lg-pill-sm lg-green", style:{ fontWeight:600 }, onClick:function(){marcarPaga(fat);} }, "✅ Marcar paga")
+                          , (fat.status==="prevista"||fat.status==="emitida"||fat.status==="vencida") &&
+                            React.createElement('button', { className:"lg-pill lg-pill-sm lg-orange", style:{ fontWeight:600 }, onClick:function(){marcarParcial(fat);} }, "💵 Receber parcial")
                           , (fat.status==="emitida"||fat.status==="paga") &&
                             React.createElement('button', { className:"lg-pill lg-pill-sm lg-ghost", style:{ fontWeight:400, fontSize:11 }, onClick:function(){ printFaturaComp(fat); } }, "📄 PDF")
                           , (fat.status==="emitida"||fat.status==="paga") &&

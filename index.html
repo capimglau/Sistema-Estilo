@@ -14715,9 +14715,10 @@ function despesaDoMes(d, mes) {
       if (diff > parseInt(d.prazo_recorrencia)) return false;
     }
     var pg = (d.data_pagamento || "").slice(0, 7);
-    if (pg && pg < mes) return true;  // pago em mês anterior → nova ocorrência prevista
+    if (pg && pg !== mes && pg > mes) return false; // pago em mês futuro → não mostra aqui
+    if (pg && pg < mes) return true;  // pago antes → nova ocorrência prevista
     if (pg && pg === mes) return true; // pago neste mês
-    return true; // sem pagamento ou pago em mês futuro → mostra como prevista/vencida
+    return true; // sem pagamento → prevista
   }
   return false;
 }
@@ -22979,13 +22980,15 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             )
             , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 8, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch" } }
               , d.status !== "pago" && !isRec && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: async () => {
-                var dt = prompt("Data do pagamento (AAAA-MM-DD):", new Date().toISOString().split("T")[0]);
+                // Data padrão: para recorrentes usa o dia da despesa no mês visualizado
+                var _dia = (d.data || "").slice(8, 10) || "01";
+                var _dtDef = d.recorrente ? (filtroMes + "-" + _dia) : (d.data || new Date().toISOString().split("T")[0]);
+                var dt = prompt("Data do pagamento (AAAA-MM-DD):", _dtDef);
                 if (!dt) return;
-                if (d._fromManutencao) {
-                  // Despesa virtual: criar no banco e baixar imediatamente
-                  var mn = d._mn;
-                  var veM2 = (veiculos||[]).find(function(v){ return v.id == mn.veiculo_id; });
-                  try {
+                try {
+                  if (d._fromManutencao) {
+                    var mn = d._mn;
+                    var veM2 = (veiculos||[]).find(function(v){ return v.id == mn.veiculo_id; });
                     var novaD = await db.post("despesas", {
                       descricao: "Manutenção: " + mn.tipo + (veM2 ? " - " + veM2.placa : ""),
                       categoria: "Manutenção", veiculo_id: mn.veiculo_id || null,
@@ -22998,13 +23001,13 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                     var umM = await db.patch("manutencao", mn.id, { status_financeiro: "pago", data_pagamento: dt });
                     setManutencoes(p => p.map(x => x.id==mn.id ? Object.assign({},x,umM) : x));
                     toast("✅ Manutenção baixada!");
-                  } catch(e) { toast("Erro: " + e.message, "error"); }
-                } else {
-                  var upd = await db.patch("despesas", d.id, { status: "pago", data_pagamento: dt });
-                  setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
-                  if (d.manutencao_id) { try { var um = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pago", data_pagamento: dt }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um) : x)); } catch(e){ console.warn(e); } }
-                  toast("Despesa baixada!");
-                }
+                  } else {
+                    var upd = await db.patch("despesas", d.id, { status: "pago", data_pagamento: dt });
+                    setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
+                    if (d.manutencao_id) { try { var um = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pago", data_pagamento: dt }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um) : x)); } catch(e){ console.warn(e); } }
+                    toast("✅ Despesa baixada!");
+                  }
+                } catch(e) { toast("❌ Erro ao baixar: " + (e.message || e)); }
               }}, "💸 Baixar" )
               , d.status === "pago" && !isRec && !d._fromManutencao && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
                 var upd = await db.patch("despesas", d.id, { status: "previsto", data_pagamento: null });
@@ -24266,7 +24269,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       });
 
       // ── Despesas ──
-      var despResumo = (despesas||[]).filter(function(d){ return !d.manutencao_id && !isRetLucro(d) && despesaVisivelNoMes(d, mes); });
+      var despResumo = (despesas||[]).filter(function(d){ return !d.manutencao_id && !isRetLucro(d) && despesaDoMes(d, mes); });
       var despPrev = despResumo.reduce(function(s,d){ return s + parseFloat(d.valor||0); }, 0);
       var despPaga = despResumo.filter(function(d){
         if (d.recorrente) return (d.data_pagamento||"").slice(0,7) === mes;
@@ -24819,7 +24822,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
         var rec = contratos.filter(function(c){ var ref=c.previsao_pagamento||c.data_fim||""; return ref.slice(0,7)===mes && (c.status_pagamento==="pago"||c.status_pagamento==="parcial"); }).reduce(function(s,c){return s+(c.status_pagamento==="parcial"?parseFloat(c.valor_pago||0):parseFloat(c.valor_total||0));},0)
           + (receitas||[]).filter(function(r){return !r.ref_fatura && r.status==="recebido" && (r.data_pagamento||r.data||"").slice(0,7)===mes;}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
         // Despesas: usa despesaVisivelNoMes para incluir recorrentes projetadas
-        var desp = (despesas||[]).filter(function(d){return !d.manutencao_id && !isRetLucro(d) && despesaVisivelNoMes(d, mes);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0)
+        var desp = (despesas||[]).filter(function(d){return !d.manutencao_id && !isRetLucro(d) && despesaDoMes(d, mes);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0)
           + (manutencoes||[]).filter(function(m2){return manVisivelNoMes(m2, mes);}).reduce(function(s,m2){return s+parseFloat(m2.custo||0);},0);
         return { mes: mes, label: nomeMesG(mes), rec: rec, desp: desp, lucro: rec-desp };
       });

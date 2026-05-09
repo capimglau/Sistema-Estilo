@@ -22499,8 +22499,18 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   var totalMultas = multas.filter(m => m.status === "pago").reduce((s,m) => s + parseFloat(m.valor||0), 0);
   var lucro = totalReceita - totalDesp - totalMan - totalMultas;
 
+  // IDs de despesas recorrentes que já têm instância filha no filtroMes
+  var _idsComInstancia = new Set(
+    despesas
+      .filter(function(d){ return d.recorrencia_origem_id && (d.data||"").slice(0,7) === filtroMes; })
+      .map(function(d){ return String(d.recorrencia_origem_id); })
+  );
   // Filtros por mês (abas despesas/receitas)
-  var despFiltradas = despesas.filter(d => despesaDoMes(d, filtroMes)).map(d => {
+  var despFiltradas = despesas.filter(d => despesaDoMes(d, filtroMes)).filter(function(d) {
+    // Oculta o pai recorrente quando já existe instância filha para este mês
+    if (d.recorrente && (d.data||"").slice(0,7) !== filtroMes && _idsComInstancia.has(String(d.id))) return false;
+    return true;
+  }).map(d => {
     if (d.recorrente && (d.data||"").slice(0,7) !== filtroMes) {
       var dia = (d.data || "").slice(8, 10);
       var pagouEsteMes = d.data_pagamento && d.data_pagamento.slice(0,7) === filtroMes;
@@ -22985,7 +22995,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               )
             )
             , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 8, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch" } }
-              , !_pagoMes && !isRec && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: async () => {
+              , !_pagoMes && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: async () => {
                 var _dia = (d.data || "").slice(8, 10) || "01";
                 var _dtDef = d.recorrente ? (filtroMes + "-" + _dia) : (d.data || new Date().toISOString().split("T")[0]);
                 var _rDesp = await window.__agPrompt({ title: "Baixar Despesa", icon: "💸", label1: "Data do pagamento", type1: "date", default1: _dtDef });
@@ -23007,6 +23017,24 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                     var umM = await db.patch("manutencao", mn.id, { status_financeiro: "pago", data_pagamento: dt });
                     setManutencoes(p => p.map(x => x.id==mn.id ? Object.assign({},x,umM) : x));
                     toast("✅ Manutenção baixada!");
+                  } else if (isRec) {
+                    // Recorrente de mês anterior: cria instância filha para não sobrescrever outros meses
+                    var _diaRec = (d.data || "").slice(8,10) || "01";
+                    var _jaExisteRec = despesas.find(function(x){ return x.recorrencia_origem_id == d.id && (x.data||"").slice(0,7) === filtroMes; });
+                    if (_jaExisteRec) {
+                      var upd = await db.patch("despesas", _jaExisteRec.id, { status: "pago", data_pagamento: dt });
+                      setDespesas(p => p.map(x => x.id === _jaExisteRec.id ? Object.assign({}, x, upd) : x));
+                    } else {
+                      var novaInst = await db.post("despesas", {
+                        descricao: d.descricao, categoria: d.categoria, veiculo_id: d.veiculo_id || null,
+                        valor: d.valor, data: filtroMes + "-" + _diaRec,
+                        status: "pago", data_pagamento: dt,
+                        recorrente: false, recorrencia_origem_id: d.id,
+                        observacoes: d.observacoes || null
+                      });
+                      setDespesas(p => [novaInst].concat(p));
+                    }
+                    toast("✅ Despesa baixada!");
                   } else {
                     var upd = await db.patch("despesas", d.id, { status: "pago", data_pagamento: dt });
                     setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
@@ -23015,13 +23043,19 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                   }
                 } catch(e) { toast("❌ Erro ao baixar: " + (e.message || e)); }
               }}, "💸 Baixar" )
-              , _pagoMes && !isRec && !d._fromManutencao && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
+              , _pagoMes && !d._fromManutencao && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
                 var _rEstD = await window.__agConfirm({ title: "Estornar Despesa", icon: "↩️", message: "Estornar pagamento de \"" + (d.descricao||d.categoria||"despesa") + "\"?", okLabel: "Estornar", danger: true });
                 if (!_rEstD.ok) return;
                 try {
-                  var upd = await db.patch("despesas", d.id, { status: "previsto", data_pagamento: null });
-                  setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
-                  if (d.manutencao_id) { try { var um2 = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pendente", data_pagamento: null }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um2) : x)); } catch(e){ console.warn(e); } }
+                  if (d.recorrencia_origem_id) {
+                    // É instância filha de recorrente: deleta a instância, pai volta a aparecer como previsto
+                    await db.del("despesas", d.id);
+                    setDespesas(p => p.filter(x => x.id !== d.id));
+                  } else {
+                    var upd = await db.patch("despesas", d.id, { status: "previsto", data_pagamento: null });
+                    setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
+                    if (d.manutencao_id) { try { var um2 = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pendente", data_pagamento: null }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um2) : x)); } catch(e){ console.warn(e); } }
+                  }
                   toast("↩ Estornado!");
                 } catch(e) { toast("❌ Erro: " + (e.message || e)); }
               }}, "↩ Estornar" )
@@ -25420,6 +25454,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3009}}), "alter table despesas add column if not exists manutencao_id bigint;"
                  , React.createElement('br', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3010}}), "alter table orcamento_pessoal add column if not exists prazo_recorrencia integer;"
                  , React.createElement('br', {}), "alter table orcamento_pessoal add column if not exists recorrencia_origem_id bigint;"
+                 , React.createElement('br', {}), "alter table despesas add column if not exists recorrencia_origem_id bigint;"
                  , React.createElement('br', {}), "-- Auditoria e histórico de ocupação (opcional):"
                  , React.createElement('br', {}), "create table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());"
                  , React.createElement('br', {}), "alter table audit_log disable row level security;"

@@ -15258,6 +15258,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
   });
   const recAvDash = (receitas||[]).filter(function(r){ return !r.ref_fatura && receitaDoMes(r, dashMes); });
   const recMes = ctsMes.filter(c => c.status_pagamento === "pago").reduce((s,c) => s+parseFloat(c.valor_total||0),0)
+    + ctsMes.filter(c => c.status_pagamento === "parcial" && c.valor_pago).reduce((s,c) => s+parseFloat(c.valor_pago||0),0)
     + recAvDash.filter(function(r){ return r.status==="recebido" && (!r.recorrente||(r.data_pagamento||"").slice(0,7)===dashMes); }).reduce((s,r)=>s+parseFloat(r.valor||0),0);
   const prevMes = ctsMes.reduce((s,c) => s+parseFloat(c.valor_total||0),0)
     + recAvDash.reduce((s,r)=>s+parseFloat(r.valor||0),0);
@@ -15517,7 +15518,10 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       var ctsAPagar    = ctsMes.filter(function(c){ return c.status_pagamento !== "pago" && c.status_pagamento !== "isento"; });
       var ctsPagos     = ctsMes.filter(function(c){ return c.status_pagamento === "pago"; });
       var ctsAtrasados = ctsAPagar.filter(function(c){ return c.previsao_pagamento && c.previsao_pagamento < hoje; });
-      var aRec         = ctsAPagar.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0);
+      var aRec         = ctsAPagar.reduce(function(s,c){
+        if (c.status_pagamento === "parcial" && c.valor_pago) return s + Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago));
+        return s + parseFloat(c.valor_total||0);
+      }, 0);
       var recPrevisto  = recMes + aRec; // total previsto de receitas
 
       /* ── Despesas ── */
@@ -15833,6 +15837,12 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         if (c.status_pagamento==="pago") {
           var dt = c.data_pagamento||c.previsao_pagamento; if (!dt||dt<periodoInicio||dt>periodoFim) return;
           eventos.push({ dt:dt, tipo:"rec", label:(clientes||[]).find(x=>x.id==c.cliente_id)?.nome||"Contrato", val:parseFloat(c.valor_total||0), pago:true });
+        } else if (c.status_pagamento==="parcial") {
+          var dtP = c.data_pagamento||c.previsao_pagamento||c.data_fim; if (!dtP||dtP<periodoInicio||dtP>periodoFim) return;
+          var _nomeCli = (clientes||[]).find(x=>x.id==c.cliente_id)?.nome||"Contrato #"+c.id;
+          if (c.valor_pago) eventos.push({ dt:dtP, tipo:"rec", label:_nomeCli+" (parcial recebido)", val:parseFloat(c.valor_pago||0), pago:true });
+          var _saldo = Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0));
+          if (_saldo > 0) eventos.push({ dt:c.previsao_pagamento||dtP, tipo:"rec", label:_nomeCli+" (saldo pendente)", val:_saldo, pago:false });
         } else if (c.status_pagamento!=="isento") {
           var dt2 = c.previsao_pagamento||c.data_fim; if (!dt2||dt2<periodoInicio||dt2>periodoFim) return;
           eventos.push({ dt:dt2, tipo:"rec", label:(clientes||[]).find(x=>x.id==c.cliente_id)?.nome||"Contrato #"+c.id, val:parseFloat(c.valor_total||0), pago:false });
@@ -16853,7 +16863,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       // Monthly receitas e despesas
       var recData = meses6.map(function(m){
         if (recMode === "recebidas") {
-          return contratos.filter(function(c){ var ref = c.status_pagamento==="pago"&&c.data_pagamento ? c.data_pagamento : c.previsao_pagamento; return ref && ref.slice(0,7)===m && c.status_pagamento==="pago"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
+          return contratos.filter(function(c){ var ref = (c.status_pagamento==="pago"||c.status_pagamento==="parcial")&&c.data_pagamento ? c.data_pagamento : c.previsao_pagamento; return ref && ref.slice(0,7)===m && (c.status_pagamento==="pago"||c.status_pagamento==="parcial"); }).reduce(function(s,c){ return s + (c.status_pagamento==="parcial" ? parseFloat(c.valor_pago||0) : parseFloat(c.valor_total||0)); },0)
             + (receitas||[]).filter(function(r){ return !r.ref_fatura && receitaVisivelNoMes(r,m) && r.status==="recebido"; }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
         } else {
           return contratos.filter(function(c){ var ref = c.previsao_pagamento; return ref && ref.slice(0,7)===m && c.status !== "cancelado"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
@@ -16982,7 +16992,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             var nomL = mL.map(function(m){ return new Date(m+"-15").toLocaleString("pt-BR",{month:"short",year:"2-digit"}); });
             var rec6L = mL.map(function(m){
               if(lucroMode==="recebidas"){
-                return contratos.filter(function(c){ var ref=c.status_pagamento==="pago"&&c.data_pagamento?c.data_pagamento:c.previsao_pagamento; return ref&&ref.slice(0,7)===m&&c.status_pagamento==="pago"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
+                return contratos.filter(function(c){ var ref=(c.status_pagamento==="pago"||c.status_pagamento==="parcial")&&c.data_pagamento?c.data_pagamento:c.previsao_pagamento; return ref&&ref.slice(0,7)===m&&(c.status_pagamento==="pago"||c.status_pagamento==="parcial"); }).reduce(function(s,c){ return s+(c.status_pagamento==="parcial"?parseFloat(c.valor_pago||0):parseFloat(c.valor_total||0)); },0)
                   +(receitas||[]).filter(function(r){ return !r.ref_fatura&&receitaVisivelNoMes(r,m)&&r.status==="recebido"; }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
               }
               return contratos.filter(function(c){ return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m&&c.status!=="cancelado"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
@@ -22777,7 +22787,14 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         )
         , React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2208}}
           , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2209}}, "Recebido")
-          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.green, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2210}}, fmtBRL(recExibidas.filter(r=>r.status==="recebido").reduce((s,r)=>s+parseFloat(r.valor||0),0)))
+          , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.green, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2210}}, fmtBRL(recExibidas.reduce(function(s,r){
+              if (r.status === "recebido") return s + parseFloat(r.valor||0);
+              if (r.status === "parcial") {
+                if (r._fromContrato) return s + parseFloat(r.valor||0);
+                if (r.ref_fatura) { var _mfT = r.ref_fatura.match(/^fat_(\d+)_/); if (_mfT) { var _ctT = (contratos||[]).find(function(c){ return String(c.id)===_mfT[1]; }); if (_ctT && _ctT.valor_pago) return s + parseFloat(_ctT.valor_pago); } }
+              }
+              return s;
+            }, 0)))
         )
       )
       , React.createElement('div', { className: "lg-card", style: CARD, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2213}}
@@ -22797,7 +22814,26 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 , r.observacoes && React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2227}}, r.observacoes)
               )
               , React.createElement('div', { style: { textAlign: "right" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2229}}
-                , React.createElement('div', { style: { fontWeight: 800, color: r.status === "recebido" ? C.green : r.status === "parcial" ? C.orange : r.status === "isento" ? C.gray : C.blue }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2230}}, fmtBRL(r.valor))
+                , (function(){
+                    if (r.status === "parcial") {
+                      var _vPago = null, _vTotal = parseFloat(r.valor||0);
+                      if (r._fromContrato) {
+                        _vPago = parseFloat(r.valor||0);
+                        var _ctFull = (contratos||[]).find(function(c){ return c.id == r.contrato_id; });
+                        if (_ctFull) _vTotal = parseFloat(_ctFull.valor_total||0);
+                      } else if (r.ref_fatura) {
+                        var _mfP = r.ref_fatura.match(/^fat_(\d+)_/);
+                        if (_mfP) { var _ctP = (contratos||[]).find(function(c){ return String(c.id)===_mfP[1]; }); if (_ctP && _ctP.valor_pago) _vPago = parseFloat(_ctP.valor_pago); }
+                      }
+                      if (_vPago !== null) {
+                        return React.createElement(React.Fragment, null,
+                          React.createElement('div', { style: { fontWeight: 800, color: C.orange } }, fmtBRL(_vPago)),
+                          React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 500, marginTop: 1 } }, "/ " + fmtBRL(_vTotal) + " total")
+                        );
+                      }
+                    }
+                    return React.createElement('div', { style: { fontWeight: 800, color: r.status === "recebido" ? C.green : r.status === "parcial" ? C.orange : r.status === "isento" ? C.gray : C.blue } }, fmtBRL(r.valor));
+                  })()
                 , React.createElement('span', { style: Badge(r.status === "recebido" ? C.green : r.status === "parcial" ? C.orange : r.status === "isento" ? C.gray : r.status === "emitida" ? C.blue : C.sub), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2231}}, r.status === "recebido" ? "recebido" : r.status === "parcial" ? "parcial" : r.status === "isento" ? "isento" : r.status === "emitida" ? "emitida" : "previsto")
               )
             )
@@ -23249,8 +23285,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       var dreMeses = [];
       for (var mm = 0; mm < 12; mm++) {
         var mStr = anoAtual + "-" + String(mm+1).padStart(2,"0");
-        var ctsMesDre = (contratos||[]).filter(function(c){ var ref = c.previsao_pagamento || c.data_fim || ""; return ref.slice(0,7) === mStr && (c.status_pagamento==="pago"||c.status_pagamento==="isento"); });
-        var receitaBruta = ctsMesDre.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0) + (receitas||[]).filter(function(r){ return !r.ref_fatura && r.status==="recebido" && (r.data_pagamento||"").slice(0,7)===mStr; }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
+        var ctsMesDre = (contratos||[]).filter(function(c){ var ref = c.previsao_pagamento || c.data_fim || ""; return ref.slice(0,7) === mStr && (c.status_pagamento==="pago"||c.status_pagamento==="isento"||c.status_pagamento==="parcial"); });
+        var receitaBruta = ctsMesDre.filter(function(c){return c.status_pagamento==="pago"||c.status_pagamento==="isento";}).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
+          + ctsMesDre.filter(function(c){return c.status_pagamento==="parcial";}).reduce(function(s,c){ return s+parseFloat(c.valor_pago||0); },0)
+          + (receitas||[]).filter(function(r){ return !r.ref_fatura && r.status==="recebido" && (r.data_pagamento||"").slice(0,7)===mStr; }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
         var custosDir = (manutencoes||[]).filter(function(mn){ return (mn.data_pagamento||"").slice(0,7)===mStr && mn.status_financeiro==="pago"; }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
         var despFixas = (despesas||[]).filter(function(d){ return !d.manutencao_id && !isRetLucro(d) && d.status==="pago" && (d.data_pagamento||"").slice(0,7)===mStr; }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
         var multasDre = (multas||[]).filter(function(mu){ return mu.status==="pago" && (mu.data_pagamento||"").slice(0,7)===mStr; }).reduce(function(s,mu){ var v = parseFloat(mu.valor||0); var cob = mu.cobrado_cliente==="pago"?parseFloat(mu.valor_cobrado||0):0; return s+Math.max(0,v-cob); },0);

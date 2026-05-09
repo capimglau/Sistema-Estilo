@@ -17845,30 +17845,24 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     return (veiculos||[]).map(function(v){
       var cts = (contratos||[]).filter(function(c){ return String(c.veiculo_id)===String(v.id) && c.status!=='cancelado'; });
 
-      // ── Receita prevista do mês: contratos com previsao_pagamento OU data_fim no mês
-      // Não usa data_inicio como fallback (causava receitas em meses errados)
-      var ctsMes = cts.filter(function(c){
-        var ref = c.previsao_pagamento || c.data_fim || '';
-        return ref.slice(0,7) === mesFmt;
-      });
-
-      // Receitas avulsas vinculadas ao veículo no mês (tabela receitas)
-      var recAvulsas = (receitas||[]).filter(function(r){
-        if(String(r.veiculo_id)!==String(v.id)) return false;
-        return receitaVisivelNoMes(r, mesFmt);
-      }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
-
-      // Receita prevista = valor_total dos contratos do mês + avulsas
-      // Em modo apurado: só conta contratos não-cancelados (já filtrado acima)
-      // Em modo previsto com zero contratos: projeta pela diária
-      var recTotal;
-      if(ctsMes.length > 0 || recAvulsas > 0) {
-        recTotal = ctsMes.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0) + recAvulsas;
-      } else if(md==='previsto') {
-        var diasMes = new Date(a, m+1, 0).getDate();
-        recTotal = parseFloat(v.valor_diaria||0) * 0.70 * diasMes;
+      // ── Receita: direto dos contratos do veículo ──────────────────────────
+      var recTotal = 0;
+      var nCtsMes  = 0;
+      if(md==='previsto') {
+        // Previstas: contratos com previsao_pagamento no mês
+        var _c = cts.filter(function(c){ return c.previsao_pagamento && c.previsao_pagamento.slice(0,7)===mesFmt; });
+        nCtsMes  = _c.length;
+        recTotal = _c.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0);
       } else {
-        recTotal = 0;
+        // Efetivadas: contratos pagos com data_pagamento no mês
+        var _c = cts.filter(function(c){
+          if(c.status_pagamento!=='pago'&&c.status_pagamento!=='parcial') return false;
+          return c.data_pagamento && c.data_pagamento.slice(0,7)===mesFmt;
+        });
+        nCtsMes  = _c.length;
+        recTotal = _c.reduce(function(s,c){
+          return s+(c.status_pagamento==='parcial'?parseFloat(c.valor_pago||0):parseFloat(c.valor_total||0));
+        },0);
       }
 
       // ── IPVA / Licenciamento / Emplacamento — individuais do veículo
@@ -17929,7 +17923,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
       return { v:v, receitaTotal:recTotal, custoSemManut:custoSemManut, custoManut:custoManut,
                ipvaVeiculo:ipvaVeiculo, despDiretas:despDir, rateioVeiculo:rateio,
                lucroSemManut:lucroSemManut, lucroTotal:lucroTotal, margem:margem,
-               nCts:cts.length, nCtsMes:ctsMes.length,
+               nCts:cts.length, nCtsMes:nCtsMes,
                valorAq:valorAq, perdaDep:perdaDep, diariaMin:diariaMin,
                lucroHistDia:lucroHistDia };
     });
@@ -18121,8 +18115,8 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
       // ── Filtros linha 2: Modo + Exibir + Ordenar ──
       React.createElement('div',{style:{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginBottom:16}},
         React.createElement('select',{value:modo,onChange:function(e){setModo(e.target.value);},style:Object.assign({},selectStyle)},
-          React.createElement('option',{value:'apurado'},'📊 Apurado'),
-          React.createElement('option',{value:'previsto'},'🔮 Previsto')
+          React.createElement('option',{value:'previsto'},'📅 Previstas'),
+          React.createElement('option',{value:'apurado'},'✅ Efetivadas')
         ),
         React.createElement('select',{value:exibir,onChange:function(e){setExibir(e.target.value);},style:Object.assign({},selectStyle,{flex:1,minWidth:110})},
           React.createElement('option',{value:'lucro_com'},'Lucro c/ Manut.'),

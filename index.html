@@ -17844,26 +17844,31 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
 
     return (veiculos||[]).map(function(v){
       var cts = (contratos||[]).filter(function(c){ return String(c.veiculo_id)===String(v.id) && c.status!=='cancelado'; });
-      var ctsMes = cts.filter(function(c){ var ref=ctMesRef(c)||mesDe(c.data_inicio); return ref===mesFmt; });
 
-      // Receita: apurado = contratos + avulsas do mês; previsto = diária × 70% × dias
-      var recMes, recTotal;
-      if(md==='apurado') {
-        recMes = ctsMes.reduce(function(s,c){
-          if(c.status==='concluido'||c.status_pagamento==='pago') return s+parseFloat(c.valor_total||0);
-          if(c.status_pagamento==='parcial'&&c.valor_pago) return s+parseFloat(c.valor_pago||0);
-          return s+parseFloat(c.valor_total||0);
-        }, 0);
-        var recAvulsaMes = (receitas||[]).filter(function(r){
-          if(String(r.veiculo_id)!==String(v.id)) return false;
-          if(!r.data) return false;
-          var dr=new Date(r.data); return dr.getMonth()===m && dr.getFullYear()===a;
-        }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
-        recMes += recAvulsaMes;
-        recTotal = recMes;
-      } else {
+      // ── Receita prevista do mês: contratos com previsao_pagamento OU data_fim no mês
+      // Não usa data_inicio como fallback (causava receitas em meses errados)
+      var ctsMes = cts.filter(function(c){
+        var ref = c.previsao_pagamento || c.data_fim || '';
+        return ref.slice(0,7) === mesFmt;
+      });
+
+      // Receitas avulsas vinculadas ao veículo no mês (tabela receitas)
+      var recAvulsas = (receitas||[]).filter(function(r){
+        if(String(r.veiculo_id)!==String(v.id)) return false;
+        return receitaVisivelNoMes(r, mesFmt);
+      }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
+
+      // Receita prevista = valor_total dos contratos do mês + avulsas
+      // Em modo apurado: só conta contratos não-cancelados (já filtrado acima)
+      // Em modo previsto com zero contratos: projeta pela diária
+      var recTotal;
+      if(ctsMes.length > 0 || recAvulsas > 0) {
+        recTotal = ctsMes.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0) + recAvulsas;
+      } else if(md==='previsto') {
         var diasMes = new Date(a, m+1, 0).getDate();
         recTotal = parseFloat(v.valor_diaria||0) * 0.70 * diasMes;
+      } else {
+        recTotal = 0;
       }
 
       // ── IPVA / Licenciamento / Emplacamento — individuais do veículo

@@ -13811,11 +13811,45 @@ window.ReactDOM=module.exports;
 // Expõe o react-dom completo (com createPortal) separadamente
 window.ReactDOMFull=require_react_dom();
 })();</script>
-<script src="https://cdn.pluggy.ai/pluggy-connect/v2/pluggy-connect.js"></script>
+<script>
+(function(){
+  var s = document.createElement('script');
+  s.src = 'https://cdn.pluggy.ai/pluggy-connect/v2/pluggy-connect.js';
+  s.async = true;
+  s.onerror = function(){ console.warn('[AutoGest] Pluggy SDK não carregou — modo fallback ativo.'); };
+  document.head.appendChild(s);
+})();
+</script>
 </head>
 <body>
 <div id="root"></div>
 <script>
+/* ── Captura erros reais no Safari (evita "Script error." genérico) ── */
+window.addEventListener('error', function(e) {
+  var msg = (e && e.message) ? e.message : String(e);
+  var src = (e && e.filename) ? e.filename : '';
+  var line = (e && e.lineno) ? e.lineno : '';
+  console.error('[AutoGest] Erro global: ' + msg + ' | ' + src + ':' + line);
+  window.__lastGlobalErr = { msg: msg, src: src, line: line, at: Date.now() };
+}, true);
+window.addEventListener('unhandledrejection', function(e) {
+  var msg = (e && e.reason) ? String(e.reason && e.reason.message || e.reason) : 'Promise rejeitada';
+  console.error('[AutoGest] Promise não tratada: ' + msg);
+  window.__lastGlobalErr = { msg: msg, at: Date.now() };
+});
+
+/* ── Guarda contra React/ReactDOM não carregados ── */
+if (!window.React || !window.ReactDOM) {
+  document.getElementById('root').innerHTML =
+    '<div style="font-family:-apple-system,sans-serif;padding:48px 24px;text-align:center;color:#fff;background:#1c1c1e;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">' +
+    '<div style="font-size:48px">⚠️</div>' +
+    '<div style="font-size:18px;font-weight:700">Erro ao carregar o app</div>' +
+    '<div style="font-size:13px;opacity:0.6;max-width:280px">React não carregou. Verifique sua conexão e recarregue a página.</div>' +
+    '<button onclick="location.reload()" style="margin-top:8px;padding:12px 28px;background:#007AFF;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer">Recarregar</button>' +
+    '</div>';
+  throw new Error('React não disponível — abortando boot.');
+}
+
 var React=window.React;
 var ReactDOM=window.ReactDOM;
 const _jsxFileName = "";
@@ -31109,43 +31143,56 @@ function App() {
 
 // ErrorBoundary captura erros de render do React e redireciona para tela inicial automaticamente
 class ErrBoundary extends React.Component {
-  constructor(props){ super(props); this.state = { err: null, recovering: false }; }
+  constructor(props){ super(props); this.state = { err: null, recovering: false, attempts: 0 }; }
   static getDerivedStateFromError(err){ return { err: err, recovering: false }; }
   componentDidCatch(err, info){
     try { window.__lastReactErr = { msg: String(err && err.message || err), stack: String(err && err.stack || "") + "\n" + (info && info.componentStack || ""), at: Date.now() }; } catch(_){}
-    // Tenta navegar para tela inicial automaticamente após erro
-    this._scheduleRecovery();
+    console.error('[AutoGest] React error:', err && err.message, err && err.stack);
+    // Só tenta recuperação automática nas primeiras tentativas
+    if ((this.state.attempts || 0) < 2) this._scheduleRecovery();
   }
   _scheduleRecovery(){
     var self = this;
-    // Cancela timer anterior se houver
     if (self._recoveryTimer) clearTimeout(self._recoveryTimer);
     self._recoveryTimer = setTimeout(function(){
-      try {
-        // Dispara evento global para o App resetar a aba para "inicio"
-        window.dispatchEvent(new CustomEvent('ag:goto-inicio'));
-      } catch(_){}
-      // Limpa o estado de erro após leve delay para o App processar o evento
-      setTimeout(function(){ self.setState({ err: null, recovering: false }); }, 80);
-    }, 50);
+      try { window.dispatchEvent(new CustomEvent('ag:goto-inicio')); } catch(_){}
+      setTimeout(function(){ self.setState(function(s){ return { err: null, recovering: false, attempts: (s.attempts||0)+1 }; }); }, 80);
+    }, 400);
   }
   componentWillUnmount(){ if(this._recoveryTimer) clearTimeout(this._recoveryTimer); }
   render(){
     if (this.state.err) {
-      // Mostra toast mínimo e não bloqueia — a recuperação automática já foi agendada
-      return React.createElement('div', { style: { position:"fixed", top:16, left:16, right:16, background:"rgba(30,30,30,0.92)", color:"#fff", padding:"12px 16px", borderRadius:14, fontSize:12, zIndex:100000, boxShadow:"0 4px 24px rgba(0,0,0,.45)", lineHeight:1.5, display:"flex", alignItems:"center", gap:12, backdropFilter:"blur(12px)" } },
-        React.createElement('span', { style:{ fontSize:20 } }, "⚠️"),
-        React.createElement('div', { style:{ flex:1 } },
-          React.createElement('div', { style:{ fontWeight:700, marginBottom:2 } }, "Algo deu errado — voltando ao início…"),
-          React.createElement('div', { style:{ fontSize:10, opacity:0.7 } }, String(this.state.err && this.state.err.message || this.state.err).slice(0,120))
-        ),
-        React.createElement('button', { onClick: ()=>{ this._scheduleRecovery(); }, style:{ background:"rgba(255,255,255,0.15)", color:"#fff", border:"1px solid rgba(255,255,255,0.25)", borderRadius:8, padding:"5px 11px", fontWeight:700, fontSize:11, cursor:"pointer", flexShrink:0 } }, "Início")
+      var errMsg = String(this.state.err && this.state.err.message || this.state.err);
+      var globalErr = window.__lastGlobalErr ? window.__lastGlobalErr.msg : null;
+      var displayMsg = errMsg && errMsg !== 'undefined' ? errMsg : (globalErr || 'Erro desconhecido');
+      return React.createElement('div', { style: { position:"fixed", inset:0, background:"#1c1c1e", color:"#fff", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"24px", zIndex:100000, fontFamily:"-apple-system,sans-serif", gap:16 } },
+        React.createElement('div', { style:{ fontSize:48 } }, "⚠️"),
+        React.createElement('div', { style:{ fontSize:17, fontWeight:700, textAlign:"center" } }, "Algo deu errado"),
+        React.createElement('div', { style:{ fontSize:12, opacity:0.55, textAlign:"center", maxWidth:300, lineHeight:1.5, wordBreak:"break-word" } }, displayMsg.slice(0, 200)),
+        React.createElement('div', { style:{ display:"flex", gap:10, marginTop:8 } },
+          React.createElement('button', { onClick: function(){ location.reload(); }, style:{ background:"#007AFF", color:"#fff", border:"none", borderRadius:12, padding:"11px 22px", fontWeight:700, fontSize:14, cursor:"pointer" } }, "Recarregar"),
+          React.createElement('button', { onClick: function(){ try{ localStorage.clear(); }catch(_){} location.reload(); }, style:{ background:"rgba(255,255,255,0.12)", color:"#fff", border:"none", borderRadius:12, padding:"11px 22px", fontWeight:600, fontSize:14, cursor:"pointer" } }, "Limpar cache")
+        )
       );
     }
     return this.props.children;
   }
 }
-if (!__viewerMode) { window.ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ErrBoundary, null, React.createElement(App, {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3252}} ))); }
+if (!__viewerMode) {
+  try {
+    window.ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ErrBoundary, null, React.createElement(App, {__self: this, __source: {fileName: _jsxFileName, lineNumber: 3252}} )));
+  } catch(bootErr) {
+    console.error('[AutoGest] Falha no boot:', bootErr);
+    document.getElementById('root').innerHTML =
+      '<div style="font-family:-apple-system,sans-serif;background:#1c1c1e;color:#fff;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;text-align:center">' +
+      '<div style="font-size:48px">⚠️</div>' +
+      '<div style="font-size:17px;font-weight:700">Falha ao iniciar o app</div>' +
+      '<div style="font-size:12px;opacity:0.55;max-width:300px;word-break:break-word">' + String(bootErr && bootErr.message || bootErr).slice(0,200) + '</div>' +
+      '<button onclick="location.reload()" style="margin-top:8px;padding:12px 28px;background:#007AFF;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer">Recarregar</button>' +
+      '<button onclick="localStorage.clear();location.reload()" style="padding:12px 28px;background:rgba(255,255,255,0.12);color:#fff;border:none;border-radius:12px;font-size:14px;font-weight:600;cursor:pointer">Limpar cache e recarregar</button>' +
+      '</div>';
+  }
+}
 
 // PWA Safari swipe-back — navega pelo estado React, nunca usa history.back()
 (function(){

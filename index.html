@@ -22210,7 +22210,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   const [form, setForm] = useState({});
   const [edit, setEdit] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState("conciliacao");
+  const [tab, setTab] = useState("receitas");
   const [budEmpState, setBudEmpState] = useState(function(){ try{ return JSON.parse(localStorage.getItem("ag_budgets_emp_v1")||"{}"); }catch(e){ return {}; } });
   function saveBudEmp(nb){ localStorage.setItem("ag_budgets_emp_v1",JSON.stringify(nb)); setBudEmpState(nb); }
   const [subOrcState, setSubOrcState] = useState("visao");
@@ -22760,7 +22760,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     , React.createElement('div', { className: "pg-title", __self: this, __source: {fileName: _jsxFileName, lineNumber: 2107}}, "Financeiro")
     , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center" } }
       , React.createElement('select', { style: Object.assign({}, FI, { flex: 1, fontSize: 14, padding: "7px 10px", cursor: "pointer" }), value: tab, onChange: function(e){ setTab(e.target.value); } }
-        , React.createElement('option', { value: "conciliacao" }, "📊 Resumo")
+        
         , React.createElement('option', { value: "receitas" }, "💰 Receitas")
         , React.createElement('option', { value: "despesas" }, "📉 Despesas")
         , React.createElement('option', { value: "fluxo" }, "📈 Fluxo")
@@ -24225,186 +24225,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       );
     })()
 
-
-    , tab === "conciliacao" && (() => {
-      var mes = filtroMes;
-      var nomeMesResumo = new Date(mes + "-15").toLocaleString("pt-BR", { month: "long", year: "numeric" });
-      var nomeMesCap = nomeMesResumo.charAt(0).toUpperCase() + nomeMesResumo.slice(1);
-
-      // ── Receitas: usa recFiltradas (já calculado corretamente com ref_fatura + _fromContrato) ──
-      var recPrev = recFiltradas.reduce(function(s,r){
-        // _fromContrato parcial: r.valor = valor_pago, mas previsto = valor_total
-        if (r._fromContrato && r.status === "parcial") {
-          var _ct = (contratos||[]).find(function(c){ return c.id == r.contrato_id; });
-          return s + parseFloat(_ct ? _ct.valor_total : r.valor || 0);
-        }
-        return s + parseFloat(r.valor||0);
-      }, 0);
-      var recReceb = recFiltradas.reduce(function(s,r){
-        if (r.status === "recebido" && (!r.recorrente||(r.data_pagamento||"").slice(0,7)===mes)) return s + parseFloat(r.valor||0);
-        if (r.status === "parcial") {
-          if (r._fromContrato) return s + parseFloat(r.valor||0); // valor já é valor_pago
-          if (r.ref_fatura) { var _mf=r.ref_fatura.match(/^fat_(\d+)_/); if(_mf){ var _ct=(contratos||[]).find(function(c){return String(c.id)===_mf[1];}); if(_ct&&_ct.valor_pago) return s+parseFloat(_ct.valor_pago); } }
-        }
-        return s;
-      }, 0);
-
-      // ── Listas separadas: contratos vs avulsas ──
-      var _seenCtIds = new Set();
-      var ctsResumoList = [];
-      var recAvulsasList = [];
-      recFiltradas.forEach(function(r){
-        var ctId = null;
-        if (r._fromContrato) ctId = r.contrato_id;
-        else if (r.ref_fatura) { var _m = r.ref_fatura.match(/^fat_(\d+)_/); if (_m) ctId = parseInt(_m[1]); }
-        if (ctId) {
-          if (!_seenCtIds.has(ctId)) {
-            _seenCtIds.add(ctId);
-            var _ct = (contratos||[]).find(function(c){ return c.id == ctId; });
-            if (_ct) ctsResumoList.push({ ct: _ct, rec: r });
-          }
-        } else {
-          recAvulsasList.push(r);
-        }
-      });
-
-      // ── Despesas ──
-      var despResumo = (despesas||[]).filter(function(d){ return !d.manutencao_id && !isRetLucro(d) && despesaDoMes(d, mes); });
-      var despPrev = despResumo.reduce(function(s,d){ return s + parseFloat(d.valor||0); }, 0);
-      var despPaga = despResumo.filter(function(d){
-        if (d.recorrente) return (d.data_pagamento||"").slice(0,7) === mes;
-        if (d.data_pagamento) return d.data_pagamento.slice(0,7) === mes;
-        return d.status === "pago";
-      }).reduce(function(s,d){ return s + parseFloat(d.valor||0); }, 0);
-
-      // ── Manutenção ──
-      var manResumo = (manutencoes||[]).filter(function(m){ return manVisivelNoMes(m, mes); });
-      var manPrev = manResumo.reduce(function(s,m){ return s + parseFloat(m.custo||0); }, 0);
-      var manPaga = manResumo.filter(function(m){
-        var dv = (despesas||[]).find(function(d){ return String(d.manutencao_id) === String(m.id); });
-        if (dv) return dv.status === "pago" || !!dv.data_pagamento;
-        return m.status_financeiro === "pago" || !!m.data_pagamento;
-      }).reduce(function(s,m){ return s + parseFloat(m.custo||0); }, 0);
-
-      // ── Multas ──
-      var multasResumo = (multas||[]).filter(function(m){ return (m.data||"").slice(0,7) === mes || (m.vencimento||"").slice(0,7) === mes; });
-      var multasPrev  = multasResumo.reduce(function(s,m){ return s + parseFloat(m.valor||0); }, 0);
-      var multasPagas = multasResumo.filter(function(m){ return m.status === "pago"; }).reduce(function(s,m){ return s + parseFloat(m.valor||0); }, 0);
-
-      // ── Saldos ──
-      var saidaPrev = despPrev + manPrev + multasPrev;
-      var saidaReal = despPaga + manPaga + multasPagas;
-      var saldoPrev = recPrev  - saidaPrev;
-      var saldoReal = recReceb - saidaReal;
-
-      // ── Componente de linha com barra ──
-      function LinhaResumo(icon, label, prev, real, corPrev, corReal) {
-        var pct = prev > 0 ? Math.min(100, real / prev * 100) : (real > 0 ? 100 : 0);
-        return React.createElement('div', { style: { marginBottom: 16 } }
-          , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 5 } }
-            , React.createElement('span', { style: { fontSize: 15, fontWeight: 700 } }, icon + " " + label)
-            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6 } }
-              , React.createElement('span', { style: { fontSize: 12, color: corPrev, fontWeight: 600 } }, fmtBRL(prev))
-              , React.createElement('span', { style: { fontSize: 11, color: C.sub } }, "→")
-              , React.createElement('span', { style: { fontSize: 15, color: corReal, fontWeight: 800 } }, fmtBRL(real))
-            )
-          )
-          , React.createElement('div', { style: { height: 6, borderRadius: 10, background: C.border + "80", overflow: "hidden" } }
-            , React.createElement('div', { style: { height: "100%", width: pct + "%", background: corReal, borderRadius: 10 } })
-          )
-        );
-      }
-
-      return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } }
-
-        // ── Card resumo ──
-        , React.createElement('div', { style: { background: C.card, borderRadius: 18, border: "1px solid " + C.border, padding: "18px 18px 16px" } }
-          , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 16 } }, "📊 Resumo · " + nomeMesCap)
-          , LinhaResumo("💰", "Receitas",   recPrev,  recReceb, C.blue,   C.green)
-          , LinhaResumo("💸", "Despesas",   despPrev, despPaga, C.red,    despPaga >= despPrev ? C.red : C.orange)
-          , manPrev  > 0 && LinhaResumo("🔧", "Manutenção", manPrev,  manPaga,  "#9B5DE5", "#9B5DE5")
-          , multasPrev > 0 && LinhaResumo("⚠️", "Multas",  multasPrev, multasPagas, C.orange, C.orange)
-          , React.createElement('div', { style: { borderTop: "1px solid " + C.border, marginTop: 4, paddingTop: 14, display: "flex", justifyContent: "space-between" } }
-            , React.createElement('div', null
-              , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginBottom: 3 } }, "Resultado previsto")
-              , React.createElement('div', { style: { fontSize: 22, fontWeight: 800, color: saldoPrev >= 0 ? C.green : C.red } }, fmtBRL(saldoPrev))
-            )
-            , React.createElement('div', { style: { textAlign: "right" } }
-              , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginBottom: 3 } }, "Resultado realizado")
-              , React.createElement('div', { style: { fontSize: 22, fontWeight: 800, color: saldoReal >= 0 ? C.green : C.red } }, fmtBRL(saldoReal))
-            )
-          )
-        )
-
-        // ── Contratos ──
-        , React.createElement('div', { style: { background: C.card, borderRadius: 18, border: "1px solid " + C.border, overflow: "hidden" } }
-          , React.createElement('div', { style: { padding: "14px 18px 10px", fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.8 } }, "Contratos do mês (" + ctsResumoList.length + ")")
-          , ctsResumoList.length === 0
-            ? React.createElement('div', { style: { padding: "12px 18px 16px", color: C.sub, fontSize: 13 } }, "Nenhum contrato neste mês")
-            : ctsResumoList.map(function(item, i) {
-                var c = item.ct; var r = item.rec;
-                var cl = (clientes||[]).find(function(x){ return x.id == c.cliente_id; }) || {};
-                var ve = (veiculos||[]).find(function(x){ return x.id == c.veiculo_id; }) || {};
-                var isPago = c.status_pagamento === "pago";
-                var isParc = c.status_pagamento === "parcial";
-                var cor = isPago ? C.green : isParc ? C.teal : C.orange;
-                var statusLabel = isPago ? "✅ recebido" : isParc ? "◑ parcial" : "⏳ pendente";
-                var valorExib = isParc && c.valor_pago ? parseFloat(c.valor_pago) : parseFloat(c.valor_total||0);
-                var dtRef = c.data_pagamento || c.previsao_pagamento || c.data_fim || "";
-                return React.createElement('div', { key: c.id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "11px 18px", borderTop: "1px solid " + C.border, gap: 10 } }
-                  , React.createElement('div', { style: { flex: 1, minWidth: 0 } }
-                    , React.createElement('div', { style: { fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, cl.nome || "--", React.createElement('span', { style: { color: C.sub, fontWeight: 400, fontSize: 11, marginLeft: 5 } }, "#" + numCt(c.id)))
-                    , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, (ve.placa || "--") + (dtRef ? " · " + fmtDate(dtRef) : ""))
-                  )
-                  , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 } }
-                    , React.createElement('div', { style: { fontSize: 14, fontWeight: 800, color: cor } }, fmtBRL(valorExib))
-                    , React.createElement('div', { style: { fontSize: 10, color: cor, marginTop: 2, fontWeight: 600 } }, statusLabel)
-                  )
-                );
-              })
-        )
-
-        // ── Receitas avulsas ──
-        , recAvulsasList.length > 0 && React.createElement('div', { style: { background: C.card, borderRadius: 18, border: "1px solid " + C.border, overflow: "hidden" } }
-          , React.createElement('div', { style: { padding: "14px 18px 10px", fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.8 } }, "Receitas avulsas (" + recAvulsasList.length + ")")
-          , recAvulsasList.map(function(r, i){
-              var conf = r.status === "recebido";
-              return React.createElement('div', { key: r.id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "11px 18px", borderTop: "1px solid " + C.border, gap: 10 } }
-                , React.createElement('div', { style: { flex: 1, minWidth: 0 } }
-                  , React.createElement('div', { style: { fontSize: 13, fontWeight: 600 } }, r.descricao || "--")
-                  , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, (r.categoria || "") + " · " + fmtDate(r.data))
-                )
-                , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 } }
-                  , React.createElement('div', { style: { fontSize: 14, fontWeight: 800, color: conf ? C.green : C.orange } }, fmtBRL(r.valor))
-                  , React.createElement('div', { style: { fontSize: 10, color: conf ? C.green : C.orange, marginTop: 2, fontWeight: 600 } }, conf ? "✅ recebido" : "⏳ pendente")
-                )
-              );
-            })
-        )
-
-        // ── Despesas ──
-        , React.createElement('div', { style: { background: C.card, borderRadius: 18, border: "1px solid " + C.border, overflow: "hidden" } }
-          , React.createElement('div', { style: { padding: "14px 18px 10px", fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.8 } }, "Despesas do mês (" + despResumo.length + ")")
-          , despResumo.length === 0
-            ? React.createElement('div', { style: { padding: "12px 18px 16px", color: C.sub, fontSize: 13 } }, "Nenhuma despesa")
-            : despResumo.slice().sort(function(a,b){ return (a.data||"").localeCompare(b.data||""); }).map(function(d, i){
-                var pgMes = d.recorrente ? (d.data_pagamento||"").slice(0,7)===mes : (d.data_pagamento ? d.data_pagamento.slice(0,7)===mes : d.status==="pago");
-                var cor = pgMes ? C.green : C.orange;
-                return React.createElement('div', { key: d.id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "11px 18px", borderTop: "1px solid " + C.border, gap: 10 } }
-                  , React.createElement('div', { style: { flex: 1, minWidth: 0 } }
-                    , React.createElement('div', { style: { fontSize: 13, fontWeight: 600 } }, d.descricao || d.categoria || "--")
-                    , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, (d.categoria||"") + " · " + fmtDate(d.data) + (d.recorrente ? " · ↻" : ""))
-                  )
-                  , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 } }
-                    , React.createElement('div', { style: { fontSize: 14, fontWeight: 800, color: cor } }, fmtBRL(d.valor))
-                    , React.createElement('div', { style: { fontSize: 10, color: cor, marginTop: 2, fontWeight: 600 } }, pgMes ? "✅ paga" : "⏳ pendente")
-                  )
-                );
-              })
-        )
-
-      );
-    })()
 
 
     , React.createElement(Modal, { open: modal, onClose: () => setModal(false), title: modalTipo === "despesa" ? (edit ? "Editar Despesa" : "Nova Despesa") : (edit ? "Editar Receita" : "Nova Receita"), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2514}}
@@ -31409,7 +31229,6 @@ var SUBTABS_MAP = {
     {id:'auditoria',      label:'Auditoria'},
   ],
   financeiro: [
-    {id:'conciliacao',        label:'Conciliação'},
     {id:'receitas',           label:'Receitas'},
     {id:'despesas',           label:'Despesas'},
     {id:'fluxo',              label:'Fluxo de Caixa'},

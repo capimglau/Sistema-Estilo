@@ -17690,7 +17690,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
   var [modo,         setModo]        = React.useState('apurado'); // 'apurado' | 'previsto'
   var [veicFiltro,   setVeicFiltro]  = React.useState('todos');
   var [exibir,       setExibir]      = React.useState('lucro_com');
-  var [ordenar,      setOrdenar]     = React.useState('lucro');
+  var [deprecMeses,  setDeprecMeses] = React.useState(24);
   var [veicDetalhe,  setVeicDetalhe] = React.useState(null);
   var [fipeMap,      setFipeMap]     = React.useState(window.__ag_fipeMap || {}); // { vehicleId: {valor, valorStr, modelo, codigo} | {loading} | {erro} }
   // Expõe fipeMap globalmente para outros componentes (ex: card da Frota)
@@ -17933,9 +17933,11 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
 
   var dadosComFipe = dados.map(function(d){
     var fi = fipeMap[d.v.id];
-    var baseInvest = (fi && fi.valor) ? fi.valor : d.valorAq;
-    var margem = baseInvest > 0 ? (d.lucroTotal / baseInvest * 100) : 0;
-    return Object.assign({}, d, { margem: margem, baseInvest: baseInvest, fipeDisp: !!(fi && fi.valor) });
+    var baseInvest   = (fi && fi.valor) ? fi.valor : d.valorAq;
+    var deprecMensal = baseInvest > 0 ? (baseInvest * 0.20) / deprecMeses : 0;
+    var lucroLiqDeprec = d.lucroTotal - deprecMensal;
+    var margem       = baseInvest > 0 ? (d.lucroTotal / baseInvest * 100) : 0;
+    return Object.assign({}, d, { margem:margem, baseInvest:baseInvest, fipeDisp:!!(fi&&fi.valor), deprecMensal:deprecMensal, lucroLiqDeprec:lucroLiqDeprec });
   });
 
   var rateioGeral = React.useMemo(function(){
@@ -17961,12 +17963,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
   });
 
   var dadosFiltrados = veicFiltro==='todos' ? dadosVis : dadosVis.filter(function(d){ return String(d.v.id)===String(veicFiltro); });
-  var dadosOrdenados = dadosFiltrados.slice().sort(function(a,b){
-    if(ordenar==='receita') return b.receitaTotal-a.receitaTotal;
-    if(ordenar==='placa')   return (a.v.placa||'').localeCompare(b.v.placa||'');
-    if(ordenar==='margem')  return b.margem-a.margem;
-    return b.lucroTotal-a.lucroTotal;
-  });
+  var dadosOrdenados = dadosFiltrados.slice().sort(function(a,b){ return b.lucroTotal-a.lucroTotal; });
 
   var totalReceita = dadosVis.reduce(function(s,d){return s+d.receitaTotal;},0);
   var totalLucro   = dadosVis.reduce(function(s,d){return s+d.lucroSemManut;},0);
@@ -18131,11 +18128,10 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
           React.createElement('option',{value:'receita'},'Receita'),
           React.createElement('option',{value:'consolidado'},'📋 Lucro Consolidado')
         ),
-        React.createElement('select',{value:ordenar,onChange:function(e){setOrdenar(e.target.value);},style:Object.assign({},selectStyle,{flex:1,minWidth:110})},
-          React.createElement('option',{value:'lucro'},'Ordenar: Lucro ↓'),
-          React.createElement('option',{value:'receita'},'Ordenar: Receita ↓'),
-          React.createElement('option',{value:'margem'},'Ordenar: Margem ↓'),
-          React.createElement('option',{value:'placa'},'Ordenar: Placa')
+        React.createElement('select',{value:deprecMeses,onChange:function(e){setDeprecMeses(parseInt(e.target.value));},style:Object.assign({},selectStyle,{flex:1,minWidth:110})},
+          React.createElement('option',{value:12},'Prazo venda: 12m'),
+          React.createElement('option',{value:24},'Prazo venda: 24m'),
+          React.createElement('option',{value:36},'Prazo venda: 36m')
         )
       ),
 
@@ -18290,7 +18286,8 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
                   React.createElement('div',{style:{display:'flex',gap:10,fontSize:10,color:'var(--c-sub)',paddingLeft:90}},
                     React.createElement('span',null,'Rec '+fR(d.receitaTotal)),
                     React.createElement('span',null,'Desp '+fR(d.custoSemManut)),
-                    React.createElement('span',null,'Man '+fR(d.custoManut))
+                    React.createElement('span',null,'Man '+fR(d.custoManut)),
+                    d.deprecMensal>0 && React.createElement('span',{style:{color:'#D4B06A'}},'Dep −'+fR(d.deprecMensal))
                   )
                 );
               })
@@ -18311,6 +18308,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
           {label:'Manutenção',            val:sel.custoManut,     cor:'#AF52DE',icon:'🔧'},
           {label:'Despesas diretas',      val:sel.despDiretas,    cor:C.red,    icon:'💸'},
           {label:'Rateio geral (÷'+nVeicAtivos+')', val:sel.rateioVeiculo, cor:C.orange, icon:'📊'},
+          {label:'Deprec. FIPE −20% ÷'+deprecMeses+'m (prazo venda)', val:sel.deprecMensal, cor:'#B0860A', icon:'📉'},
           {label:'Multas n/ recebidas',   val:multasNR,           cor:'#FF6B00',icon:'⚠️'},
         ];
         var maxV=Math.max.apply(null,items.map(function(x){return x.val;}).concat([1]));
@@ -18342,12 +18340,13 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
           ),
           // KPIs resumo
           React.createElement('div',{style:{marginTop:14,display:'flex',gap:8,flexWrap:'wrap'}},
-            [{lbl:'Receita',  val:sel.receitaTotal,   cor:C.green,                          fmt:null},
-             {lbl:'IPVA/Lic.',val:sel.ipvaVeiculo,    cor:'#D4B06A',                        fmt:null},
-             {lbl:'Manut.',   val:sel.custoManut,     cor:'#AF52DE',                        fmt:null},
-             {lbl:'Rateio',   val:sel.rateioVeiculo,  cor:C.orange,                         fmt:null},
-             {lbl:'Lucro',    val:sel.lucroTotal,     cor:sel.lucroTotal>=0?C.green:C.red,  fmt:null},
-             {lbl:'ROI/mês', val:sel.margem, cor:tCor(sel.margem,20), fmt:function(v){return v.toFixed(2)+'%';}, sub:sel.fipeDisp?'base FIPE':'base aquisição'}
+            [{lbl:'Receita',  val:sel.receitaTotal,      cor:C.green,                               fmt:null},
+             {lbl:'IPVA/Lic.',val:sel.ipvaVeiculo,       cor:'#D4B06A',                             fmt:null},
+             {lbl:'Manut.',   val:sel.custoManut,        cor:'#AF52DE',                             fmt:null},
+             {lbl:'Rateio',   val:sel.rateioVeiculo,     cor:C.orange,                              fmt:null},
+             {lbl:'Deprec./mês',val:sel.deprecMensal,    cor:'#B0860A',                             fmt:null, sub:sel.fipeDisp?'base FIPE':'base aquis.'},
+             {lbl:'Lucro c/Dep.',val:sel.lucroLiqDeprec, cor:sel.lucroLiqDeprec>=0?C.green:C.red,  fmt:null},
+             {lbl:'ROI/mês',  val:sel.margem,            cor:tCor(sel.margem,20),                   fmt:function(v){return v.toFixed(2)+'%';}, sub:sel.fipeDisp?'base FIPE':'base aquisição'}
             ].map(function(k,i){
               return React.createElement('div',{key:i,style:{flex:1,minWidth:68,background:'rgba(120,120,128,0.07)',
                 borderRadius:10,padding:'8px 10px',border:'1px solid var(--c-border)'}},

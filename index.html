@@ -23544,7 +23544,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       /* ── Lucratividade por veículo ── */
       var lucVei = (veiculos||[]).map(function(v){
         var cts=(contratos||[]).filter(function(c){ return c.veiculo_id==v.id&&c.status!=="cancelado"; });
-        var rec=cts.filter(function(c){ return c.status_pagamento==="pago"||c.status_pagamento==="isento"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0);
+        var rec=cts.reduce(function(s,c){ if(c.status_pagamento==="pago"||c.status_pagamento==="isento") return s+parseFloat(c.valor_total||0); if(c.status_pagamento==="parcial"&&c.valor_pago) return s+parseFloat(c.valor_pago||0); return s; },0);
         var man=(manutencoes||[]).filter(function(mn){ return mn.veiculo_id==v.id; }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
         var mult=(multas||[]).filter(function(mu){ return mu.veiculo_id==v.id; }).reduce(function(s,mu){ return s+Math.max(0,parseFloat(mu.valor||0)-(mu.cobrado_cliente==="pago"?parseFloat(mu.valor_cobrado||0):0)); },0);
         var nDias=cts.reduce(function(s,c){ var d1=new Date(c.data_inicio||c.data||Date.now()),d2=new Date(c.data_fim||c.data||Date.now()); return s+Math.max(0,Math.round((d2-d1)/(864e5))); },0);
@@ -23554,7 +23554,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       /* ── Lucratividade por cliente ── */
       var lucCli = (clientes||[]).map(function(cl){
         var cts=(contratos||[]).filter(function(c){ return c.cliente_id==cl.id&&c.status!=="cancelado"; });
-        var rec=cts.filter(function(c){ return c.status_pagamento==="pago"||c.status_pagamento==="isento"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0);
+        var rec=cts.reduce(function(s,c){ if(c.status_pagamento==="pago"||c.status_pagamento==="isento") return s+parseFloat(c.valor_total||0); if(c.status_pagamento==="parcial"&&c.valor_pago) return s+parseFloat(c.valor_pago||0); return s; },0);
         var mult=(multas||[]).filter(function(mu){ return mu.cliente_id==cl.id; }).reduce(function(s,mu){ return s+Math.max(0,parseFloat(mu.valor||0)-(mu.cobrado_cliente==="pago"?parseFloat(mu.valor_cobrado||0):0)); },0);
         return { cl:cl, rec:rec, mult:mult, liq:rec-mult, nCts:cts.length };
       }).filter(function(x){ return x.nCts>0; }).sort(function(a,b){ return b.liq-a.liq; });
@@ -24228,10 +24228,14 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         return true;
       });
       var despMesConc = despesas.filter(function(d) { return !d.manutencao_id && despesaDoMes(d, mesConc); });
-      var totalPrevisto = recFiltradas.reduce(function(s,r){ return s+parseFloat(r.valor||0); }, 0);
-      var totalConfirmado = recFiltradas.filter(function(r){
-        return r.status === "recebido" && (!r.recorrente || (r.data_pagamento||"").slice(0,7) === mesConc);
-      }).reduce(function(s,r){ return s+parseFloat(r.valor||0); }, 0);
+      var totalPrevisto = ctsMesConc.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0)
+        + recAvMesConc.reduce(function(s,r){ return s+parseFloat(r.valor||0); }, 0);
+      var totalConfirmado = ctsMesConc.reduce(function(s,c){
+        if (c.status_pagamento === "pago") return s + parseFloat(c.valor_total||0);
+        if (c.status_pagamento === "parcial" && c.valor_pago) return s + parseFloat(c.valor_pago||0);
+        return s;
+      }, 0)
+        + recAvMesConc.filter(function(r){ return r.status === "recebido" && (!r.recorrente || (r.data_pagamento||"").slice(0,7) === mesConc); }).reduce(function(s,r){ return s+parseFloat(r.valor||0); }, 0);
       var totalDespPrevista = despMesConc.reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
       var totalDespPaga = despMesConc.filter(function(d){return d.status==="pago" && (!d.recorrente||(d.data_pagamento||"").slice(0,7)===mesConc);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
 
@@ -25582,7 +25586,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
 
       // Receita vs Despesa por mês
       var evol = meses12.map(function(mes) {
-        var rec = contratos.filter(function(c){ var ref=c.previsao_pagamento||c.data_fim||""; return ref.slice(0,7)===mes && c.status_pagamento==="pago"; }).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)
+        var rec = contratos.filter(function(c){ var ref=c.previsao_pagamento||c.data_fim||""; return ref.slice(0,7)===mes && (c.status_pagamento==="pago"||c.status_pagamento==="parcial"); }).reduce(function(s,c){return s+(c.status_pagamento==="parcial"?parseFloat(c.valor_pago||0):parseFloat(c.valor_total||0));},0)
           + (receitas||[]).filter(function(r){return !r.ref_fatura && r.status==="recebido" && (r.data_pagamento||r.data||"").slice(0,7)===mes;}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
         // Despesas: usa despesaVisivelNoMes para incluir recorrentes projetadas
         var desp = (despesas||[]).filter(function(d){return !d.manutencao_id && !isRetLucro(d) && despesaVisivelNoMes(d, mes);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0)

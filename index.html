@@ -14657,16 +14657,24 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab, searchBarEl, onItemNav }
 function fmtDate(d) { if (!d) return "--"; var p = d.split("-"); if (p.length !== 3) return d; return p[2] + "/" + p[1] + "/" + p[0]; }
 function isRetLucro(d) { var c = d.categoria || ""; return c === "Retirada de Lucro" || c === "Ajuste de Saldo"; }
 function despesaVisivelNoMes(d, mes) {
-  var dataMes = (d.data || "").slice(0, 7);
-  if (!dataMes) return false;
-  if (dataMes === mes) return true;
-  if (d.recorrente && dataMes < mes) {
-    if (!d.prazo_recorrencia) return true;
-    var ini = new Date(dataMes + "-01"), fim = new Date(mes + "-01");
-    var diff = (fim.getFullYear() - ini.getFullYear()) * 12 + (fim.getMonth() - ini.getMonth());
-    return diff <= parseInt(d.prazo_recorrencia);
+  if (d.recorrente) {
+    var dataMes = (d.data || "").slice(0, 7);
+    if (!dataMes) return false;
+    if (dataMes === mes) return true;
+    if (dataMes < mes) {
+      if (!d.prazo_recorrencia) return true;
+      var ini = new Date(dataMes + "-01"), fim = new Date(mes + "-01");
+      var diff = (fim.getFullYear() - ini.getFullYear()) * 12 + (fim.getMonth() - ini.getMonth());
+      return diff <= parseInt(d.prazo_recorrencia);
+    }
+    return false;
   }
-  return false;
+  // Não recorrente: competência = data_pagamento se pago, senão data_vencimento || data
+  var dataMes = ((d.status === "pago" || d.data_pagamento)
+    ? (d.data_pagamento || d.data_vencimento || d.data)
+    : (d.data_vencimento || d.data) || "").slice(0, 7);
+  if (!dataMes) return false;
+  return dataMes === mes;
 }
 function receitaVisivelNoMes(r, mes) {
   if (r.ref_fatura) {
@@ -14675,18 +14683,28 @@ function receitaVisivelNoMes(r, mes) {
     // Parcelas CC e outros ref_fatura: usa a data da receita
     return (r.data||"").slice(0,7) === mes;
   }
-  var dataMes = (r.data || "").slice(0, 7);
-  if (dataMes === mes) return true;
-  if (r.recorrente && dataMes && dataMes < mes) {
-    if (!r.prazo_recorrencia) return true;
-    var ini2 = new Date(dataMes + "-01"), fim2 = new Date(mes + "-01");
-    var diff2 = (fim2.getFullYear() - ini2.getFullYear()) * 12 + (fim2.getMonth() - ini2.getMonth());
-    return diff2 <= parseInt(r.prazo_recorrencia);
+  if (r.recorrente) {
+    var dataMes = (r.data || "").slice(0, 7);
+    if (dataMes === mes) return true;
+    if (dataMes && dataMes < mes) {
+      if (!r.prazo_recorrencia) return true;
+      var ini2 = new Date(dataMes + "-01"), fim2 = new Date(mes + "-01");
+      var diff2 = (fim2.getFullYear() - ini2.getFullYear()) * 12 + (fim2.getMonth() - ini2.getMonth());
+      return diff2 <= parseInt(r.prazo_recorrencia);
+    }
+    return false;
   }
-  return false;
+  // Não recorrente: competência = data_pagamento se recebido/parcial, senão data_vencimento || data
+  var dataMes = ((r.status === "recebido" || r.status === "parcial")
+    ? (r.data_pagamento || r.data_vencimento || r.data)
+    : (r.data_vencimento || r.data) || "").slice(0, 7);
+  return dataMes === mes;
 }
 function manVisivelNoMes(m, mes) {
-  var dataMes = (m.data_previsao_pagamento || m.data_pagamento || m.data_entrada || "").slice(0, 7);
+  var pago = m.status_financeiro === "pago" || !!m.data_pagamento;
+  var dataMes = (pago
+    ? (m.data_pagamento || m.data_previsao_pagamento || m.data_entrada)
+    : (m.data_previsao_pagamento || m.data_entrada) || "").slice(0, 7);
   if (dataMes === mes) return true;
   if (m.recorrente && dataMes && dataMes < mes) {
     if (!m.prazo_recorrencia) return true;
@@ -14706,24 +14724,28 @@ function manMesRefGlobal(m) { return (m.data_previsao_pagamento || m.data_entrad
    ───────────────────────────────────────────────────────────────── */
 function despesaDoMes(d, mes) {
   if (!d || !mes) return false;
-  var dataMes = (d.data || "").slice(0, 7);
-  if (dataMes === mes) return true;
-  if (d.recorrente && dataMes && dataMes < mes) {
-    if (d.prazo_recorrencia) {
-      var ini = new Date(dataMes + "-01"), fim = new Date(mes + "-01");
-      var diff = (fim.getFullYear() - ini.getFullYear()) * 12 + (fim.getMonth() - ini.getMonth());
-      if (diff > parseInt(d.prazo_recorrencia)) return false;
+  if (d.recorrente) {
+    var dataMes = (d.data || "").slice(0, 7);
+    if (dataMes === mes) return true;
+    if (dataMes && dataMes < mes) {
+      if (d.prazo_recorrencia) {
+        var ini = new Date(dataMes + "-01"), fim = new Date(mes + "-01");
+        var diff = (fim.getFullYear() - ini.getFullYear()) * 12 + (fim.getMonth() - ini.getMonth());
+        if (diff > parseInt(d.prazo_recorrencia)) return false;
+      }
+      var pg = (d.data_pagamento || "").slice(0, 7);
+      if (pg && pg !== mes && pg > mes) return false;
+      if (pg && pg < mes) return true;
+      if (pg && pg === mes) return true;
+      return true;
     }
-    var pg = (d.data_pagamento || "").slice(0, 7);
-    /* Se foi pago num mês específico: só aparece naquele mês como "pago".
-       Nos meses seguintes ao pagamento ainda aparece como prevista (nova ocorrência).
-       Se ainda não tem pagamento: aparece em todos os meses seguintes como prevista. */
-    if (pg && pg !== mes && pg > mes) return false; /* pago no futuro — não aparece aqui ainda */
-    if (pg && pg < mes) return true; /* pago anteriormente → aparece como prevista nos meses seguintes */
-    if (pg && pg === mes) return true; /* pago neste mês */
-    return true; /* sem pagamento → prevista em todos os meses seguintes */
+    return false;
   }
-  return false;
+  // Não recorrente: competência = data_pagamento se pago, senão data_vencimento || data
+  var dataMes = ((d.status === "pago" || d.data_pagamento)
+    ? (d.data_pagamento || d.data_vencimento || d.data)
+    : (d.data_vencimento || d.data) || "").slice(0, 7);
+  return dataMes === mes;
 }
 function receitaDoMes(r, mes) {
   if (!r || !mes) return false;
@@ -14735,23 +14757,33 @@ function receitaDoMes(r, mes) {
     // Outros ref_fatura desconhecidos: usa data
     return (r.data||"").slice(0,7) === mes;
   }
-  var dataMes = (r.data || "").slice(0, 7);
-  if (dataMes === mes) return true;
-  if (r.recorrente && dataMes && dataMes < mes) {
-    if (r.prazo_recorrencia) {
-      var ini2 = new Date(dataMes + "-01"), fim2 = new Date(mes + "-01");
-      var diff2 = (fim2.getFullYear() - ini2.getFullYear()) * 12 + (fim2.getMonth() - ini2.getMonth());
-      if (diff2 > parseInt(r.prazo_recorrencia)) return false;
+  if (r.recorrente) {
+    var dataMes = (r.data || "").slice(0, 7);
+    if (dataMes === mes) return true;
+    if (dataMes && dataMes < mes) {
+      if (r.prazo_recorrencia) {
+        var ini2 = new Date(dataMes + "-01"), fim2 = new Date(mes + "-01");
+        var diff2 = (fim2.getFullYear() - ini2.getFullYear()) * 12 + (fim2.getMonth() - ini2.getMonth());
+        if (diff2 > parseInt(r.prazo_recorrencia)) return false;
+      }
+      var pg2 = (r.data_pagamento || "").slice(0, 7);
+      if (pg2 && pg2 !== mes) return false;
+      return true;
     }
-    var pg2 = (r.data_pagamento || "").slice(0, 7);
-    if (pg2 && pg2 !== mes) return false;
-    return true;
+    return false;
   }
-  return false;
+  // Não recorrente: competência = data_pagamento se recebido/parcial, senão data_vencimento || data
+  var dataMes = ((r.status === "recebido" || r.status === "parcial")
+    ? (r.data_pagamento || r.data_vencimento || r.data)
+    : (r.data_vencimento || r.data) || "").slice(0, 7);
+  return dataMes === mes;
 }
 function manDoMes(m, mes) {
   if (!m || !mes) return false;
-  var dataMes = (m.data_previsao_pagamento || m.data_entrada || "").slice(0, 7);
+  var pago = m.status_financeiro === "pago" || !!m.data_pagamento;
+  var dataMes = (pago
+    ? (m.data_pagamento || m.data_previsao_pagamento || m.data_entrada)
+    : (m.data_previsao_pagamento || m.data_entrada) || "").slice(0, 7);
   if (dataMes === mes) return true;
   if (m.recorrente && dataMes && dataMes < mes) {
     if (m.prazo_recorrencia) {
@@ -14760,8 +14792,8 @@ function manDoMes(m, mes) {
       if (diff3 > parseInt(m.prazo_recorrencia)) return false;
     }
     var pg3 = (m.data_pagamento || "").slice(0, 7);
-    if (pg3 && pg3 > mes) return false; /* pago no futuro — não aparece aqui ainda */
-    return true; /* prevista ou paga neste mês / meses anteriores já pagos → nova ocorrência prevista */
+    if (pg3 && pg3 > mes) return false;
+    return true;
   }
   return false;
 }
@@ -15324,8 +15356,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     var dt = m.data_previsao_pagamento || m.data_entrada || "";
     return dt && dt < hoje;
   });
-  function _dataRefDesp(d) { return (d.recorrente && (d.data||"").slice(0,7) < mesAtual) ? (mesAtual + "-" + (d.data||"").slice(8,10)) : (d.data||""); }
-  function _dataRefRec(r) { return (r.recorrente && (r.data||"").slice(0,7) < mesAtual) ? (mesAtual + "-" + (r.data||"").slice(8,10)) : (r.data||""); }
+  function _dataRefDesp(d) { return (d.recorrente && (d.data||"").slice(0,7) < mesAtual) ? (mesAtual + "-" + (d.data||"").slice(8,10)) : (d.data_vencimento || d.data || ""); }
+  function _dataRefRec(r) { return (r.recorrente && (r.data||"").slice(0,7) < mesAtual) ? (mesAtual + "-" + (r.data||"").slice(8,10)) : (r.data_vencimento || r.data || ""); }
   const despesasVencidas = (despesas || []).filter(d => { if (isRetLucro(d)) return false; if (d.status === "pago" || !!d.data_pagamento) return false; var dr = _dataRefDesp(d); return dr && dr < hoje; });
   const despesasVencendo = (despesas || []).filter(d => { if (isRetLucro(d)) return false; if (d.status === "pago" || !!d.data_pagamento) return false; var dr = _dataRefDesp(d); return dr && dr >= hoje && dr <= str3; });
   const receitasAtrasadas = (receitas || []).filter(r => { if (r.ref_fatura || r.status === "recebido") return false; var dr = _dataRefRec(r); return dr && dr < hoje; });
@@ -24228,14 +24260,17 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         return true;
       });
       var despMesConc = despesas.filter(function(d) { return !d.manutencao_id && despesaDoMes(d, mesConc); });
-      var totalPrevisto = ctsMesConc.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0)
-        + recAvMesConc.reduce(function(s,r){ return s+parseFloat(r.valor||0); }, 0);
-      var totalConfirmado = ctsMesConc.reduce(function(s,c){
-        if (c.status_pagamento === "pago") return s + parseFloat(c.valor_total||0);
-        if (c.status_pagamento === "parcial" && c.valor_pago) return s + parseFloat(c.valor_pago||0);
+      var totalPrevisto = recFiltradas.reduce(function(s,r){ return s+parseFloat(r.valor||0); }, 0);
+      var totalConfirmado = recFiltradas.reduce(function(s,r){
+        if (r.status === "recebido" && (!r.recorrente || (r.data_pagamento||"").slice(0,7) === mesConc)) {
+          return s + parseFloat(r.valor||0);
+        }
+        if (r.status === "parcial") {
+          if (r._fromContrato) return s + parseFloat(r.valor||0); // valor já é valor_pago
+          if (r.ref_fatura) { var _mfC=r.ref_fatura.match(/^fat_(\d+)_/); if(_mfC){var _ctC=(contratos||[]).find(function(c){return String(c.id)===_mfC[1];}); if(_ctC&&_ctC.valor_pago) return s+parseFloat(_ctC.valor_pago);} }
+        }
         return s;
-      }, 0)
-        + recAvMesConc.filter(function(r){ return r.status === "recebido" && (!r.recorrente || (r.data_pagamento||"").slice(0,7) === mesConc); }).reduce(function(s,r){ return s+parseFloat(r.valor||0); }, 0);
+      }, 0);
       var totalDespPrevista = despMesConc.reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
       var totalDespPaga = despMesConc.filter(function(d){return d.status==="pago" && (!d.recorrente||(d.data_pagamento||"").slice(0,7)===mesConc);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
 

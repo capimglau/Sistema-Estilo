@@ -15535,16 +15535,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       function _despPagaBarras(d, m) {
         if (d.manutencao_id) return false;
         if (!despesaVisivelNoMes(d, m)) return false;
-        if (d.recorrente) {
-          // Meses posteriores ao cadastro: pago apenas se data_pagamento está no mês m
-          if ((d.data||"").slice(0,7) < m) return (d.data_pagamento||"").slice(0,7) === m;
-          // Mês inicial da recorrência: verifica data_pagamento no mês ou status=pago sem data
-          if (d.data_pagamento) return d.data_pagamento.slice(0,7) === m;
-          return d.status === "pago";
-        }
-        // Não recorrente: pago se data_pagamento no mês m, ou status=pago sem data_pagamento
-        if (d.data_pagamento) return d.data_pagamento.slice(0,7) === m;
-        return d.status === "pago";
+        if (d.recorrente && (d.data||"").slice(0,7) < m) return (d.data_pagamento||"").slice(0,7) === m;
+        return d.status === "pago" || !!d.data_pagamento;
       }
       var despPago     = despMesItens.filter(function(d){ return _despPagaBarras(d, dashMes); }).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
       var despAPagar   = despTotal - despPago;
@@ -15552,16 +15544,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       /* ── Manutenções ── */
       var manMesItens  = (manutencoes||[]).filter(function(m){ return manVisivelNoMes(m, dashMes); });
       var manTotal     = manMesItens.reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);
-      function _isManPagaBarras(mn) {
-        var dv = (despesas||[]).find(function(d){ return d.manutencao_id == mn.id; });
-        if (dv) {
-          if (!(dv.status === "pago" || !!dv.data_pagamento)) return false;
-          if (dv.data_pagamento) return dv.data_pagamento.slice(0,7) === dashMes;
-          return true; // status=pago sem data_pagamento — confia no status
-        }
-        if (mn.data_pagamento) return mn.data_pagamento.slice(0,7) === dashMes;
-        return mn.status_financeiro === "pago";
-      }
+      function _isManPagaBarras(m) { return m.status_financeiro === "pago" || !!m.data_pagamento || (despesas||[]).some(function(d){ return d.manutencao_id == m.id && (d.status === "pago" || !!d.data_pagamento); }); }
       var manPago      = manMesItens.filter(function(m){ return _isManPagaBarras(m); }).reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);
       var manAPagar    = manTotal - manPago;
 
@@ -19191,6 +19174,20 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                 setVeiculos(function(p) { return p.map(function(v) { return String(v.id) === String(veicId) ? Object.assign({}, v, { status: "disponivel" }) : v; }); });
               } catch(e) { console.warn("status veiculo cancelado:", e); }
             }
+          }
+          // Cancelar receitas vinculadas ao contrato cancelado
+          if (payload.status === "cancelado") {
+            var _recCancel = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + edit + "_") && r.status !== "cancelada"; });
+            for (var _rci = 0; _rci < _recCancel.length; _rci++) {
+              try { var _ucr = await db.patch("receitas", _recCancel[_rci].id, { status: "cancelada" }); setReceitas(function(_p){ var _rid = _recCancel[_rci].id; return _p.map(function(r){ return r.id===_rid ? Object.assign({},r,_ucr) : r; }); }); } catch(e) { console.warn("cancelar receita:", e); }
+            }
+          }
+        }
+        // Sincronizar valor da receita vinculada se valor_total mudou
+        if (payload.valor_total && ctAntes && parseFloat(payload.valor_total) !== parseFloat(ctAntes.valor_total)) {
+          var _recValor = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + edit + "_") && r.status !== "cancelada" && r.status !== "recebido"; });
+          if (_recValor) {
+            try { var _uvr = await db.patch("receitas", _recValor.id, { valor: parseFloat(payload.valor_total).toFixed(2) }); setReceitas(function(p){ return p.map(function(r){ return r.id===_recValor.id ? Object.assign({},r,_uvr) : r; }); }); } catch(e) { console.warn("sync valor receita:", e); }
           }
         }
         toast("Atualizado!");

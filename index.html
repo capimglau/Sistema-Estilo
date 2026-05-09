@@ -14115,17 +14115,23 @@ function _alertStableKey(g) {
   var t = (g.titulo || "").replace(/\s*\(\d+\)/g, "").trim();
   return (g.tab || "") + "|" + t;
 }
+// Assinatura do grupo: muda quando novos itens entram → invalida o dismiss automaticamente
+function _alertGroupSig(g) {
+  var refs = (g.itemRefs || []).filter(function(r){ return r && r.id; });
+  var refStr = refs.map(function(r){ return (r.type||"") + ":" + r.id; }).sort().join(",");
+  return (g.items ? g.items.length : 0) + "|" + refStr;
+}
 function _alertGetDismissed() {
-  try { var s = localStorage.getItem("ag_dismissed_v2"); return s ? JSON.parse(s) : {}; } catch(_){ return {}; }
+  try { var s = localStorage.getItem("ag_dismissed_v3"); return s ? JSON.parse(s) : {}; } catch(_){ return {}; }
 }
 function _alertSetDismissed(obj) {
-  try { localStorage.setItem("ag_dismissed_v2", JSON.stringify(obj)); } catch(_){}
-  // Notifica todos os TopBanner montados
+  try { localStorage.setItem("ag_dismissed_v3", JSON.stringify(obj)); } catch(_){}
   window.dispatchEvent(new CustomEvent("ag-dismissed-changed"));
 }
-function _alertDismiss(key) {
+// sig = assinatura atual do grupo no momento do dismiss
+function _alertDismiss(key, sig) {
   var obj = _alertGetDismissed();
-  obj[key] = Date.now();
+  obj[key] = { ts: Date.now(), sig: sig || "" };
   _alertSetDismissed(obj);
 }
 function _alertRestore(key) {
@@ -14133,8 +14139,13 @@ function _alertRestore(key) {
   delete obj[key];
   _alertSetDismissed(obj);
 }
-function _alertIsDismissed(key) {
-  return !!_alertGetDismissed()[key];
+// currentSig: assinatura atual do grupo — se diferente do momento do dismiss, exibe novamente
+function _alertIsDismissed(key, currentSig) {
+  var d = _alertGetDismissed()[key];
+  if (!d) return false;
+  if (typeof d === "number") return false; // formato antigo → invalida, mostra de novo
+  if (currentSig !== undefined && d.sig !== currentSig) return false; // conteúdo mudou
+  return true;
 }
 function _alertItemKey(groupKey, ref) {
   if (!ref || !ref.id || !ref.type) return null;
@@ -14353,10 +14364,12 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl, onItemNav,
 
   var groups = (alertaGroups || []).filter(function(g) { return g.items && g.items.length > 0; });
   var visibleGroups = groups.filter(function(g) {
-    if (_alertIsDismissed(_alertStableKey(g))) return false;
+    var dimKey = _alertStableKey(g);
+    var sig = _alertGroupSig(g);
+    if (_alertIsDismissed(dimKey, sig)) return false;
     // Se todos os itens com ref forem dismissed individualmente, some o grupo
     var refs = (g.itemRefs || []).filter(function(r){ return r && r.id && r.type; });
-    if (refs.length > 0 && refs.every(function(r){ return _alertItemIsDismissed(_alertStableKey(g), r); })) return false;
+    if (refs.length > 0 && refs.every(function(r){ return _alertItemIsDismissed(dimKey, r); })) return false;
     return true;
   });
   var nAlertas = visibleGroups.length;
@@ -14437,8 +14450,7 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl, onItemNav,
       React.createElement('div', { style: { width: 1, height: 16, background: C.border, flexShrink: 0 } }),
       /* BOTÃO ALERTAS */
       (function() {
-        var _groups = (alertaGroups || []).filter(function(g) { return g.items && g.items.length > 0; });
-        var _nAlertas = _groups.length;
+        var _nAlertas = nAlertas; // usa visibleGroups.length (respeita dismissed)
         var _alertColor = _nAlertas > 5 ? C.red : C.orange;
         var _statusColor = _nAlertas > 5 ? C.red : _nAlertas > 2 ? C.orange : C.green;
         return React.createElement('div', {
@@ -14467,7 +14479,7 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl, onItemNav,
       )
     ),
     open && (function() {
-      var _groups = (alertaGroups || []).filter(function(g) { return g.items && g.items.length > 0; });
+      var _groups = visibleGroups; // já filtrado por dismissed + assinatura
       var _cats = ["todos"];
       _groups.forEach(function(g){ if (g.tab && _cats.indexOf(g.tab) < 0) _cats.push(g.tab); });
       var _catLabels = { todos:"Todos", reservas:"Reservas", contratos:"Contratos", financeiro:"Financeiro", clientes:"Clientes", multas:"Multas", manutencao:"Manutenção", frota:"Frota" };
@@ -14492,6 +14504,7 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl, onItemNav,
           : _groupsFil.map(function(g, i) {
             var gKey = g.tab + "_" + i; var isOpen = grpExp[gKey] !== false;
             var dimKey = _alertStableKey(g);
+            var dimSig = _alertGroupSig(g);
             return React.createElement('div', { key: i,
               style: { background: g.cor + "0D", border: "1px solid " + g.cor + "40", borderRadius: 14, overflow: "hidden" } },
               React.createElement('div', { onClick: function() { setGrpExp(function(p) { var n = Object.assign({}, p); n[gKey] = !isOpen; return n; }); }, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", cursor: "pointer" } },
@@ -14502,7 +14515,7 @@ function TopBanner({ alertaGroups, C, setTab, searchBarEl, onItemNav,
                 React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6 } },
                   g.tab && React.createElement('span', { onClick: function(e) { e.stopPropagation(); setTab(g.tab); setOpen(false); }, style: { fontSize: 11, color: g.cor, opacity: 0.7 } }, "Ver →"),
                   React.createElement('span', { style: { fontSize: 10, color: g.cor, background: g.cor + "18", borderRadius: 6, padding: "2px 6px", fontWeight: 700, transition: "transform .2s", transform: isOpen ? "rotate(180deg)" : "rotate(0deg)" } }, "▼"),
-                  React.createElement('button', { onClick: function(e) { e.stopPropagation(); _alertDismiss(dimKey); setTick(function(n){ return n+1; }); }, style: { border: "none", background: "transparent", color: g.cor, opacity: 0.55, cursor: "pointer", fontSize: 14, padding: "0 0 0 2px", lineHeight: 1, display: "flex", alignItems: "center" } }, "✕")
+                  React.createElement('button', { onClick: function(e) { e.stopPropagation(); _alertDismiss(dimKey, dimSig); setTick(function(n){ return n+1; }); }, style: { border: "none", background: "transparent", color: g.cor, opacity: 0.55, cursor: "pointer", fontSize: 14, padding: "0 0 0 2px", lineHeight: 1, display: "flex", alignItems: "center" } }, "✕")
                 )
               ),
               isOpen && React.createElement('div', { style: { borderTop: "1px solid " + g.cor + "25", padding: "6px 14px 10px" } },
@@ -18898,7 +18911,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (recExist) {
       if (recExist.status !== "recebido" || recExist.data_pagamento !== dtPag || parseFloat(recExist.valor) !== parseFloat(c.valor_total||0)) {
         try {
-          var patchSinc = { status: "recebido", data_pagamento: dtPag, valor: parseFloat(c.valor_total||0).toFixed(2) };
+          var patchSinc = { status: "recebido", data_pagamento: dtPag, valor: parseFloat(c.valor_total||0).toFixed(2), veiculo_id: c.veiculo_id || null, forma_pagamento: c.forma_pagamento || null };
           var upd2 = await db.patch("receitas", recExist.id, patchSinc);
           setReceitas(function(p) { return p.map(function(r) { return r.id === recExist.id ? Object.assign({}, r, upd2) : r; }); });
         } catch(e) { console.warn(e); }
@@ -18912,7 +18925,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           data: dtPag, data_pagamento: dtPag,
           data_vencimento: c.previsao_pagamento || dtPag,
           status: "recebido", tipo: "locacao",
-          cliente_id: c.cliente_id, ref_fatura: refKeyNovo
+          cliente_id: c.cliente_id, veiculo_id: c.veiculo_id || null,
+          forma_pagamento: c.forma_pagamento || null, ref_fatura: refKeyNovo
         });
         setReceitas(function(p) { return p.concat([nova]); });
       } catch(e) { console.warn(e); }
@@ -18938,7 +18952,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       // Só migra se ainda não está recebida — pagamento já feito permanece no mês original
       if (recAntiga.status !== "recebido") {
         try {
-          var migPatch = { ref_fatura: refKey, data: c.previsao_pagamento, data_vencimento: c.previsao_pagamento, valor: parseFloat(c.valor_total||0).toFixed(2), cliente_id: c.cliente_id };
+          var migPatch = { ref_fatura: refKey, data: c.previsao_pagamento, data_vencimento: c.previsao_pagamento, valor: parseFloat(c.valor_total||0).toFixed(2), cliente_id: c.cliente_id, veiculo_id: c.veiculo_id || null, forma_pagamento: c.forma_pagamento || null };
           var migUpd = await db.patch("receitas", recAntiga.id, migPatch);
           setReceitas(function(p){ return p.map(function(r){ return r.id === recAntiga.id ? Object.assign({}, r, migUpd, migPatch) : r; }); });
         } catch(e) { console.warn("migrar fatura:", e); }
@@ -18951,7 +18965,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         valor: parseFloat(c.valor_total || 0).toFixed(2),
         data: c.previsao_pagamento, data_vencimento: c.previsao_pagamento,
         status: "prevista", tipo: "locacao",
-        cliente_id: c.cliente_id, ref_fatura: refKey
+        cliente_id: c.cliente_id, veiculo_id: c.veiculo_id || null,
+        forma_pagamento: c.forma_pagamento || null, ref_fatura: refKey
       });
       setReceitas(function(p){ return [nova].concat(p); });
     } catch(e) { console.warn(e); }
@@ -18980,7 +18995,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           valor: (vlr/100).toFixed(2),
           data: dtVenc, data_vencimento: dtVenc,
           status: "prevista", tipo: "locacao",
-          cliente_id: c.cliente_id, ref_fatura: refKey
+          cliente_id: c.cliente_id, veiculo_id: c.veiculo_id || null,
+          forma_pagamento: c.forma_pagamento || null, ref_fatura: refKey
         });
         setReceitas(function(p){ return [nova].concat(p); });
       } catch(e) { console.warn("parcela CC", i+1, e); }
@@ -19062,17 +19078,24 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         // Se previsao_pagamento mudou, garantir que existe fatura prevista para o novo mês
         if (payload.previsao_pagamento) { await criarFaturaPrevista(Object.assign({}, u, { id: edit })); }
         // ── SINCRONIZAR VALOR, CLIENTE E VENCIMENTO DA RECEITA ao editar contrato ──
-        // Atualiza TODAS as receitas vinculadas a este contrato (ref_fatura)
+        // Atualiza TODAS as receitas vinculadas a este contrato (ref_fatura ou contrato_id manual)
         if (valorFinal) {
           var recsVinculadas = (receitas || []).filter(function(r) {
             return r.ref_fatura && r.ref_fatura.startsWith("fat_" + edit + "_") && !r.ref_fatura.includes("_cc_p");
           });
-          for (var _i = 0; _i < recsVinculadas.length; _i++) {
-            var _rec = recsVinculadas[_i];
+          // Também inclui receitas manuais vinculadas via contrato_id (sem ref_fatura)
+          var recsManuais = (receitas || []).filter(function(r) {
+            return !r.ref_fatura && r.contrato_id && String(r.contrato_id) === String(edit);
+          });
+          var todasRecsSync = recsVinculadas.concat(recsManuais);
+          for (var _i = 0; _i < todasRecsSync.length; _i++) {
+            var _rec = todasRecsSync[_i];
             var _patchR = {};
             if (parseFloat(_rec.valor) !== parseFloat(valorFinal)) _patchR.valor = valorFinal;
             if (payload.cliente_id && String(_rec.cliente_id) !== String(payload.cliente_id)) _patchR.cliente_id = payload.cliente_id;
             if (payload.previsao_pagamento && _rec.data_vencimento !== payload.previsao_pagamento) _patchR.data_vencimento = payload.previsao_pagamento;
+            if (payload.veiculo_id && String(_rec.veiculo_id) !== String(payload.veiculo_id)) _patchR.veiculo_id = payload.veiculo_id;
+            if (payload.forma_pagamento && _rec.forma_pagamento !== payload.forma_pagamento) _patchR.forma_pagamento = payload.forma_pagamento;
             if (Object.keys(_patchR).length > 0) {
               try {
                 var _upd = await db.patch("receitas", _rec.id, _patchR);
@@ -19094,6 +19117,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               var _patchCC = {};
               if (parseFloat(_recCC.valor) !== parseFloat(_novoVlr)) _patchCC.valor = _novoVlr;
               if (payload.cliente_id && String(_recCC.cliente_id) !== String(payload.cliente_id)) _patchCC.cliente_id = payload.cliente_id;
+              if (payload.veiculo_id && String(_recCC.veiculo_id) !== String(payload.veiculo_id)) _patchCC.veiculo_id = payload.veiculo_id;
+              if (payload.forma_pagamento && _recCC.forma_pagamento !== payload.forma_pagamento) _patchCC.forma_pagamento = payload.forma_pagamento;
               if (Object.keys(_patchCC).length > 0) {
                 try {
                   var _updCC = await db.patch("receitas", _recCC.id, _patchCC);
@@ -25049,6 +25074,29 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             , React.createElement(Lbl, { label: "Categoria", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2544}}, React.createElement('select', { style: FI, value: form.categoria || "Locacao", onChange: e => F("categoria", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2544}}, CATS_REC.map(c => React.createElement('option', { key: c, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2544}}, c))))
             , React.createElement(Lbl, { label: "Forma de Pagamento"  , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2545}}, React.createElement('select', { style: FI, value: form.forma_pagamento || "Pix", onChange: e => F("forma_pagamento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2545}}, React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2545}}, "Pix"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2545}}, "Dinheiro"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2545}}, "Cartao Debito" ), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2545}}, "Cartao Credito" ), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2545}}, "Transferencia"), React.createElement('option', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2545}}, "Boleto")))
           )
+          , React.createElement(Lbl, { label: "Contrato (opcional — vincula receita ao contrato)" }, React.createElement('select', { style: FI, value: form.contrato_id || "", onChange: function(e) {
+              var ctId = e.target.value;
+              if (ctId) {
+                var ctSel = contratos.find(function(x){ return String(x.id) === ctId; });
+                if (ctSel) {
+                  var veSel = veiculos.find(function(x){ return x.id == ctSel.veiculo_id; });
+                  var clSel = clientes.find(function(x){ return x.id == ctSel.cliente_id; });
+                  setForm(function(p){ return Object.assign({}, p, {
+                    contrato_id: ctId,
+                    veiculo_id: ctSel.veiculo_id ? String(ctSel.veiculo_id) : p.veiculo_id,
+                    forma_pagamento: ctSel.forma_pagamento || p.forma_pagamento,
+                  }); });
+                } else { F("contrato_id", ctId); }
+              } else { F("contrato_id", ""); }
+            }},
+            React.createElement('option', { value: "" }, "— Nenhum (receita avulsa)"),
+            contratos.filter(function(c){ return c.status !== "cancelado"; }).map(function(c) {
+              var cl = clientes.find(function(x){ return x.id == c.cliente_id; });
+              var ve = veiculos.find(function(x){ return x.id == c.veiculo_id; });
+              return React.createElement('option', { key: c.id, value: c.id },
+                "#", numCt(c.id), " — ", cl&&cl.nome||"?", " · ", ve&&ve.placa||"", " · ", fmtBRL(c.valor_total));
+            })
+          ))
           , React.createElement(Lbl, { label: "Veículo (opcional)" , __self: this, __source: {fileName: _jsxFileName, lineNumber: 2547}}, React.createElement('select', { style: FI, value: form.veiculo_id || "", onChange: e => F("veiculo_id", e.target.value || null), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2547}}, React.createElement('option', { value: "", __self: this, __source: {fileName: _jsxFileName, lineNumber: 2547}}, "Nenhum (receita geral)"  ), veiculos.map(v => React.createElement('option', { key: v.id, value: v.id, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2547}}, v.placa, " — "  , v.marca, " " , v.modelo))))
           , React.createElement('div', { onClick: () => F("recorrente", !form.recorrente), style: { display: "flex", alignItems: "center", gap: 10, background: form.recorrente ? C.green + "15" : C.border + "40", borderRadius: 12, padding: "12px 14px", cursor: "pointer", border: "1.5px solid " + (form.recorrente ? C.green : C.border) }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2548}}
             , React.createElement('div', { style: { width: 22, height: 22, borderRadius: 6, background: form.recorrente ? C.green : "#fff", border: "2px solid " + (form.recorrente ? C.green : "#C7C7CC"), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2549}}

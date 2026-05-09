@@ -17820,36 +17820,39 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
   // Despesas gerais (sem vínculo a veículo) — filtradas pelo mês quando apurado
   var nVeicAtivos = Math.max(1, (veiculos||[]).filter(function(v){ return v.status!=='inativo'; }).length);
 
+  // Categorias de custo individual por veículo (não entram no rateio geral)
+  var CATS_VEIC = ['IPVA','Licenciamento','Emplacamento'];
+
   function calcDados(m, a, md) {
-    var despGeral = (despesas||[]).filter(function(d){
+    var mesFmt = String(a)+'-'+String(m+1).padStart(2,'0');
+
+    // ── Despesas gerais puras (sem vínculo a veículo E sem categorias veículo-específicas)
+    // Usa resolverDespesasDoMes para incluir recorrentes corretamente
+    var _despGeralBase = (despesas||[]).filter(function(d){
       if(d.veiculo_id && d.veiculo_id!=='' && d.veiculo_id!==null) return false;
       if(d.manutencao_id) return false;
-      if(d.categoria==='Retirada de Lucro'||d.categoria==='Ajuste de Saldo') return false;
-      if(md==='apurado') {
-        // filtra pelo mês/ano
-        var ref = d.data_vencimento||d.data||d.created_at||'';
-        if(!ref) return true;
-        var dr = new Date(ref);
-        return dr.getMonth()===m && dr.getFullYear()===a;
-      }
-      return true; // previsto = tudo
+      if(['Retirada de Lucro','Ajuste de Saldo'].indexOf(d.categoria)>=0) return false;
+      if(CATS_VEIC.indexOf(d.categoria)>=0) return false; // IPVA/Licenc./Empl. são per-veículo
+      return true;
+    });
+    var _despGeralRes = resolverDespesasDoMes(_despGeralBase, mesFmt);
+    var despGeral = _despGeralRes.filter(function(d){
+      if(md==='apurado') return d.status==='pago'||!!d.data_pagamento;
+      return true;
     }).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
     var rateio = despGeral / nVeicAtivos;
 
     return (veiculos||[]).map(function(v){
-      // contratos do veículo (exclui cancelados)
       var cts = (contratos||[]).filter(function(c){ return String(c.veiculo_id)===String(v.id) && c.status!=='cancelado'; });
-      // contratos do mês selecionado: usa data de conclusão/pagamento previsto, não data_inicio
-      var mesFmt = String(a)+'-'+String(m+1).padStart(2,'0');
       var ctsMes = cts.filter(function(c){ var ref=ctMesRef(c)||mesDe(c.data_inicio); return ref===mesFmt; });
 
-      // Receita: apurado = só contratos do mês; previsto = diária * dias do mês * 0.7
+      // Receita: apurado = contratos + avulsas do mês; previsto = diária × 70% × dias
       var recMes, recTotal;
       if(md==='apurado') {
         recMes = ctsMes.reduce(function(s,c){
           if(c.status==='concluido'||c.status_pagamento==='pago') return s+parseFloat(c.valor_total||0);
           if(c.status_pagamento==='parcial'&&c.valor_pago) return s+parseFloat(c.valor_pago||0);
-          return s+parseFloat(c.valor_total||0); // conta contratos ativos do mês tb
+          return s+parseFloat(c.valor_total||0);
         }, 0);
         var recAvulsaMes = (receitas||[]).filter(function(r){
           if(String(r.veiculo_id)!==String(v.id)) return false;
@@ -17859,40 +17862,47 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
         recMes += recAvulsaMes;
         recTotal = recMes;
       } else {
-        // previsto: diária * 70% * dias do mês
         var diasMes = new Date(a, m+1, 0).getDate();
         recTotal = parseFloat(v.valor_diaria||0) * 0.70 * diasMes;
       }
 
-      // Despesas diretas do veículo no mês
-      var despDir = (despesas||[]).filter(function(d){
+      // ── IPVA / Licenciamento / Emplacamento — individuais do veículo
+      var _ipvaBase = (despesas||[]).filter(function(d){
         if(String(d.veiculo_id)!==String(v.id)) return false;
-        if(d.manutencao_id) return false;
-        if(d.categoria==='Retirada de Lucro') return false;
-        if(md==='apurado') {
-          var ref = d.data_vencimento||d.data||d.created_at||'';
-          if(!ref) return true;
-          var dr=new Date(ref); return dr.getMonth()===m && dr.getFullYear()===a;
-        }
+        if(CATS_VEIC.indexOf(d.categoria)<0) return false;
+        return true;
+      });
+      var _ipvaRes = resolverDespesasDoMes(_ipvaBase, mesFmt);
+      var ipvaVeiculo = _ipvaRes.filter(function(d){
+        if(md==='apurado') return d.status==='pago'||!!d.data_pagamento;
         return true;
       }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
 
+      // ── Despesas diretas do veículo (excluindo IPVA/Licenc./Empl. já acima)
+      var _despDirBase = (despesas||[]).filter(function(d){
+        if(String(d.veiculo_id)!==String(v.id)) return false;
+        if(d.manutencao_id) return false;
+        if(['Retirada de Lucro'].concat(CATS_VEIC).indexOf(d.categoria)>=0) return false;
+        return true;
+      });
+      var _despDirRes = resolverDespesasDoMes(_despDirBase, mesFmt);
+      var despDir = _despDirRes.filter(function(d){
+        if(md==='apurado') return d.status==='pago'||!!d.data_pagamento;
+        return true;
+      }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
+
+      // ── Manutenção individual do veículo no mês
       var custoManut = (manutencoes||[]).filter(function(mn){
         if(String(mn.veiculo_id)!==String(v.id)) return false;
-        if(md==='apurado') {
-          var ref = mn.data||mn.created_at||'';
-          if(!ref) return true;
-          var dr=new Date(ref); return dr.getMonth()===m && dr.getFullYear()===a;
-        }
-        return true;
+        return manVisivelNoMes(mn, mesFmt);
       }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
 
-      var custoSemManut = despDir + rateio;
+      // Fórmula: Receita - IPVA/Licenc./Empl. - DespDir - Rateio - Manutenção
+      var custoSemManut = despDir + ipvaVeiculo + rateio;
       var lucroSemManut = recTotal - custoSemManut;
       var lucroTotal    = lucroSemManut - custoManut;
-      var margem        = recTotal>0 ? (lucroSemManut/recTotal*100) : 0;
+      var margem        = recTotal>0 ? (lucroTotal/recTotal*100) : 0;
 
-      // Para cenário: usa histórico completo para lucroDia
       var ctsAll = cts;
       var diasRodados = ctsAll.reduce(function(s,c){
         if(!c.data_inicio) return s;
@@ -17908,12 +17918,13 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
 
       var valorAq  = parseFloat(v.valor_compra||v.valor_aquisicao||0);
       var perdaDep = valorAq*0.20;
-      var despMensalHist = diasRodados>0 ? (despDir+rateio)/(diasRodados/30) : (despDir+rateio);
+      var despMensalHist = diasRodados>0 ? (custoSemManut)/(diasRodados/30) : custoSemManut;
       var diariaMin = valorAq>0 ? (despMensalHist + perdaDep/24)/(0.70*30) : 0;
 
       return { v:v, receitaTotal:recTotal, custoSemManut:custoSemManut, custoManut:custoManut,
+               ipvaVeiculo:ipvaVeiculo, despDiretas:despDir, rateioVeiculo:rateio,
                lucroSemManut:lucroSemManut, lucroTotal:lucroTotal, margem:margem,
-               despDiretas:despDir, nCts:cts.length, nCtsMes:ctsMes.length,
+               nCts:cts.length, nCtsMes:ctsMes.length,
                valorAq:valorAq, perdaDep:perdaDep, diariaMin:diariaMin,
                lucroHistDia:lucroHistDia };
     });
@@ -17923,14 +17934,16 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     [veiculos,contratos,despesas,receitas,manutencoes,mesSel,anoSel,modo]);
 
   var rateioGeral = React.useMemo(function(){
-    var despGeral = (despesas||[]).filter(function(d){
+    var mesFmt2 = String(anoSel)+'-'+String(mesSel+1).padStart(2,'0');
+    var _base = (despesas||[]).filter(function(d){
       if(d.veiculo_id && d.veiculo_id!=='' && d.veiculo_id!==null) return false;
       if(d.manutencao_id) return false;
-      if(d.categoria==='Retirada de Lucro'||d.categoria==='Ajuste de Saldo') return false;
-      if(modo==='apurado') {
-        var ref=d.data_vencimento||d.data||d.created_at||''; if(!ref) return true;
-        var dr=new Date(ref); return dr.getMonth()===mesSel && dr.getFullYear()===anoSel;
-      }
+      if(['Retirada de Lucro','Ajuste de Saldo'].concat(CATS_VEIC).indexOf(d.categoria)>=0) return false;
+      return true;
+    });
+    var _res = resolverDespesasDoMes(_base, mesFmt2);
+    var despGeral = _res.filter(function(d){
+      if(modo==='apurado') return d.status==='pago'||!!d.data_pagamento;
       return true;
     }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
     return despGeral/nVeicAtivos;
@@ -18110,7 +18123,8 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
           React.createElement('option',{value:'lucro_com'},'Lucro c/ Manut.'),
           React.createElement('option',{value:'lucro_sem'},'Lucro s/ Manut.'),
           React.createElement('option',{value:'margem'},'Margem %'),
-          React.createElement('option',{value:'receita'},'Receita')
+          React.createElement('option',{value:'receita'},'Receita'),
+          React.createElement('option',{value:'consolidado'},'📋 Lucro Consolidado')
         ),
         React.createElement('select',{value:ordenar,onChange:function(e){setOrdenar(e.target.value);},style:Object.assign({},selectStyle,{flex:1,minWidth:110})},
           React.createElement('option',{value:'lucro'},'Ordenar: Lucro ↓'),
@@ -18120,8 +18134,123 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
         )
       ),
 
-      // ── Barras por veículo ──
-      dadosOrdenados.length===0
+      // ── Barras por veículo OU Waterfall consolidado ──
+      exibir === 'consolidado' ? (function(){
+        var base = dadosOrdenados.length > 0 ? dadosOrdenados : dadosVis;
+        var totRec     = base.reduce(function(s,d){return s+d.receitaTotal;},0);
+        var totIPVA    = base.reduce(function(s,d){return s+d.ipvaVeiculo;},0);
+        var totManut   = base.reduce(function(s,d){return s+d.custoManut;},0);
+        var totDir     = base.reduce(function(s,d){return s+d.despDiretas;},0);
+        var totRateio  = base.reduce(function(s,d){return s+d.rateioVeiculo;},0);
+        var totMultas  = (multas||[]).filter(function(m){
+          return m.status!=='pago' && !m.data_pagamento &&
+                 base.some(function(d){ return String(d.v.id)===String(m.veiculo_id); });
+        }).reduce(function(s,m){return s+parseFloat(m.valor||0);},0);
+        var lucroExato = totRec - totIPVA - totManut - totDir - totRateio;
+
+        var linhas=[
+          {label:'Receita total',           val:totRec,    cor:C.green,  icon:'💵', soma:true},
+          {label:'IPVA / Licenc. / Empl.',  val:-totIPVA,  cor:'#D4B06A',icon:'📄'},
+          {label:'Manutenção',              val:-totManut,  cor:'#AF52DE',icon:'🔧'},
+          {label:'Despesas diretas',        val:-totDir,    cor:C.red,    icon:'💸'},
+          {label:'Despesas gerais (÷'+nVeicAtivos+')', val:-totRateio, cor:C.orange, icon:'📊'},
+        ];
+        var maxBar = Math.max(totRec, 1);
+
+        return React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:0,marginTop:4}},
+          // Cabeçalho
+          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',padding:'6px 0',marginBottom:4,borderBottom:'1px solid var(--c-border)'}},
+            React.createElement('span',{style:{fontSize:10,fontWeight:700,color:'var(--c-sub)',textTransform:'uppercase',letterSpacing:0.5}},
+              (veicFiltro==='todos'?'Todos os veículos':base[0]&&(base[0].v.placa||''))
+              +' · '+MS[mesSel]+'/'+anoSel+' · '+(modo==='apurado'?'Apurado':'Previsto')
+            ),
+            React.createElement('span',{style:{fontSize:10,color:'var(--c-sub)'}},nVeicAtivos+' veículo(s) ativo(s)')
+          ),
+          // Linhas do waterfall
+          linhas.map(function(linha,i){
+            var abs=Math.abs(linha.val);
+            var pct=maxBar>0?abs/maxBar*100:0;
+            var isPos=linha.soma;
+            return React.createElement('div',{key:i,style:{
+              padding:'9px 0',
+              borderBottom:'1px solid rgba(120,120,128,0.10)'
+            }},
+              React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8}},
+                React.createElement('span',{style:{fontSize:12,width:200,flexShrink:0,color:'var(--c-text)',fontWeight:isPos?700:400}},
+                  linha.icon+' '+(isPos?'':' (−) ')+linha.label),
+                React.createElement('div',{style:{flex:1,height:14,background:'rgba(120,120,128,0.08)',borderRadius:4,overflow:'hidden'}},
+                  React.createElement('div',{style:{height:'100%',width:pct+'%',background:linha.cor,borderRadius:4,opacity:isPos?1:0.75,transition:'width .6s'}})
+                ),
+                React.createElement('span',{style:{fontSize:12,fontWeight:isPos?800:600,color:linha.cor,whiteSpace:'nowrap',minWidth:90,textAlign:'right'}},
+                  (isPos?'':'-')+fR(abs))
+              )
+            );
+          }),
+          // Linha resultado
+          React.createElement('div',{style:{
+            marginTop:6,padding:'12px 14px',borderRadius:12,
+            background:lucroExato>=0?'rgba(52,199,89,0.10)':'rgba(255,59,48,0.10)',
+            border:'2px solid '+(lucroExato>=0?C.green:C.red),
+            display:'flex',alignItems:'center',justifyContent:'space-between'
+          }},
+            React.createElement('div',null,
+              React.createElement('div',{style:{fontSize:10,fontWeight:700,color:'var(--c-sub)',textTransform:'uppercase',letterSpacing:0.5,marginBottom:2}},'🏆 Lucro Líquido Exato'),
+              React.createElement('div',{style:{fontSize:11,color:'var(--c-sub)'}},
+                'Receita − IPVA − Manutenção − Despesas dir. − Despesas gerais')
+            ),
+            React.createElement('div',{style:{fontSize:22,fontWeight:900,color:lucroExato>=0?C.green:C.red}},fR(lucroExato))
+          ),
+          // Alerta multas pendentes
+          totMultas > 0 && React.createElement('div',{style:{
+            marginTop:8,padding:'8px 12px',background:'rgba(255,149,0,0.08)',
+            borderRadius:10,border:'1px solid rgba(255,149,0,0.25)',
+            display:'flex',justifyContent:'space-between',alignItems:'center',
+            fontSize:11,color:C.orange,fontWeight:600
+          }},
+            React.createElement('span',null,'⚠️ Multas pendentes de recebimento (não incluídas no lucro acima)'),
+            React.createElement('span',{style:{fontSize:13,fontWeight:800}},fR(totMultas))
+          ),
+          // Mini-tabela por veículo abaixo
+          base.length > 1 && React.createElement('div',{style:{marginTop:12}}),
+          base.length > 1 && React.createElement('div',{style:{overflowX:'auto',marginTop:4}},
+            React.createElement('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+              React.createElement('thead',null,
+                React.createElement('tr',{style:{borderBottom:'1px solid var(--c-border)'}},
+                  ['Placa','Receita','IPVA/Lic.','Manut.','Desp.Dir.','Rateio','Lucro'].map(function(h){
+                    return React.createElement('th',{key:h,style:{padding:'6px 8px',textAlign:'right',fontSize:9,fontWeight:700,textTransform:'uppercase',letterSpacing:0.5,color:'var(--c-sub)',whiteSpace:'nowrap',background:'rgba(120,120,128,0.04)'}},h);
+                  })
+                )
+              ),
+              React.createElement('tbody',null,
+                base.map(function(d){
+                  var lv=d.lucroTotal;
+                  return React.createElement('tr',{key:d.v.id,style:{borderBottom:'1px solid rgba(120,120,128,0.08)'}},
+                    React.createElement('td',{style:{padding:'6px 8px',textAlign:'left'}},
+                      React.createElement('span',{style:{fontFamily:'monospace',fontSize:10,fontWeight:700,background:'rgba(0,122,255,0.10)',color:C.blue,padding:'1px 6px',borderRadius:4}},d.v.placa||'—')
+                    ),
+                    React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',color:C.green,fontWeight:600}},fR(d.receitaTotal)),
+                    React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',color:'#D4B06A'}},fR(d.ipvaVeiculo)),
+                    React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',color:'#AF52DE'}},fR(d.custoManut)),
+                    React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',color:C.red}},fR(d.despDiretas)),
+                    React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',color:C.orange}},fR(d.rateioVeiculo)),
+                    React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',fontWeight:700,color:lv>=0?C.green:C.red}},fR(lv))
+                  );
+                }),
+                React.createElement('tr',{style:{borderTop:'2px solid var(--c-border)',background:'rgba(120,120,128,0.04)'}},
+                  React.createElement('td',{style:{padding:'6px 8px',fontWeight:700,fontSize:10,color:'var(--c-sub)'}},'TOTAL'),
+                  React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',fontWeight:800,color:C.green}},fR(totRec)),
+                  React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',fontWeight:700,color:'#D4B06A'}},fR(totIPVA)),
+                  React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',fontWeight:700,color:'#AF52DE'}},fR(totManut)),
+                  React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',fontWeight:700,color:C.red}},fR(totDir)),
+                  React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',fontWeight:700,color:C.orange}},fR(totRateio)),
+                  React.createElement('td',{style:{padding:'6px 8px',textAlign:'right',fontWeight:900,color:lucroExato>=0?C.green:C.red}},fR(lucroExato))
+                )
+              )
+            )
+          )
+        );
+      }())
+      : dadosOrdenados.length===0
         ? React.createElement('div',{style:{padding:'24px 0',textAlign:'center',color:'var(--c-sub)',fontSize:12}},'Nenhum veículo com dados no período.')
         : (function(){
             var getVal=function(d){
@@ -18172,10 +18301,12 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
                  m.status!=='pago' && !m.data_pagamento;
         }).reduce(function(s,m){ return s+parseFloat(m.valor||0); },0);
         var items=[
-          {label:'Receitas',            val:sel.receitaTotal,  cor:C.green,  icon:'💵'},
-          {label:'Despesas',            val:sel.custoSemManut, cor:C.red,    icon:'💸'},
-          {label:'Manutenção',          val:sel.custoManut,    cor:'#AF52DE',icon:'🔧'},
-          {label:'Multas n/ recebidas', val:multasNR,          cor:C.orange, icon:'⚠️'},
+          {label:'Receitas',              val:sel.receitaTotal,   cor:C.green,  icon:'💵'},
+          {label:'IPVA / Licenc. / Empl.',val:sel.ipvaVeiculo,    cor:'#D4B06A',icon:'📄'},
+          {label:'Manutenção',            val:sel.custoManut,     cor:'#AF52DE',icon:'🔧'},
+          {label:'Despesas diretas',      val:sel.despDiretas,    cor:C.red,    icon:'💸'},
+          {label:'Rateio geral (÷'+nVeicAtivos+')', val:sel.rateioVeiculo, cor:C.orange, icon:'📊'},
+          {label:'Multas n/ recebidas',   val:multasNR,           cor:'#FF6B00',icon:'⚠️'},
         ];
         var maxV=Math.max.apply(null,items.map(function(x){return x.val;}).concat([1]));
         return React.createElement('div',{style:{marginTop:16,borderTop:'1px solid var(--c-border)',paddingTop:16}},
@@ -18206,15 +18337,17 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
           ),
           // KPIs resumo
           React.createElement('div',{style:{marginTop:14,display:'flex',gap:8,flexWrap:'wrap'}},
-            [{lbl:'Lucro s/M',val:sel.lucroSemManut,cor:sel.lucroSemManut>=0?C.green:C.red},
-             {lbl:'Lucro c/M',val:sel.lucroTotal,   cor:sel.lucroTotal>=0?C.green:C.red},
-             {lbl:'Margem',   val:sel.margem,        cor:tCor(sel.margem,20), fmt:function(v){return v.toFixed(1)+'%';}},
-             {lbl:'Contratos',val:sel.nCtsMes,       cor:'var(--c-text)',     fmt:function(v){return v+' ct';}}
+            [{lbl:'Receita',  val:sel.receitaTotal,   cor:C.green,                          fmt:null},
+             {lbl:'IPVA/Lic.',val:sel.ipvaVeiculo,    cor:'#D4B06A',                        fmt:null},
+             {lbl:'Manut.',   val:sel.custoManut,     cor:'#AF52DE',                        fmt:null},
+             {lbl:'Rateio',   val:sel.rateioVeiculo,  cor:C.orange,                         fmt:null},
+             {lbl:'Lucro',    val:sel.lucroTotal,     cor:sel.lucroTotal>=0?C.green:C.red,  fmt:null},
+             {lbl:'Margem',   val:sel.margem,         cor:tCor(sel.margem,20),              fmt:function(v){return v.toFixed(1)+'%';}}
             ].map(function(k,i){
-              return React.createElement('div',{key:i,style:{flex:1,minWidth:72,background:'rgba(120,120,128,0.07)',
+              return React.createElement('div',{key:i,style:{flex:1,minWidth:68,background:'rgba(120,120,128,0.07)',
                 borderRadius:10,padding:'8px 10px',border:'1px solid var(--c-border)'}},
                 React.createElement('div',{style:{fontSize:9,fontWeight:700,color:'var(--c-sub)',textTransform:'uppercase',letterSpacing:0.5,marginBottom:3}},k.lbl),
-                React.createElement('div',{style:{fontSize:14,fontWeight:800,color:k.cor}},(k.fmt?k.fmt(k.val):fR(k.val)))
+                React.createElement('div',{style:{fontSize:13,fontWeight:800,color:k.cor}},(k.fmt?k.fmt(k.val):fR(k.val)))
               );
             })
           ),

@@ -15957,27 +15957,48 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                   });
                   return Object.keys(byDay).sort().map(function(dt){
                     var cts = byDay[dt];
-                    var dayTotal = cts.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0);
+                    var dayTotal = cts.reduce(function(s,c){
+                      if (c.status_pagamento === "parcial" && c.valor_pago) return s + parseFloat(c.valor_pago||0);
+                      if (c.status_pagamento === "pago") return s + parseFloat(c.valor_total||0);
+                      return s;
+                    },0);
+                    var dayPending = cts.reduce(function(s,c){
+                      if (c.status_pagamento === "parcial" && c.valor_pago) return s + Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0));
+                      if (c.status_pagamento !== "pago" && c.status_pagamento !== "parcial") return s + parseFloat(c.valor_total||0);
+                      return s;
+                    },0);
                     return React.createElement('div', { key:dt }
                       , React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", padding:"6px 14px 4px", background:"rgba(120,120,128,0.05)", borderTop:"1px solid "+C.border } }
                         , React.createElement('span', { style:{ fontSize:11, fontWeight:700, color:C.sub } }, fmtDate(dt)||"Sem data")
-                        , React.createElement('span', { style:{ fontSize:12, fontWeight:700, color:C.green } }, fmtBRL(dayTotal).split(",")[0])
+                        , React.createElement('div', { style:{ display:"flex", gap:8, alignItems:"center" } }
+                          , dayTotal > 0 && React.createElement('span', { style:{ fontSize:11, fontWeight:700, color:C.green } }, "✓ "+fmtBRL(dayTotal).split(",")[0])
+                          , dayPending > 0 && React.createElement('span', { style:{ fontSize:11, fontWeight:600, color:C.orange, opacity:0.85 } }, fmtBRL(dayPending).split(",")[0]+" pend.")
+                        )
                       )
                       , cts.map(function(c,i){
                           var cl = (clientes||[]).find(function(x){ return x.id==c.cliente_id; });
                           var ve = (veiculos||[]).find(function(x){ return x.id==c.veiculo_id; });
                           var isPago = c.status_pagamento === "pago";
-                          var isAtras = !isPago && c.previsao_pagamento && c.previsao_pagamento < hoje;
-                          var itemCor = isPago ? C.green : (isAtras ? C.red : C.orange);
+                          var isParcial = c.status_pagamento === "parcial";
+                          var isAtras = !isPago && !isParcial && c.previsao_pagamento && c.previsao_pagamento < hoje;
+                          var itemCor = isPago ? C.green : isParcial ? C.orange : (isAtras ? C.red : C.orange);
+                          var valorExibido = isParcial && c.valor_pago ? parseFloat(c.valor_pago||0) : parseFloat(c.valor_total||0);
+                          var restante = isParcial && c.valor_pago ? Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0)) : 0;
                           return React.createElement('div', { key:c.id, onClick:function(){ setTab("contratos"); },
                             style:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 14px", borderTop:"1px solid "+C.border, cursor:"pointer" } }
                             , React.createElement('div', null
                               , React.createElement('div', { style:{ fontSize:13, fontWeight:600, color: isAtras ? C.red : "var(--c-text)" } },
-                                  (isPago?"✅ ":isAtras?"⚠️ ":"⏳ ")+(( cl&&cl.nome)||"--"))
+                                  (isPago?"✅ ":isParcial?"⬡ ":isAtras?"⚠️ ":"⏳ ")+(( cl&&cl.nome)||"--"))
                               , React.createElement('div', { style:{ fontSize:11, color: isAtras ? C.red : C.sub, marginTop:1 } },
-                                  (ve&&ve.placa||"--")+" · "+fmtDate(c.previsao_pagamento||c.data_fim)+(isPago?" · recebido":isAtras?" · atrasado":""))
+                                  (ve&&ve.placa||"--")+" · "+fmtDate(c.previsao_pagamento||c.data_fim)
+                                  +(isPago?" · recebido":isParcial?" · parcial recebido":isAtras?" · atrasado":""))
+                              , isParcial && restante > 0 && React.createElement('div', { style:{ fontSize:10, color:C.orange, marginTop:1 } },
+                                  "Restante: "+fmtBRL(restante))
                             )
-                            , React.createElement('div', { style:{ fontWeight:700, fontSize:13, color:itemCor } }, fmtBRL(c.valor_total).split(",")[0])
+                            , React.createElement('div', { style:{ textAlign:"right" } }
+                              , React.createElement('div', { style:{ fontWeight:700, fontSize:13, color:itemCor } }, fmtBRL(valorExibido).split(",")[0])
+                              , isParcial && React.createElement('div', { style:{ fontSize:10, color:C.sub, marginTop:1 } }, "de "+fmtBRL(c.valor_total).split(",")[0])
+                            )
                           );
                         })
                     );
@@ -17203,7 +17224,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       return React.createElement(React.Fragment, null,
 
         // Por categoria
-        React.createElement('div', { style:{ marginTop:18, marginBottom:10, fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Despesas por Categoria"),
+        React.createElement('div', { style:{ marginTop:18, marginBottom:10, fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Receitas e Despesas Mensais"),
         React.createElement('div', { className:'lg-card', "data-no-cm":"1", style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"14px", boxShadow:"0 1px 8px rgba(0,0,0,0.05)" } },
           React.createElement('div', { style:{ display:"flex", gap:8, marginBottom:10 } },
             React.createElement('select', { value:catSel, onChange:function(e){ setCatSel(e.target.value); setCatClickedMes(null); }, style:{ flex:1, background:"rgba(120,120,128,0.10)", border:"1px solid "+C.border, borderRadius:10, padding:"7px 10px", fontSize:13, fontWeight:600, color:"var(--c-text)", outline:"none" } },

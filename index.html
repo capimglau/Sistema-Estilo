@@ -1223,7 +1223,7 @@ input,select,textarea{transition:border-color .15s,box-shadow .15s;}
 
   /* Layout raiz */
   #root > div[style*="display: flex"] {
-    overflow:hidden;
+    overflow: hidden;
   }
 
   /* A própria nav sidebar gerada pelo React */
@@ -1231,27 +1231,19 @@ input,select,textarea{transition:border-color .15s,box-shadow .15s;}
     width: var(--sb-expanded) !important;
     min-width: var(--sb-expanded) !important;
     max-width: var(--sb-expanded) !important;
+    flex-shrink: 0 !important;
     transition: width var(--sb-transition), min-width var(--sb-transition), max-width var(--sb-transition), padding var(--sb-transition);
     overflow: hidden !important;
     position: relative !important;
-    /* Redesign: gradient vertical mais rico */
-    background: linear-gradient(180deg,
-      rgba(255,255,255,0.68) 0%,
-      rgba(242,246,255,0.58) 50%,
-      rgba(235,240,255,0.52) 100%) !important;
-    backdrop-filter: blur(52px) saturate(2.4) brightness(1.06) !important;
-    -webkit-backdrop-filter: blur(52px) saturate(2.4) brightness(1.06) !important;
-    border-right: 0.5px solid rgba(255,255,255,0.85) !important;
-    box-shadow:
-      1px 0 0 rgba(255,255,255,0.60),
-      4px 0 24px rgba(80,100,220,0.09),
-      0 0 0 0.5px rgba(200,215,255,0.18) !important;
+    /* NÃO sobrescreve background — herda o .lg-sidebar de cada tema */
+    backdrop-filter: blur(52px) saturate(2.2) brightness(1.04) !important;
+    -webkit-backdrop-filter: blur(52px) saturate(2.2) brightness(1.04) !important;
     z-index: 200;
     padding: 20px 10px 16px !important;
     gap: 2px !important;
   }
 
-  /* Estado colapsado */
+  /* Estado colapsado — sidebar encolhe e main ocupa o espaço */
   nav.lg-sidebar.sb-collapsed {
     width: var(--sb-collapsed) !important;
     min-width: var(--sb-collapsed) !important;
@@ -1260,20 +1252,12 @@ input,select,textarea{transition:border-color .15s,box-shadow .15s;}
     align-items: center !important;
   }
 
-  /* Tema escuro — sidebar */
-  body.dark nav.lg-sidebar,
-  body.dim nav.lg-sidebar,
-  body.midnight nav.lg-sidebar,
-  body.grafite nav.lg-sidebar,
-  body.navy nav.lg-sidebar,
-  body.indigo nav.lg-sidebar,
-  body.eclipse nav.lg-sidebar,
-  body.cognac nav.lg-sidebar {
-    background: linear-gradient(180deg,
-      rgba(20,22,36,0.96) 0%,
-      rgba(14,16,28,0.92) 100%) !important;
-    border-right-color: rgba(255,255,255,0.07) !important;
-    box-shadow: 1px 0 0 rgba(255,255,255,0.05), 4px 0 24px rgba(0,0,0,0.4) !important;
+  /* Main sempre ocupa o flex restante — sem max-width fixo para poder expandir */
+  #root > div[style*="display: flex"] > main {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    transition: padding-left var(--sb-transition) !important;
   }
 
   /* Logotipo / header da sidebar */
@@ -1558,14 +1542,10 @@ input,select,textarea{transition:border-color .15s,box-shadow .15s;}
     pointer-events: none;
   }
 
-  /* Ajusta o main quando o painel está aberto */
-  body.ag-alert-open main {
-    margin-left: 320px;
-    transition: margin-left var(--sb-transition);
-  }
-  body:not(.ag-alert-open) main {
-    margin-left: 0;
-    transition: margin-left var(--sb-transition);
+  /* Ajusta o main quando o painel de alertas está aberto */
+  body.ag-alert-open #root > div[style*="display: flex"] > main {
+    padding-left: calc(320px + 8px) !important;
+    transition: padding-left var(--sb-transition) !important;
   }
 
   /* Header do painel */
@@ -34082,242 +34062,194 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
 })();
 
 /* ═══════════════════════════════════════════════════════════════
-   CENTRAL DE ALERTAS — AutoGest Pro
-   Lê os alertaGroups exportados pelo React via window.__ag_alertGroups
+   CENTRAL DE ALERTAS — AutoGest Pro (v2 — sem travamento)
    ════════════════════════════════════════════════════════════════ */
 var AlertCenter = (function(){
-  if (typeof window === 'undefined' || window.innerWidth < 768) return { toggle: function(){} };
+  if (typeof window === 'undefined' || window.innerWidth < 768) return { toggle:function(){}, open:function(){}, close:function(){} };
 
   var _open = false;
-  var _filter = 'all'; // all | critical | warning | info
+  var _filter = 'all';
   var _panel = null;
   var _toggleBtn = null;
-  var _openGroups = {}; // track which groups are expanded
-  var _pollTimer = null;
-  var _lastHash = '';
+  var _openGroups = {};
+  var _rendering = false;   // flag para evitar loop observer→render→observer
 
-  /* Cores por severidade */
   var SEV = {
-    red:    { bg:'rgba(255,59,48,0.12)',  text:'#FF3B30', dot:'#FF3B30',  bar:'#FF3B30'  },
+    red:    { bg:'rgba(255,59,48,0.12)',  text:'#FF3B30', dot:'#FF3B30', bar:'#FF3B30'  },
     orange: { bg:'rgba(255,149,0,0.12)', text:'#FF9500', dot:'#FF9500', bar:'#FF9500' },
     blue:   { bg:'rgba(0,122,255,0.12)', text:'#007AFF', dot:'#007AFF', bar:'#007AFF'  },
     purple: { bg:'rgba(175,82,222,0.12)',text:'#AF52DE', dot:'#AF52DE', bar:'#AF52DE' },
     green:  { bg:'rgba(52,199,89,0.12)', text:'#34C759', dot:'#34C759', bar:'#34C759'  },
   };
 
-  function getSeverity(cor){
+  function getSev(cor){
     if (!cor) return SEV.blue;
-    if (cor === '#FF3B30' || cor === 'var(--red,#FF3B30)' || /red/i.test(cor)) return SEV.red;
-    if (cor === '#FF9500' || /orange/i.test(cor)) return SEV.orange;
-    if (/purple|AF52DE/i.test(cor)) return SEV.purple;
-    if (/green|34C7/i.test(cor)) return SEV.green;
+    if (/#FF3B30|red/i.test(cor)) return SEV.red;
+    if (/#FF9500|orange/i.test(cor)) return SEV.orange;
+    if (/AF52DE|purple/i.test(cor)) return SEV.purple;
+    if (/34C759|green/i.test(cor)) return SEV.green;
     return SEV.blue;
   }
 
-  /* Obtém grupos de alerta do React */
   function getGroups(){
-    var raw = window.__ag_alertGroups || [];
-    return raw.filter(function(g){ return g && g.items && g.items.length > 0; });
+    return (window.__ag_alertGroups || []).filter(function(g){ return g && g.items && g.items.length > 0; });
   }
 
-  /* Contagem por severidade */
   function countBySev(groups){
-    var red=0, orange=0, blue=0;
+    var r=0,o=0,b=0;
     groups.forEach(function(g){
-      var sev = getSeverity(g.cor);
-      if (sev === SEV.red) red += g.items.length;
-      else if (sev === SEV.orange) orange += g.items.length;
-      else blue += g.items.length;
+      var s=getSev(g.cor);
+      if(s===SEV.red) r+=g.items.length;
+      else if(s===SEV.orange) o+=g.items.length;
+      else b+=g.items.length;
     });
-    return { red:red, orange:orange, blue:blue, total:red+orange+blue };
+    return {red:r,orange:o,blue:b,total:r+o+b};
   }
 
-  /* Filtra grupos */
   function filterGroups(groups){
-    if (_filter === 'all') return groups;
+    if(_filter==='all') return groups;
     return groups.filter(function(g){
-      var sev = getSeverity(g.cor);
-      if (_filter === 'critical') return sev === SEV.red;
-      if (_filter === 'warning')  return sev === SEV.orange;
-      if (_filter === 'info')     return sev === SEV.blue || sev === SEV.purple;
+      var s=getSev(g.cor);
+      if(_filter==='critical') return s===SEV.red;
+      if(_filter==='warning')  return s===SEV.orange;
+      if(_filter==='info')     return s===SEV.blue||s===SEV.purple;
       return true;
     });
   }
 
-  /* Navega para a aba correta */
   function navToTab(tabId){
-    if (!tabId) return;
-    var btn = document.querySelector('button[data-tab-id="' + tabId + '"]');
-    if (btn) { btn.click(); }
-    else {
-      // fallback: tenta via evento React
-      window.dispatchEvent(new CustomEvent('ag:goto', { detail: { tab: tabId } }));
-    }
+    if(!tabId) return;
+    var btn = document.querySelector('button[data-tab-id="'+tabId+'"]');
+    if(btn) btn.click();
   }
 
-  /* Constrói o painel */
-  function buildPanel(){
-    var el = document.createElement('div');
-    el.id = 'ag-alert-panel';
-    el.className = 'ag-ap-hidden';
-    el.setAttribute('role', 'complementary');
-    el.setAttribute('aria-label', 'Central de Alertas');
-    document.body.appendChild(el);
-    return el;
-  }
-
-  /* Renderiza o painel completo */
+  /* ── Render — envolto em flag para não disparar observers ── */
   function render(){
-    if (!_panel) return;
-    var groups = getGroups();
-    var counts = countBySev(groups);
+    if(!_panel || _rendering) return;
+    _rendering = true;
+    try { _renderInner(); } catch(e){ console.warn('[AlertCenter] render error', e); }
+    _rendering = false;
+  }
+
+  function _renderInner(){
+    var groups  = getGroups();
+    var counts  = countBySev(groups);
     var visible = filterGroups(groups);
 
-    /* Adiciona/remove shift quando sidebar está colapsada */
+    /* posição do painel relativa ao estado collapsed da sidebar */
     var sb = document.querySelector('nav.lg-sidebar');
-    if (sb && sb.classList.contains('sb-collapsed')) {
+    if(sb && sb.classList.contains('sb-collapsed')){
       _panel.classList.add('sb-shift-collapsed');
     } else {
       _panel.classList.remove('sb-shift-collapsed');
     }
 
+    /* ── Limpa e reconstrói apenas o conteúdo interno ── */
     _panel.innerHTML = '';
 
-    /* ── HEAD ── */
+    /* HEAD */
     var head = document.createElement('div');
     head.className = 'ap-head';
-    var badge = counts.total > 0
-      ? '<span class="ap-head-badge">' + (counts.total > 99 ? '99+' : counts.total) + '</span>'
-      : '<span class="ap-head-badge zero">✓</span>';
+    var badgeCls = counts.total===0 ? 'ap-head-badge zero' : 'ap-head-badge';
+    var badgeTxt = counts.total===0 ? '✓' : (counts.total>99?'99+':String(counts.total));
     head.innerHTML =
-      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FF3B30" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>' +
-      '<span class="ap-head-title">Central de Alertas</span>' +
-      badge +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FF3B30" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>'+
+      '<span class="ap-head-title">Central de Alertas</span>'+
+      '<span class="'+badgeCls+'">'+badgeTxt+'</span>'+
       '<button class="ap-close" title="Fechar (])">✕</button>';
-    head.querySelector('.ap-close').addEventListener('click', function(){ AlertCenter.close(); });
+    head.querySelector('.ap-close').addEventListener('click', function(e){ e.stopPropagation(); close(); });
     _panel.appendChild(head);
 
-    /* ── RESUMO ── */
+    /* RESUMO */
     var sum = document.createElement('div');
     sum.className = 'ap-summary';
-    sum.innerHTML =
-      '<div class="ap-sum-card" style="background:rgba(255,59,48,0.09)" data-f="critical">' +
-        '<span class="ap-sum-num" style="color:#FF3B30">' + counts.red + '</span>' +
-        '<span class="ap-sum-lbl" style="color:#FF3B30">Crítico</span>' +
-      '</div>' +
-      '<div class="ap-sum-card" style="background:rgba(255,149,0,0.09)" data-f="warning">' +
-        '<span class="ap-sum-num" style="color:#FF9500">' + counts.orange + '</span>' +
-        '<span class="ap-sum-lbl" style="color:#FF9500">Atenção</span>' +
-      '</div>' +
-      '<div class="ap-sum-card" style="background:rgba(0,122,255,0.09)" data-f="info">' +
-        '<span class="ap-sum-num" style="color:#007AFF">' + counts.blue + '</span>' +
-        '<span class="ap-sum-lbl" style="color:#007AFF">Info</span>' +
-      '</div>';
-    sum.querySelectorAll('.ap-sum-card').forEach(function(card){
-      card.addEventListener('click', function(){
-        var f = card.getAttribute('data-f');
-        _filter = (_filter === f) ? 'all' : f;
-        render();
-      });
+    [
+      {f:'critical',num:counts.red,   clr:'#FF3B30', bg:'rgba(255,59,48,0.09)',  lbl:'Crítico'},
+      {f:'warning', num:counts.orange,clr:'#FF9500', bg:'rgba(255,149,0,0.09)', lbl:'Atenção'},
+      {f:'info',    num:counts.blue,  clr:'#007AFF', bg:'rgba(0,122,255,0.09)', lbl:'Info'},
+    ].forEach(function(d){
+      var c=document.createElement('div');
+      c.className='ap-sum-card';
+      c.style.background=d.bg;
+      c.innerHTML='<span class="ap-sum-num" style="color:'+d.clr+'">'+d.num+'</span><span class="ap-sum-lbl" style="color:'+d.clr+'">'+d.lbl+'</span>';
+      c.addEventListener('click', function(){ _filter=(_filter===d.f)?'all':d.f; render(); });
+      sum.appendChild(c);
     });
     _panel.appendChild(sum);
 
-    /* ── FILTROS ── */
-    var filtersEl = document.createElement('div');
-    filtersEl.className = 'ap-filters';
-    var filterDefs = [
-      { id:'all',      label:'Todos', color:'', count: groups.length },
-      { id:'critical', label:'Crítico', color:'red',    count: groups.filter(function(g){ return getSeverity(g.cor)===SEV.red; }).length },
-      { id:'warning',  label:'Atenção', color:'orange', count: groups.filter(function(g){ return getSeverity(g.cor)===SEV.orange; }).length },
-      { id:'info',     label:'Info',    color:'blue',   count: groups.filter(function(g){ return getSeverity(g.cor)===SEV.blue||getSeverity(g.cor)===SEV.purple; }).length },
-    ];
-    filterDefs.forEach(function(fd){
-      var btn = document.createElement('button');
-      btn.className = 'ap-filter-btn' + (fd.color?' '+fd.color:'') + (_filter===fd.id?' active':'');
-      var dotColor = fd.color==='red'?'#FF3B30':fd.color==='orange'?'#FF9500':fd.color==='blue'?'#007AFF':'rgba(120,120,128,0.5)';
-      btn.innerHTML =
-        (fd.color ? '<span class="ap-filter-dot" style="background:'+dotColor+'"></span>' : '') +
-        fd.label +
-        '<span class="ap-filter-count">' + fd.count + '</span>';
-      btn.addEventListener('click', function(){
-        _filter = fd.id;
-        render();
-      });
+    /* FILTROS */
+    var filtersEl=document.createElement('div');
+    filtersEl.className='ap-filters';
+    [
+      {id:'all',     label:'Todos',   color:'',       count:groups.length},
+      {id:'critical',label:'Crítico', color:'red',    count:groups.filter(function(g){return getSev(g.cor)===SEV.red;}).length},
+      {id:'warning', label:'Atenção', color:'orange', count:groups.filter(function(g){return getSev(g.cor)===SEV.orange;}).length},
+      {id:'info',    label:'Info',    color:'blue',   count:groups.filter(function(g){var s=getSev(g.cor);return s===SEV.blue||s===SEV.purple;}).length},
+    ].forEach(function(fd){
+      var btn=document.createElement('button');
+      btn.className='ap-filter-btn'+(fd.color?' '+fd.color:'')+(_filter===fd.id?' active':'');
+      var dotClr=fd.color==='red'?'#FF3B30':fd.color==='orange'?'#FF9500':fd.color==='blue'?'#007AFF':'rgba(120,120,128,0.4)';
+      btn.innerHTML=(fd.color?'<span class="ap-filter-dot" style="background:'+dotClr+'"></span>':'')+fd.label+'<span class="ap-filter-count">'+fd.count+'</span>';
+      btn.addEventListener('click', function(){ _filter=fd.id; render(); });
       filtersEl.appendChild(btn);
     });
     _panel.appendChild(filtersEl);
 
-    /* ── SCROLL ── */
-    var scroll = document.createElement('div');
-    scroll.className = 'ap-scroll';
+    /* SCROLL */
+    var scroll=document.createElement('div');
+    scroll.className='ap-scroll';
 
-    if (visible.length === 0) {
-      var empty = document.createElement('div');
-      empty.className = 'ap-empty';
-      if (groups.length === 0) {
-        empty.innerHTML =
-          '<div class="ap-empty-icon">✅</div>' +
-          '<div class="ap-empty-title">Tudo em dia!</div>' +
-          '<div class="ap-empty-sub">Nenhum alerta pendente no momento.</div>';
+    if(visible.length===0){
+      var empty=document.createElement('div');
+      empty.className='ap-empty';
+      if(groups.length===0){
+        empty.innerHTML='<div class="ap-empty-icon">✅</div><div class="ap-empty-title">Tudo em dia!</div><div class="ap-empty-sub">Nenhum alerta pendente.</div>';
       } else {
-        empty.innerHTML =
-          '<div class="ap-empty-icon">🔍</div>' +
-          '<div class="ap-empty-title">Nenhum alerta neste filtro</div>' +
-          '<div class="ap-empty-sub">Tente mudar o filtro acima.</div>';
+        empty.innerHTML='<div class="ap-empty-icon">🔍</div><div class="ap-empty-title">Nenhum neste filtro</div><div class="ap-empty-sub">Tente outro filtro.</div>';
       }
       scroll.appendChild(empty);
     } else {
       visible.forEach(function(g, gi){
-        var sev = getSeverity(g.cor);
-        var groupId = 'ag-ag-' + gi;
-        var isOpen = !!_openGroups[groupId];
+        var sev=getSev(g.cor);
+        var gid='aggrp'+gi;
+        var isOpen=!!_openGroups[gid];
 
-        var card = document.createElement('div');
-        card.className = 'ap-group' + (isOpen?' open':'');
-        card.style.animationDelay = (gi * 0.035) + 's';
+        var card=document.createElement('div');
+        card.className='ap-group'+(isOpen?' open':'');
+        card.style.animationDelay=(gi*0.03)+'s';
 
-        /* Head */
-        var gh = document.createElement('div');
-        gh.className = 'ap-group-head';
-        gh.innerHTML =
-          '<div class="ap-severity-bar" style="background:'+sev.bar+'"></div>' +
-          '<span class="ap-group-icon">' + (g.icon||'•') + '</span>' +
-          '<span class="ap-group-title">' + (g.titulo||'').replace(/\s*\(\d+\)\s*$/,'') + '</span>' +
-          '<span class="ap-group-count" style="background:'+sev.bg+';color:'+sev.text+'">' + g.items.length + '</span>' +
+        /* Group head */
+        var gh=document.createElement('div');
+        gh.className='ap-group-head';
+        var cleanTitle=(g.titulo||'').replace(/\s*\(\d+\)\s*$/,'');
+        gh.innerHTML=
+          '<div class="ap-severity-bar" style="background:'+sev.bar+'"></div>'+
+          '<span class="ap-group-icon">'+(g.icon||'•')+'</span>'+
+          '<span class="ap-group-title">'+cleanTitle+'</span>'+
+          '<span class="ap-group-count" style="background:'+sev.bg+';color:'+sev.text+'">'+g.items.length+'</span>'+
           '<span class="ap-chevron">▾</span>';
-
         gh.addEventListener('click', function(){
-          if (isOpen) {
-            delete _openGroups[groupId];
-            isOpen = false;
-            card.classList.remove('open');
-          } else {
-            _openGroups[groupId] = true;
-            isOpen = true;
-            card.classList.add('open');
-          }
+          if(_openGroups[gid]){ delete _openGroups[gid]; card.classList.remove('open'); }
+          else { _openGroups[gid]=true; card.classList.add('open'); }
         });
         card.appendChild(gh);
 
-        /* Items container */
-        var itemsEl = document.createElement('div');
-        itemsEl.className = 'ap-items';
-
         /* Items */
-        g.items.forEach(function(item, ii){
-          var ref = (g.itemRefs && g.itemRefs[ii]) || null;
-          var div = document.createElement('div');
-          div.className = 'ap-item';
-          div.innerHTML =
-            '<span class="ap-item-dot" style="background:'+sev.dot+'"></span>' +
-            '<span class="ap-item-text">' + (item||'').replace(/·/g,'<span style="opacity:0.4"> · </span>') + '</span>';
-          if (ref || g.tab) {
-            div.style.cursor = 'pointer';
-            div.addEventListener('click', function(){
-              if (ref && window.__ag_alertGroups) {
-                /* tenta navegar diretamente */
-                var navFn = window.__ag_onItemNav;
-                if (typeof navFn === 'function') { navFn(ref, g.tab); return; }
+        var itemsEl=document.createElement('div');
+        itemsEl.className='ap-items';
+
+        g.items.forEach(function(item,ii){
+          var ref=(g.itemRefs&&g.itemRefs[ii])||null;
+          var div=document.createElement('div');
+          div.className='ap-item';
+          var txt=(item||'').replace(/·/g,'<span style="opacity:0.38"> · </span>');
+          div.innerHTML='<span class="ap-item-dot" style="background:'+sev.dot+'"></span><span class="ap-item-text">'+txt+'</span>';
+          if(ref||g.tab){
+            div.addEventListener('click', function(e){
+              e.stopPropagation();
+              if(ref){
+                var fn=window.__ag_onItemNav;
+                if(typeof fn==='function'){ fn(ref,g.tab); return; }
               }
               navToTab(g.tab);
             });
@@ -34325,28 +34257,19 @@ var AlertCenter = (function(){
           itemsEl.appendChild(div);
         });
 
-        /* Sub */
-        if (g.sub) {
-          var subEl = document.createElement('div');
-          subEl.className = 'ap-sub';
-          subEl.textContent = g.sub;
+        if(g.sub){
+          var subEl=document.createElement('div');
+          subEl.className='ap-sub';
+          subEl.textContent=g.sub;
           itemsEl.appendChild(subEl);
         }
 
-        /* Botão ir para aba */
-        if (g.tab) {
-          var navBtn = document.createElement('button');
-          navBtn.className = 'ap-nav-btn';
-          var tabLabels = {
-            contratos:'Contratos', financeiro:'Financeiro', clientes:'Clientes',
-            frota:'Frota', multas:'Multas', manutencao:'Manutenção',
-            reservas:'Reservas', operacional:'Operacional', inicio:'Início'
-          };
-          navBtn.innerHTML = '→ Ver em ' + (tabLabels[g.tab] || g.tab);
-          navBtn.addEventListener('click', function(e){
-            e.stopPropagation();
-            navToTab(g.tab);
-          });
+        if(g.tab){
+          var navBtn=document.createElement('button');
+          navBtn.className='ap-nav-btn';
+          var tl={contratos:'Contratos',financeiro:'Financeiro',clientes:'Clientes',frota:'Frota',multas:'Multas',manutencao:'Manutenção',reservas:'Reservas',operacional:'Operacional',inicio:'Início'};
+          navBtn.innerHTML='→ Ver em '+(tl[g.tab]||g.tab);
+          navBtn.addEventListener('click',function(e){ e.stopPropagation(); navToTab(g.tab); });
           itemsEl.appendChild(navBtn);
         }
 
@@ -34354,145 +34277,114 @@ var AlertCenter = (function(){
         scroll.appendChild(card);
       });
     }
-
     _panel.appendChild(scroll);
-    updateToggleBtn(counts.total);
+    _updateBadge(counts.total);
   }
 
-  /* Atualiza o botão na sidebar */
-  function updateToggleBtn(total){
-    if (!_toggleBtn) return;
-    var badge = _toggleBtn.querySelector('.ag-atb-badge');
-    if (badge) {
-      badge.textContent = total > 99 ? '99+' : (total > 0 ? String(total) : '✓');
-      badge.className = 'ag-atb-badge' + (total === 0 ? ' zero' : '');
+  function _updateBadge(total){
+    if(!_toggleBtn) return;
+    var badge=_toggleBtn.querySelector('.ag-atb-badge');
+    if(badge){
+      badge.textContent=total>99?'99+':(total>0?String(total):'✓');
+      badge.className='ag-atb-badge'+(total===0?' zero':'');
     }
-    if (_open) _toggleBtn.classList.add('active');
+    if(_open) _toggleBtn.classList.add('active');
     else _toggleBtn.classList.remove('active');
   }
 
-  /* Polling para sincronizar com React */
-  function startPolling(){
-    if (_pollTimer) return;
-    _pollTimer = setInterval(function(){
-      if (!_open) return;
-      var groups = getGroups();
-      var hash = JSON.stringify(groups.map(function(g){ return g.titulo + (g.items||[]).length; }));
-      if (hash !== _lastHash) {
-        _lastHash = hash;
-        render();
-      }
-      /* Atualiza badge mesmo se fechado */
-      var counts = countBySev(groups);
-      updateToggleBtn(counts.total);
-    }, 2000);
-  }
-
-  /* Abre o painel */
   function open(){
-    if (!_panel) _panel = buildPanel();
-    _open = true;
+    if(!_panel){
+      _panel=document.createElement('div');
+      _panel.id='ag-alert-panel';
+      _panel.setAttribute('role','complementary');
+      document.body.appendChild(_panel);
+    }
+    _open=true;
     document.body.classList.add('ag-alert-open');
+    _panel.classList.remove('ag-ap-hidden');
     render();
-    requestAnimationFrame(function(){
-      _panel.classList.remove('ag-ap-hidden');
-    });
-    updateToggleBtn(countBySev(getGroups()).total);
   }
 
-  /* Fecha o painel */
   function close(){
-    _open = false;
+    _open=false;
     document.body.classList.remove('ag-alert-open');
-    if (_panel) _panel.classList.add('ag-ap-hidden');
-    updateToggleBtn(countBySev(getGroups()).total);
+    if(_panel) _panel.classList.add('ag-ap-hidden');
+    _updateBadge(countBySev(getGroups()).total);
   }
 
-  /* Toggle */
-  function toggle(){
-    if (_open) close(); else open();
+  function toggle(){ if(_open) close(); else open(); }
+
+  /* Badge update only — safe to call from observer */
+  function syncBadgeOnly(){
+    if(_rendering) return;
+    var c=countBySev(getGroups());
+    _updateBadge(c.total);
+    if(_open) render();
   }
 
-  /* Constrói botão na sidebar */
+  /* Build sidebar button */
   function buildToggleButton(){
-    var btn = document.createElement('button');
-    btn.className = 'ag-alert-toggle-btn';
-    btn.title = 'Central de Alertas (])';
-    var counts = countBySev(getGroups());
-    btn.innerHTML =
-      '<span class="ag-atb-icon" style="font-size:16px;flex-shrink:0">🔔</span>' +
-      '<span style="flex:1;text-align:left;font-size:13px">Alertas</span>' +
-      '<span class="ag-atb-badge' + (counts.total===0?' zero':'') + '">' +
-        (counts.total > 99 ? '99+' : counts.total > 0 ? String(counts.total) : '✓') +
+    var btn=document.createElement('button');
+    btn.className='ag-alert-toggle-btn';
+    btn.title='Central de Alertas (])';
+    var c=countBySev(getGroups());
+    btn.innerHTML=
+      '<span class="ag-atb-icon" style="font-size:16px;flex-shrink:0;line-height:1">🔔</span>'+
+      '<span style="flex:1;text-align:left;font-size:13px;white-space:nowrap">Alertas</span>'+
+      '<span class="ag-atb-badge'+(c.total===0?' zero':'')+'">'+
+        (c.total>99?'99+':c.total>0?String(c.total):'✓')+
       '</span>';
-    btn.addEventListener('click', function(){ toggle(); });
-    _toggleBtn = btn;
+    btn.addEventListener('click', function(e){ e.stopPropagation(); toggle(); });
+    _toggleBtn=btn;
     return btn;
   }
 
-  /* Injeta na sidebar quando ela aparecer */
   function injectIntoSidebar(sb){
-    if (sb.dataset.agAlertInjected) return;
-    sb.dataset.agAlertInjected = '1';
-
-    /* Insere antes do último botão (Config) */
-    var configBtn = sb.querySelector('button[data-tab-id="config"]');
-    var btn = buildToggleButton();
-
-    /* Adiciona divisor antes do botão */
-    var divider = document.createElement('div');
-    divider.className = 'ag-sb-divider';
-    divider.style.marginTop = '4px';
-
-    if (configBtn) {
-      sb.insertBefore(divider, configBtn);
-      sb.insertBefore(btn, configBtn);
+    if(sb.dataset.agAlertInjected) return;
+    sb.dataset.agAlertInjected='1';
+    var divider=document.createElement('div');
+    divider.className='ag-sb-divider';
+    divider.style.marginTop='4px';
+    var btn=buildToggleButton();
+    var configBtn=sb.querySelector('button[data-tab-id="config"]');
+    if(configBtn){
+      sb.insertBefore(divider,configBtn);
+      sb.insertBefore(btn,configBtn);
     } else {
-      /* fallback: antes do último filho */
-      var last = sb.lastElementChild;
-      if (last && !last.classList.contains('ag-sb-toggle')) {
-        sb.insertBefore(divider, last);
-        sb.insertBefore(btn, last);
-      } else {
-        sb.appendChild(divider);
-        sb.appendChild(btn);
-      }
+      var last=sb.querySelector('.ag-sb-toggle');
+      sb.insertBefore(divider, last||null);
+      sb.insertBefore(btn, last||null);
     }
-
-    startPolling();
-
-    /* Atualiza badge periodicamente mesmo fechado */
-    setInterval(function(){
-      if (_toggleBtn) {
-        var c = countBySev(getGroups());
-        updateToggleBtn(c.total);
-      }
-    }, 3000);
+    /* Periodic badge sync — very lightweight */
+    setInterval(syncBadgeOnly, 4000);
   }
 
-  /* Observa a sidebar */
-  var _obs2 = new MutationObserver(function(){
-    var sb = document.querySelector('nav.lg-sidebar');
-    if (sb && !sb.dataset.agAlertInjected) injectIntoSidebar(sb);
-    /* Mantém shift quando sidebar colapsa */
-    if (_panel && _open) {
-      var s = document.querySelector('nav.lg-sidebar');
-      if (s && s.classList.contains('sb-collapsed')) _panel.classList.add('sb-shift-collapsed');
-      else if (_panel) _panel.classList.remove('sb-shift-collapsed');
+  /* Observe sidebar appearance only — not panel contents */
+  var _sbObs=new MutationObserver(function(muts){
+    var sb=document.querySelector('nav.lg-sidebar');
+    if(sb&&!sb.dataset.agAlertInjected) injectIntoSidebar(sb);
+    /* sync collapsed shift */
+    if(_panel&&_open){
+      if(sb&&sb.classList.contains('sb-collapsed')) _panel.classList.add('sb-shift-collapsed');
+      else _panel.classList.remove('sb-shift-collapsed');
     }
   });
-  _obs2.observe(document.body, { childList:true, subtree:true, attributes:true, attributeFilter:['class'] });
+  _sbObs.observe(document.body,{childList:true,subtree:false,attributes:true,attributeFilter:['class']});
+  /* Also watch for sidebar insertion deeper */
+  var _deepObs=new MutationObserver(function(){
+    var sb=document.querySelector('nav.lg-sidebar');
+    if(sb&&!sb.dataset.agAlertInjected) injectIntoSidebar(sb);
+  });
+  _deepObs.observe(document.body,{childList:true,subtree:true});
 
-  /* Expõe bridge para React injetar os grupos */
-  window.__ag_setAlertGroups = function(groups, onItemNav){
-    window.__ag_alertGroups = groups;
-    if (typeof onItemNav === 'function') window.__ag_onItemNav = onItemNav;
-    if (_open) render();
-    var counts = countBySev(getGroups());
-    updateToggleBtn(counts.total);
+  /* Public bridge */
+  window.__ag_setAlertGroups=function(groups,onItemNav){
+    window.__ag_alertGroups=groups;
+    if(typeof onItemNav==='function') window.__ag_onItemNav=onItemNav;
+    if(!_rendering) syncBadgeOnly();
   };
 
-  return { open:open, close:close, toggle:toggle };
+  return {open:open,close:close,toggle:toggle};
 })();
 /* ═══════════════════════════════════════════════════════════
    BRIDGE: lê alertaGroups do React e alimenta a Central

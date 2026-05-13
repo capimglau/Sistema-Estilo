@@ -107,6 +107,63 @@ input[type=file]{display:none}
   content:'';
   display:none;
 }
+
+/* ══════════════════════════════════════════════
+   LIQUID GLASS BLOB — iOS 26 Dock bubble effect
+   Bolha que acompanha o dedo no Dock
+   ============================================== */
+.lg-nav-pill { position: relative; overflow: visible !important; }
+
+#ag-liquid-blob {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 60px;
+  height: 60px;
+  border-radius: 30px;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+  will-change: transform, width, border-radius, opacity;
+  /* Liquid Glass appearance */
+  background:
+    radial-gradient(ellipse at 38% 28%, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.22) 38%, transparent 68%),
+    radial-gradient(ellipse at 68% 72%, rgba(180,210,255,0.28) 0%, transparent 58%),
+    rgba(255,255,255,0.18);
+  backdrop-filter: blur(18px) saturate(200%) brightness(1.10);
+  -webkit-backdrop-filter: blur(18px) saturate(200%) brightness(1.10);
+  border: 1px solid rgba(255,255,255,0.55);
+  box-shadow:
+    0 1.5px 0 rgba(255,255,255,0.80) inset,
+    0 -1px 0 rgba(0,0,0,0.06) inset,
+    0 6px 24px rgba(0,80,200,0.10),
+    0 2px 8px rgba(255,255,255,0.18);
+  transition:
+    opacity 0.16s ease,
+    width 0.14s cubic-bezier(0.22,1,0.36,1),
+    border-radius 0.14s cubic-bezier(0.22,1,0.36,1);
+}
+#ag-liquid-blob.blob-visible { opacity: 1; }
+
+/* Dark/dim themes: adjust blob tint */
+body.dark #ag-liquid-blob,
+body.dim #ag-liquid-blob,
+body.midnight #ag-liquid-blob,
+body.navy #ag-liquid-blob,
+body.indigo #ag-liquid-blob,
+body.grafite #ag-liquid-blob {
+  background:
+    radial-gradient(ellipse at 38% 28%, rgba(255,255,255,0.40) 0%, rgba(255,255,255,0.10) 38%, transparent 68%),
+    radial-gradient(ellipse at 68% 72%, rgba(80,140,255,0.22) 0%, transparent 58%),
+    rgba(255,255,255,0.09);
+  border-color: rgba(255,255,255,0.28);
+  box-shadow:
+    0 1.5px 0 rgba(255,255,255,0.40) inset,
+    0 -1px 0 rgba(0,0,0,0.12) inset,
+    0 6px 24px rgba(0,80,200,0.18),
+    0 2px 8px rgba(255,255,255,0.08);
+}
+
 /* Atalhos com animação spring melhorada */
 .ag-shortcuts-panel{
   animation:ag-shortcuts-spring 0.36s cubic-bezier(0.22,1,0.36,1) both !important;
@@ -33533,6 +33590,202 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
   });
 })();
 
+</script>
+
+<script>
+/* ══════════════════════════════════════════════
+   LIQUID GLASS BLOB — iOS 26 Dock bubble effect
+   Versão: integrada no AutoGest Pro
+   ============================================== */
+(function() {
+  'use strict';
+
+  var blob = null;
+  var pill = null;
+  var touching = false;
+  var blobVisible = false;
+  var currentX = 0;
+  var targetX  = 0;
+  var currentW = 60;
+  var targetW  = 60;
+  var raf      = null;
+  var BLOB_H   = 58;
+
+  function init() {
+    pill = document.querySelector('.lg-nav-pill:not(.ag-subpill)');
+    // Prefer the main tabs pill (last one in DOM if there are subtab pills)
+    var pills = document.querySelectorAll('.lg-nav-pill');
+    if (pills.length > 1) pill = pills[pills.length - 1];
+    if (!pill) return;
+    if (document.getElementById('ag-liquid-blob')) return;
+
+    blob = document.createElement('div');
+    blob.id = 'ag-liquid-blob';
+    pill.insertBefore(blob, pill.firstChild);
+
+    // Touch
+    pill.addEventListener('touchstart',  onTouchStart,  { passive: true });
+    pill.addEventListener('touchmove',   onTouchMove,   { passive: false });
+    pill.addEventListener('touchend',    onTouchEnd,    { passive: true });
+    pill.addEventListener('touchcancel', onTouchEnd,    { passive: true });
+
+    // Mouse (desktop preview)
+    pill.addEventListener('mouseenter',  onMouseMove);
+    pill.addEventListener('mousemove',   onMouseMove);
+    pill.addEventListener('mouseleave',  onMouseLeave);
+  }
+
+  function getButtons() {
+    return pill ? Array.from(pill.querySelectorAll('.lg-nav-btn')) : [];
+  }
+
+  function getNearestBtn(clientX) {
+    var btns = getButtons();
+    var best = null, bestDist = Infinity;
+    btns.forEach(function(btn) {
+      var r = btn.getBoundingClientRect();
+      var cx = r.left + r.width / 2;
+      var d  = Math.abs(clientX - cx);
+      if (d < bestDist) { bestDist = d; best = btn; }
+    });
+    return best;
+  }
+
+  function updateBlob(clientX) {
+    if (!pill || !blob) return;
+    var pr = pill.getBoundingClientRect();
+    var btns = getButtons();
+    if (!btns.length) return;
+
+    // Clamp X inside pill
+    var minX = pr.left + BLOB_H / 2;
+    var maxX = pr.right  - BLOB_H / 2;
+    var cx   = Math.max(minX, Math.min(maxX, clientX));
+    var localCX = cx - pr.left;   // relative to pill
+
+    // Nearest button centre
+    var nearest = getNearestBtn(clientX);
+    var stretch = 0;
+    if (nearest) {
+      var nr  = nearest.getBoundingClientRect();
+      var ncx = nr.left + nr.width / 2 - pr.left;
+      var dist = Math.abs(ncx - localCX);
+      stretch = Math.min(dist * 0.48, 26);
+    }
+
+    var w = BLOB_H + stretch;
+    targetW = w;
+    targetX = localCX - w / 2;
+
+    // Border radius: rounder when not stretched
+    var rx = Math.max(14, (BLOB_H / 2) * (BLOB_H / w));
+    blob.style.borderRadius = rx + 'px';
+    blob.style.height = BLOB_H + 'px';
+    blob.style.top = '50%';
+
+    if (!blobVisible) {
+      blobVisible = true;
+      currentX = targetX;
+      currentW = targetW;
+      blob.style.left = '0px';
+      blob.style.width = currentW + 'px';
+      blob.style.transform = 'translate(' + currentX + 'px, -50%)';
+      blob.classList.add('blob-visible');
+    }
+
+    // Scale up nearest icon, fade neighbours
+    btns.forEach(function(btn) {
+      var r   = btn.getBoundingClientRect();
+      var bcx = r.left + r.width / 2;
+      var d   = Math.abs(clientX - bcx);
+      var svg = btn.querySelector('svg');
+      if (!svg) return;
+      var sc  = d < 28 ? 1.20 : d < 64 ? (1 + 0.20 * (1 - (d - 28) / 36)) : 1;
+      svg.style.transition = 'transform 0.18s cubic-bezier(0.34,1.56,0.64,1)';
+      svg.style.transform  = 'scale(' + sc + ')';
+    });
+
+    scheduleAnim();
+  }
+
+  function hideBlob() {
+    blobVisible = false;
+    if (blob) blob.classList.remove('blob-visible');
+    getButtons().forEach(function(btn) {
+      var svg = btn.querySelector('svg');
+      if (svg) { svg.style.transform = ''; }
+    });
+  }
+
+  function scheduleAnim() {
+    if (!raf) raf = requestAnimationFrame(animStep);
+  }
+
+  function animStep() {
+    raf = null;
+    if (!blobVisible || !blob) return;
+
+    var spd = 0.20;
+    currentX += (targetX - currentX) * spd;
+    currentW += (targetW - currentW) * spd;
+
+    blob.style.width     = currentW + 'px';
+    blob.style.transform = 'translate(' + currentX + 'px, -50%)';
+
+    var dX = Math.abs(targetX - currentX);
+    var dW = Math.abs(targetW - currentW);
+    if (dX > 0.4 || dW > 0.4) {
+      raf = requestAnimationFrame(animStep);
+    } else {
+      currentX = targetX;
+      currentW = targetW;
+      blob.style.width     = currentW + 'px';
+      blob.style.transform = 'translate(' + currentX + 'px, -50%)';
+    }
+  }
+
+  function onTouchStart(e) {
+    touching = true;
+    updateBlob(e.touches[0].clientX);
+  }
+  function onTouchMove(e) {
+    if (!touching) return;
+    e.preventDefault();
+    updateBlob(e.touches[0].clientX);
+  }
+  function onTouchEnd() {
+    touching = false;
+    hideBlob();
+  }
+  function onMouseMove(e) { updateBlob(e.clientX); }
+  function onMouseLeave()  { hideBlob(); }
+
+  // Wait for React to render the dock
+  function tryInit() {
+    if (document.querySelector('.lg-nav-pill .lg-nav-btn')) {
+      init();
+    } else {
+      setTimeout(tryInit, 300);
+    }
+  }
+
+  // Re-init if pill is re-rendered by React
+  var _obs = new MutationObserver(function() {
+    var p = document.querySelector('.lg-nav-pill');
+    if (p && !document.getElementById('ag-liquid-blob')) {
+      blob = null; pill = null;
+      blobVisible = false;
+      init();
+    }
+  });
+  _obs.observe(document.body, { childList: true, subtree: true });
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', tryInit);
+  } else {
+    tryInit();
+  }
+})();
 </script>
 
 <a class="apres-tab" href="apresentacao.html" target="_blank" rel="noopener">

@@ -31079,7 +31079,7 @@ function App() {
     dockVisibleRef.current = true;
     setDockVisible(true);
     if (dockTimerRef.current) clearTimeout(dockTimerRef.current);
-    dockTimerRef.current = setTimeout(function(){ dockVisibleRef.current = false; setDockVisible(false); }, 5000);
+    dockTimerRef.current = setTimeout(function(){ dockVisibleRef.current = false; setDockVisible(false); }, 8000);
   }
   function hideDock() {
     if (dockTimerRef.current) clearTimeout(dockTimerRef.current);
@@ -31096,16 +31096,27 @@ function App() {
       document.body.insertBefore(blob, document.body.firstChild);
     }
     showDock();
-    var _lastScrollY = window.scrollY || 0;
+    var _touchTime = 0; // timestamp do último toque — evita que scroll pós-toque oculte o dock
     function onScroll(e) {
       // Ignora scrolls horizontais (ex: filtros, botões com overflow-x)
       var t = e.target;
       var isHoriz = t && t !== document && t !== document.documentElement &&
                     t !== document.body && t.scrollHeight <= t.clientHeight + 4;
       if (isHoriz) return;
+      // Ignora scroll disparado nos primeiros 200ms após um toque (Safari PWA)
+      if (Date.now() - _touchTime < 200) return;
       hideDock();
     }
-    function onTouchStart() { if (shortcutsOpenRef.current) return; showDock(); }
+    function onTouchStart() {
+      _touchTime = Date.now();
+      if (shortcutsOpenRef.current) return;
+      showDock();
+    }
+    function onTouchEnd() {
+      // touchend é mais confiável que click no Safari PWA
+      if (shortcutsOpenRef.current) return;
+      showDock();
+    }
     // Desktop: mostra dock quando mouse está próximo da borda inferior (120px)
     function onMouseMove(e) {
       var isDesktop = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
@@ -31116,11 +31127,13 @@ function App() {
     }
     document.addEventListener('scroll', onScroll, { passive: true, capture: true });
     document.addEventListener('touchstart', onTouchStart, { passive: true });
+    document.addEventListener('touchend',   onTouchEnd,   { passive: true });
     document.addEventListener('mousemove', onMouseMove, { passive: true });
     return function(){
       if (dockTimerRef.current) clearTimeout(dockTimerRef.current);
       document.removeEventListener('scroll', onScroll, { capture: true });
       document.removeEventListener('touchstart', onTouchStart);
+      document.removeEventListener('touchend',   onTouchEnd);
       document.removeEventListener('mousemove', onMouseMove);
     };
   }, []);
@@ -31564,11 +31577,14 @@ function App() {
         , React.createElement('div', { style: { display: "flex", alignItems: "center", width: "100%" } }
           , (function(){
               var allTabs = TABS.filter(function(t){ return !usuarioAtual || temAcesso(usuarioAtual, t.id); });
-              var VISIBLE = 5; /* 5 tabs visíveis */
+              /* VISIBLE = 4: página 0 mostra 4 abas + "Ver mais" = 5 slots
+                 página 1+ mostra os restantes + "…" = N+1 slots */
+              var VISIBLE = 4;
               var totalPages = Math.ceil(allTabs.length / VISIBLE);
               var startIdx = dockPage * VISIBLE;
               var visibleTabs = allTabs.slice(startIdx, startIdx + VISIBLE);
               var hasMore = allTabs.length > VISIBLE;
+              var isLastPage = (startIdx + VISIBLE) >= allTabs.length;
               function goNextPage(e) {
                 e.stopPropagation();
                 setDockPage(function(p){ return (p + 1) % totalPages; });
@@ -31597,11 +31613,13 @@ function App() {
                       , React.createElement('span', { style: { fontSize: 10, fontWeight: isActive ? 700 : 400, color: isActive ? C.blue : C.sub, whiteSpace: "nowrap", position: "relative", zIndex: 1, letterSpacing: 0 } }, t.label)
                     );
                   })
+                /* "Ver mais": sempre visível quando há mais de uma página */
                 , hasMore && React.createElement('button', { key: "__more__", onClick: goNextPage, className: "lg-nav-btn", style: { flex: "1 1 0", position: "relative" } }
                     , moreIcon
-                    , React.createElement('span', { style: { fontSize: 10, color: C.sub, whiteSpace: "nowrap", position: "relative", zIndex: 1 } }, "Ver mais")
+                    , React.createElement('span', { style: { fontSize: 10, color: C.sub, whiteSpace: "nowrap", position: "relative", zIndex: 1 } }, dockPage === 0 ? "Ver mais" : "Voltar")
                   )
-                , React.createElement('button', {
+                /* "…" atalhos: só aparece na segunda tela (dockPage > 0) */
+                , dockPage > 0 && React.createElement('button', {
                     key: "__dots__",
                     className: "lg-nav-btn ag-dots-btn",
                     style: { flex: "1 1 0", borderLeft: "0.5px solid rgba(120,120,128,0.15)" },

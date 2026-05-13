@@ -34053,14 +34053,44 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     });
   }
 
-  /* ── event handlers ── */
-  function onTouchStart(e) { touching = true;  updateBlob(e.touches[0].clientX); }
-  function onTouchMove(e)  { if (touching) updateBlob(e.touches[0].clientX); }
-  function onTouchEnd(e) {
+  /* ── event handlers ──
+     Escutamos no DOCUMENT em capture phase para garantir que o toque
+     em qualquer filho da pill (botão, span, svg) seja capturado imediatamente,
+     sem depender de bubbling — resolve o problema do PWA Safari.          */
+
+  function pillContains(x, y) {
+    if (!pill) return false;
+    var r = pill.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+
+  function onDocTouchStart(e) {
+    var t = e.touches[0];
+    if (!pillContains(t.clientX, t.clientY)) return;
+    touching = true;
+    updateBlob(t.clientX);
+  }
+
+  function onDocTouchMove(e) {
+    if (!touching) {
+      // Ativa mesmo se o touchstart não capturou (dedo entrou deslizando)
+      var t = e.touches[0];
+      if (pillContains(t.clientX, t.clientY)) {
+        touching = true;
+        updateBlob(t.clientX);
+      }
+      return;
+    }
+    updateBlob(e.touches[0].clientX);
+  }
+
+  function onDocTouchEnd(e) {
+    if (!touching) return;
     touching = false;
     hideBlob();
     if (!e || !e.changedTouches || !e.changedTouches.length) return;
     var cx = e.changedTouches[0].clientX, cy = e.changedTouches[0].clientY;
+    if (!pillContains(cx, cy)) return;
     // Ignora botões com data-no-blob
     if (pill) {
       var noBlobBtns = Array.from(pill.querySelectorAll('[data-no-blob]'));
@@ -34077,10 +34107,34 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     });
     if (best && bestDist < 80) best.click();
   }
-  function onMouseMove(e)  { updateBlob(e.clientX); }
-  function onMouseLeave()  { hideBlob(); }
+
+  function onDocTouchCancel() { touching = false; hideBlob(); }
+
+  function onMouseMove(e) {
+    if (!pill) return;
+    var r = pill.getBoundingClientRect();
+    if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+      updateBlob(e.clientX);
+    } else {
+      hideBlob();
+    }
+  }
 
   /* ── init ── */
+  var _listenersAttached = false;
+
+  function attachDocListeners() {
+    if (_listenersAttached) return;
+    _listenersAttached = true;
+    // capture:true → captura antes de qualquer handler dos filhos (botões, svgs)
+    document.addEventListener('touchstart',  onDocTouchStart,  { passive: true, capture: true });
+    document.addEventListener('touchmove',   onDocTouchMove,   { passive: true, capture: true });
+    document.addEventListener('touchend',    onDocTouchEnd,    { passive: true, capture: true });
+    document.addEventListener('touchcancel', onDocTouchCancel, { passive: true, capture: true });
+    // Mouse: escuta no documento e filtra por posição
+    document.addEventListener('mousemove',   onMouseMove,      { passive: true });
+  }
+
   function init() {
     var p = getMainPill();
     if (!p) return false;
@@ -34089,20 +34143,14 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     var oldBlob = document.getElementById('ag-liquid-blob');
     if (oldBlob && oldBlob.parentElement !== p) { oldBlob.remove(); oldBlob = null; }
 
-    if (oldBlob) { blob = oldBlob; pill = p; return true; } // já existe e está certo
+    if (oldBlob) { blob = oldBlob; pill = p; attachDocListeners(); return true; }
 
     pill = p;
     blob = document.createElement('div');
     blob.id = 'ag-liquid-blob';
     pill.insertBefore(blob, pill.firstChild);
 
-    pill.addEventListener('touchstart',  onTouchStart,  { passive: true });
-    pill.addEventListener('touchmove',   onTouchMove,   { passive: true });
-    pill.addEventListener('touchend',    onTouchEnd,    { passive: true });
-    pill.addEventListener('touchcancel', onTouchEnd,    { passive: true });
-    pill.addEventListener('mouseenter',  onMouseMove);
-    pill.addEventListener('mousemove',   onMouseMove);
-    pill.addEventListener('mouseleave',  onMouseLeave);
+    attachDocListeners();
     return true;
   }
 

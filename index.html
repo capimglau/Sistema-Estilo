@@ -31217,27 +31217,37 @@ function App() {
       document.body.insertBefore(blob, document.body.firstChild);
     }
     showDock();
-    var _touchTime = 0; // timestamp do último toque — evita que scroll pós-toque oculte o dock
+    var _touchActive  = false; // dedo está na tela agora?
+    var _touchEndTime = 0;     // quando o dedo saiu
+    var _GRACE        = 800;   // ms de graça após levantar o dedo (scroll inercial iOS)
+
     function onScroll(e) {
-      // Ignora scrolls horizontais (ex: filtros, botões com overflow-x)
+      // Ignora scrolls horizontais (filtros, overflow-x)
       var t = e.target;
       var isHoriz = t && t !== document && t !== document.documentElement &&
                     t !== document.body && t.scrollHeight <= t.clientHeight + 4;
       if (isHoriz) return;
-      // Ignora scroll disparado nos primeiros 200ms após um toque (Safari PWA)
-      if (Date.now() - _touchTime < 400) return;
+      // NUNCA oculta enquanto dedo está na tela
+      if (_touchActive) return;
+      // Graça após levantar o dedo — scroll inercial iOS não conta como interação
+      if (Date.now() - _touchEndTime < _GRACE) return;
       hideDock();
     }
     function onTouchStart() {
-      _touchTime = Date.now();
+      _touchActive = true;
       if (shortcutsOpenRef.current) return;
       showDock();
     }
     function onTouchEnd() {
-      // Se o painel de atalhos acabou de fechar (shortcutsOpenRef já false), mostra dock
+      _touchActive  = false;
+      _touchEndTime = Date.now();
       if (!shortcutsOpenRef.current) {
         setTimeout(function(){ if (!shortcutsOpenRef.current) showDock(); }, 50);
       }
+    }
+    function onTouchCancel() {
+      _touchActive  = false;
+      _touchEndTime = Date.now();
     }
     // Desktop: mostra dock quando mouse está próximo da borda inferior (120px)
     function onMouseMove(e) {
@@ -31247,16 +31257,18 @@ function App() {
       var distFromBottom = window.innerHeight - e.clientY;
       if (distFromBottom <= 120) { showDock(); }
     }
-    document.addEventListener('scroll', onScroll, { passive: true, capture: true });
-    document.addEventListener('touchstart', onTouchStart, { passive: true });
-    document.addEventListener('touchend',   onTouchEnd,   { passive: true });
-    document.addEventListener('mousemove', onMouseMove, { passive: true });
+    document.addEventListener('scroll',      onScroll,      { passive: true, capture: true });
+    document.addEventListener('touchstart',  onTouchStart,  { passive: true });
+    document.addEventListener('touchend',    onTouchEnd,    { passive: true });
+    document.addEventListener('touchcancel', onTouchCancel, { passive: true });
+    document.addEventListener('mousemove',   onMouseMove,   { passive: true });
     return function(){
       if (dockTimerRef.current) clearTimeout(dockTimerRef.current);
-      document.removeEventListener('scroll', onScroll, { capture: true });
-      document.removeEventListener('touchstart', onTouchStart);
-      document.removeEventListener('touchend',   onTouchEnd);
-      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('scroll',      onScroll,      { capture: true });
+      document.removeEventListener('touchstart',  onTouchStart);
+      document.removeEventListener('touchend',    onTouchEnd);
+      document.removeEventListener('touchcancel', onTouchCancel);
+      document.removeEventListener('mousemove',   onMouseMove);
     };
   }, []);
   // Wrapper: redireciona contratos/multas/manutencao para aba Operacional
@@ -33919,121 +33931,116 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
 <script>
 /* ══════════════════════════════════════════════
    LIQUID GLASS BLOB — iOS 26 Dock bubble effect
-   Versão: integrada no AutoGest Pro
+   v2 — init rápido para PWA Safari
    ============================================== */
 (function() {
   'use strict';
 
-  var blob = null;
-  var pill = null;
-  var touching = false;
+  var blob      = null;
+  var pill      = null;
+  var touching  = false;
   var blobVisible = false;
-  var currentX = 0;
-  var targetX  = 0;
-  var currentW = 60;
-  var targetW  = 60;
-  var raf      = null;
-  var BLOB_H   = 58;
+  var currentX  = 0, targetX  = 0;
+  var currentW  = 60, targetW = 60;
+  var raf       = null;
+  var BLOB_H    = 58;
+  var _initDone = false;
 
-  function init() {
-    pill = document.querySelector('.lg-nav-pill:not(.ag-subpill)');
-    // Prefer the main tabs pill (last one in DOM if there are subtab pills)
-    var pills = document.querySelectorAll('.lg-nav-pill');
-    if (pills.length > 1) pill = pills[pills.length - 1];
-    if (!pill) return;
-    if (document.getElementById('ag-liquid-blob')) return;
-
-    blob = document.createElement('div');
-    blob.id = 'ag-liquid-blob';
-    pill.insertBefore(blob, pill.firstChild);
-
-    // Touch
-    pill.addEventListener('touchstart',  onTouchStart,  { passive: true });
-    pill.addEventListener('touchmove',   onTouchMove,   { passive: true });
-    pill.addEventListener('touchend',    onTouchEnd,    { passive: true });
-    pill.addEventListener('touchcancel', onTouchEnd,    { passive: true });
-
-    // Mouse (desktop preview)
-    pill.addEventListener('mouseenter',  onMouseMove);
-    pill.addEventListener('mousemove',   onMouseMove);
-    pill.addEventListener('mouseleave',  onMouseLeave);
+  /* ── helpers ── */
+  function getMainPill() {
+    // Prefere a pill que contém botões de navegação real (não subpill)
+    var all = document.querySelectorAll('.lg-nav-pill');
+    for (var i = all.length - 1; i >= 0; i--) {
+      if (all[i].querySelector('.lg-nav-btn:not(.ag-theme-dock-btn):not(.ag-dots-btn)')) return all[i];
+    }
+    return null;
   }
 
   function getButtons() {
-    // Exclude theme/decorator buttons — only real nav tab buttons
     return pill ? Array.from(pill.querySelectorAll('.lg-nav-btn')).filter(function(b){
       return !b.classList.contains('ag-theme-dock-btn') && !b.classList.contains('ag-dots-btn');
     }) : [];
   }
 
   function getNearestBtn(clientX) {
-    var btns = getButtons();
-    var best = null, bestDist = Infinity;
+    var btns = getButtons(), best = null, bestDist = Infinity;
     btns.forEach(function(btn) {
       var r = btn.getBoundingClientRect();
-      var cx = r.left + r.width / 2;
-      var d  = Math.abs(clientX - cx);
+      var d = Math.abs(clientX - (r.left + r.width / 2));
       if (d < bestDist) { bestDist = d; best = btn; }
     });
     return best;
   }
 
+  /* ── animação ── */
+  function scheduleAnim() { if (!raf) raf = requestAnimationFrame(animStep); }
+  function animStep() {
+    raf = null;
+    if (!blobVisible || !blob) return;
+    var spd = 0.22;
+    currentX += (targetX - currentX) * spd;
+    currentW += (targetW - currentW) * spd;
+    blob.style.width     = currentW + 'px';
+    blob.style.transform = 'translate(' + currentX + 'px, -50%)';
+    if (Math.abs(targetX - currentX) > 0.3 || Math.abs(targetW - currentW) > 0.3) {
+      raf = requestAnimationFrame(animStep);
+    } else {
+      currentX = targetX; currentW = targetW;
+      blob.style.width     = currentW + 'px';
+      blob.style.transform = 'translate(' + currentX + 'px, -50%)';
+    }
+  }
+
+  /* ── posição da bolha ── */
   function updateBlob(clientX) {
     if (!pill || !blob) return;
-    var pr = pill.getBoundingClientRect();
+    var pr   = pill.getBoundingClientRect();
     var btns = getButtons();
     if (!btns.length) return;
 
-    // Clamp X to the range covered by actual nav buttons
     var firstR = btns[0].getBoundingClientRect();
     var lastR  = btns[btns.length - 1].getBoundingClientRect();
-    var minX = firstR.left + BLOB_H / 2;
-    var maxX = lastR.right - BLOB_H / 2;
-    var cx   = Math.max(minX, Math.min(maxX, clientX));
-    var localCX = cx - pr.left;   // relative to pill
+    var minX   = firstR.left + BLOB_H / 2;
+    var maxX   = lastR.right - BLOB_H / 2;
+    var cx     = Math.max(minX, Math.min(maxX, clientX));
+    var localCX = cx - pr.left;
 
-    // Nearest button centre
     var nearest = getNearestBtn(clientX);
     var stretch = 0;
     if (nearest) {
       var nr  = nearest.getBoundingClientRect();
       var ncx = nr.left + nr.width / 2 - pr.left;
-      var dist = Math.abs(ncx - localCX);
-      stretch = Math.min(dist * 0.48, 26);
+      stretch = Math.min(Math.abs(ncx - localCX) * 0.48, 26);
     }
-
     var w = BLOB_H + stretch;
     targetW = w;
     targetX = localCX - w / 2;
 
-    // Border radius: rounder when not stretched
     var rx = Math.max(14, (BLOB_H / 2) * (BLOB_H / w));
     blob.style.borderRadius = rx + 'px';
     blob.style.height = BLOB_H + 'px';
-    blob.style.top = '50%';
+    blob.style.top    = '50%';
 
     if (!blobVisible) {
       blobVisible = true;
-      currentX = targetX;
-      currentW = targetW;
-      blob.style.left = '0px';
-      blob.style.width = currentW + 'px';
+      currentX = targetX; currentW = targetW;
+      blob.style.left      = '0px';
+      blob.style.width     = currentW + 'px';
       blob.style.transform = 'translate(' + currentX + 'px, -50%)';
-      blob.classList.add('blob-visible');
+      // rAF garante que o browser aplica o estado inicial antes de adicionar a classe
+      requestAnimationFrame(function() { if (blob) blob.classList.add('blob-visible'); });
     }
 
-    // Scale up nearest icon, fade neighbours
+    // Magnify nearest icon
     btns.forEach(function(btn) {
       var r   = btn.getBoundingClientRect();
-      var bcx = r.left + r.width / 2;
-      var d   = Math.abs(clientX - bcx);
+      var d   = Math.abs(clientX - (r.left + r.width / 2));
       var svg = btn.querySelector('svg');
       if (!svg) return;
-      var sc  = d < 28 ? 1.20 : d < 64 ? (1 + 0.20 * (1 - (d - 28) / 36)) : 1;
+      var sc = d < 28 ? 1.20 : d < 64 ? (1 + 0.20 * (1 - (d - 28) / 36)) : 1;
       svg.style.transition = 'transform 0.18s cubic-bezier(0.34,1.56,0.64,1)';
       svg.style.transform  = 'scale(' + sc + ')';
     });
-
     scheduleAnim();
   }
 
@@ -34042,105 +34049,90 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     if (blob) blob.classList.remove('blob-visible');
     getButtons().forEach(function(btn) {
       var svg = btn.querySelector('svg');
-      if (svg) { svg.style.transform = ''; }
+      if (svg) svg.style.transform = '';
     });
   }
 
-  function scheduleAnim() {
-    if (!raf) raf = requestAnimationFrame(animStep);
-  }
-
-  function animStep() {
-    raf = null;
-    if (!blobVisible || !blob) return;
-
-    var spd = 0.20;
-    currentX += (targetX - currentX) * spd;
-    currentW += (targetW - currentW) * spd;
-
-    blob.style.width     = currentW + 'px';
-    blob.style.transform = 'translate(' + currentX + 'px, -50%)';
-
-    var dX = Math.abs(targetX - currentX);
-    var dW = Math.abs(targetW - currentW);
-    if (dX > 0.4 || dW > 0.4) {
-      raf = requestAnimationFrame(animStep);
-    } else {
-      currentX = targetX;
-      currentW = targetW;
-      blob.style.width     = currentW + 'px';
-      blob.style.transform = 'translate(' + currentX + 'px, -50%)';
-    }
-  }
-
-  function onTouchStart(e) {
-    touching = true;
-    updateBlob(e.touches[0].clientX);
-  }
-  function onTouchMove(e) {
-    if (!touching) return;
-    updateBlob(e.touches[0].clientX);
-  }
+  /* ── event handlers ── */
+  function onTouchStart(e) { touching = true;  updateBlob(e.touches[0].clientX); }
+  function onTouchMove(e)  { if (touching) updateBlob(e.touches[0].clientX); }
   function onTouchEnd(e) {
     touching = false;
     hideBlob();
-    // Dispara clique no botão mais próximo (bolha não deve engolir o tap)
-    if (e && e.changedTouches && e.changedTouches.length) {
-      var cx = e.changedTouches[0].clientX;
-      var cy = e.changedTouches[0].clientY;
-      // Verifica se o toque foi em um botão com data-no-blob (ex: Tema)
-      // Nesses casos não interfere — o próprio onTouchEnd do botão já cuida
-      if (pill) {
-        var allBtns = Array.from(pill.querySelectorAll('[data-no-blob]'));
-        for (var i = 0; i < allBtns.length; i++) {
-          var nr = allBtns[i].getBoundingClientRect();
-          if (cx >= nr.left && cx <= nr.right && cy >= nr.top && cy <= nr.bottom) {
-            return; // deixa o botão tratar o seu próprio evento
-          }
-        }
-      }
-      var btns = getButtons();
-      var best = null, bestDist = Infinity;
-      btns.forEach(function(btn) {
-        var r = btn.getBoundingClientRect();
-        var bcx = r.left + r.width / 2;
-        var bcy = r.top  + r.height / 2;
-        var d = Math.abs(cx - bcx) + Math.abs(cy - bcy);
-        if (d < bestDist) { bestDist = d; best = btn; }
-      });
-      // Só clica se o toque foi razoavelmente próximo (dentro da pill)
-      if (best && bestDist < 80) {
-        best.click();
+    if (!e || !e.changedTouches || !e.changedTouches.length) return;
+    var cx = e.changedTouches[0].clientX, cy = e.changedTouches[0].clientY;
+    // Ignora botões com data-no-blob
+    if (pill) {
+      var noBlobBtns = Array.from(pill.querySelectorAll('[data-no-blob]'));
+      for (var i = 0; i < noBlobBtns.length; i++) {
+        var nr = noBlobBtns[i].getBoundingClientRect();
+        if (cx >= nr.left && cx <= nr.right && cy >= nr.top && cy <= nr.bottom) return;
       }
     }
+    var btns = getButtons(), best = null, bestDist = Infinity;
+    btns.forEach(function(btn) {
+      var r = btn.getBoundingClientRect();
+      var d = Math.abs(cx - (r.left + r.width / 2)) + Math.abs(cy - (r.top + r.height / 2));
+      if (d < bestDist) { bestDist = d; best = btn; }
+    });
+    if (best && bestDist < 80) best.click();
   }
-  function onMouseMove(e) { updateBlob(e.clientX); }
+  function onMouseMove(e)  { updateBlob(e.clientX); }
   function onMouseLeave()  { hideBlob(); }
 
-  // Wait for React to render the dock
-  function tryInit() {
-    if (document.querySelector('.lg-nav-pill .lg-nav-btn')) {
-      init();
-    } else {
-      setTimeout(tryInit, 300);
-    }
+  /* ── init ── */
+  function init() {
+    var p = getMainPill();
+    if (!p) return false;
+
+    // Remove blob antigo se pill mudou
+    var oldBlob = document.getElementById('ag-liquid-blob');
+    if (oldBlob && oldBlob.parentElement !== p) { oldBlob.remove(); oldBlob = null; }
+
+    if (oldBlob) { blob = oldBlob; pill = p; return true; } // já existe e está certo
+
+    pill = p;
+    blob = document.createElement('div');
+    blob.id = 'ag-liquid-blob';
+    pill.insertBefore(blob, pill.firstChild);
+
+    pill.addEventListener('touchstart',  onTouchStart,  { passive: true });
+    pill.addEventListener('touchmove',   onTouchMove,   { passive: true });
+    pill.addEventListener('touchend',    onTouchEnd,    { passive: true });
+    pill.addEventListener('touchcancel', onTouchEnd,    { passive: true });
+    pill.addEventListener('mouseenter',  onMouseMove);
+    pill.addEventListener('mousemove',   onMouseMove);
+    pill.addEventListener('mouseleave',  onMouseLeave);
+    return true;
   }
 
-  // Re-init if pill is re-rendered by React
+  /* ── boot: tenta imediatamente, repete até conseguir ── */
+  var _attempts = 0;
+  function tryInit() {
+    if (init()) { _initDone = true; return; }
+    _attempts++;
+    // Primeiros 3s: tenta a cada 100ms (PWA demora a renderizar)
+    var delay = _attempts < 30 ? 100 : 300;
+    if (_attempts < 100) setTimeout(tryInit, delay);
+  }
+
+  /* ── MutationObserver: re-init se pill for recriada pelo React ── */
   var _obs = new MutationObserver(function() {
-    var p = document.querySelector('.lg-nav-pill');
+    var p = getMainPill();
     if (p && !document.getElementById('ag-liquid-blob')) {
-      blob = null; pill = null;
-      blobVisible = false;
+      blob = null; pill = null; blobVisible = false;
       init();
     }
   });
   _obs.observe(document.body, { childList: true, subtree: true });
 
+  /* ── Disparo ── */
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', tryInit);
   } else {
+    // Tenta imediatamente + no próximo frame (PWA: DOM pode não estar pronto)
     tryInit();
+    requestAnimationFrame(tryInit);
   }
 })();
 </script>

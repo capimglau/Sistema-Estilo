@@ -22379,47 +22379,72 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
           await db.patch("veiculos", form.veiculo_id, { status: "disponivel" });
           setVeiculos(p => p.map(v => v.id == form.veiculo_id ? Object.assign({}, v, { status: "disponivel" }) : v));
         }
-        // Sincronizar despesa vinculada ao editar manutenção
-        var despExist = despesas.find(d => String(d.manutencao_id) === String(edit));
-        if (despExist) {
-          var ve2 = getVe(form.veiculo_id);
-          var patchDesp = {};
-          if (form.custo && String(form.custo) !== String(despExist.valor)) patchDesp.valor = form.custo;
-          if (form.tipo) patchDesp.descricao = "Manutenção: " + form.tipo + (ve2 ? " - " + ve2.placa : "");
-          if (form.data_previsao_pagamento && form.data_previsao_pagamento !== despExist.data) patchDesp.data = form.data_previsao_pagamento;
-          else if (form.data_entrada && !form.data_previsao_pagamento && form.data_entrada !== despExist.data) patchDesp.data = form.data_entrada;
-          if (typeof form.recorrente !== "undefined") patchDesp.recorrente = !!form.recorrente;
-          if (form.prazo_recorrencia !== undefined) patchDesp.prazo_recorrencia = form.prazo_recorrencia || null;
-          // Sincronizar status financeiro
-          if (form.status_financeiro === "pago" && despExist.status !== "pago") {
-            patchDesp.status = "pago";
-            if (form.data_pagamento) patchDesp.data_pagamento = form.data_pagamento;
-          } else if (form.status_financeiro === "pendente" && despExist.status === "pago") {
-            patchDesp.status = "previsto";
-            patchDesp.data_pagamento = null;
+        // Sincronizar despesas vinculadas ao editar manutenção
+        var despVincs = despesas.filter(d => String(d.manutencao_id) === String(edit));
+        var ve2 = getVe(form.veiculo_id);
+        var dataDesp2 = form.data_previsao_pagamento || form.data_entrada || new Date().toISOString().split("T")[0];
+        var mParcEdit = (form.forma_pagamento||"").match(/Cartao Credito (\d+)x/);
+        var numParcEdit = mParcEdit ? parseInt(mParcEdit[1]) : 1;
+        function addDiasEdit(dateStr, n) {
+          var d = new Date(dateStr + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0,10);
+        }
+        if (numParcEdit > 1) {
+          // Parcelado: apaga despesas antigas e cria N novas
+          for (var dv of despVincs) {
+            try { await db.del("despesas", dv.id); } catch(e) { console.warn("del desp:", e); }
           }
-          if (Object.keys(patchDesp).length > 0) {
+          setDespesas(p => p.filter(d => String(d.manutencao_id) !== String(edit)));
+          var valorParcEdit = (parseFloat(form.custo) / numParcEdit).toFixed(2);
+          var novasParcMan = [];
+          for (var pi2 = 0; pi2 < numParcEdit; pi2++) {
             try {
-              var updDesp = await db.patch("despesas", despExist.id, patchDesp);
-              setDespesas(p => p.map(x => x.id === despExist.id ? Object.assign({}, x, updDesp) : x));
-            } catch(e) { console.warn("Sync desp:", e); }
+              var dp = await db.post("despesas", {
+                descricao: "Manutenção: " + form.tipo + (ve2 ? " - " + ve2.placa : "") + " — Parcela " + (pi2+1) + "/" + numParcEdit,
+                categoria: "Manutenção", veiculo_id: form.veiculo_id || null,
+                valor: valorParcEdit, data: addDiasEdit(dataDesp2, pi2 * 30),
+                status: "previsto", recorrente: false, forma_pagamento: form.forma_pagamento,
+                observacoes: (form.descricao||"") + (form.oficina ? " | Oficina: " + form.oficina : ""),
+                manutencao_id: edit
+              });
+              novasParcMan.push(dp);
+            } catch(e) { console.warn("criar parcela " + (pi2+1), e); }
           }
+          setDespesas(p => novasParcMan.concat(p));
+        } else if (despVincs.length > 0) {
+          // Pagamento único: atualiza a primeira despesa (ou única)
+          var despExist = despVincs[0];
+          var patchDesp = { forma_pagamento: form.forma_pagamento || null };
+          if (form.custo) patchDesp.valor = form.custo;
+          if (form.tipo) patchDesp.descricao = "Manutenção: " + form.tipo + (ve2 ? " - " + ve2.placa : "");
+          if (dataDesp2 !== despExist.data) patchDesp.data = dataDesp2;
+          patchDesp.recorrente = !!form.recorrente;
+          patchDesp.prazo_recorrencia = form.prazo_recorrencia || null;
+          if (form.status_financeiro === "pago") { patchDesp.status = "pago"; patchDesp.data_pagamento = form.data_pagamento || null; }
+          else if (form.status_financeiro === "pendente") { patchDesp.status = "previsto"; patchDesp.data_pagamento = null; }
+          // Se havia múltiplas parcelas antes, remove as extras
+          for (var dv2 of despVincs.slice(1)) {
+            try { await db.del("despesas", dv2.id); } catch(e) { console.warn("del extra desp:", e); }
+          }
+          setDespesas(p => p.filter(d => despVincs.slice(1).some(x => x.id === d.id) ? false : true));
+          try {
+            var updDesp = await db.patch("despesas", despExist.id, patchDesp);
+            setDespesas(p => p.map(x => x.id === despExist.id ? Object.assign({}, x, updDesp) : x));
+          } catch(e) { console.warn("Sync desp:", e); }
         } else if (parseFloat(form.custo || 0) > 0) {
-          // Não existe despesa ainda: criar agora
-          var ve3 = getVe(form.veiculo_id);
-          var novaDesp2 = await db.post("despesas", {
-            descricao: "Manutenção: " + form.tipo + (ve3 ? " - " + ve3.placa : ""),
-            categoria: "Manutenção",
-            valor: form.custo,
-            data: form.data_previsao_pagamento || form.data_entrada || new Date().toISOString().split("T")[0],
-            status: form.status_financeiro === "pago" ? "pago" : "previsto",
-            data_pagamento: form.status_financeiro === "pago" ? (form.data_pagamento || null) : null,
-            recorrente: !!form.recorrente,
-            prazo_recorrencia: form.prazo_recorrencia || null,
-            observacoes: (form.descricao || "") + (form.oficina ? " | Oficina: " + form.oficina : ""),
-            manutencao_id: edit
-          });
-          setDespesas(p => [novaDesp2].concat(p));
+          // Não existe despesa: criar
+          try {
+            var novaDesp2 = await db.post("despesas", {
+              descricao: "Manutenção: " + form.tipo + (ve2 ? " - " + ve2.placa : ""),
+              categoria: "Manutenção", valor: form.custo, data: dataDesp2,
+              status: form.status_financeiro === "pago" ? "pago" : "previsto",
+              data_pagamento: form.status_financeiro === "pago" ? (form.data_pagamento || null) : null,
+              recorrente: !!form.recorrente, prazo_recorrencia: form.prazo_recorrencia || null,
+              forma_pagamento: form.forma_pagamento || null,
+              observacoes: (form.descricao||"") + (form.oficina ? " | Oficina: " + form.oficina : ""),
+              manutencao_id: edit
+            });
+            setDespesas(p => [novaDesp2].concat(p));
+          } catch(e) { console.warn("criar desp:", e); }
         }
         toast("Atualizado!");
       } else {

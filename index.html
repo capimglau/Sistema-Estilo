@@ -22345,9 +22345,28 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
   async function save() {
     if (!form.veiculo_id || !form.tipo) return toast("Veiculo e Tipo obrigatorios", "error");
     setLoading(true);
+    // Payload explícito — apenas colunas que existem na tabela manutencao
+    var manPayload = {
+      veiculo_id: form.veiculo_id || null,
+      tipo: form.tipo || null,
+      status: form.status || "em_andamento",
+      data_entrada: form.data_entrada || null,
+      data_saida: form.data_saida || null,
+      data_previsao_pagamento: form.data_previsao_pagamento || null,
+      data_pagamento: form.data_pagamento || null,
+      custo: form.custo || null,
+      oficina: form.oficina || null,
+      descricao: form.descricao || null,
+      forma_pagamento: form.forma_pagamento || null,
+      recorrente: !!form.recorrente,
+      prazo_recorrencia: form.prazo_recorrencia || null,
+      orcamento_url: form.orcamento_url || null,
+      nota_servico_url: form.nota_servico_url || null,
+      status_financeiro: form.status_financeiro || "pendente",
+    };
     try {
       if (edit) {
-        const u = await db.patch("manutencao", edit, form);
+        const u = await db.patch("manutencao", edit, manPayload);
         setManutencoes(p => p.map(m => m.id === edit ? Object.assign({}, m, u) : m));
         var manutConcluida = (form.status !== "em_andamento");
         // Só grava "manutencao" no banco — alugado/disponivel são calculados por statusEfetivoVeiculo()
@@ -22404,7 +22423,7 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
         }
         toast("Atualizado!");
       } else {
-        const c = await db.post("manutencao", form);
+        const c = await db.post("manutencao", manPayload);
         setManutencoes(p => [c].concat(p));
         // Só grava "manutencao" para travar veículo; se já concluída/cancelada, limpa para "disponivel"
         // Nunca grava "alugado" — statusEfetivoVeiculo() calcula isso dinamicamente
@@ -22462,7 +22481,7 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
         toast("Registrada!");
       }
       setModal(false);
-    } catch(e) { toast("Erro: " + e.message, "error"); }
+    } catch(e) { toast("Erro ao salvar: " + e.message + " — rode o SQL em Configurações se for coluna inexistente", "error"); }
     setLoading(false);
   }
 
@@ -31613,36 +31632,50 @@ function App() {
       document.body.insertBefore(blob, document.body.firstChild);
     }
     showDock();
-    var _touchActive  = false; // dedo está na tela agora?
-    var _touchEndTime = 0;     // quando o dedo saiu
-    var _GRACE        = 800;   // ms de graça após levantar o dedo (scroll inercial iOS)
+    var _touchActive    = false;
+    var _touchEndTime   = 0;
+    var _touchStartY    = 0;
+    var _touchStartInDock = false;
+    var _GRACE          = 800;   // ms de graça após scroll inercial iOS
+    var _BOTTOM_ZONE    = 100;   // px do fundo — zona onde o dock vive
 
     function onScroll(e) {
-      // Ignora scrolls horizontais (filtros, overflow-x)
       var t = e.target;
       var isHoriz = t && t !== document && t !== document.documentElement &&
                     t !== document.body && t.scrollHeight <= t.clientHeight + 4;
       if (isHoriz) return;
-      // NUNCA oculta enquanto dedo está na tela
       if (_touchActive) return;
-      // Graça após levantar o dedo — scroll inercial iOS não conta como interação
       if (Date.now() - _touchEndTime < _GRACE) return;
       hideDock();
     }
+
     function onTouchStart(e) {
-      _touchActive = true;
-      // Não mostra o dock aqui — ele se mostra apenas via seu próprio onTouchStart
+      _touchActive  = true;
+      _touchStartY  = e.touches[0].clientY;
+      var nav       = document.querySelector('.lg-nav');
+      // Toque na zona inferior (onde dock fica mesmo oculto) → mostra imediatamente
+      if (_touchStartY >= window.innerHeight - _BOTTOM_ZONE) {
+        showDock();
+        _touchStartInDock = true;
+      } else {
+        _touchStartInDock = !!(nav && nav.contains(e.target));
+      }
     }
+
     function onTouchEnd(e) {
       _touchActive  = false;
       _touchEndTime = Date.now();
       if (shortcutsOpenRef.current) return;
-      // Se o toque começou fora do dock → oculta imediatamente
-      var nav = document.querySelector('.lg-nav');
-      if (!nav || !nav.contains(e.target)) {
-        hideDock();
-      }
+      var endY   = e.changedTouches[0].clientY;
+      var swipeUp = _touchStartY - endY; // positivo = dedo subiu
+      // Swipe pra cima (≥40px) de qualquer lugar → mostra dock
+      if (swipeUp >= 40) { showDock(); return; }
+      // Toque na zona do dock ou dentro do nav → mantém visível
+      if (_touchStartInDock) return;
+      // Tap no conteúdo → oculta com pequeno delay para não conflitar com navegação
+      setTimeout(function() { if (!shortcutsOpenRef.current) hideDock(); }, 80);
     }
+
     function onTouchCancel() {
       _touchActive  = false;
       _touchEndTime = Date.now();

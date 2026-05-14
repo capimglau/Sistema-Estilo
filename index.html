@@ -22301,6 +22301,8 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
   const [baixarModal, setBaixarModal] = useState(false);
   const [baixarItem, setBaixarItem] = useState(null);
   const [baixarData, setBaixarData] = useState(new Date().toISOString().split("T")[0]);
+  const [baixarParcelas, setBaixarParcelas] = useState([]);
+  const [baixarParcelaId, setBaixarParcelaId] = useState(null);
   const [sortMan, setSortMan] = useState("data_asc");
 
   var _abrirNovaManutRef = React.useRef(null);
@@ -22414,20 +22416,48 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
           var ve = getVe(form.veiculo_id);
           // Usa data de previsão de pagamento se disponível; senão data de entrada
           var dataDesp = form.data_previsao_pagamento || form.data_entrada || new Date().toISOString().split("T")[0];
-          var despPayload = {
-            descricao: "Manutenção: " + form.tipo + (ve ? " - " + ve.placa : ""),
-            categoria: "Manutenção",
-            veiculo_id: form.veiculo_id || null,
-            valor: form.custo,
-            data: dataDesp,
-            status: "previsto",
-            recorrente: !!form.recorrente,
-            prazo_recorrencia: form.prazo_recorrencia || null,
-            observacoes: (form.descricao || "") + (form.oficina ? " | Oficina: " + form.oficina : ""),
-            manutencao_id: c.id
-          };
-          var desp = await db.post("despesas", despPayload);
-          setDespesas(p => [desp].concat(p));
+          var mParcMan = (form.forma_pagamento||"").match(/Cartao Credito (\d+)x/);
+          var numParcMan = mParcMan ? parseInt(mParcMan[1]) : 1;
+          function addMesesMan(dateStr, n) {
+            var d = new Date(dateStr + "T12:00:00");
+            d.setMonth(d.getMonth() + n);
+            return d.toISOString().slice(0, 10);
+          }
+          if (numParcMan > 1) {
+            var valorParcMan = (parseFloat(form.custo) / numParcMan).toFixed(2);
+            for (var pi = 0; pi < numParcMan; pi++) {
+              var despParcPayload = {
+                descricao: "Manutenção: " + form.tipo + (ve ? " - " + ve.placa : "") + " — Parcela " + (pi+1) + "/" + numParcMan,
+                categoria: "Manutenção",
+                veiculo_id: form.veiculo_id || null,
+                valor: valorParcMan,
+                data: addMesesMan(dataDesp, pi),
+                status: "previsto",
+                recorrente: false,
+                observacoes: (form.descricao || "") + (form.oficina ? " | Oficina: " + form.oficina : ""),
+                forma_pagamento: form.forma_pagamento || null,
+                manutencao_id: c.id
+              };
+              var despParc = await db.post("despesas", despParcPayload);
+              setDespesas(p => [despParc].concat(p));
+            }
+          } else {
+            var despPayload = {
+              descricao: "Manutenção: " + form.tipo + (ve ? " - " + ve.placa : ""),
+              categoria: "Manutenção",
+              veiculo_id: form.veiculo_id || null,
+              valor: form.custo,
+              data: dataDesp,
+              status: "previsto",
+              recorrente: !!form.recorrente,
+              prazo_recorrencia: form.prazo_recorrencia || null,
+              observacoes: (form.descricao || "") + (form.oficina ? " | Oficina: " + form.oficina : ""),
+              forma_pagamento: form.forma_pagamento || null,
+              manutencao_id: c.id
+            };
+            var desp = await db.post("despesas", despPayload);
+            setDespesas(p => [desp].concat(p));
+          }
         }
         toast("Registrada!");
       }
@@ -22479,6 +22509,26 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
     if (!baixarItem || !baixarData) return toast("Informe a data de pagamento", "error");
     try {
       var ve = getVe(baixarItem.veiculo_id);
+
+      // ── Caso multi-parcela: baixar apenas a parcela selecionada ──
+      if (baixarParcelas.length > 1) {
+        if (!baixarParcelaId) return toast("Selecione a parcela a baixar", "error");
+        var parcSel = baixarParcelas.find(function(d){ return d.id === baixarParcelaId; });
+        if (!parcSel) return toast("Parcela não encontrada", "error");
+        var updParc = await db.patch("despesas", parcSel.id, { status: "pago", data_pagamento: baixarData });
+        setDespesas(p => p.map(x => x.id === parcSel.id ? Object.assign({}, x, updParc) : x));
+        // Verifica se todas as parcelas foram pagas
+        var todasPagas = baixarParcelas.every(function(d){ return d.id === parcSel.id ? true : d.status === "pago"; });
+        if (todasPagas) {
+          await db.patch("manutencao", baixarItem.id, { status_financeiro: "pago", data_pagamento: baixarData });
+          setManutencoes(p => p.map(x => x.id === baixarItem.id ? Object.assign({}, x, { status_financeiro: "pago", data_pagamento: baixarData }) : x));
+        }
+        setBaixarModal(false); setBaixarItem(null); setBaixarParcelas([]); setBaixarParcelaId(null);
+        toast("Parcela " + (parcSel.descricao||"").match(/Parcela (\d+\/\d+)/)?.[1] + " baixada! ✅");
+        return;
+      }
+
+      // ── Caso despesa única ──
       var despVinc = despesas.find(d => String(d.manutencao_id) === String(baixarItem.id));
 
       if (despVinc && !despVinc.recorrente) {
@@ -22525,6 +22575,8 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
 
       setBaixarModal(false);
       setBaixarItem(null);
+      setBaixarParcelas([]);
+      setBaixarParcelaId(null);
       toast("Despesa de manutenção baixada! ✅");
     } catch(e) {
       toast("Erro ao baixar: " + e.message, "error");
@@ -22561,8 +22613,13 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
       , fil.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1517}}, "Nenhuma manutenção" )
       , fil.map((m, i) => {
         var ve = getVe(m.veiculo_id);
-        var despVinc = despesas.find(d => String(d.manutencao_id) === String(m.id));
-        var financPago = m.status_financeiro === "pago" || (despVinc && despVinc.status === "pago");
+        var despVincs = despesas.filter(d => String(d.manutencao_id) === String(m.id));
+        var isParcelada = despVincs.length > 1;
+        var parcelasPagas = despVincs.filter(d => d.status === "pago").length;
+        var financPago = isParcelada
+          ? parcelasPagas === despVincs.length && despVincs.length > 0
+          : (m.status_financeiro === "pago" || (despVincs[0] && despVincs[0].status === "pago"));
+        var todasPendentes = isParcelada && parcelasPagas < despVincs.length;
         var hoje = new Date().toISOString().split("T")[0];
         var vencida = !financPago && m.data_previsao_pagamento && m.data_previsao_pagamento < hoje;
         return React.createElement('div', { key: m.id, style: { padding: "14px 0", borderBottom: i < fil.length - 1 ? "1px solid " + C.border : "none", ...(financPago ? { borderLeft: "4px solid " + C.green, paddingLeft: 12, marginLeft: -4 } : vencida ? { borderLeft: "4px solid " + C.red, paddingLeft: 12, marginLeft: -4 } : {}) }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1524}}
@@ -22583,12 +22640,23 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
             , React.createElement('div', { style: { textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1539}}
               , parseFloat(m.custo || 0) > 0 && React.createElement('div', { style: { fontWeight: 800, fontSize: 18, color: financPago ? C.green : C.purple }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1540}}, fmtBRL(m.custo))
               , React.createElement('span', { style: Badge(SC[m.status] || C.gray), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1541}}, (m.status || "").replace("_", " "))
-              , parseFloat(m.custo || 0) > 0 && React.createElement('span', { style: Badge(financPago ? C.green : vencida ? C.red : C.orange), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1542}}, financPago ? "💰 pago" : vencida ? "🚨 vencido" : "⏳ pendente")
+              , parseFloat(m.custo || 0) > 0 && React.createElement('span', { style: Badge(financPago ? C.green : vencida ? C.red : C.orange), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1542}},
+                  isParcelada
+                    ? (financPago ? "💳 " : "") + parcelasPagas + "/" + despVincs.length + " parcelas pagas"
+                    : financPago ? "💰 pago" : vencida ? "🚨 vencido" : "⏳ pendente"
+                )
             )
           )
           , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 10, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch", paddingBottom: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1545}}
             , m.status === "em_andamento" && React.createElement('button', { className: bCls(Ghost(C.green)), style: bStyle(Ghost(C.green)), onClick: () => concluir(m), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1546}}, "✅ Concluir" )
-            /* Pagamento gerenciado pelo Financeiro — botões Baixar/Reverter removidos */
+            , parseFloat(m.custo || 0) > 0 && (isParcelada ? todasPendentes : !financPago) && React.createElement('button', { className: bCls(Ghost(C.green)), style: bStyle(Ghost(C.green)), onClick: function() {
+                var pending = despVincs.filter(function(d){ return d.status !== "pago"; });
+                setBaixarItem(m);
+                setBaixarData(new Date().toISOString().split("T")[0]);
+                setBaixarParcelas(despVincs);
+                setBaixarParcelaId(pending.length > 0 ? pending[0].id : null);
+                setBaixarModal(true);
+              }}, isParcelada ? ("💸 Baixar parcela (" + parcelasPagas + "/" + despVincs.length + ")") : "💸 Baixar")
             , React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => { setForm(Object.assign({}, m)); setEdit(m.id); setModal(true); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1557}}, "Editar")
             , React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: () => remove(m.id), "aria-label": "Excluir multa", title: "Excluir", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1558}}, "✕")
           )
@@ -22597,15 +22665,45 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
     )
 
     /* Modal Baixar Despesa */
-    , React.createElement(Modal, { open: baixarModal, onClose: () => { setBaixarModal(false); setBaixarItem(null); }, title: "Baixar Despesa de Manutenção"   , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1565}}
+    , React.createElement(Modal, { open: baixarModal, onClose: () => { setBaixarModal(false); setBaixarItem(null); setBaixarParcelas([]); setBaixarParcelaId(null); }, title: baixarParcelas.length > 1 ? "Baixar Parcela de Manutenção" : "Baixar Despesa de Manutenção", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1565}}
       , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1566}}
         , baixarItem && React.createElement('div', { style: { background: C.bg, borderRadius: 12, padding: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1567}}
           , React.createElement('div', { style: { fontWeight: 700 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1568}}, baixarItem.tipo)
           , React.createElement('div', { style: { fontSize: 13, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1569}}, getVe(baixarItem.veiculo_id) && getVe(baixarItem.veiculo_id).placa)
           , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: C.red, marginTop: 6 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1570}}, fmtBRL(baixarItem.custo))
         )
-        , React.createElement(Lbl, { label: "Data do Pagamento *"   , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1572}}, React.createElement('input', { style: FI, type: "date", value: baixarData, onChange: e => setBaixarData(e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1572}} ))
-        , React.createElement('button', { className: bCls(Btn(C.red)), style: bStyle(Btn(C.red)), onClick: confirmarBaixar, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1573}}, "💸 Confirmar Pagamento"  )
+        , baixarParcelas.length > 1
+          ? React.createElement(React.Fragment, null
+              , React.createElement('div', { style: { fontWeight: 600, fontSize: 13, color: C.sub, marginBottom: 2 } }, "Selecione a parcela a baixar:")
+              , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 6 } }
+                , baixarParcelas.map(function(p) {
+                    var pago = p.status === "pago";
+                    var sel = baixarParcelaId === p.id;
+                    var mParcLabel = (p.descricao||"").match(/Parcela (\d+\/\d+)/);
+                    var label = mParcLabel ? "Parcela " + mParcLabel[1] : p.descricao;
+                    return React.createElement('div', { key: p.id, onClick: function(){ if(!pago) setBaixarParcelaId(p.id); },
+                        style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderRadius: 10,
+                          border: "1.5px solid " + (pago ? C.green : sel ? C.blue : C.border),
+                          background: pago ? C.green+"10" : sel ? C.blue+"10" : "transparent",
+                          cursor: pago ? "default" : "pointer", opacity: pago ? 0.7 : 1 } }
+                      , React.createElement('div', null
+                          , React.createElement('div', { style: { fontWeight: 600, fontSize: 13 } }, label)
+                          , React.createElement('div', { style: { fontSize: 11, color: C.sub } }, fmtDate(p.data))
+                        )
+                      , React.createElement('div', { style: { textAlign: "right" } }
+                          , React.createElement('div', { style: { fontWeight: 700, fontSize: 14 } }, fmtBRL(p.valor))
+                          , React.createElement('span', { style: Badge(pago ? C.green : sel ? C.blue : C.gray) }, pago ? "✅ pago" : sel ? "selecionada" : "pendente")
+                        )
+                    );
+                  })
+              )
+              , React.createElement(Lbl, { label: "Data do Pagamento *" }, React.createElement('input', { style: FI, type: "date", value: baixarData, onChange: e => setBaixarData(e.target.value) }))
+              , React.createElement('button', { className: bCls(Btn(C.red)), style: bStyle(Btn(C.red)), onClick: confirmarBaixar, disabled: !baixarParcelaId }, "💸 Confirmar Parcela")
+            )
+          : React.createElement(React.Fragment, null
+              , React.createElement(Lbl, { label: "Data do Pagamento *", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1572}}, React.createElement('input', { style: FI, type: "date", value: baixarData, onChange: e => setBaixarData(e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1572}} ))
+              , React.createElement('button', { className: bCls(Btn(C.red)), style: bStyle(Btn(C.red)), onClick: confirmarBaixar, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1573}}, "💸 Confirmar Pagamento")
+            )
       )
     )
 
@@ -22625,6 +22723,35 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
           , React.createElement(Lbl, { label: "Custo (R$)" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1590}}, React.createElement('input', { style: FI, type: "number", step: "0.01", value: form.custo || "", onChange: e => F("custo", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1590}} ))
         )
         , React.createElement(Lbl, { label: "Previsão de Pagamento"  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1592}}, React.createElement('input', { style: FI, type: "date", value: form.data_previsao_pagamento || "", onChange: e => F("data_previsao_pagamento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1592}} ))
+        , React.createElement(Lbl, { label: "Forma de Pagamento" }, React.createElement('select', { style: FI, value: (form.forma_pagamento||"").replace(/ \d+x$/,"") === "Cartao Credito" ? "Cartao Credito" : (form.forma_pagamento || "Pix"), onChange: function(e) {
+            var v = e.target.value;
+            F("forma_pagamento", v !== "Cartao Credito" ? v : "Cartao Credito");
+          }}
+          , React.createElement('option', { value: "Pix" }, "Pix")
+          , React.createElement('option', { value: "Dinheiro" }, "Dinheiro")
+          , React.createElement('option', { value: "Cartao Debito" }, "Cartão Débito")
+          , React.createElement('option', { value: "Cartao Credito" }, "Cartão Crédito")
+          , React.createElement('option', { value: "Transferencia" }, "Transferência")
+          , React.createElement('option', { value: "Boleto" }, "Boleto")
+        ))
+        , (form.forma_pagamento === "Cartao Credito" || (form.forma_pagamento||"").startsWith("Cartao Credito ")) && (function(){
+            var mParcCC = (form.forma_pagamento||"").match(/Cartao Credito (\d+)x/);
+            var nParcAtual = mParcCC ? parseInt(mParcCC[1]) : 1;
+            var valorTotal = parseFloat(form.custo || 0);
+            return React.createElement('div', { style: { background: C.blue+"10", border: "1.5px solid "+C.blue+"40", borderRadius: 12, padding: "12px 14px" } }
+              , React.createElement('div', { style: { fontWeight: 700, fontSize: 13, color: C.blue, marginBottom: 8 } }, "💳 Parcelamento no Cartão")
+              , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } }
+                , [1,2,3,4,5,6,7,8,9,10,11,12].map(function(n) {
+                    var sel = nParcAtual === n;
+                    return React.createElement('button', { key: n, onClick: function(){ F("forma_pagamento", n===1 ? "Cartao Credito" : "Cartao Credito "+n+"x"); },
+                      style: { padding: "6px 12px", borderRadius: 8, border: "1.5px solid "+(sel ? C.blue : C.border), background: sel ? C.blue : "transparent", color: sel ? "#fff" : C.text, fontWeight: sel ? 700 : 400, fontSize: 13, cursor: "pointer" } }, n+"x");
+                  })
+              )
+              , nParcAtual > 1 && valorTotal > 0 && React.createElement('div', { style: { marginTop: 8, fontSize: 12, color: C.sub } },
+                  nParcAtual + "x de " + (valorTotal / nParcAtual).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) + " — 1ª parcela em " + (form.data_previsao_pagamento || "?")
+                )
+            );
+          })()
         /* Recorrente */
         , React.createElement('div', { onClick: () => F("recorrente", !form.recorrente), style: { display: "flex", alignItems: "center", gap: 10, background: form.recorrente ? C.orange + "15" : C.border + "40", borderRadius: 12, padding: "12px 14px", cursor: "pointer", border: "1.5px solid " + (form.recorrente ? C.orange : C.border) }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1594}}
           , React.createElement('div', { style: { width: 22, height: 22, borderRadius: 6, background: form.recorrente ? C.orange : "#fff", border: "2px solid " + (form.recorrente ? C.orange : "#C7C7CC"), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1595}}
@@ -23605,6 +23732,13 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     if (!form.descricao || !form.valor || !form.data) return toast("Descricao, valor e data obrigatorios", "error");
     setLoading(true);
     try {
+      function addMeses(dateStr, n) {
+        var d = new Date(dateStr + "T12:00:00");
+        d.setMonth(d.getMonth() + n);
+        return d.toISOString().slice(0, 10);
+      }
+      var mParcCC = (form.forma_pagamento||"").match(/Cartao Credito (\d+)x/);
+      var numParcelas = mParcCC ? parseInt(mParcCC[1]) : 1;
       var payload = {
         descricao: form.descricao || null,
         categoria: form.categoria || null,
@@ -23617,9 +23751,31 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         prazo_recorrencia: form.recorrente ? (form.prazo_recorrencia || null) : null,
         veiculo_id: form.veiculo_id || null,
         manutencao_id: form.manutencao_id || null,
-        contrato_id: form.contrato_id || null};
-      if (edit) { const u = await db.patch("despesas", edit, payload); setDespesas(p => p.map(d => d.id === edit ? Object.assign({}, d, u) : d)); toast("Atualizado!"); }
-      else { const c = await db.post("despesas", payload); setDespesas(p => [c].concat(p)); toast("Registrado!"); }
+        contrato_id: form.contrato_id || null,
+        forma_pagamento: form.forma_pagamento || null};
+      if (edit) {
+        const u = await db.patch("despesas", edit, payload);
+        setDespesas(p => p.map(d => d.id === edit ? Object.assign({}, d, u) : d));
+        toast("Atualizado!");
+      } else if (numParcelas > 1) {
+        var valorParcela = (parseFloat(form.valor) / numParcelas).toFixed(2);
+        var novas = [];
+        for (var i = 0; i < numParcelas; i++) {
+          var payloadParc = Object.assign({}, payload, {
+            valor: valorParcela,
+            data: addMeses(form.data, i),
+            descricao: (form.descricao || "") + " — Parcela " + (i+1) + "/" + numParcelas
+          });
+          var c = await db.post("despesas", payloadParc);
+          novas.push(c);
+        }
+        setDespesas(p => novas.concat(p));
+        toast(numParcelas + " parcelas lançadas!");
+      } else {
+        const c = await db.post("despesas", payload);
+        setDespesas(p => [c].concat(p));
+        toast("Registrado!");
+      }
       setModal(false);
     } catch(e) { toast("Erro: " + e.message, "error"); }
     setLoading(false);
@@ -24141,7 +24297,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                   , isRec && React.createElement('span', { style: { fontSize: 10, background: C.purple + "20", color: C.purple, borderRadius: 6, padding: "2px 6px", fontWeight: 700 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2290}}, "recorrente")
                   , d.manutencao_id && React.createElement('span', { style: { fontSize: 10, background: C.purple + "20", color: C.purple, borderRadius: 6, padding: "2px 6px", fontWeight: 700 } }, "🔧 manutenção")
                 )
-                , React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2293}}, d.categoria, d.veiculo_id && (() => { var ve = veiculos.find(v => v.id == d.veiculo_id); return ve ? React.createElement('span', { style: { marginLeft: 6, background: C.blue + "15", color: C.blue, borderRadius: 5, padding: "1px 6px", fontWeight: 600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2293}}, ve.placa) : null; })())
+                , React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2293}}, d.categoria, d.forma_pagamento && React.createElement('span', { style: { marginLeft: 6, background: C.blue+"12", color: C.blue, borderRadius: 5, padding: "1px 6px", fontWeight: 600 } }, "💳 "+d.forma_pagamento), d.veiculo_id && (() => { var ve = veiculos.find(v => v.id == d.veiculo_id); return ve ? React.createElement('span', { style: { marginLeft: 6, background: C.blue + "15", color: C.blue, borderRadius: 5, padding: "1px 6px", fontWeight: 600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2293}}, ve.placa) : null; })())
                 , React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2294}}, "Previsão: " , fmtDate(d.data), d.data_pagamento && React.createElement('span', { style: { color: C.red }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2294}}, " · Pago: "   , fmtDate(d.data_pagamento)))
                 , d.observacoes && React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2295}}, d.observacoes)
               )
@@ -25517,6 +25673,36 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             , React.createElement(Lbl, { label: "Data *" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2520}}, React.createElement('input', { style: FI, type: "date", value: form.data || "", onChange: e => F("data", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2520}} ))
           )
           , React.createElement(Lbl, { label: "Categoria", __self: this, __source: {fileName: _jsxFileName, lineNumber: 2522}}, React.createElement('select', { style: FI, value: form.categoria || "Outros", onChange: e => F("categoria", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2522}}, CATS_DESP.map(c => React.createElement('option', { key: c, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2522}}, c))))
+          , React.createElement(Lbl, { label: "Forma de Pagamento" }, React.createElement('select', { style: FI, value: (form.forma_pagamento||"").replace(/ \d+x$/,"").replace(" ","_") === "Cartao_Credito" ? "Cartao Credito" : (form.forma_pagamento || "Pix"), onChange: function(e) {
+              var v = e.target.value;
+              if (v !== "Cartao Credito") F("forma_pagamento", v);
+              else F("forma_pagamento", "Cartao Credito");
+            }}
+            , React.createElement('option', { value: "Pix" }, "Pix")
+            , React.createElement('option', { value: "Dinheiro" }, "Dinheiro")
+            , React.createElement('option', { value: "Cartao Debito" }, "Cartão Débito")
+            , React.createElement('option', { value: "Cartao Credito" }, "Cartão Crédito")
+            , React.createElement('option', { value: "Transferencia" }, "Transferência")
+            , React.createElement('option', { value: "Boleto" }, "Boleto")
+          ))
+          , (form.forma_pagamento === "Cartao Credito" || (form.forma_pagamento||"").startsWith("Cartao Credito ")) && (function(){
+              var mParcCC = (form.forma_pagamento||"").match(/Cartao Credito (\d+)x/);
+              var nParcAtual = mParcCC ? parseInt(mParcCC[1]) : 1;
+              var valorTotal = parseFloat(form.valor || 0);
+              return React.createElement('div', { style: { background: C.blue+"10", border: "1.5px solid "+C.blue+"40", borderRadius: 12, padding: "12px 14px" } }
+                , React.createElement('div', { style: { fontWeight: 700, fontSize: 13, color: C.blue, marginBottom: 8 } }, "💳 Parcelamento no Cartão")
+                , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } }
+                  , [1,2,3,4,5,6,7,8,9,10,11,12].map(function(n) {
+                      var sel = nParcAtual === n;
+                      return React.createElement('button', { key: n, onClick: function(){ F("forma_pagamento", n===1 ? "Cartao Credito" : "Cartao Credito "+n+"x"); },
+                        style: { padding: "6px 12px", borderRadius: 8, border: "1.5px solid "+(sel ? C.blue : C.border), background: sel ? C.blue : "transparent", color: sel ? "#fff" : C.text, fontWeight: sel ? 700 : 400, fontSize: 13, cursor: "pointer" } }, n+"x");
+                    })
+                )
+                , nParcAtual > 1 && valorTotal > 0 && React.createElement('div', { style: { marginTop: 8, fontSize: 12, color: C.sub } },
+                    nParcAtual + "x de " + (valorTotal / nParcAtual).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) + " — 1ª parcela em " + (form.data || "?")
+                  )
+              );
+            })()
           , React.createElement(Lbl, { label: "Veículo (opcional)" , __self: this, __source: {fileName: _jsxFileName, lineNumber: 2523}}, React.createElement('select', { style: FI, value: form.veiculo_id || "", onChange: e => F("veiculo_id", e.target.value || null), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2523}}, React.createElement('option', { value: "", __self: this, __source: {fileName: _jsxFileName, lineNumber: 2523}}, "Nenhum (despesa geral)"  ), veiculos.map(v => React.createElement('option', { key: v.id, value: v.id, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2523}}, v.placa, " — "  , v.marca, " " , v.modelo))))
           , React.createElement('div', { onClick: () => F("recorrente", !form.recorrente), style: { display: "flex", alignItems: "center", gap: 10, background: form.recorrente ? C.orange + "15" : C.border + "40", borderRadius: 12, padding: "12px 14px", cursor: "pointer", border: "1.5px solid " + (form.recorrente ? C.orange : C.border) }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2524}}
             , React.createElement('div', { style: { width: 22, height: 22, borderRadius: 6, background: form.recorrente ? C.orange : "#fff", border: "2px solid " + (form.recorrente ? C.orange : "#C7C7CC"), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2525}}

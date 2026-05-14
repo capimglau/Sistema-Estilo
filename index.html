@@ -23773,24 +23773,33 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         contrato_id: form.contrato_id || null,
         forma_pagamento: form.forma_pagamento || null};
       if (edit && numParcelas > 1) {
-        // Editar com parcelamento: exclui o registro atual e cria as N parcelas
-        await db.del("despesas", edit);
-        setDespesas(p => p.filter(d => d.id !== edit));
-        var valorParcela2 = (parseFloat(form.valor) / numParcelas).toFixed(2);
-        var novasEdit = [];
-        for (var j = 0; j < numParcelas; j++) {
-          var payloadParcEdit = Object.assign({}, payload, {
-            valor: valorParcela2,
+        // Editar com parcelamento: atualiza o registro atual como parcela 1
+        // e cria os demais — sem excluir nada (mais seguro)
+        var valorParc = (parseFloat(form.valor) / numParcelas).toFixed(2);
+        var baseDesc  = (form.descricao || "").replace(/ — Parcela \d+\/\d+$/, "");
+        var parc1Payload = Object.assign({}, payload, {
+          valor: valorParc,
+          data: form.data,
+          descricao: baseDesc + " — Parcela 1/" + numParcelas,
+          status: "previsto",
+          data_pagamento: null
+        });
+        const u1 = await db.patch("despesas", edit, parc1Payload);
+        setDespesas(p => p.map(d => d.id === edit ? Object.assign({}, d, u1) : d));
+        var novasParcEdit = [];
+        for (var j = 1; j < numParcelas; j++) {
+          var pj = Object.assign({}, payload, {
+            valor: valorParc,
             data: addMeses(form.data, j),
-            descricao: (form.descricao || "").replace(/ — Parcela \d+\/\d+$/, "") + " — Parcela " + (j+1) + "/" + numParcelas,
+            descricao: baseDesc + " — Parcela " + (j+1) + "/" + numParcelas,
             status: "previsto",
             data_pagamento: null
           });
-          var ce = await db.post("despesas", payloadParcEdit);
-          novasEdit.push(ce);
+          var cj = await db.post("despesas", pj);
+          novasParcEdit.push(cj);
         }
-        setDespesas(p => novasEdit.concat(p));
-        toast(numParcelas + " parcelas criadas! ✅");
+        setDespesas(p => novasParcEdit.concat(p));
+        toast(numParcelas + "x criadas — " + numParcelas + " parcelas de R$ " + parseFloat(valorParc).toLocaleString("pt-BR",{minimumFractionDigits:2}) + " ✅");
       } else if (edit) {
         const u = await db.patch("despesas", edit, payload);
         setDespesas(p => p.map(d => d.id === edit ? Object.assign({}, d, u) : d));
@@ -23815,7 +23824,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         toast("Registrado!");
       }
       setModal(false);
-    } catch(e) { toast("Erro: " + e.message, "error"); }
+    } catch(e) {
+      console.error("[saveDespesa] Erro:", e);
+      alert("Erro ao salvar:\n" + e.message);
+    }
     setLoading(false);
   }
   async function saveReceita() {

@@ -23749,9 +23749,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
   async function saveDespesa() {
     if (!form.descricao || !form.valor || !form.data) return toast("Descricao, valor e data obrigatorios", "error");
-    var mParcCC0 = (form.forma_pagamento||"").match(/Cartao Credito (\d+)x/);
-    var numP0 = mParcCC0 ? parseInt(mParcCC0[1]) : 1;
-    alert("DEBUG\nforma_pagamento: " + (form.forma_pagamento||"(vazio)") + "\nnumParcelas: " + numP0 + "\nedit: " + edit + "\ndata: " + form.data);
     setLoading(true);
     try {
       function addMeses(dateStr, n) {
@@ -23776,33 +23773,50 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         contrato_id: form.contrato_id || null,
         forma_pagamento: form.forma_pagamento || null};
       if (edit && numParcelas > 1) {
-        // Editar com parcelamento: atualiza o registro atual como parcela 1
-        // e cria os demais — sem excluir nada (mais seguro)
         var valorParc = (parseFloat(form.valor) / numParcelas).toFixed(2);
         var baseDesc  = (form.descricao || "").replace(/ — Parcela \d+\/\d+$/, "");
-        var parc1Payload = Object.assign({}, payload, {
+        // Passo 1: atualiza o registro existente como parcela 1
+        var parc1Payload = {
+          descricao: baseDesc + " — Parcela 1/" + numParcelas,
+          categoria: payload.categoria,
           valor: valorParc,
           data: form.data,
-          descricao: baseDesc + " — Parcela 1/" + numParcelas,
           status: "previsto",
-          data_pagamento: null
-        });
-        const u1 = await db.patch("despesas", edit, parc1Payload);
+          data_pagamento: null,
+          observacoes: payload.observacoes,
+          recorrente: false,
+          prazo_recorrencia: null,
+          veiculo_id: payload.veiculo_id,
+          manutencao_id: payload.manutencao_id,
+          contrato_id: payload.contrato_id,
+          forma_pagamento: form.forma_pagamento
+        };
+        var u1;
+        try {
+          u1 = await db.patch("despesas", edit, parc1Payload);
+        } catch(ep) {
+          alert("Erro ao atualizar parcela 1:\n" + ep.message);
+          setLoading(false); return;
+        }
         setDespesas(p => p.map(d => d.id === edit ? Object.assign({}, d, u1) : d));
-        var novasParcEdit = [];
+        // Passos 2..N: cria as demais parcelas
+        var criadas = [];
         for (var j = 1; j < numParcelas; j++) {
-          var pj = Object.assign({}, payload, {
+          var pj = Object.assign({}, parc1Payload, {
             valor: valorParc,
             data: addMeses(form.data, j),
-            descricao: baseDesc + " — Parcela " + (j+1) + "/" + numParcelas,
-            status: "previsto",
-            data_pagamento: null
+            descricao: baseDesc + " — Parcela " + (j+1) + "/" + numParcelas
           });
-          var cj = await db.post("despesas", pj);
-          novasParcEdit.push(cj);
+          try {
+            var cj = await db.post("despesas", pj);
+            criadas.push(cj);
+          } catch(ep2) {
+            alert("Erro ao criar parcela " + (j+1) + ":\n" + ep2.message);
+            setLoading(false); return;
+          }
         }
-        setDespesas(p => novasParcEdit.concat(p));
-        toast(numParcelas + "x criadas — " + numParcelas + " parcelas de R$ " + parseFloat(valorParc).toLocaleString("pt-BR",{minimumFractionDigits:2}) + " ✅");
+        setDespesas(p => criadas.concat(p));
+        toast(numParcelas + "x de R$ " + parseFloat(valorParc).toLocaleString("pt-BR",{minimumFractionDigits:2}) + " criadas ✅");
       } else if (edit) {
         const u = await db.patch("despesas", edit, payload);
         setDespesas(p => p.map(d => d.id === edit ? Object.assign({}, d, u) : d));

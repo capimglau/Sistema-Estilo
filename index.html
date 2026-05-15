@@ -16892,7 +16892,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
 
       return React.createElement(React.Fragment, null
         /* Header */
-        , React.createElement("div", { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:22, marginBottom:12, flexWrap:"nowrap", gap:8 } }
+        , React.createElement("div", { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:22, marginBottom:5, flexWrap:"nowrap", gap:8 } }
           , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, flexShrink:0 } }, "Fluxo de Caixa")
           , React.createElement("select", { value:fluxoVeiculo, onChange:function(e){setFluxoVeiculo(e.target.value);},
               style:{ border:"1px solid "+C.border, borderRadius:8, padding:"4px 8px", fontSize:11, background:C.card, color:"var(--c-text)", cursor:"pointer", maxWidth:160, minWidth:0, flexShrink:1 } }
@@ -18768,7 +18768,11 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
               price = await fetch(FIPE_API+'/brands/'+brand.code+'/models/'+model.code+'/years/'+yr.code,{headers:{accept:'application/json'}}).then(function(r){ return r.json(); });
             }
             var rawPr = price.price != null ? price.price : (price.valor || null);
-            var num = typeof rawPr === "number" ? rawPr : (parseFloat((rawPr||'').replace(/[^0-9]/g,'').replace(',','.')) || 0);
+            // Parsing correto de moeda BR: remove tudo exceto dígitos e vírgula (decimal),
+            // depois troca vírgula por ponto. Ex: "R$ 69.975,00" → "69975.00" → 69975
+            var num = typeof rawPr === "number"
+              ? rawPr
+              : (parseFloat((rawPr||'').replace(/[^0-9,]/g,'').replace(',','.')) || 0);
             var numStr = typeof rawPr === "number" ? rawPr.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) : (rawPr || '');
             setFipeMap(function(p){ var u=Object.assign({},p); u[v.id]={valor:num,valorStr:numStr,modelo:price.model||price.modelo||'',codigo:price.codeFipe||codigoManual||'',anoFipe:price.modelYear?String(price.modelYear):(yr.code||'').split('-')[0]||'',manual:!!codigoManual}; return u; });
           } catch(e) {
@@ -31883,64 +31887,44 @@ function App() {
       document.body.insertBefore(blob, document.body.firstChild);
     }
     showDock();
+    // Grace period: ignora scroll nos primeiros 2.5s (evita que carregamento do React esconda o dock)
+    var _startTime = Date.now();
+    var _STARTUP_GRACE = 2500;
+    var _lastScrollY = window.scrollY;
     var _touchActive    = false;
     var _touchStartY    = 0;
     var _touchStartX    = 0;
     var _touchEndTime   = 0;
-    var _GRACE          = 800;
-    var _SWIPE_THRESH   = 35; // px mínimo para considerar swipe (não tap)
+    var _SWIPE_THRESH   = 35;
 
     function onScroll(e) {
+      // Ignora scroll durante grace de inicialização
+      if (Date.now() - _startTime < _STARTUP_GRACE) return;
       var t = e.target;
       var isHoriz = t && t !== document && t !== document.documentElement &&
                     t !== document.body && t.scrollHeight <= t.clientHeight + 4;
       if (isHoriz) return;
       if (_touchActive) return;
-      if (Date.now() - _touchEndTime < _GRACE) return;
-      hideDock();
+      if (Date.now() - _touchEndTime < 800) return;
+      // Só esconde se scroll para baixo (≥20px) — scroll para cima sempre mostra
+      var curY = window.scrollY || (t && t.scrollTop) || 0;
+      var delta = curY - _lastScrollY;
+      _lastScrollY = curY;
+      if (delta > 20) hideDock();
+      else if (delta < -10) showDock();
     }
 
     function onTouchStart(e) {
       _touchActive = true;
       _touchStartY = e.touches[0].clientY;
       _touchStartX = e.touches[0].clientX;
+      _lastScrollY = window.scrollY;
     }
 
     function onTouchEnd(e) {
       _touchActive  = false;
       _touchEndTime = Date.now();
-      if (shortcutsOpenRef.current) return;
-
-      var endY   = e.changedTouches[0].clientY;
-      var endX   = e.changedTouches[0].clientX;
-      var distY  = Math.abs(_touchStartY - endY);
-      var distX  = Math.abs(_touchStartX - endX);
-
-      // Ignorar swipes (scroll) — só reagir a taps
-      if (distY > _SWIPE_THRESH || distX > _SWIPE_THRESH) return;
-
-      var target = e.target || e.changedTouches[0].target;
-
-      // Ignorar toques no próprio dock
-      var nav = document.querySelector('.lg-nav');
-      if (nav && nav.contains(target)) return;
-
-      // Ignorar toques em campos de formulário, botões e modais
-      var tag = (target.tagName || '').toUpperCase();
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
-          tag === 'BUTTON' || tag === 'A' || tag === 'LABEL') return;
-      if (target.closest && (target.closest('[role="dialog"]') ||
-          target.closest('.lg-modal') || target.closest('.ag-modal') ||
-          target.closest('button') || target.closest('a') ||
-          target.closest('input') || target.closest('select') ||
-          target.closest('textarea'))) return;
-
-      // Toggle: tap alterna visibilidade
-      if (dockVisibleRef.current) {
-        hideDock();
-      } else {
-        showDock();
-      }
+      // Removido: tap em tela não mais esconde/mostra dock (era a causa principal do sumiço)
     }
 
     function onTouchCancel() {
@@ -31972,6 +31956,7 @@ function App() {
   // Wrapper: redireciona contratos/multas/manutencao para aba Operacional
   function navTab(t) {
     setNavOculto(false);
+    showDock();
     if (t === "reservas" || t === "contratos" || t === "multas" || t === "manutencao") {
       setOperacionalSubTab(t);
       handleTabChange("operacional");
@@ -32075,9 +32060,20 @@ function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const shortcutsOpenRef = React.useRef(false);
   React.useEffect(function(){
-    function _onOpenSC(){ shortcutsOpenRef.current = true; setShortcutsOpen(true); }
+    // Ponte global: o pull-tab dispara ag:open-shortcuts mesmo antes do React montar.
+    // O listener no documento persiste para sempre; delega para React via window.__ag_open_shortcuts.
+    function _onOpenSC(){
+      shortcutsOpenRef.current = true;
+      setShortcutsOpen(true);
+      showDock(); // garante que dock está visível quando painel abre
+    }
+    window.__ag_open_shortcuts = _onOpenSC;
+    // Listener React (fallback caso o global seja chamado antes de montar)
     document.addEventListener('ag:open-shortcuts', _onOpenSC);
-    return function(){ document.removeEventListener('ag:open-shortcuts', _onOpenSC); };
+    return function(){
+      delete window.__ag_open_shortcuts;
+      document.removeEventListener('ag:open-shortcuts', _onOpenSC);
+    };
   }, []);
   const [buscaOpen, setBuscaOpen] = useState(false);
   const [enviarOpen, setEnviarOpen] = useState(false);
@@ -32418,7 +32414,7 @@ function App() {
             return React.createElement('div', { className: "lg-nav-pill", style: { overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none", WebkitOverflowScrolling: "touch", width: "100%" } }
               , subs.map(function(s) {
                   var isActive = activeSubTab === s.id;
-                  return React.createElement('button', { key: s.id, 'data-subtab-id': s.id, onClick: function(){ setActiveSubTab(s.id); setNavOculto(true); setTimeout(hideDock, 220); }, className: "lg-nav-btn" + (isActive ? " lg-nav-btn-active" : ""), style: { position: "relative" } }
+                  return React.createElement('button', { key: s.id, 'data-subtab-id': s.id, onClick: function(){ setActiveSubTab(s.id); setNavOculto(true); }, className: "lg-nav-btn" + (isActive ? " lg-nav-btn-active" : ""), style: { position: "relative" } }
                     , React.createElement(NavIcon, { id: s.id, active: isActive })
                     , React.createElement('span', { style: { fontSize: 10, fontWeight: isActive ? 700 : 400, color: isActive ? C.blue : C.sub, whiteSpace: "nowrap", position: "relative", zIndex: 1 } }, s.label)
                   );
@@ -34722,10 +34718,14 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
       ' stroke-linecap="round" stroke-linejoin="round">' +
       '<polyline points="15 18 9 12 15 6"/></svg>';
 
-    // Abre painel via evento — listener já registrado dentro do App React
+    // Abre painel via ponte global (imediato) ou evento (fallback)
     function open(e){
       e.stopPropagation();
-      document.dispatchEvent(new CustomEvent('ag:open-shortcuts'));
+      if (window.__ag_open_shortcuts) {
+        window.__ag_open_shortcuts();
+      } else {
+        document.dispatchEvent(new CustomEvent('ag:open-shortcuts'));
+      }
     }
     tab.addEventListener('click',  open, { capture: true });
     tab.addEventListener('touchend', function(e){

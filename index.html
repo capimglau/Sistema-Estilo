@@ -15672,6 +15672,7 @@ function filtrarManParaBarras(manutencoes, despesas, mes) {
 function despesaDoMes(d, mes) {
   if (!d || !mes) return false;
   if (d.recorrencia_origem_id) return (d.data || "").slice(0, 7) === mes;
+  if (!d.recorrente && (d.data_pagamento || "").slice(0, 7) === mes) return true;
   var dataMes = (d.data || "").slice(0, 7);
   if (dataMes === mes) return true;
   if (d.recorrente && dataMes && dataMes < mes) {
@@ -16499,43 +16500,19 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       }, 0);
       var recPrevisto  = recMes + aRec; // total previsto de receitas
 
-      /* ── Despesas ── */
-      var despMesItens = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d) && !d.manutencao_id; }), dashMes);
-      var despTotal    = despMesItens.reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
-      function _despPagaBarras(d, m) {
-        if (d.manutencao_id) return false;
-        if (!despesaVisivelNoMes(d, m)) return false;
-        if (d.recorrente && (d.data||"").slice(0,7) < m) return (d.data_pagamento||"").slice(0,7) === m;
-        return d.status === "pago" || !!d.data_pagamento;
-      }
-      var despPago     = despMesItens.filter(function(d){ return _despPagaBarras(d, dashMes); }).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
-      var despAPagar   = despTotal - despPago;
-
-      /* ── Manutenções ── */
-      // Exclui manutenções que já possuem despesa vinculada (manutencao_id) — elas
-      // aparecem na seção de Despesas via resolverDespesasDoMes, evitando duplicata.
-      // Também exclui manutenções recorrentes cuja despesa-pai já gerou uma instância
-      // paga no mês atual (baixada via aba Financeiro, sem manutencao_id na filha).
-      var manMesItens  = filtrarManParaBarras(manutencoes, despesas, dashMes);
-      var manTotal     = manMesItens.reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);
-      function _isManPagaBarras(m) { return m.status_financeiro === "pago" || !!m.data_pagamento || (despesas||[]).some(function(d){ return d.manutencao_id == m.id && (d.status === "pago" || !!d.data_pagamento); }); }
-      var manPago      = manMesItens.filter(function(m){ return _isManPagaBarras(m); }).reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);
-      var manAPagar    = manTotal - manPago;
-
-      /* Despesas vinculadas a manutencoes (manutencao_id) sao excluidas de despMesItens
-         e tambem excluem a manutencao de manMesItens — somamos separadamente */
-      var despManItens  = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d) && !!d.manutencao_id; }), dashMes);
-      var despManTotal  = despManItens.reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
-      var despManPago   = despManItens.filter(function(d){ return d.status === "pago" || !!d.data_pagamento; }).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
-      var despManAPagar = despManTotal - despManPago;
-
-      var dmTotal      = despTotal + manTotal + despManTotal;
-      console.log("[BARRAS] despTotal=", despTotal, "manTotal=", manTotal, "despManTotal=", despManTotal, "dmTotal=", dmTotal);
-      console.log("[BARRAS] despMesItens=", despMesItens.map(function(d){return d.descricao+":"+d.valor;}));
-      console.log("[BARRAS] manMesItens=", manMesItens.map(function(m){return (m.descricao||m.tipo)+":"+m.custo;}));
-      console.log("[BARRAS] despManItens=", despManItens.map(function(d){return d.descricao+":"+d.valor;}));
-      var dmPago       = despPago  + manPago  + despManPago;
-      var dmAPagar     = despAPagar + manAPagar + despManAPagar;
+      /* ── Despesas + Manutenções ──
+         Toda manutenção gera uma despesa vinculada (manutencao_id).
+         A barra soma TODAS as despesas do mês — idêntico ao total do Financeiro. */
+      var despMesItens = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), dashMes);
+      var dmTotal      = despMesItens.reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
+      function _despPagaBarras(d){ return d.status === "pago" || !!d.data_pagamento; }
+      var dmPago       = despMesItens.filter(_despPagaBarras).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
+      var dmAPagar     = dmTotal - dmPago;
+      var despTotal = dmTotal; var despPago = dmPago; var despAPagar = dmAPagar;
+      var manTotal = 0; var manPago = 0; var manAPagar = 0;
+      var manMesItens = [];
+      function _isManPagaBarras(){ return false; }
+      console.log("[BARRAS] dmTotal=", dmTotal, "dmPago=", dmPago, "itens=", despMesItens.map(function(d){return d.descricao+":"+d.valor;}));
       var todoPagoDM   = dmTotal > 0 && dmAPagar <= 0;
 
       var _selState = React.useState(null); var sel = _selState[0]; var setSel = _selState[1];
@@ -16793,48 +16770,68 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                     );
                   });
                 }
-                /* Despesas + Manutenção unificadas */
+                /* Despesas + Manutenção — agrupadas por dia */
                 if (sel === "dm") {
-                  function _dtRefDashDesp(d){ return (d.recorrente && (d.data||"").slice(0,7) < dashMes) ? (dashMes+"-"+(d.data||"").slice(8,10)) : (d.data||""); }
-                  var despOrdenadas = despMesItens.slice().sort(function(a,b){ return (_dtRefDashDesp(a)||"") < (_dtRefDashDesp(b)||"") ? -1 : 1; });
-                  var manOrdenadas  = manMesItens.slice().sort(function(a,b){ return (a.data_entrada||"") < (b.data_entrada||"") ? -1 : 1; });
+                  function _dtRefDashDesp(d){
+                    if (_despPagaBarras(d) && d.data_pagamento) return d.data_pagamento.slice(0,10);
+                    return (d.recorrente && (d.data||"").slice(0,7) < dashMes)
+                      ? (dashMes+"-"+(d.data||"").slice(8,10))
+                      : (d.data||"").slice(0,10);
+                  }
+                  var porDia = {}; var ordemDias = [];
+                  despMesItens.forEach(function(d){
+                    var dt = _dtRefDashDesp(d) || "9999-99-99";
+                    if (!porDia[dt]){ porDia[dt] = []; ordemDias.push(dt); }
+                    porDia[dt].push(d);
+                  });
+                  ordemDias.sort();
                   return React.createElement('div', null
-                    /* Seção Despesas */
-                    , despOrdenadas.length > 0 && React.createElement('div', null
-                      , React.createElement('div', { style:{ padding:"7px 14px 5px", fontSize:10, fontWeight:700, color:C.red, textTransform:"uppercase", letterSpacing:0.5, background:"rgba(255,59,48,0.04)", borderBottom:"1px solid "+C.border } }, "Despesas ("+despOrdenadas.length+")")
-                      , despOrdenadas.map(function(d, i){
-                          var pago = _despPagaBarras(d, dashMes);
-                          var dtRefD = _dtRefDashDesp(d);
-                          var isAtras = !pago && dtRefD && dtRefD < hoje;
-                          var itemCor = pago ? C.green : (isAtras ? C.red : C.orange);
-                          return React.createElement('div', { key:d.id||i, onClick:function(){ setTab("financeiro"); },
-                            style:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"9px 14px", borderTop:"1px solid "+C.border, cursor:"pointer" } }
-                            , React.createElement('div', null
-                              , React.createElement('div', { style:{ fontSize:13, fontWeight:600, color: isAtras ? C.red : "var(--c-text)" } }, (pago?"✅ ":isAtras?"⚠️ ":"")+( d.descricao||d.categoria||"Despesa"))
-                              , React.createElement('div', { style:{ fontSize:11, color: isAtras ? C.red : C.sub, marginTop:1 } }, (d.categoria||"")+(dtRefD?" · "+fmtDate(dtRefD):"")+(pago?" · paga":isAtras?" · vencida":""))
-                            )
-                            , React.createElement('div', { style:{ fontWeight:700, fontSize:13, color:itemCor } }, fmtBRL(d.valor).split(",")[0])
-                          );
-                        })
-                    )
-                    /* Seção Manutenções */
-                    , manOrdenadas.length > 0 && React.createElement('div', null
-                      , React.createElement('div', { style:{ padding:"7px 14px 5px", fontSize:10, fontWeight:700, color:"#9B5DE5", textTransform:"uppercase", letterSpacing:0.5, background:"rgba(155,93,229,0.04)", borderTop:"1px solid "+C.border, borderBottom:"1px solid "+C.border } }, "Manutenção ("+manOrdenadas.length+")")
-                      , manOrdenadas.map(function(m, i){
-                          var ve = (veiculos||[]).find(function(v){ return v.id==m.veiculo_id; });
-                          var pgPend = !_isManPagaBarras(m);
-                          var venc = pgPend && (m.data_previsao_pagamento||m.data_entrada||"") < hoje;
-                          var itemCor = !pgPend ? C.green : (venc ? C.red : C.orange);
-                          return React.createElement('div', { key:m.id||i, onClick:function(){ setTab("manutencao"); },
-                            style:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"9px 14px", borderTop:"1px solid "+C.border, cursor:"pointer" } }
-                            , React.createElement('div', null
-                              , React.createElement('div', { style:{ fontSize:13, fontWeight:600, color: venc ? C.red : "var(--c-text)" } }, (!pgPend?"✅ ":venc?"⚠️ ":" 🔧 ")+(m.descricao||m.tipo||"Manutenção"))
-                              , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:1 } }, (ve?ve.placa+" · ":"")+(m.data_entrada?fmtDate(m.data_entrada):"")+(pgPend?" · pgto pendente":" · pago"))
-                            )
-                            , React.createElement('div', { style:{ fontWeight:700, fontSize:13, color:itemCor } }, fmtBRL(m.custo).split(",")[0])
-                          );
-                        })
-                    )
+                    , ordemDias.map(function(dt){
+                        var itens = porDia[dt];
+                        var subtotal = itens.reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
+                        var dtLabel = dt === "9999-99-99" ? "Sem data" : fmtDate(dt);
+                        return React.createElement('div', { key: dt }
+                          , React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                              padding:"6px 14px 5px", fontSize:10, fontWeight:700, color:C.sub,
+                              textTransform:"uppercase", letterSpacing:0.5,
+                              background:"rgba(120,120,128,0.07)",
+                              borderTop:"1px solid "+C.border, borderBottom:"1px solid "+C.border } }
+                            , React.createElement('span', null, dtLabel)
+                            , React.createElement('span', { style:{ color:"var(--c-text)", fontWeight:700 } }, fmtBRL(subtotal).split(",")[0])
+                          )
+                          , itens.map(function(d, i){
+                              var isMan = !!d.manutencao_id;
+                              var pago  = _despPagaBarras(d);
+                              var dtRef = _dtRefDashDesp(d);
+                              var isAtras = !pago && dtRef && dtRef < hoje;
+                              var itemCor = pago ? C.green : (isAtras ? C.red : C.orange);
+                              var manCor  = "#9B5DE5";
+                              return React.createElement('div', { key: d.id||i,
+                                onClick: function(){ setTab("financeiro"); },
+                                style:{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                                  padding:"9px 14px", borderTop: i>0 ? "1px solid "+C.border : "none",
+                                  cursor:"pointer",
+                                  background: isMan ? "rgba(155,93,229,0.05)" : "transparent" } }
+                                , React.createElement('div', null
+                                  , React.createElement('div', { style:{ fontSize:13, fontWeight:600,
+                                      color: isMan ? manCor : (isAtras ? C.red : "var(--c-text)") } }
+                                    , (pago ? "✅ " : isAtras ? "⚠️ " : isMan ? "🔧 " : "")
+                                    + (d.descricao || d.categoria || "Despesa")
+                                  )
+                                  , React.createElement('div', { style:{ fontSize:11, marginTop:1,
+                                      color: isMan ? manCor : (isAtras ? C.red : C.sub) } }
+                                    , (isMan ? "Manutenção" : (d.categoria||""))
+                                    + (pago ? " · paga" : isAtras ? " · vencida" : "")
+                                  )
+                                )
+                                , React.createElement('div', { style:{ fontWeight:700, fontSize:13,
+                                    color: isMan ? (pago ? C.green : manCor) : itemCor } }
+                                  , fmtBRL(d.valor).split(",")[0]
+                                )
+                              );
+                            })
+                        );
+                      })
                   );
                 }
                 return null;
@@ -17970,7 +17967,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       var _lucroCorCat = _lucroMesCat >= 0 ? C.green : C.red;
 
       return React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:0 } }
-        , React.createElement('div', { onClick: function(){ setTab("financeiro"); }, style: { marginTop:29, marginBottom:40, fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, cursor:"pointer", display:"flex", alignItems:"center", gap:4 } }
+        , React.createElement('div', { onClick: function(){ setTab("financeiro"); }, style: { marginTop:29, marginBottom:12, fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5, cursor:"pointer", display:"flex", alignItems:"center", gap:4 } }
           , "Despesas por Categoria"
           , React.createElement('span', { style:{ fontSize:10, opacity:0.6 } }, "→")
         )

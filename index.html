@@ -15644,6 +15644,24 @@ function manVisivelNoMes(m, mes) {
   return false;
 }
 function manMesRefGlobal(m) { return (m.data_previsao_pagamento || m.data_entrada || "").slice(0, 7); }
+/* Filtra manutenções do mês para as barras do dashboard —
+   exclui as que têm despesa vinculada (manutencao_id) e
+   as recorrentes cuja filha já existe no mês. */
+function filtrarManParaBarras(manutencoes, despesas, mes) {
+  return (manutencoes||[]).filter(function(m) {
+    if (!manVisivelNoMes(m, mes)) return false;
+    var hasDesp = (despesas||[]).some(function(d){ return String(d.manutencao_id) === String(m.id); });
+    if (hasDesp) return false;
+    if (m.recorrente && m.data_pagamento && m.data_pagamento.slice(0,7) < mes) {
+      var despPai = (despesas||[]).find(function(d){ return String(d.manutencao_id) === String(m.id) && d.recorrente; });
+      if (despPai) {
+        var filhaMes = (despesas||[]).some(function(d){ return d.recorrencia_origem_id == despPai.id && (d.data||"").slice(0,7) === mes; });
+        if (filhaMes) return false;
+      }
+    }
+    return true;
+  });
+}
 
 /* ─────────────────────────────────────────────────────────────────
    FILTROS ESTRITOS — usados em seletores de mês (conciliação,
@@ -16208,11 +16226,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
   const pagosMes = ctsMes.filter(c => c.status_pagamento === "pago").length;
   const despMesBanner = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d) && !d.manutencao_id; }), dashMes).reduce((s,d)=>s+parseFloat(d.valor||0),0);
   const despManBanner = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d) && !!d.manutencao_id; }), dashMes).reduce((s,d)=>s+parseFloat(d.valor||0),0);
-  const manMesBanner = (manutencoes||[]).filter(function(m){
-    if (!manVisivelNoMes(m, dashMes)) return false;
-    var hasDesp = (despesas||[]).some(function(d){ return String(d.manutencao_id) === String(m.id); });
-    return !hasDesp;
-  }).reduce((s,m)=>s+parseFloat(m.custo||0),0);
+  const manMesBanner = filtrarManParaBarras(manutencoes, despesas, dashMes).reduce((s,m)=>s+parseFloat(m.custo||0),0);
   const resultPrevBanner = prevMes - despMesBanner - despManBanner - manMesBanner;
 
   const receitaContratos = contratos.filter(c => c.status === "concluido").reduce((s, c) => s + parseFloat(c.valor_total || 0), 0);
@@ -16493,24 +16507,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       // aparecem na seção de Despesas via resolverDespesasDoMes, evitando duplicata.
       // Também exclui manutenções recorrentes cuja despesa-pai já gerou uma instância
       // paga no mês atual (baixada via aba Financeiro, sem manutencao_id na filha).
-      var manMesItens  = (manutencoes||[]).filter(function(m){
-        if (!manVisivelNoMes(m, dashMes)) return false;
-        // Tem despesa vinculada diretamente por manutencao_id?
-        var hasDesp = (despesas||[]).some(function(d){ return String(d.manutencao_id) === String(m.id); });
-        if (hasDesp) return false;
-        // Manutenção recorrente paga em mês anterior: verifica se já existe instância
-        // filha da despesa referente a ela no mês atual
-        if (m.recorrente && m.data_pagamento && m.data_pagamento.slice(0,7) < dashMes) {
-          // Procura despesa filha cuja recorrencia_origem aponta para uma despesa de manutenção
-          // ligada a esta manutenção, ou qualquer despesa paga neste mês com o mesmo valor/descrição
-          var despPai = (despesas||[]).find(function(d){ return String(d.manutencao_id) === String(m.id) && d.recorrente; });
-          if (despPai) {
-            var filhaMes = (despesas||[]).some(function(d){ return d.recorrencia_origem_id == despPai.id && (d.data||"").slice(0,7) === dashMes; });
-            if (filhaMes) return false;
-          }
-        }
-        return true;
-      });
+      var manMesItens  = filtrarManParaBarras(manutencoes, despesas, dashMes);
       var manTotal     = manMesItens.reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);
       function _isManPagaBarras(m) { return m.status_financeiro === "pago" || !!m.data_pagamento || (despesas||[]).some(function(d){ return d.manutencao_id == m.id && (d.status === "pago" || !!d.data_pagamento); }); }
       var manPago      = manMesItens.filter(function(m){ return _isManPagaBarras(m); }).reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);

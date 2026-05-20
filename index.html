@@ -2025,7 +2025,7 @@ input,select,textarea{transition:border-color .15s,box-shadow .15s;}
   transition:transform 0.38s cubic-bezier(0.34,1.10,0.64,1);
   touch-action:pan-y;
 }
-.ag-swipe-wrap.ag-swiped .ag-sw-inner{transform:translateX(-130px);}
+.ag-swipe-wrap.ag-swiped .ag-sw-inner{transform:translateX(calc(-1 * var(--sw-reveal, 130px)));}
 
 /* ══════════════════════════════════════════════════
    EFFECT 12 · BOTTOM SHEET (drag-to-dismiss)
@@ -16246,9 +16246,12 @@ function BottomSheet({ open, onClose, title, children }) {
 }
 
 /* ── EFFECT 10 · SwipeRow ── */
-function SwipeRow({ children, onEdit, onDelete, deleteLabel }) {
+function SwipeRow({ children, onEdit, onDelete, deleteLabel, action2, action2Label, action2Icon, action2Color }) {
   var wrapRef = React.useRef(null);
   var _sw = React.useRef({ on:false, sx:0, sy:0, dx:0, swiped:false });
+  /* largura total das ações reveladas */
+  var actCount = (onEdit?1:0) + (onDelete||action2?1:0);
+  var revealW = actCount * 65;
 
   function getClient(e){ return e.touches ? { x:e.touches[0].clientX, y:e.touches[0].clientY } : { x:e.clientX, y:e.clientY }; }
 
@@ -16265,8 +16268,8 @@ function SwipeRow({ children, onEdit, onDelete, deleteLabel }) {
     var dy = Math.abs(c.y - _sw.current.sy);
     if(!_sw.current.moved && dy > 10) { _sw.current.on=false; return; }
     _sw.current.moved = true;
-    var cur = _sw.current.swiped ? dx - 130 : dx;
-    cur = Math.max(-130, Math.min(0, cur));
+    var cur = _sw.current.swiped ? dx - revealW : dx;
+    cur = Math.max(-revealW, Math.min(0, cur));
     _sw.current.dx = cur;
     var inner = wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner');
     if(inner) inner.style.transform = 'translateX('+cur+'px)';
@@ -16276,27 +16279,46 @@ function SwipeRow({ children, onEdit, onDelete, deleteLabel }) {
     _sw.current.on = false;
     var inner = wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner');
     if(inner) { inner.style.transition = ''; inner.style.transform = ''; }
-    var shouldSnap = _sw.current.dx < -55;
+    var shouldSnap = _sw.current.dx < -(revealW * 0.42);
     _sw.current.swiped = shouldSnap;
     if(wrapRef.current) wrapRef.current.classList.toggle('ag-swiped', shouldSnap);
+    _sw.current.moved = false;
   }
 
-  // close on outside click
+  function closeSwipe(e) {
+    e.stopPropagation();
+    _sw.current.swiped=false;
+    if(wrapRef.current) wrapRef.current.classList.remove('ag-swiped');
+    var inner = wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner');
+    if(inner) { inner.style.transition=''; inner.style.transform=''; }
+  }
+
   React.useEffect(function(){
     function close(e){ if(wrapRef.current && !wrapRef.current.contains(e.target)){ _sw.current.swiped=false; if(wrapRef.current) wrapRef.current.classList.remove('ag-swiped'); } }
     document.addEventListener('click', close);
     return function(){ document.removeEventListener('click', close); };
   }, []);
 
-  return React.createElement('div', { ref:wrapRef, className:'ag-swipe-wrap' },
+  var secondAction = action2 || onDelete;
+  var secondLabel  = action2 ? (action2Label||'Ação') : (deleteLabel||'Excluir');
+  var secondIcon   = action2 ? (action2Icon||'⚡') : '🗑️';
+  var secondColor  = action2 ? (action2Color||'rgba(52,199,89,0.92)') : 'rgba(255,59,48,0.92)';
+  var secondClick  = function(e){ closeSwipe(e); if(action2) action2(); else if(onDelete) onDelete(); };
+
+  return React.createElement('div', { ref:wrapRef, className:'ag-swipe-wrap',
+      style:{ '--sw-reveal': revealW+'px' } },
     React.createElement('div', { className:'ag-swipe-actions' },
-      onEdit && React.createElement('button', { className:'ag-sw-btn edit', onClick:function(e){e.stopPropagation();_sw.current.swiped=false;if(wrapRef.current)wrapRef.current.classList.remove('ag-swiped');onEdit();} },
+      onEdit && React.createElement('button', { className:'ag-sw-btn edit',
+          style:{ minWidth: 65 },
+          onClick:function(e){ closeSwipe(e); onEdit(); } },
         React.createElement('span', { style:{fontSize:16} }, '✏️'),
         'Editar'
       ),
-      onDelete && React.createElement('button', { className:'ag-sw-btn delete', onClick:function(e){e.stopPropagation();_sw.current.swiped=false;if(wrapRef.current)wrapRef.current.classList.remove('ag-swiped');onDelete();} },
-        React.createElement('span', { style:{fontSize:16} }, '🗑️'),
-        deleteLabel||'Excluir'
+      secondAction && React.createElement('button', { className:'ag-sw-btn',
+          style:{ background: secondColor, minWidth: 65 },
+          onClick: secondClick },
+        React.createElement('span', { style:{fontSize:16} }, secondIcon),
+        secondLabel
       )
     ),
     React.createElement('div', {
@@ -20466,6 +20488,7 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
   const [search, setSearch] = useState("");
   const [sortCl, setSortCl] = useState("nome_asc");
   const [loading, setLoading] = useState(false);
+  const [cliSheet, setCliSheet] = useState(null); // Effect 12: cliente selecionado para BottomSheet
 
   var _abrirNovoClienteRef = React.useRef(null);
   _abrirNovoClienteRef.current = function() { setForm({}); setEdit(null); setModal(true); };
@@ -20547,7 +20570,7 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
           onEdit: function(){ setForm(Object.assign({},c)); setEdit(c.id); setModal(true); },
           onDelete: function(){ remove(c.id); }
         }
-        , React.createElement('div', { style: { padding: "13px 0", borderBottom: i < fil.length - 1 ? "1px solid " + C.border : "none" } }
+        , React.createElement('div', { style: { padding: "13px 0", borderBottom: i < fil.length - 1 ? "1px solid " + C.border : "none", cursor: "pointer" }, onClick: function(e){ if(!e.target.closest('a')) setCliSheet(c); } }
           , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 633}}
             , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 634}}
               , React.createElement('div', { style: { fontWeight: 600, fontSize: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 635}}, c.nome)
@@ -20556,24 +20579,36 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
             )
             , score !== null && React.createElement('span', { style: Badge(scoreCor), __self: this, __source: {fileName: _jsxFileName, lineNumber: 639}}, score, "% adimpl." )
           )
-          , React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 641}}, "CPF/CNPJ: " , c.cpf || "--", " · CNH: "   , c.cnh || "--", " " , c.categoria_cnh && "(" + c.categoria_cnh + ")")
-          , React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 642}}, "Tel: " , c.telefone || "--", c.email && " · " + c.email)
-          , c.bloqueado && c.motivo_bloqueio && React.createElement('div', { style: { fontSize: 12, color: C.red, marginTop: 2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 643}}, "Bloqueio: " , c.motivo_bloqueio)
-          , React.createElement('div', { style: { display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 644}}
-            , c.cnh_url && React.createElement('a', { href: c.cnh_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 645}}, "CNH")
-            , c.rg_url && React.createElement('a', { href: c.rg_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 646}}, "RG")
-            , c.comprovante_url && React.createElement('a', { href: c.comprovante_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 647}}, "Comprovante")
-          )
-          , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 10, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch", paddingBottom: 2 } }
-            , React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => verHist(c) }, "Histórico")
-            , React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => { setForm(Object.assign({}, c)); setEdit(c.id); setModal(true); } }, "Editar")
-            , React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => toggleBloquear(c) }, c.bloqueado ? "Desbloquear" : "Bloquear")
-            , React.createElement(HoldDeleteBtn, { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onDelete: () => remove(c.id), label: "✕" })
+          , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, "CPF/CNPJ: " , c.cpf || "--", " · CNH: "   , c.cnh || "--", " " , c.categoria_cnh && "(" + c.categoria_cnh + ")")
+          , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, "Tel: " , c.telefone || "--", c.email && " · " + c.email)
+          , c.bloqueado && c.motivo_bloqueio && React.createElement('div', { style: { fontSize: 12, color: C.red, marginTop: 2 } }, "Bloqueio: " , c.motivo_bloqueio)
+          , React.createElement('div', { style: { display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" } }
+            , c.cnh_url && React.createElement('a', { href: c.cnh_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, onClick: function(e){e.stopPropagation();} }, "CNH")
+            , c.rg_url && React.createElement('a', { href: c.rg_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, onClick: function(e){e.stopPropagation();} }, "RG")
+            , c.comprovante_url && React.createElement('a', { href: c.comprovante_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, onClick: function(e){e.stopPropagation();} }, "Comprovante")
+            , React.createElement('span', { style: { fontSize: 11, color: C.sub, marginLeft: "auto", opacity: 0.5 } }, "··· toque para ações")
           )
         )
         )
       );
       })
+    )
+    , React.createElement(BottomSheet, { open: !!cliSheet, onClose: function(){ setCliSheet(null); }, title: cliSheet ? cliSheet.nome : '' }
+      , cliSheet && React.createElement(React.Fragment, null
+        , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ var c=cliSheet; setCliSheet(null); setTimeout(function(){ verHist(c); },120); } }
+          , React.createElement('span', { className:'ag-sheet-icon' }, '📋'), 'Ver histórico'
+        )
+        , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ var c=cliSheet; setCliSheet(null); setTimeout(function(){ setForm(Object.assign({},c)); setEdit(c.id); setModal(true); },120); } }
+          , React.createElement('span', { className:'ag-sheet-icon' }, '✏️'), 'Editar cliente'
+        )
+        , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ var c=cliSheet; setCliSheet(null); setTimeout(function(){ toggleBloquear(c); },120); } }
+          , React.createElement('span', { className:'ag-sheet-icon' }, cliSheet.bloqueado ? '🔓' : '🔒')
+          , cliSheet.bloqueado ? 'Desbloquear' : 'Bloquear cliente'
+        )
+        , React.createElement('div', { className:'ag-sheet-row danger', onClick:function(){ var id=cliSheet.id; setCliSheet(null); setTimeout(function(){ remove(id); },120); } }
+          , React.createElement('span', { className:'ag-sheet-icon' }, '🗑️'), 'Excluir cliente'
+        )
+      )
     )
     , React.createElement(Modal, { open: modal, onClose: () => setModal(false), title: edit ? "Editar Cliente" : "Novo Cliente", __self: this, __source: {fileName: _jsxFileName, lineNumber: 659}}
       , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 660}}
@@ -21502,7 +21537,13 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         var faturaAEmitir = c.status !== "cancelado" && c.status !== "concluido" && isPendente && c.previsao_pagamento && c.previsao_pagamento >= hoje && c.previsao_pagamento <= _str20 && !(receitas||[]).some(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
         var _cardClass = periodoExpirado ? "ag-expirado" : (contratoVenceHoje||pagAtrasado) ? "ag-urgent" : faturaAEmitir ? "ag-urgent" : "";
 
-        return React.createElement('div', { key: c.id, className: _cardClass, style: Object.assign({}, cardStyle, periodoExpirado ? { cursor: "pointer" } : {}), onClick: periodoExpirado ? function(e){ if(!e.target.closest('select,button,input,a')) renovar(c); } : undefined, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1026}}
+        return React.createElement(SwipeRow, { key: c.id,
+          onEdit: function(){ setForm(Object.assign({}, c)); setEdit(c.id); setModal(true); },
+          action2: (c.status === 'ativo' && !foiRenovado) ? function(){ renovar(c); } : null,
+          action2Label: 'Renovar', action2Icon: '↻',
+          action2Color: 'rgba(52,199,89,0.92)'
+        },
+        React.createElement('div', { className: _cardClass, style: Object.assign({}, cardStyle, periodoExpirado ? { cursor: "pointer" } : {}), onClick: periodoExpirado ? function(e){ if(!e.target.closest('select,button,input,a')) renovar(c); } : undefined }
           /* Linha 1: Cliente em destaque + valor */
           , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 8 } }
             , React.createElement('div', { style: { flex: 1, minWidth: 0 } }
@@ -21682,8 +21723,6 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               }
             }
             , React.createElement('option', { value: "" }, "— Ações —")
-            , React.createElement('option', { value: "editar" }, "✏ Editar")
-            , c.status === "ativo" && !foiRenovado ? React.createElement('option', { value: "renovar" }, "↻ Renovar") : null
             , isPendente ? React.createElement('option', { value: "receber" }, "💰 Receber") : null
             , (isPendente || isParcial) ? React.createElement('option', { value: "receber_parcial" }, "💵 Receber parcial") : null
             , isParcial ? React.createElement('option', { value: "editar_parcial" }, "✏ Editar parcial") : null
@@ -21702,6 +21741,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             , React.createElement('option', { value: "docs" }, "📎 Docs")
             , React.createElement('option', { value: "excluir" }, "✕ Excluir")
           )
+        )
         );
         });
       })()
@@ -25143,7 +25183,11 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           var _recVencida = !_recebida && _dataRec && _dataRec < _hojeRec;
           var _recHoje   = !_recebida && _dataRec === _hojeRec;
           var _recClass  = _recVencida ? "ag-expirado" : _recHoje ? "ag-urgent" : "";
-          return React.createElement('div', { key: r.id, className: _recClass, style: { padding: "12px 0", borderBottom: i < recExibidas.length - 1 ? "1px solid " + C.border : "none" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2217}}
+          return React.createElement(SwipeRow, { key: r.id,
+            onEdit: !r._fromContrato && !isRec ? function(){ openRec(r); } : null,
+            onDelete: !r._fromContrato && !isRec ? function(){ removeReceita(r.id); } : null
+          },
+          React.createElement('div', { className: _recClass, style: { padding: "12px 0", borderBottom: i < recExibidas.length - 1 ? "1px solid " + C.border : "none" } }
             , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2218}}
               , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2219}}
                 , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2220}}
@@ -25198,8 +25242,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 if (r.ref_fatura) { var mE = r.ref_fatura.match(/^fat_(\d+)_/); if (mE) { var ctE = contratos.find(function(c){return String(c.id)===mE[1];}); if (ctE && (ctE.status_pagamento === "pago" || ctE.status_pagamento === "parcial")) { try { var _pRev = ctE.status_pagamento === "parcial" ? { status_pagamento: "pendente", data_pagamento: null, valor_pago: null } : { status_pagamento: "pendente", data_pagamento: null }; await db.patch("contratos", ctE.id, _pRev); setContratos(p => p.map(x => x.id==ctE.id ? Object.assign({},x,_pRev) : x)); } catch(e){ console.warn(e); } } } }
                 toast("Estornado!");
               }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2242}}, "↩ Estornar" )
-              , !r._fromContrato && !isRec && React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => openRec(r), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2247}}, "Editar")
-              , !r._fromContrato && !isRec && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: () => removeReceita(r.id), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2248}}, "✕")
               , r._fromContrato && r.status !== "recebido" && React.createElement('button', { className: bCls(Ghost(C.green)), style: bStyle(Ghost(C.green)), onClick: async () => {
                 var _rCtRec = await window.__agPrompt({ title: "Receber Pagamento", icon: "💰", label1: "Data do recebimento", type1: "date", default1: new Date().toISOString().split("T")[0] });
                 if (!_rCtRec.ok) return;
@@ -25247,6 +25289,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               }}, "↩ Reverter parcial")
               , r._fromContrato && React.createElement('button', { className: bCls(Ghost(C.blue)), style: bStyle(Ghost(C.blue)), onClick: () => setTab("contratos") }, "Ver Contrato")
             )
+          )
           );
         })
       )
@@ -25300,7 +25343,11 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           var _vencida = !_pagoMes && _dataDesp && _dataDesp < _hoje;
           var _venceHoje = !_pagoMes && _dataDesp === _hoje;
           var _despClass = _vencida ? "ag-expirado" : _venceHoje ? "ag-urgent" : "";
-          return React.createElement('div', { key: d.id, className: _despClass, ref: isHighlight ? function(el){ if(el){ el.scrollIntoView({behavior:"smooth",block:"center"}); if(window.__ag_flash_after_nav){ window.__ag_flash_after_nav=false; el.classList.add('ag-flash-nav'); el.addEventListener('animationend',function h(){el.classList.remove('ag-flash-nav');el.removeEventListener('animationend',h);}); } } } : null, style: { padding: "12px 0", borderBottom: i < despExibidas.length - 1 ? "1px solid " + C.border : "none", background: isHighlight ? C.red + "15" : "transparent", borderRadius: isHighlight ? 8 : 0, transition: "background 0.5s" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2284}}
+          return React.createElement(SwipeRow, { key: d.id,
+            onEdit: !isRec && !d._fromManutencao ? function(){ openDesp(d); } : null,
+            onDelete: !isRec && !d._fromManutencao ? function(){ removeDespesa(d.id); } : null
+          },
+          React.createElement('div', { className: _despClass, ref: isHighlight ? function(el){ if(el){ el.scrollIntoView({behavior:"smooth",block:"center"}); if(window.__ag_flash_after_nav){ window.__ag_flash_after_nav=false; el.classList.add('ag-flash-nav'); el.addEventListener('animationend',function h(){el.classList.remove('ag-flash-nav');el.removeEventListener('animationend',h);}); } } } : null, style: { padding: "12px 0", borderBottom: i < despExibidas.length - 1 ? "1px solid " + C.border : "none", background: isHighlight ? C.red + "15" : "transparent", borderRadius: isHighlight ? 8 : 0, transition: "background 0.5s" } }
             , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2285}}
               , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2286}}
                 , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2287}}
@@ -25385,9 +25432,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                   toast("↩ Estornado!");
                 } catch(e) { toast("❌ Erro: " + (e.message || e)); }
               }}, "↩ Estornar" )
-              , !isRec && !d._fromManutencao && React.createElement('button', { className: bCls(Ghost()), style: bStyle(Ghost()), onClick: () => openDesp(d) }, "Editar")
-              , !isRec && !d._fromManutencao && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: () => removeDespesa(d.id) }, "✕")
             )
+          )
           );
         })
       )

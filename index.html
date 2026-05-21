@@ -2006,12 +2006,13 @@ input,select,textarea{transition:border-color .15s,box-shadow .15s;}
    EFFECT 10 · SWIPE ROW (swipe-to-reveal actions)
    ══════════════════════════════════════════════════ */
 .ag-swipe-wrap{position:relative;overflow:hidden;}
+/* Ações DIREITA (swipe esquerda → Excluir) */
 .ag-swipe-actions{
   position:absolute;right:0;top:0;bottom:0;
   display:flex;align-items:stretch;z-index:0;
-  border-radius:0 12px 12px 0;overflow:hidden;
+  overflow:hidden;
   opacity:0;pointer-events:none;
-  transition:opacity 0.25s ease;
+  transition:opacity 0.2s ease;
 }
 .ag-swipe-wrap.ag-swiped .ag-swipe-actions,
 .ag-swipe-wrap.ag-dragging .ag-swipe-actions{
@@ -2019,30 +2020,31 @@ input,select,textarea{transition:border-color .15s,box-shadow .15s;}
 }
 .ag-sw-btn{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
-  gap:3px;padding:0 20px;cursor:pointer;
+  gap:3px;padding:0 16px;cursor:pointer;
   font-size:10px;font-weight:700;letter-spacing:0.03em;color:#fff;
   border:none;font-family:inherit;
   transition:filter 0.15s ease;
 }
 .ag-sw-btn:active{filter:brightness(0.88);}
-.ag-sw-btn.edit{background:rgba(0,122,255,0.92);}
-.ag-sw-btn.delete{background:rgba(255,59,48,0.92);}
 .ag-sw-inner{
   position:relative;z-index:1;
   background:var(--c-card,#fff);
-  transition:transform 0.38s cubic-bezier(0.34,1.10,0.64,1);
+  transition:transform 0.32s cubic-bezier(0.25,1,0.5,1);
   touch-action:pan-y;
+  will-change:transform;
 }
-.ag-swipe-wrap.ag-swiped .ag-sw-inner{transform:translateX(calc(-1 * var(--sw-reveal, 130px)));}
-.ag-swipe-wrap.ag-swiped-r .ag-sw-inner{transform:translateX(var(--sw-reveal-r, 80px));}
+/* snap esquerda (swipe ←) revela Excluir à direita */
+.ag-swipe-wrap.ag-swiped .ag-sw-inner{transform:translateX(calc(-1 * var(--sw-reveal, 75px)));}
+/* snap direita (swipe →) revela Baixar+Editar à esquerda */
+.ag-swipe-wrap.ag-swiped-r .ag-sw-inner{transform:translateX(var(--sw-reveal-r, 144px));}
 
-/* Ações do lado esquerdo (swipe direita) */
+/* Ações ESQUERDA (swipe direita → Baixar, Editar) */
 .ag-swipe-actions-r{
   position:absolute;left:0;top:0;bottom:0;
   display:flex;align-items:stretch;z-index:0;
-  border-radius:12px 0 0 12px;overflow:hidden;
+  overflow:hidden;
   opacity:0;pointer-events:none;
-  transition:opacity 0.25s ease;
+  transition:opacity 0.2s ease;
 }
 .ag-swipe-wrap.ag-swiped-r .ag-swipe-actions-r,
 .ag-swipe-wrap.ag-dragging .ag-swipe-actions-r{
@@ -16268,101 +16270,105 @@ function BottomSheet({ open, onClose, title, children }) {
 }
 
 /* ── EFFECT 10 · SwipeRow ── */
-function SwipeRow({ children, onEdit, onDelete, deleteLabel, action2, action2Label, action2Icon, action2Color, wrapStyle, onRight, rightLabel, rightIcon, rightColor }) {
+/* Swipe ESQUERDA → revela ações direita (Excluir)
+   Swipe DIREITA  → revela ações esquerda (Baixar, Editar) */
+function SwipeRow({ children, onEdit, onDelete, onBaixar, baixarLabel, deleteLabel, action2, action2Label, action2Icon, action2Color, wrapStyle, onRight, rightLabel, rightIcon, rightColor }) {
   var wrapRef = React.useRef(null);
-  var _sw = React.useRef({ on:false, sx:0, sy:0, dx:0, swipedL:false, swipedR:false, moved:false });
-  var actCount = (onEdit?1:0) + (onDelete||action2?1:0);
-  var revealL = actCount * 65;
-  var revealR = onRight ? 80 : 0;
+  var _sw = React.useRef({ on:false, sx:0, sy:0, dx:0, dir:null, moved:false });
+
+  /* Lado esquerdo (revelar com swipe direita): Baixar + Editar */
+  var leftActions = [];
+  if(onBaixar) leftActions.push({ label: baixarLabel||'Baixar', icon:'💸', color:'rgba(255,149,0,0.92)', fn: onBaixar });
+  if(onEdit)   leftActions.push({ label:'Editar', icon:'✏️', color:'rgba(0,122,255,0.92)', fn: onEdit });
+  var revealL = leftActions.length * 72;
+
+  /* Lado direito (revelar com swipe esquerda): Excluir */
+  var rightActionFn = action2 || onDelete;
+  var rightActionLabel = action2 ? (action2Label||'Ação') : (deleteLabel||'Excluir');
+  var rightActionIcon  = action2 ? (action2Icon||'⚡') : '🗑️';
+  var rightActionColor = action2 ? (action2Color||'rgba(52,199,89,0.92)') : 'rgba(255,59,48,0.92)';
+  var revealR = rightActionFn ? 75 : 0;
 
   function getClient(e){ return e.touches ? { x:e.touches[0].clientX, y:e.touches[0].clientY } : { x:e.clientX, y:e.clientY }; }
+  function getInner(){ return wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner'); }
 
   function swStart(e) {
     var c = getClient(e);
-    _sw.current = { on:true, sx:c.x, sy:c.y, dx:0, swipedL:_sw.current.swipedL, swipedR:_sw.current.swipedR, moved:false };
-    var inner = wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner');
-    if(inner) inner.style.transition = 'none';
+    _sw.current = { on:true, sx:c.x, sy:c.y, dx:0, dir:null, moved:false };
+    var inner = getInner(); if(inner) inner.style.transition = 'none';
   }
   function swMove(e) {
-    if(!_sw.current.on) return;
+    var sw = _sw.current; if(!sw.on) return;
     var c = getClient(e);
-    var dx = c.x - _sw.current.sx;
-    var dy = Math.abs(c.y - _sw.current.sy);
-    if(!_sw.current.moved && dy > 10) { _sw.current.on=false; return; }
-    _sw.current.moved = true;
+    var dx = c.x - sw.sx;
+    var dy = Math.abs(c.y - sw.sy);
+    if(!sw.moved && dy > Math.abs(dx) && dy > 6) { sw.on=false; return; }
+    sw.moved = true;
+    if(!sw.dir) sw.dir = dx > 0 ? 'R' : 'L';
+    var cur = 0;
+    if(sw.dir === 'R' && revealL > 0) cur = Math.min(revealL, Math.max(0, dx));
+    if(sw.dir === 'L' && revealR > 0) cur = Math.max(-revealR, Math.min(0, dx));
+    sw.dx = cur;
     if(wrapRef.current) wrapRef.current.classList.add('ag-dragging');
-    var cur;
-    if(_sw.current.swipedL) { cur = Math.max(-revealL, Math.min(0, dx - revealL)); }
-    else if(_sw.current.swipedR) { cur = Math.max(0, Math.min(revealR, dx + revealR)); }
-    else if(dx < 0) { cur = Math.max(-revealL, dx); }
-    else { cur = onRight ? Math.min(revealR, dx) : 0; }
-    _sw.current.dx = cur;
-    var inner = wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner');
-    if(inner) inner.style.transform = 'translateX('+cur+'px)';
+    var inner = getInner(); if(inner) inner.style.transform = 'translateX('+cur+'px)';
   }
   function swEnd() {
-    if(!_sw.current.on) return;
-    _sw.current.on = false;
+    var sw = _sw.current; if(!sw.on) return;
+    sw.on = false;
     if(wrapRef.current) wrapRef.current.classList.remove('ag-dragging');
-    var inner = wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner');
+    var dx = sw.dx;
+    var snapR = sw.dir === 'R' && dx > revealL * 0.4;
+    var snapL = sw.dir === 'L' && dx < -(revealR * 0.4);
+    var inner = getInner();
     if(inner) { inner.style.transition = ''; inner.style.transform = ''; }
-    var dx = _sw.current.dx;
-    var snapL = dx < -(revealL * 0.42);
-    var snapR = onRight && dx > (revealR * 0.42);
-    _sw.current.swipedL = snapL;
-    _sw.current.swipedR = snapR && !snapL;
     if(wrapRef.current) {
-      wrapRef.current.classList.toggle('ag-swiped', snapL);
-      wrapRef.current.classList.toggle('ag-swiped-r', snapR && !snapL);
+      wrapRef.current.classList.toggle('ag-swiped-r', snapR);
+      wrapRef.current.classList.toggle('ag-swiped',   snapL);
     }
-    _sw.current.moved = false;
+    sw.moved = false; sw.dir = null;
   }
 
   function closeSwipe(e) {
     if(e) e.stopPropagation();
-    _sw.current.swipedL = false; _sw.current.swipedR = false;
     if(wrapRef.current) wrapRef.current.classList.remove('ag-swiped','ag-swiped-r','ag-dragging');
-    var inner = wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner');
-    if(inner) { inner.style.transition=''; inner.style.transform=''; }
+    var inner = getInner(); if(inner) { inner.style.transition=''; inner.style.transform=''; }
   }
 
   React.useEffect(function(){
     function close(e){ if(wrapRef.current && !wrapRef.current.contains(e.target)) closeSwipe(null); }
-    document.addEventListener('click', close);
-    return function(){ document.removeEventListener('click', close); };
+    document.addEventListener('touchstart', close, { passive:true });
+    return function(){ document.removeEventListener('touchstart', close); };
   }, []);
 
-  var secondAction = action2 || onDelete;
-  var secondLabel  = action2 ? (action2Label||'Ação') : (deleteLabel||'Excluir');
-  var secondIcon   = action2 ? (action2Icon||'⚡') : '🗑️';
-  var secondColor  = action2 ? (action2Color||'rgba(52,199,89,0.92)') : 'rgba(255,59,48,0.92)';
-  var secondClick  = function(e){ closeSwipe(e); if(action2) action2(); else if(onDelete) onDelete(); };
-
   return React.createElement('div', { ref:wrapRef, className:'ag-swipe-wrap',
-      style: Object.assign({ '--sw-reveal': revealL+'px', '--sw-reveal-r': revealR+'px' }, wrapStyle||{}) },
-    React.createElement('div', { className:'ag-swipe-actions' },
-      onEdit && React.createElement('button', { className:'ag-sw-btn edit', style:{ minWidth:65 },
-          onClick:function(e){ closeSwipe(e); onEdit(); } },
-        React.createElement('span', { style:{fontSize:16} }, '\u270F\uFE0F'), 'Editar'
-      ),
-      secondAction && React.createElement('button', { className:'ag-sw-btn',
-          style:{ background:secondColor, minWidth:65 }, onClick:secondClick },
-        React.createElement('span', { style:{fontSize:16} }, secondIcon), secondLabel
-      )
+      style: Object.assign({ '--sw-reveal': revealR+'px', '--sw-reveal-r': revealL+'px' }, wrapStyle||{}) },
+
+    /* Ações ESQUERDA (swipe direita → Baixar, Editar) */
+    leftActions.length > 0 && React.createElement('div', { className:'ag-swipe-actions-r', style:{ width: revealL } },
+      leftActions.map(function(a, i){
+        return React.createElement('button', { key:i, className:'ag-sw-btn',
+            style:{ background:a.color, flex:1 },
+            onClick:function(e){ closeSwipe(e); a.fn(); } },
+          React.createElement('span', { style:{fontSize:18} }, a.icon), a.label
+        );
+      })
     ),
-    onRight && React.createElement('div', { className:'ag-swipe-actions-r' },
+
+    /* Ações DIREITA (swipe esquerda → Excluir) */
+    rightActionFn && React.createElement('div', { className:'ag-swipe-actions', style:{ width: revealR } },
       React.createElement('button', { className:'ag-sw-btn',
-          style:{ background: rightColor||'rgba(52,199,89,0.92)', minWidth:revealR, flexDirection:'column' },
-          onClick:function(e){ closeSwipe(e); onRight(); } },
-        React.createElement('span', { style:{fontSize:20} }, rightIcon||'\u2705'),
-        React.createElement('span', { style:{fontSize:9,marginTop:2,fontWeight:700,textAlign:'center',maxWidth:72,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'} }, rightLabel||'Confirmar')
+          style:{ background:rightActionColor, flex:1 },
+          onClick:function(e){ closeSwipe(e); rightActionFn(); } },
+        React.createElement('span', { style:{fontSize:18} }, rightActionIcon), rightActionLabel
       )
     ),
+
     React.createElement('div', {
       className:'ag-sw-inner',
       onMouseDown:swStart, onTouchStart:swStart,
       onMouseMove:swMove,  onTouchMove:swMove,
-      onMouseUp:swEnd,     onTouchEnd:swEnd
+      onMouseUp:swEnd,     onTouchEnd:swEnd,
+      onMouseLeave:swEnd
     }, children)
   );
 }
@@ -25340,9 +25346,43 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           var _recVencida = !_recebida && _dataRec && _dataRec < _hojeRec;
           var _recHoje   = !_recebida && _dataRec === _hojeRec;
           var _recClass  = _recVencida ? "ag-expirado" : _recHoje ? "ag-urgent" : "";
+
+          var _fnBaixarRec = (!r._fromContrato && !_recebida && !isRec) ? async function() {
+            var _rRec = await window.__agPrompt({ title: "Baixar Receita", icon: "✅", label1: "Data do recebimento", type1: "date", default1: new Date().toISOString().split("T")[0] });
+            if (!_rRec.ok) return;
+            var dt = _rRec.v1;
+            var upd = await db.patch("receitas", r.id, { status: "recebido", data_pagamento: dt });
+            setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
+            if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){ console.warn(e); } } } }
+            toast("Receita baixada!");
+          } : (r._fromContrato && !_recebida) ? async function() {
+            var _rCtRec = await window.__agPrompt({ title: "Receber Pagamento", icon: "💰", label1: "Data do recebimento", type1: "date", default1: new Date().toISOString().split("T")[0] });
+            if (!_rCtRec.ok) return;
+            var dt = _rCtRec.v1;
+            await db.patch("contratos", r.contrato_id, { status_pagamento: "pago", data_pagamento: dt });
+            setContratos(p => p.map(x => x.id == r.contrato_id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dt }) : x));
+            var mes = (r.data||"").slice(0,7); var refKey = "fat_" + r.contrato_id + "_" + mes;
+            var recEx = (receitas||[]).find(function(rx){ return rx.ref_fatura === refKey; });
+            if (recEx) { var upd = await db.patch("receitas", recEx.id, { status: "recebido", data_pagamento: dt }); setReceitas(p => p.map(x => x.id===recEx.id ? Object.assign({},x,upd) : x)); }
+            else { var ct = contratos.find(function(cx){return cx.id==r.contrato_id;}); if (ct) { var nova = await db.post("receitas", { descricao: "Comp. "+fmtComp(mes)+" | "+r.descricao, valor: parseFloat(r.valor||0).toFixed(2), data: dt, data_pagamento: dt, data_vencimento: r.data, status: "recebido", tipo: "locacao", cliente_id: ct.cliente_id, ref_fatura: refKey }); setReceitas(p => p.concat([nova])); } }
+            toast("✅ Recebido!");
+          } : null;
+
+          var _fnEstornarRec = _recebida && !r._fromContrato && !isRec ? async function() {
+            var _rEst = await window.__agConfirm({ title: "Estornar Recebimento", icon: "↩️", message: "Estornar recebimento de \"" + (r.descricao||"receita") + "\"?", okLabel: "Estornar", danger: true });
+            if (!_rEst.ok) return;
+            var upd = await db.patch("receitas", r.id, { status: "previsto", data_pagamento: null });
+            setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
+            if (r.ref_fatura) { var mE = r.ref_fatura.match(/^fat_(\d+)_/); if (mE) { var ctE = contratos.find(function(c){return String(c.id)===mE[1];}); if (ctE && (ctE.status_pagamento === "pago" || ctE.status_pagamento === "parcial")) { try { var _pRev = ctE.status_pagamento === "parcial" ? { status_pagamento: "pendente", data_pagamento: null, valor_pago: null } : { status_pagamento: "pendente", data_pagamento: null }; await db.patch("contratos", ctE.id, _pRev); setContratos(p => p.map(x => x.id==ctE.id ? Object.assign({},x,_pRev) : x)); } catch(e){ console.warn(e); } } } }
+            toast("Estornado!");
+          } : null;
+
           return React.createElement(SwipeRow, { key: r.id,
+            onBaixar: _fnBaixarRec,
+            baixarLabel: r._fromContrato ? "Receber" : "Baixar",
             onEdit: !r._fromContrato && !isRec ? function(){ openRec(r); } : null,
-            onDelete: !r._fromContrato && !isRec ? function(){ removeReceita(r.id); } : null
+            onDelete: (!r._fromContrato && !isRec) ? function(){ removeReceita(r.id); } : _fnEstornarRec,
+            deleteLabel: _recebida ? "Estornar" : "Excluir"
           },
           React.createElement('div', { className: _recClass, style: { padding: "12px 0", borderBottom: i < recExibidas.length - 1 ? "1px solid " + C.border : "none" } }
             , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2218}}
@@ -25379,72 +25419,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                   })()
                 , React.createElement('span', { style: Badge(r.status === "recebido" ? C.green : r.status === "parcial" ? C.orange : r.status === "isento" ? C.gray : r.status === "emitida" ? C.blue : C.sub), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2231}}, r.status === "recebido" ? "recebido" : r.status === "parcial" ? "parcial" : r.status === "isento" ? "isento" : r.status === "emitida" ? "emitida" : "previsto")
               )
-            )
-            , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 8, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2234}}
-              , !r._fromContrato && r.status !== "recebido" && !isRec && React.createElement('button', { className: bCls(Ghost(C.green)), style: bStyle(Ghost(C.green)), onClick: async () => {
-                var _rRec = await window.__agPrompt({ title: "Baixar Receita", icon: "✅", label1: "Data do recebimento", type1: "date", default1: new Date().toISOString().split("T")[0] });
-                if (!_rRec.ok) return;
-                var dt = _rRec.v1;
-                var upd = await db.patch("receitas", r.id, { status: "recebido", data_pagamento: dt });
-                setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
-                // Sincronizar contrato se for ref_fatura
-                if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){ console.warn(e); } } } }
-                toast("Receita baixada!");
-              }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2235}}, "✅ Baixar" )
-              , !r._fromContrato && r.status === "recebido" && !isRec && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
-                var _rEst = await window.__agConfirm({ title: "Estornar Recebimento", icon: "↩️", message: "Estornar recebimento de \"" + (r.descricao||"receita") + "\"?", okLabel: "Estornar", danger: true });
-                if (!_rEst.ok) return;
-                var upd = await db.patch("receitas", r.id, { status: "previsto", data_pagamento: null });
-                setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
-                if (r.ref_fatura) { var mE = r.ref_fatura.match(/^fat_(\d+)_/); if (mE) { var ctE = contratos.find(function(c){return String(c.id)===mE[1];}); if (ctE && (ctE.status_pagamento === "pago" || ctE.status_pagamento === "parcial")) { try { var _pRev = ctE.status_pagamento === "parcial" ? { status_pagamento: "pendente", data_pagamento: null, valor_pago: null } : { status_pagamento: "pendente", data_pagamento: null }; await db.patch("contratos", ctE.id, _pRev); setContratos(p => p.map(x => x.id==ctE.id ? Object.assign({},x,_pRev) : x)); } catch(e){ console.warn(e); } } } }
-                toast("Estornado!");
-              }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2242}}, "↩ Estornar" )
-              , r._fromContrato && r.status !== "recebido" && React.createElement('button', { className: bCls(Ghost(C.green)), style: bStyle(Ghost(C.green)), onClick: async () => {
-                var _rCtRec = await window.__agPrompt({ title: "Receber Pagamento", icon: "💰", label1: "Data do recebimento", type1: "date", default1: new Date().toISOString().split("T")[0] });
-                if (!_rCtRec.ok) return;
-                var dt = _rCtRec.v1;
-                await db.patch("contratos", r.contrato_id, { status_pagamento: "pago", data_pagamento: dt });
-                setContratos(p => p.map(x => x.id == r.contrato_id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dt }) : x));
-                var mes = (r.data||"").slice(0,7); var refKey = "fat_" + r.contrato_id + "_" + mes;
-                var recEx = (receitas||[]).find(function(rx){ return rx.ref_fatura === refKey; });
-                if (recEx) { var upd = await db.patch("receitas", recEx.id, { status: "recebido", data_pagamento: dt }); setReceitas(p => p.map(x => x.id===recEx.id ? Object.assign({},x,upd) : x)); }
-                else { var ct = contratos.find(function(cx){return cx.id==r.contrato_id;}); if (ct) { var nova = await db.post("receitas", { descricao: "Comp. "+fmtComp(mes)+" | "+r.descricao, valor: parseFloat(r.valor||0).toFixed(2), data: dt, data_pagamento: dt, data_vencimento: r.data, status: "recebido", tipo: "locacao", cliente_id: ct.cliente_id, ref_fatura: refKey }); setReceitas(p => p.concat([nova])); } }
-                toast("✅ Recebido!");
-              }}, "💰 Receber")
-              , r._fromContrato && r.status !== "recebido" && React.createElement('button', { className: bCls(Ghost(C.orange)), style: bStyle(Ghost(C.orange)), onClick: async () => {
-                var _rParcFin = await window.__agPrompt2({ title: "Recebimento Parcial", icon: "💵", label1: "Valor recebido (R$)", type1: "text", label2: "Data do recebimento", type2: "date", default2: new Date().toISOString().split("T")[0] });
-                if (!_rParcFin.ok) return;
-                var valParcial = parseFloat(_rParcFin.v1.replace(",","."));
-                if (!valParcial || valParcial <= 0) return;
-                var dt = _rParcFin.v2;
-                await db.patch("contratos", r.contrato_id, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dt });
-                setContratos(p => p.map(x => x.id == r.contrato_id ? Object.assign({}, x, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dt }) : x));
-                var mes = (r.data||"").slice(0,7); var refKey = "fat_" + r.contrato_id + "_" + mes;
-                var recEx2 = (receitas||[]).find(function(rx){ return rx.ref_fatura === refKey; });
-                if (recEx2) { var upd2 = await db.patch("receitas", recEx2.id, { status: "parcial", data_pagamento: dt }); setReceitas(p => p.map(x => x.id===recEx2.id ? Object.assign({},x,upd2) : x)); }
-                toast("💵 Parcial de " + fmtBRL(valParcial) + " registrado!");
-              }}, "💵 Parcial")
-              , r._fromContrato && r.status === "recebido" && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
-                var _rEstCt = await window.__agConfirm({ title: "Estornar Pagamento", icon: "↩️", message: "Estornar pagamento registrado?", okLabel: "Estornar", danger: true });
-                if (!_rEstCt.ok) return;
-                await db.patch("contratos", r.contrato_id, { status_pagamento: "pendente", data_pagamento: null });
-                setContratos(p => p.map(x => x.id == r.contrato_id ? Object.assign({}, x, { status_pagamento: "pendente", data_pagamento: null }) : x));
-                var mes = (r.data||"").slice(0,7); var refKey = "fat_" + r.contrato_id + "_" + mes;
-                var recEx = (receitas||[]).find(function(rx){ return rx.ref_fatura === refKey; });
-                if (recEx) { var upd2 = await db.patch("receitas", recEx.id, { status: "previsto", data_pagamento: null }); setReceitas(p => p.map(x => x.id===recEx.id ? Object.assign({},x,upd2) : x)); }
-                toast("↩ Estornado!");
-              }}, "↩ Estornar")
-              , r._fromContrato && r.status === "parcial" && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
-                var _rRevParcFin = await window.__agConfirm({ title: "Reverter Parcial", icon: "↩️", message: "Reverter recebimento parcial para 'a receber'?", okLabel: "Reverter", danger: true });
-                if (!_rRevParcFin.ok) return;
-                await db.patch("contratos", r.contrato_id, { status_pagamento: "pendente", valor_pago: null, data_pagamento: null });
-                setContratos(p => p.map(x => x.id == r.contrato_id ? Object.assign({}, x, { status_pagamento: "pendente", valor_pago: null, data_pagamento: null }) : x));
-                var mes = (r.data||"").slice(0,7); var refKey = "fat_" + r.contrato_id + "_" + mes;
-                var recExP = (receitas||[]).find(function(rx){ return rx.ref_fatura === refKey && rx.status === "parcial"; });
-                if (recExP) { var novoStP = recExP.numero_fatura ? "emitida" : "prevista"; var updP = await db.patch("receitas", recExP.id, { status: novoStP, data_pagamento: null }); setReceitas(p => p.map(x => x.id===recExP.id ? Object.assign({},x,updP) : x)); }
-                toast("↩ Parcial revertido!");
-              }}, "↩ Reverter parcial")
-              , r._fromContrato && React.createElement('button', { className: bCls(Ghost(C.blue)), style: bStyle(Ghost(C.blue)), onClick: () => setTab("contratos") }, "Ver Contrato")
             )
           )
           );
@@ -25500,15 +25474,95 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           var _vencida = !_pagoMes && _dataDesp && _dataDesp < _hoje;
           var _venceHoje = !_pagoMes && _dataDesp === _hoje;
           var _despClass = _vencida ? "ag-expirado" : _venceHoje ? "ag-urgent" : "";
+          /* ── número da parcela para recorrentes com prazo ── */
+          var _parcelaLabel = (function(){
+            if (!d.recorrente || !d.prazo_recorrencia) return null;
+            var _origemMes = (d.data || "").slice(0,7);
+            var _ini = new Date(_origemMes + "-01");
+            var _fil = new Date(filtroMes + "-01");
+            var _n = (_fil.getFullYear() - _ini.getFullYear()) * 12 + (_fil.getMonth() - _ini.getMonth()) + 1;
+            return _n + "/" + d.prazo_recorrencia;
+          })();
+
+          /* ── função Baixar (para swipe e botão) ── */
+          var _fnBaixarDesp = _pagoMes ? null : async function() {
+            var _dia = (d.data || "").slice(8, 10) || "01";
+            var _dtDef = d.recorrente ? (filtroMes + "-" + _dia) : (d.data || new Date().toISOString().split("T")[0]);
+            var _rDesp = await window.__agPrompt({ title: "Baixar Despesa", icon: "💸", label1: "Data do pagamento", type1: "date", default1: _dtDef });
+            if (!_rDesp.ok) return;
+            var dt = _rDesp.v1;
+            try {
+              if (d._fromManutencao) {
+                var mn = d._mn;
+                var veM2 = (veiculos||[]).find(function(v){ return v.id == mn.veiculo_id; });
+                var novaD = await db.post("despesas", {
+                  descricao: "Manutenção: " + mn.tipo + (veM2 ? " - " + veM2.placa : ""),
+                  categoria: "Manutenção", veiculo_id: mn.veiculo_id || null,
+                  valor: mn.custo, data: mn.data_previsao_pagamento || mn.data_entrada || dt,
+                  status: "pago", data_pagamento: dt,
+                  observacoes: (mn.descricao||"") + (mn.oficina ? " | Oficina: " + mn.oficina : ""),
+                  manutencao_id: mn.id
+                });
+                setDespesas(p => [novaD].concat(p));
+                var umM = await db.patch("manutencao", mn.id, { status_financeiro: "pago", data_pagamento: dt });
+                setManutencoes(p => p.map(x => x.id==mn.id ? Object.assign({},x,umM) : x));
+                toast("✅ Manutenção baixada!");
+              } else if (d.recorrente) {
+                var _diaRec = (d.data || "").slice(8,10) || "01";
+                var _origemId = d.recorrencia_origem_id || d.id;
+                var _jaExisteRec = despesas.find(function(x){ return x.recorrencia_origem_id == _origemId && (x.data||"").slice(0,7) === filtroMes; });
+                if (_jaExisteRec) {
+                  var upd = await db.patch("despesas", _jaExisteRec.id, { status: "pago", data_pagamento: dt });
+                  setDespesas(p => p.map(x => x.id === _jaExisteRec.id ? Object.assign({}, x, upd) : x));
+                } else {
+                  var _paiId = d.recorrencia_origem_id || d.id;
+                  var novaInst = await db.post("despesas", {
+                    descricao: d.descricao, categoria: d.categoria, veiculo_id: d.veiculo_id || null,
+                    valor: d.valor, data: filtroMes + "-" + _diaRec,
+                    status: "pago", data_pagamento: dt,
+                    recorrente: false, recorrencia_origem_id: _paiId,
+                    observacoes: d.observacoes || null
+                  });
+                  setDespesas(p => [novaInst].concat(p));
+                }
+                toast("✅ Despesa baixada!");
+              } else {
+                var upd = await db.patch("despesas", d.id, { status: "pago", data_pagamento: dt });
+                setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
+                if (d.manutencao_id) { try { var um = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pago", data_pagamento: dt }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um) : x)); } catch(e){ console.warn(e); } }
+                toast("✅ Despesa baixada!");
+              }
+            } catch(e) { toast("❌ Erro ao baixar: " + (e.message || e)); }
+          };
+
+          var _fnEstornarDesp = _pagoMes && !d._fromManutencao ? async function() {
+            var _rEstD = await window.__agConfirm({ title: "Estornar Despesa", icon: "↩️", message: "Estornar pagamento de \"" + (d.descricao||d.categoria||"despesa") + "\"?", okLabel: "Estornar", danger: true });
+            if (!_rEstD.ok) return;
+            try {
+              if (d.recorrencia_origem_id) {
+                await db.del("despesas", d.id);
+                setDespesas(p => p.filter(x => x.id !== d.id));
+              } else {
+                var upd = await db.patch("despesas", d.id, { status: "previsto", data_pagamento: null });
+                setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
+                if (d.manutencao_id) { try { var um2 = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pendente", data_pagamento: null }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um2) : x)); } catch(e){ console.warn(e); } }
+              }
+              toast("↩ Estornado!");
+            } catch(e) { toast("❌ Erro: " + (e.message || e)); }
+          } : null;
+
           return React.createElement(SwipeRow, { key: d.id,
+            onBaixar: _fnBaixarDesp,
+            baixarLabel: "Baixar",
             onEdit: !isRec && !d._fromManutencao ? function(){ openDesp(d); } : null,
-            onDelete: !isRec && !d._fromManutencao ? function(){ removeDespesa(d.id); } : null
+            onDelete: !isRec && !d._fromManutencao ? function(){ removeDespesa(d.id); } : _fnEstornarDesp,
+            deleteLabel: _pagoMes ? "Estornar" : "Excluir"
           },
           React.createElement('div', { className: _despClass, ref: isHighlight ? function(el){ if(el){ el.scrollIntoView({behavior:"smooth",block:"center"}); if(window.__ag_flash_after_nav){ window.__ag_flash_after_nav=false; el.classList.add('ag-flash-nav'); el.addEventListener('animationend',function h(){el.classList.remove('ag-flash-nav');el.removeEventListener('animationend',h);}); } } } : null, style: { padding: "12px 0", borderBottom: i < despExibidas.length - 1 ? "1px solid " + C.border : "none", background: isHighlight ? C.red + "15" : "transparent", borderRadius: isHighlight ? 8 : 0, transition: "background 0.5s" } }
             , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2285}}
               , React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 2286}}
                 , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2287}}
-                  , React.createElement('div', { style: { fontWeight: 600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2288}}, d.descricao)
+                  , React.createElement('div', { style: { fontWeight: 600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2288}}, d.descricao, _parcelaLabel && React.createElement('span', { style: { fontWeight: 400, color: C.sub, fontSize: 13 } }, " — " + _parcelaLabel))
                   , d.recorrente && React.createElement('span', { style: { fontSize: 10, background: C.orange + "20", color: C.orange, borderRadius: 6, padding: "2px 6px", fontWeight: 700 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2289}}, "🔁", d.prazo_recorrencia ? " " + d.prazo_recorrencia + "m" : "")
                   , isRec && React.createElement('span', { style: { fontSize: 10, background: C.purple + "20", color: C.purple, borderRadius: 6, padding: "2px 6px", fontWeight: 700 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2290}}, "recorrente")
                   , d.manutencao_id && React.createElement('span', { style: { fontSize: 10, background: C.purple + "20", color: C.purple, borderRadius: 6, padding: "2px 6px", fontWeight: 700 } }, "🔧 manutenção")
@@ -25521,74 +25575,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 , React.createElement('div', { style: { fontWeight: 800, color: _corDesp }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2298}}, fmtBRL(d.valor))
                 , React.createElement('span', { style: Badge(_corDesp), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2299}}, _pagoMes ? "pago" : "previsto")
               )
-            )
-            , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 8, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch" } }
-              , !_pagoMes && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: async () => {
-                var _dia = (d.data || "").slice(8, 10) || "01";
-                var _dtDef = d.recorrente ? (filtroMes + "-" + _dia) : (d.data || new Date().toISOString().split("T")[0]);
-                var _rDesp = await window.__agPrompt({ title: "Baixar Despesa", icon: "💸", label1: "Data do pagamento", type1: "date", default1: _dtDef });
-                if (!_rDesp.ok) return;
-                var dt = _rDesp.v1;
-                try {
-                  if (d._fromManutencao) {
-                    var mn = d._mn;
-                    var veM2 = (veiculos||[]).find(function(v){ return v.id == mn.veiculo_id; });
-                    var novaD = await db.post("despesas", {
-                      descricao: "Manutenção: " + mn.tipo + (veM2 ? " - " + veM2.placa : ""),
-                      categoria: "Manutenção", veiculo_id: mn.veiculo_id || null,
-                      valor: mn.custo, data: mn.data_previsao_pagamento || mn.data_entrada || dt,
-                      status: "pago", data_pagamento: dt,
-                      observacoes: (mn.descricao||"") + (mn.oficina ? " | Oficina: " + mn.oficina : ""),
-                      manutencao_id: mn.id
-                    });
-                    setDespesas(p => [novaD].concat(p));
-                    var umM = await db.patch("manutencao", mn.id, { status_financeiro: "pago", data_pagamento: dt });
-                    setManutencoes(p => p.map(x => x.id==mn.id ? Object.assign({},x,umM) : x));
-                    toast("✅ Manutenção baixada!");
-                  } else if (d.recorrente) {
-                    // Qualquer despesa recorrente: sempre cria instância filha para isolar o mês
-                    var _diaRec = (d.data || "").slice(8,10) || "01";
-                    var _origemId = d.recorrencia_origem_id || d.id;
-                    var _jaExisteRec = despesas.find(function(x){ return x.recorrencia_origem_id == _origemId && (x.data||"").slice(0,7) === filtroMes; });
-                    if (_jaExisteRec) {
-                      var upd = await db.patch("despesas", _jaExisteRec.id, { status: "pago", data_pagamento: dt });
-                      setDespesas(p => p.map(x => x.id === _jaExisteRec.id ? Object.assign({}, x, upd) : x));
-                    } else {
-                      var _paiId = d.recorrencia_origem_id || d.id;
-                      var novaInst = await db.post("despesas", {
-                        descricao: d.descricao, categoria: d.categoria, veiculo_id: d.veiculo_id || null,
-                        valor: d.valor, data: filtroMes + "-" + _diaRec,
-                        status: "pago", data_pagamento: dt,
-                        recorrente: false, recorrencia_origem_id: _paiId,
-                        observacoes: d.observacoes || null
-                      });
-                      setDespesas(p => [novaInst].concat(p));
-                    }
-                    toast("✅ Despesa baixada!");
-                  } else {
-                    var upd = await db.patch("despesas", d.id, { status: "pago", data_pagamento: dt });
-                    setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
-                    if (d.manutencao_id) { try { var um = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pago", data_pagamento: dt }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um) : x)); } catch(e){ console.warn(e); } }
-                    toast("✅ Despesa baixada!");
-                  }
-                } catch(e) { toast("❌ Erro ao baixar: " + (e.message || e)); }
-              }}, "💸 Baixar" )
-              , _pagoMes && !d._fromManutencao && React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: async () => {
-                var _rEstD = await window.__agConfirm({ title: "Estornar Despesa", icon: "↩️", message: "Estornar pagamento de \"" + (d.descricao||d.categoria||"despesa") + "\"?", okLabel: "Estornar", danger: true });
-                if (!_rEstD.ok) return;
-                try {
-                  if (d.recorrencia_origem_id) {
-                    // É instância filha de recorrente: deleta a instância, pai volta a aparecer como previsto
-                    await db.del("despesas", d.id);
-                    setDespesas(p => p.filter(x => x.id !== d.id));
-                  } else {
-                    var upd = await db.patch("despesas", d.id, { status: "previsto", data_pagamento: null });
-                    setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
-                    if (d.manutencao_id) { try { var um2 = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pendente", data_pagamento: null }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um2) : x)); } catch(e){ console.warn(e); } }
-                  }
-                  toast("↩ Estornado!");
-                } catch(e) { toast("❌ Erro: " + (e.message || e)); }
-              }}, "↩ Estornar" )
             )
           )
           );

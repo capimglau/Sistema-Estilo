@@ -156,16 +156,17 @@ input[type=file]{display:none}
 .lg-nav-pill { position: relative; overflow: visible !important; }
 
 #ag-liquid-blob {
-  position: fixed;
-  top: 0;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
   left: 0;
   width: 60px;
   height: 54px;
   border-radius: 27px;
   pointer-events: none;
-  z-index: 101;
+  z-index: 0;          /* botões (position:relative, sem z-index) pintam por cima */
   opacity: 1;
-  will-change: left, width, top;
+  will-change: left, width;
   background:
     radial-gradient(ellipse at 38% 28%, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.22) 38%, transparent 68%),
     radial-gradient(ellipse at 68% 72%, rgba(180,210,255,0.28) 0%, transparent 58%),
@@ -178,9 +179,8 @@ input[type=file]{display:none}
     0 -1px 0 rgba(0,0,0,0.06) inset,
     0 6px 24px rgba(0,80,200,0.10),
     0 2px 8px rgba(255,255,255,0.18);
-  transition: opacity 0.16s ease;
 }
-/* blob-visible obsoleto — blob sempre visível */
+
 
 /* Dark/dim themes: adjust blob tint */
 body.dark #ag-liquid-blob,
@@ -35723,23 +35723,27 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
 </script>
 
 <script>
-/* DOCK BUBBLE v5 — fixed no body, fora do React, igual ao preview JSX */
+/* DOCK BUBBLE v6 — dentro da pill, z-index:0, re-inject no microtask */
 (function () {
-  var blob = null, touching = false, ready = false;
+  var blob     = null;
+  var pill     = null;
+  var touching = false;
+  var savedLeft  = -999;
+  var savedWidth = 60;
+  var pillObs  = null;
 
-  /* ── cria o blob uma única vez no body ── */
-  function createBlob() {
-    if (document.getElementById('ag-liquid-blob')) return;
-    var el = document.createElement('div');
-    el.id = 'ag-liquid-blob';
-    document.body.appendChild(el);
-    blob = el;
+  /* ── seleciona a pill correta ── */
+  function getPill() {
+    var all = document.querySelectorAll('.lg-nav-pill');
+    for (var i = all.length - 1; i >= 0; i--)
+      if (all[i].querySelector('.lg-nav-btn[data-tab-id],.lg-nav-btn[data-subtab-id]'))
+        return all[i];
+    return null;
   }
 
-  /* ── botões de aba reais (main tabs ou sub-tabs) ── */
   function getBtns() {
-    return Array.from(document.querySelectorAll(
-      '.lg-nav-btn[data-tab-id],.lg-nav-btn[data-subtab-id]'));
+    return pill ? Array.from(pill.querySelectorAll(
+      '.lg-nav-btn[data-tab-id],.lg-nav-btn[data-subtab-id]')) : [];
   }
   function getActiveBtn() {
     var btns = getBtns();
@@ -35757,55 +35761,103 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     return best;
   }
 
-  /* ── posiciona com coordenadas de viewport (position:fixed) ── */
+  /* ── posiciona (left relativo à pill) ── */
   function snapTo(btn, animate) {
-    if (!blob || !btn) return;
-    var r = btn.getBoundingClientRect();
+    if (!pill || !blob || !btn) return;
+    var pr = pill.getBoundingClientRect();
+    var br = btn.getBoundingClientRect();
+    var x  = br.left - pr.left;
+    var w  = br.width;
+    savedLeft  = x;
+    savedWidth = w;
     if (!animate) {
       blob.style.transition = 'none';
-      blob.style.left   = r.left + 'px';
-      blob.style.width  = r.width + 'px';
-      blob.style.top    = (r.top + r.height / 2 - 27) + 'px';
-      void blob.offsetWidth;                    /* force reflow */
+      blob.style.left  = x + 'px';
+      blob.style.width = w + 'px';
+      void blob.offsetWidth;               /* force reflow */
     } else {
       blob.style.transition =
         'left .35s cubic-bezier(.34,1.56,.64,1),' +
-        'width .35s cubic-bezier(.34,1.56,.64,1),' +
-        'top .35s cubic-bezier(.34,1.56,.64,1)';
-      blob.style.left   = r.left + 'px';
-      blob.style.width  = r.width + 'px';
-      blob.style.top    = (r.top + r.height / 2 - 27) + 'px';
+        'width .35s cubic-bezier(.34,1.56,.64,1)';
+      blob.style.left  = x + 'px';
+      blob.style.width = w + 'px';
     }
   }
 
-  /* ── MutationObserver: detecta mudança de aba ativa ── */
-  var _obs = new MutationObserver(function (mutations) {
-    if (touching) return;
-    for (var i = 0; i < mutations.length; i++) {
-      if (mutations[i].attributeName === 'class') {
-        snapTo(getActiveBtn(), true);
-        return;
-      }
-    }
+  /* ── watch: classe ativa mudou → move blob ── */
+  var classObs = new MutationObserver(function () {
+    if (!touching) snapTo(getActiveBtn(), true);
   });
-  function watchBtns() {
-    _obs.disconnect();
+  function watchClasses() {
+    classObs.disconnect();
     getBtns().forEach(function (b) {
-      _obs.observe(b, { attributes: true, attributeFilter: ['class'] });
+      classObs.observe(b, { attributes: true, attributeFilter: ['class'] });
     });
   }
 
-  /* ── touch: segue o dedo, solta → volta para ativa ── */
-  function inDock(x, y) {
-    var pill = document.querySelector('.lg-nav-pill');
+  /* ── insere blob na pill; observa remoção para reinserir antes de pintar ── */
+  function attachBlob(p, animate) {
+    if (!blob) {
+      blob = document.createElement('div');
+      blob.id = 'ag-liquid-blob';
+    }
+    /* posiciona com valor salvo ANTES de inserir (evita flash em left:0) */
+    blob.style.transition = 'none';
+    blob.style.left  = savedLeft + 'px';
+    blob.style.width = savedWidth + 'px';
+
+    p.insertBefore(blob, p.firstChild);
+    pill = p;
+
+    /* observa remoção direta: quando React recria os filhos da pill,
+       reinserimos no mesmo microtask — antes do browser pintar */
+    if (pillObs) pillObs.disconnect();
+    pillObs = new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var removed = muts[i].removedNodes;
+        for (var j = 0; j < removed.length; j++) {
+          if (removed[j] === blob) {
+            /* reinsere imediatamente no microtask */
+            var np = getPill();
+            if (np) {
+              blob.style.transition = 'none';
+              blob.style.left  = savedLeft + 'px';
+              blob.style.width = savedWidth + 'px';
+              np.insertBefore(blob, np.firstChild);
+              pill = np;
+              void blob.offsetWidth;
+              /* anima para o botão ativo atual */
+              snapTo(getActiveBtn(), true);
+              watchClasses();
+            }
+            return;
+          }
+        }
+      }
+    });
+    pillObs.observe(p, { childList: true });
+
+    /* posiciona no botão ativo */
+    requestAnimationFrame(function () {
+      var active = getActiveBtn();
+      if (active) {
+        snapTo(active, animate);
+        watchClasses();
+      }
+    });
+  }
+
+  /* ── touch ── */
+  function inPill(x, y) {
     if (!pill) return false;
     var r = pill.getBoundingClientRect();
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
   document.addEventListener('touchstart', function (e) {
-    if (!inDock(e.touches[0].clientX, e.touches[0].clientY)) return;
+    var t = e.touches[0];
+    if (!inPill(t.clientX, t.clientY)) return;
     touching = true;
-    snapTo(nearest(e.touches[0].clientX), false);
+    snapTo(nearest(t.clientX), false);
   }, { passive: true, capture: true });
 
   document.addEventListener('touchmove', function (e) {
@@ -35813,10 +35865,10 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     snapTo(nearest(e.touches[0].clientX), true);
   }, { passive: true, capture: true });
 
-  document.addEventListener('touchend', function (e) {
+  document.addEventListener('touchend', function () {
     if (!touching) return;
     touching = false;
-    setTimeout(function () { snapTo(getActiveBtn(), true); watchBtns(); }, 40);
+    setTimeout(function () { snapTo(getActiveBtn(), true); watchClasses(); }, 40);
   }, { passive: true, capture: true });
 
   document.addEventListener('touchcancel', function () {
@@ -35824,9 +35876,8 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     snapTo(getActiveBtn(), true);
   }, { passive: true, capture: true });
 
-  /* ── desktop hover ── */
+  /* ── desktop ── */
   document.addEventListener('mousemove', function (e) {
-    var pill = document.querySelector('.lg-nav-pill');
     if (!pill) return;
     var r = pill.getBoundingClientRect();
     if (e.clientX >= r.left && e.clientX <= r.right &&
@@ -35836,26 +35887,25 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
       snapTo(getActiveBtn(), true);
   }, { passive: true });
 
-  /* ── boot ── */
-  function boot() {
-    if (!document.querySelector('.lg-nav-btn[data-tab-id],.lg-nav-btn[data-subtab-id]')) return false;
-    createBlob();
-    snapTo(getActiveBtn(), false);
-    watchBtns();
-    ready = true;
+  /* ── init ── */
+  function init() {
+    var p = getPill();
+    if (!p) return false;
+    if (pill === p && document.getElementById('ag-liquid-blob')) return true; /* já ok */
+    attachBlob(p, false);
     return true;
   }
 
-  /* re-observa botões quando o React recriar o dock */
+  /* re-init se a pill mudar de instância */
   new MutationObserver(function () {
-    if (ready) watchBtns();
-    else boot();
+    var p = getPill();
+    if (p && p !== pill) { pill = null; init(); }
   }).observe(document.body, { childList: true, subtree: true });
 
   var n = 0;
-  function tryBoot() { if (!boot() && ++n < 80) setTimeout(tryBoot, n < 20 ? 100 : 300); }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', tryBoot);
-  else { tryBoot(); requestAnimationFrame(tryBoot); }
+  function boot() { if (!init() && ++n < 80) setTimeout(boot, n < 20 ? 100 : 300); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else { boot(); requestAnimationFrame(boot); }
 })();
 </script>
 

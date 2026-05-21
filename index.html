@@ -22389,37 +22389,43 @@ function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSel
   var aitsArr=[...new Set((allMultas||[]).filter(function(m){return m.ait;}).map(function(m){return m.ait;}))].sort();
 
   var selSt={border:"1px solid "+C.border,borderRadius:8,padding:"4px 7px",fontSize:12,background:C.card,color:"var(--c-text)",cursor:"pointer",flex:1,minWidth:0};
+
+  /* ── valor unificado do seletor ── */
+  var gmSelVal = gmPlaca ? "placa:"+gmPlaca : gmAIT ? "ait:"+gmAIT : gmStatus !== "nao_encerrada" ? "status:"+gmStatus : "status:nao_encerrada";
+  function handleGmSel(e) {
+    var v = e.target.value;
+    setGmPlaca(""); setGmAIT(""); setGmStatus("nao_encerrada");
+    if (v.startsWith("placa:"))  setGmPlaca(v.slice(6));
+    else if (v.startsWith("ait:")) setGmAIT(v.slice(4));
+    else if (v.startsWith("status:")) setGmStatus(v.slice(7));
+  }
+
   return React.createElement(React.Fragment, null
     , React.createElement("div",{style:{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginTop:0,marginBottom:8}}
       , React.createElement("div",{style:{fontSize:12,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:0.5,flexShrink:0,marginRight:2}},"Cronograma")
-      , React.createElement("select",{value:gmPlaca,onChange:function(e){setGmPlaca(e.target.value);},style:selSt}
-        , React.createElement("option",{value:""},"Todas as placas")
-        , placas.map(function(v){return React.createElement("option",{key:v.id,value:String(v.id)},v.placa+(v.modelo?" · "+v.modelo:""));})
-      )
-      , React.createElement("select",{value:gmStatus,onChange:function(e){setGmStatus(e.target.value);},style:selSt}
-        , React.createElement("option",{value:"todos"},"Todos")
-        , React.createElement("option",{value:"nao_encerrada"},"Não encerradas")
-        , React.createElement("optgroup",{label:"Pagamento órgão"}
-          , React.createElement("option",{value:"pendente"},"A pagar")
-          , React.createElement("option",{value:"vencida"},"Vencida")
-          , React.createElement("option",{value:"pago"},"Pago")
-        )
-        , React.createElement("optgroup",{label:"Cobrança cliente"}
-          , React.createElement("option",{value:"nao_cobrado"},"Não cobrado")
-          , React.createElement("option",{value:"cob_pendente"},"Aguardando")
-          , React.createElement("option",{value:"cob_pago"},"Cliente pagou")
+      , React.createElement("select",{value:gmSelVal,onChange:handleGmSel,style:selSt}
+        , React.createElement("optgroup",{label:"Status"}
+          , React.createElement("option",{value:"status:nao_encerrada"},"Não encerradas")
+          , React.createElement("option",{value:"status:todos"},"Todos")
+          , React.createElement("option",{value:"status:pendente"},"A pagar órgão")
+          , React.createElement("option",{value:"status:vencida"},"Vencida")
+          , React.createElement("option",{value:"status:pago"},"Pago órgão")
+          , React.createElement("option",{value:"status:nao_cobrado"},"Não cobrado cliente")
+          , React.createElement("option",{value:"status:cob_pendente"},"Aguardando cliente")
+          , React.createElement("option",{value:"status:cob_pago"},"Cliente pagou")
         )
         , React.createElement("optgroup",{label:"Etapa do processo"}
           , PIPELINE_MULTA.map(function(step){
-              return React.createElement("option",{key:step.id,value:"etapa_"+step.id},step.label);
+              return React.createElement("option",{key:step.id,value:"status:etapa_"+step.id},step.label);
             })
-          , React.createElement("option",{value:"etapa_recusou"},"Cliente Recusou Assinar")
+          , React.createElement("option",{value:"status:etapa_recusou"},"Cliente Recusou Assinar")
         )
-      )
-
-      , React.createElement("select",{value:gmAIT,onChange:function(e){setGmAIT(e.target.value);},style:selSt}
-        , React.createElement("option",{value:""},"Todos AIT")
-        , aitsArr.map(function(a){return React.createElement("option",{key:a,value:a},a);})
+        , placas.length > 0 && React.createElement("optgroup",{label:"Placa"}
+          , placas.map(function(v){return React.createElement("option",{key:v.id,value:"placa:"+String(v.id)},v.placa+(v.modelo?" · "+v.modelo:""));})
+        )
+        , aitsArr.length > 0 && React.createElement("optgroup",{label:"AIT"}
+          , aitsArr.map(function(a){return React.createElement("option",{key:a,value:"ait:"+a},a);})
+        )
       )
     )
     , fil.length===0
@@ -24855,6 +24861,42 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         d.setDate(d.getDate() + n * 30);
         return d.toISOString().slice(0, 10);
       }
+
+      /* ── Rateio automático: Seguros sem veículo → divide entre todos os ativos ── */
+      var isRateioSeguro = form.categoria === "Seguros" && !form.veiculo_id;
+      var veiculosAtivos = (veiculos||[]).filter(function(v){ return v.status !== "inativo"; });
+      if (isRateioSeguro && veiculosAtivos.length > 1) {
+        var valorPorVeic = (parseFloat(form.valor) / veiculosAtivos.length).toFixed(2);
+        var criados = [];
+        for (var vi = 0; vi < veiculosAtivos.length; vi++) {
+          var vAt = veiculosAtivos[vi];
+          var pv = {
+            descricao: (form.descricao||"") + " — " + (vAt.placa||vAt.modelo||"Veículo"),
+            categoria: form.categoria,
+            valor: valorPorVeic,
+            data: form.data,
+            status: form.status || "previsto",
+            data_pagamento: form.data_pagamento || null,
+            observacoes: form.observacoes || null,
+            recorrente: form.recorrente || false,
+            prazo_recorrencia: form.recorrente ? (form.prazo_recorrencia || null) : null,
+            veiculo_id: vAt.id,
+            manutencao_id: null,
+            contrato_id: form.contrato_id || null,
+            forma_pagamento: form.forma_pagamento || null
+          };
+          if (edit && vi === 0) {
+            var u0 = await db.patch("despesas", edit, pv);
+            setDespesas(function(p){ return p.map(function(d){ return d.id === edit ? Object.assign({}, d, u0) : d; }); });
+          } else {
+            var c0 = await db.post("despesas", pv);
+            criados.push(c0);
+          }
+        }
+        if (criados.length > 0) setDespesas(function(p){ return criados.concat(p); });
+        toast("🛡️ Seguro rateado em "+veiculosAtivos.length+"x de R$ "+parseFloat(valorPorVeic).toLocaleString("pt-BR",{minimumFractionDigits:2})+" por veículo ✅");
+        setModal(false); setLoading(false); return;
+      }
       var mParcCC = (form.forma_pagamento||"").match(/Cartao Credito (\d+)x/);
       var numParcelas = mParcCC ? parseInt(mParcCC[1]) : 1;
       var payload = {
@@ -27087,7 +27129,18 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               , React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2530}}, "Aparece automaticamente nos próximos meses"    )
             )
           )
-          , form.recorrente && React.createElement(Lbl, { label: "Prazo da Recorrência (meses)"   , __self: this, __source: {fileName: _jsxFileName, lineNumber: 2533}}, React.createElement('input', { style: FI, type: "number", min: "1", max: "60", value: form.prazo_recorrencia || "", onChange: e => F("prazo_recorrencia", e.target.value), placeholder: "Vazio = sem prazo (indefinido)"    , __self: this, __source: {fileName: _jsxFileName, lineNumber: 2533}} ))
+          , form.recorrente && React.createElement('div', { style: { background: C.orange+"10", border: "1.5px solid "+C.orange+"40", borderRadius: 12, padding: "12px 14px" } }
+            , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: C.orange, marginBottom: 6 } }, "⏱ Prazo da recorrência")
+            , React.createElement('input', { style: Object.assign({}, FI, { marginTop: 0 }), type: "number", min: "1", max: "120", value: form.prazo_recorrencia || "", onChange: e => F("prazo_recorrencia", e.target.value), placeholder: "Qtd de meses (vazio = indefinido)" })
+            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 6 } }, form.prazo_recorrencia ? "Repetir por "+form.prazo_recorrencia+" mês(es)" : "Sem prazo definido — repete indefinidamente")
+          )
+          , (form.categoria === "Seguros" && !form.veiculo_id) && React.createElement('div', { style: { background: C.blue+"10", border: "1.5px solid "+C.blue+"40", borderRadius: 12, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 } }
+            , React.createElement('span', { style: { fontSize: 16 } }, "🛡️")
+            , React.createElement('div', null
+              , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: C.blue } }, "Rateio automático por veículo")
+              , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "Ao salvar, o valor será dividido entre os "+veiculos.filter(function(v){ return v.status !== "inativo"; }).length+" veículos ativos (R$ "+(veiculos.filter(function(v){ return v.status !== "inativo"; }).length > 0 ? (parseFloat(form.valor||0) / veiculos.filter(function(v){ return v.status !== "inativo"; }).length).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}) : "0,00")+" cada)")
+            )
+          )
           , React.createElement(Lbl, { label: "Observacoes", __self: this, __source: {fileName: _jsxFileName, lineNumber: 2534}}, React.createElement('input', { style: FI, value: form.observacoes || "", onChange: e => F("observacoes", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2534}} ))
           , React.createElement('button', { className: bCls(Btn(C.red)), style: bStyle(Btn(C.red)), onClick: saveDespesa, disabled: loading, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2535}}, loading ? "Salvando..." : "Salvar")
         )

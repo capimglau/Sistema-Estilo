@@ -156,17 +156,16 @@ input[type=file]{display:none}
 .lg-nav-pill { position: relative; overflow: visible !important; }
 
 #ag-liquid-blob {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+  position: fixed;
+  top: 0;
   left: 0;
   width: 60px;
   height: 54px;
   border-radius: 27px;
   pointer-events: none;
-  z-index: 0;
-  opacity: 0;
-  will-change: left, width, opacity;
+  z-index: 101;
+  opacity: 1;
+  will-change: left, width, top;
   background:
     radial-gradient(ellipse at 38% 28%, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.22) 38%, transparent 68%),
     radial-gradient(ellipse at 68% 72%, rgba(180,210,255,0.28) 0%, transparent 58%),
@@ -181,7 +180,7 @@ input[type=file]{display:none}
     0 2px 8px rgba(255,255,255,0.18);
   transition: opacity 0.16s ease;
 }
-#ag-liquid-blob.blob-visible { opacity: 1; }
+/* blob-visible obsoleto — blob sempre visível */
 
 /* Dark/dim themes: adjust blob tint */
 body.dark #ag-liquid-blob,
@@ -35724,23 +35723,30 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
 </script>
 
 <script>
-/* DOCK BUBBLE — port direto do AppStoreDock.jsx */
+/* DOCK BUBBLE v5 — fixed no body, fora do React, igual ao preview JSX */
 (function () {
-  var blob = null, pill = null, touching = false;
+  var blob = null, touching = false, ready = false;
 
-  function getPill() {
-    var all = document.querySelectorAll('.lg-nav-pill');
-    for (var i = all.length - 1; i >= 0; i--) {
-      if (all[i].querySelector('.lg-nav-btn[data-tab-id],.lg-nav-btn[data-subtab-id]')) return all[i];
-    }
-    return null;
+  /* ── cria o blob uma única vez no body ── */
+  function createBlob() {
+    if (document.getElementById('ag-liquid-blob')) return;
+    var el = document.createElement('div');
+    el.id = 'ag-liquid-blob';
+    document.body.appendChild(el);
+    blob = el;
   }
 
+  /* ── botões de aba reais (main tabs ou sub-tabs) ── */
   function getBtns() {
-    return pill ? Array.from(pill.querySelectorAll(
-      '.lg-nav-btn[data-tab-id],.lg-nav-btn[data-subtab-id]')) : [];
+    return Array.from(document.querySelectorAll(
+      '.lg-nav-btn[data-tab-id],.lg-nav-btn[data-subtab-id]'));
   }
-
+  function getActiveBtn() {
+    var btns = getBtns();
+    for (var i = 0; i < btns.length; i++)
+      if (btns[i].classList.contains('lg-nav-btn-active')) return btns[i];
+    return btns[0] || null;
+  }
   function nearest(clientX) {
     var best = null, bd = Infinity;
     getBtns().forEach(function (b) {
@@ -35751,107 +35757,105 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     return best;
   }
 
+  /* ── posiciona com coordenadas de viewport (position:fixed) ── */
   function snapTo(btn, animate) {
-    if (!pill || !blob || !btn) return;
-    var pr = pill.getBoundingClientRect();
-    var br = btn.getBoundingClientRect();
-    var x = br.left - pr.left;
-    var w = br.width;
-
+    if (!blob || !btn) return;
+    var r = btn.getBoundingClientRect();
     if (!animate) {
-      /* MATA toda transição, posiciona imediatamente, força reflow
-         para o browser "travar" os valores antes de qualquer fade */
       blob.style.transition = 'none';
-      blob.style.left  = x + 'px';
-      blob.style.width = w + 'px';
-      void blob.offsetWidth;                   /* <-- force reflow */
-      blob.style.transition = 'opacity .16s ease';
+      blob.style.left   = r.left + 'px';
+      blob.style.width  = r.width + 'px';
+      blob.style.top    = (r.top + r.height / 2 - 27) + 'px';
+      void blob.offsetWidth;                    /* force reflow */
     } else {
       blob.style.transition =
         'left .35s cubic-bezier(.34,1.56,.64,1),' +
         'width .35s cubic-bezier(.34,1.56,.64,1),' +
-        'opacity .16s ease';
-      blob.style.left  = x + 'px';
-      blob.style.width = w + 'px';
+        'top .35s cubic-bezier(.34,1.56,.64,1)';
+      blob.style.left   = r.left + 'px';
+      blob.style.width  = r.width + 'px';
+      blob.style.top    = (r.top + r.height / 2 - 27) + 'px';
     }
-    blob.style.opacity = '1';
   }
 
-  function hide() {
-    if (!blob) return;
-    blob.style.transition = 'opacity .16s ease';
-    blob.style.opacity = '0';
+  /* ── MutationObserver: detecta mudança de aba ativa ── */
+  var _obs = new MutationObserver(function (mutations) {
+    if (touching) return;
+    for (var i = 0; i < mutations.length; i++) {
+      if (mutations[i].attributeName === 'class') {
+        snapTo(getActiveBtn(), true);
+        return;
+      }
+    }
+  });
+  function watchBtns() {
+    _obs.disconnect();
+    getBtns().forEach(function (b) {
+      _obs.observe(b, { attributes: true, attributeFilter: ['class'] });
+    });
   }
 
-  function inPill(x, y) {
+  /* ── touch: segue o dedo, solta → volta para ativa ── */
+  function inDock(x, y) {
+    var pill = document.querySelector('.lg-nav-pill');
     if (!pill) return false;
     var r = pill.getBoundingClientRect();
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
-
   document.addEventListener('touchstart', function (e) {
-    var t = e.touches[0];
-    if (!inPill(t.clientX, t.clientY)) return;
+    if (!inDock(e.touches[0].clientX, e.touches[0].clientY)) return;
     touching = true;
-    snapTo(nearest(t.clientX), false);   /* snap sem animação */
+    snapTo(nearest(e.touches[0].clientX), false);
   }, { passive: true, capture: true });
 
   document.addEventListener('touchmove', function (e) {
     if (!touching) return;
-    snapTo(nearest(e.touches[0].clientX), true);  /* spring ao arrastar */
+    snapTo(nearest(e.touches[0].clientX), true);
   }, { passive: true, capture: true });
 
   document.addEventListener('touchend', function (e) {
     if (!touching) return;
     touching = false;
-    var t = e.changedTouches[0];
-    var btn = nearest(t.clientX);
-    if (btn) { snapTo(btn, true); btn.click(); }
-    setTimeout(hide, 260);
+    setTimeout(function () { snapTo(getActiveBtn(), true); watchBtns(); }, 40);
   }, { passive: true, capture: true });
 
   document.addEventListener('touchcancel', function () {
-    touching = false; hide();
+    touching = false;
+    snapTo(getActiveBtn(), true);
   }, { passive: true, capture: true });
 
+  /* ── desktop hover ── */
   document.addEventListener('mousemove', function (e) {
+    var pill = document.querySelector('.lg-nav-pill');
     if (!pill) return;
     var r = pill.getBoundingClientRect();
     if (e.clientX >= r.left && e.clientX <= r.right &&
-        e.clientY >= r.top  && e.clientY <= r.bottom) {
+        e.clientY >= r.top  && e.clientY <= r.bottom)
       snapTo(nearest(e.clientX), true);
-    } else { hide(); }
+    else if (!touching)
+      snapTo(getActiveBtn(), true);
   }, { passive: true });
 
-  function init() {
-    var p = getPill();
-    if (!p) return false;
-    var old = document.getElementById('ag-liquid-blob');
-    if (old && old.parentElement !== p) { old.remove(); old = null; }
-    if (!old) {
-      old = document.createElement('div');
-      old.id = 'ag-liquid-blob';
-      /* inicia completamente fora da tela e invisível */
-      old.style.left    = '-9999px';
-      old.style.width   = '60px';
-      old.style.opacity = '0';
-      p.insertBefore(old, p.firstChild);
-    }
-    blob = old; pill = p;
+  /* ── boot ── */
+  function boot() {
+    if (!document.querySelector('.lg-nav-btn[data-tab-id],.lg-nav-btn[data-subtab-id]')) return false;
+    createBlob();
+    snapTo(getActiveBtn(), false);
+    watchBtns();
+    ready = true;
     return true;
   }
 
+  /* re-observa botões quando o React recriar o dock */
   new MutationObserver(function () {
-    var p = getPill();
-    if (p && !document.getElementById('ag-liquid-blob')) {
-      blob = null; pill = null; init();
-    }
+    if (ready) watchBtns();
+    else boot();
   }).observe(document.body, { childList: true, subtree: true });
 
   var n = 0;
-  function boot() { if (!init() && ++n < 80) setTimeout(boot, n < 20 ? 100 : 300); }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else { boot(); requestAnimationFrame(boot); }
+  function tryBoot() { if (!boot() && ++n < 80) setTimeout(tryBoot, n < 20 ? 100 : 300); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', tryBoot);
+  else { tryBoot(); requestAnimationFrame(tryBoot); }
 })();
 </script>
 

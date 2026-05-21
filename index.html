@@ -2032,6 +2032,20 @@ input,select,textarea{transition:border-color .15s,box-shadow .15s;}
   touch-action:pan-y;
 }
 .ag-swipe-wrap.ag-swiped .ag-sw-inner{transform:translateX(calc(-1 * var(--sw-reveal, 130px)));}
+.ag-swipe-wrap.ag-swiped-r .ag-sw-inner{transform:translateX(var(--sw-reveal-r, 80px));}
+
+/* Ações do lado esquerdo (swipe direita) */
+.ag-swipe-actions-r{
+  position:absolute;left:0;top:0;bottom:0;
+  display:flex;align-items:stretch;z-index:0;
+  border-radius:12px 0 0 12px;overflow:hidden;
+  opacity:0;pointer-events:none;
+  transition:opacity 0.25s ease;
+}
+.ag-swipe-wrap.ag-swiped-r .ag-swipe-actions-r,
+.ag-swipe-wrap.ag-dragging .ag-swipe-actions-r{
+  opacity:1;pointer-events:auto;
+}
 
 /* ══════════════════════════════════════════════════
    EFFECT 12 · BOTTOM SHEET (drag-to-dismiss)
@@ -16252,18 +16266,18 @@ function BottomSheet({ open, onClose, title, children }) {
 }
 
 /* ── EFFECT 10 · SwipeRow ── */
-function SwipeRow({ children, onEdit, onDelete, deleteLabel, action2, action2Label, action2Icon, action2Color, wrapStyle }) {
+function SwipeRow({ children, onEdit, onDelete, deleteLabel, action2, action2Label, action2Icon, action2Color, wrapStyle, onRight, rightLabel, rightIcon, rightColor }) {
   var wrapRef = React.useRef(null);
-  var _sw = React.useRef({ on:false, sx:0, sy:0, dx:0, swiped:false });
-  /* largura total das ações reveladas */
+  var _sw = React.useRef({ on:false, sx:0, sy:0, dx:0, swipedL:false, swipedR:false, moved:false });
   var actCount = (onEdit?1:0) + (onDelete||action2?1:0);
-  var revealW = actCount * 65;
+  var revealL = actCount * 65;
+  var revealR = onRight ? 80 : 0;
 
   function getClient(e){ return e.touches ? { x:e.touches[0].clientX, y:e.touches[0].clientY } : { x:e.clientX, y:e.clientY }; }
 
   function swStart(e) {
     var c = getClient(e);
-    _sw.current = { on:true, sx:c.x, sy:c.y, dx:0, swiped:_sw.current.swiped };
+    _sw.current = { on:true, sx:c.x, sy:c.y, dx:0, swipedL:_sw.current.swipedL, swipedR:_sw.current.swipedR, moved:false };
     var inner = wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner');
     if(inner) inner.style.transition = 'none';
   }
@@ -16275,8 +16289,11 @@ function SwipeRow({ children, onEdit, onDelete, deleteLabel, action2, action2Lab
     if(!_sw.current.moved && dy > 10) { _sw.current.on=false; return; }
     _sw.current.moved = true;
     if(wrapRef.current) wrapRef.current.classList.add('ag-dragging');
-    var cur = _sw.current.swiped ? dx - revealW : dx;
-    cur = Math.max(-revealW, Math.min(0, cur));
+    var cur;
+    if(_sw.current.swipedL) { cur = Math.max(-revealL, Math.min(0, dx - revealL)); }
+    else if(_sw.current.swipedR) { cur = Math.max(0, Math.min(revealR, dx + revealR)); }
+    else if(dx < 0) { cur = Math.max(-revealL, dx); }
+    else { cur = onRight ? Math.min(revealR, dx) : 0; }
     _sw.current.dx = cur;
     var inner = wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner');
     if(inner) inner.style.transform = 'translateX('+cur+'px)';
@@ -16287,25 +16304,28 @@ function SwipeRow({ children, onEdit, onDelete, deleteLabel, action2, action2Lab
     if(wrapRef.current) wrapRef.current.classList.remove('ag-dragging');
     var inner = wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner');
     if(inner) { inner.style.transition = ''; inner.style.transform = ''; }
-    var shouldSnap = _sw.current.dx < -(revealW * 0.42);
-    _sw.current.swiped = shouldSnap;
-    if(wrapRef.current) wrapRef.current.classList.toggle('ag-swiped', shouldSnap);
+    var dx = _sw.current.dx;
+    var snapL = dx < -(revealL * 0.42);
+    var snapR = onRight && dx > (revealR * 0.42);
+    _sw.current.swipedL = snapL;
+    _sw.current.swipedR = snapR && !snapL;
+    if(wrapRef.current) {
+      wrapRef.current.classList.toggle('ag-swiped', snapL);
+      wrapRef.current.classList.toggle('ag-swiped-r', snapR && !snapL);
+    }
     _sw.current.moved = false;
   }
 
   function closeSwipe(e) {
-    e.stopPropagation();
-    _sw.current.swiped=false;
-    if(wrapRef.current) wrapRef.current.classList.remove('ag-swiped');
+    if(e) e.stopPropagation();
+    _sw.current.swipedL = false; _sw.current.swipedR = false;
+    if(wrapRef.current) wrapRef.current.classList.remove('ag-swiped','ag-swiped-r','ag-dragging');
     var inner = wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner');
     if(inner) { inner.style.transition=''; inner.style.transform=''; }
   }
 
   React.useEffect(function(){
-    function close(e){ if(wrapRef.current && !wrapRef.current.contains(e.target)){
-      _sw.current.swiped=false;
-      if(wrapRef.current) { wrapRef.current.classList.remove('ag-swiped'); wrapRef.current.classList.remove('ag-dragging'); }
-    } }
+    function close(e){ if(wrapRef.current && !wrapRef.current.contains(e.target)) closeSwipe(null); }
     document.addEventListener('click', close);
     return function(){ document.removeEventListener('click', close); };
   }, []);
@@ -16317,19 +16337,23 @@ function SwipeRow({ children, onEdit, onDelete, deleteLabel, action2, action2Lab
   var secondClick  = function(e){ closeSwipe(e); if(action2) action2(); else if(onDelete) onDelete(); };
 
   return React.createElement('div', { ref:wrapRef, className:'ag-swipe-wrap',
-      style: Object.assign({ '--sw-reveal': revealW+'px' }, wrapStyle||{}) },
+      style: Object.assign({ '--sw-reveal': revealL+'px', '--sw-reveal-r': revealR+'px' }, wrapStyle||{}) },
     React.createElement('div', { className:'ag-swipe-actions' },
-      onEdit && React.createElement('button', { className:'ag-sw-btn edit',
-          style:{ minWidth: 65 },
+      onEdit && React.createElement('button', { className:'ag-sw-btn edit', style:{ minWidth:65 },
           onClick:function(e){ closeSwipe(e); onEdit(); } },
-        React.createElement('span', { style:{fontSize:16} }, '✏️'),
-        'Editar'
+        React.createElement('span', { style:{fontSize:16} }, '\u270F\uFE0F'), 'Editar'
       ),
       secondAction && React.createElement('button', { className:'ag-sw-btn',
-          style:{ background: secondColor, minWidth: 65 },
-          onClick: secondClick },
-        React.createElement('span', { style:{fontSize:16} }, secondIcon),
-        secondLabel
+          style:{ background:secondColor, minWidth:65 }, onClick:secondClick },
+        React.createElement('span', { style:{fontSize:16} }, secondIcon), secondLabel
+      )
+    ),
+    onRight && React.createElement('div', { className:'ag-swipe-actions-r' },
+      React.createElement('button', { className:'ag-sw-btn',
+          style:{ background: rightColor||'rgba(52,199,89,0.92)', minWidth:revealR, flexDirection:'column' },
+          onClick:function(e){ closeSwipe(e); onRight(); } },
+        React.createElement('span', { style:{fontSize:20} }, rightIcon||'\u2705'),
+        React.createElement('span', { style:{fontSize:9,marginTop:2,fontWeight:700,textAlign:'center',maxWidth:72,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'} }, rightLabel||'Confirmar')
       )
     ),
     React.createElement('div', {
@@ -22757,7 +22781,11 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         return React.createElement(SwipeRow, { key: m.id,
           wrapStyle: { marginBottom: i < fil.length - 1 ? 18 : 0, borderRadius: 16 },
           onEdit: function(){ setForm(Object.assign({}, m)); setEdit(m.id); setModal(true); },
-          onDelete: function(){ remove(m.id); }
+          onDelete: function(){ remove(m.id); },
+          onRight: nextAct ? function(){ nextAct.action(); } : null,
+          rightLabel: nextAct ? nextAct.label : '',
+          rightIcon: nextAct ? (_pipeline[stepIdx] ? _pipeline[stepIdx].emoji : '✅') : '✅',
+          rightColor: nextAct ? (nextAct.color||'rgba(52,199,89,0.92)') : 'rgba(52,199,89,0.92)'
         },
         React.createElement('div', { className: (vencida || cobCliAtrasado) ? "ag-urgent" : _venceSemana ? "ag-multa-semana" : "", style: cardStyle, onClick: function(e){ if(e.target.closest('button,a,select,input')) return; setExpandedMulId(isExpanded ? null : m.id); } }
           , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 6 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1330}}
@@ -22900,17 +22928,9 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
                 })
               )
           )
-          /* Próximo passo em destaque — compacto */
-          , nextAct && React.createElement('div', { style: { margin: "6px 0 2px", padding: "7px 10px", borderRadius: 10, background: nextAct.color+"12", border: "1px solid "+nextAct.color+"40", display: "flex", alignItems: "center", gap: 8 } }
-            , React.createElement('span', { style: { fontSize: 15, flexShrink: 0 } }, _pipeline[stepIdx] ? _pipeline[stepIdx].emoji : "👉")
-            , React.createElement('div', { style: { flex: 1, minWidth: 0 } }
-              , React.createElement('div', { style: { fontSize: 8, fontWeight: 800, color: nextAct.color, letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 1 } }, "⚡ Próximo passo")
-              , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: nextAct.color, lineHeight: 1.3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, nextAct.label)
-            )
-            , React.createElement('button', { className: bCls(Btn(nextAct.color)), style: Object.assign({}, bStyle(Btn(nextAct.color)), { flexShrink: 0, fontWeight: 700, fontSize: 11, padding: "5px 11px" }), onClick: nextAct.action }, "→ Fazer")
-          )
-          , React.createElement('div', { style: { display: "flex", alignItems: "center", marginTop: 4 } }
-            , React.createElement('span', { style: { marginLeft: "auto", fontSize: 11, color: C.sub, opacity: 0.55 } }, isExpanded ? "▲ recolher" : "▼ detalhes")
+          , React.createElement('div', { style: { display: "flex", alignItems: "center", marginTop: 6 } }
+            , nextAct && React.createElement('span', { style: { fontSize: 10, color: nextAct.color, fontWeight: 700, opacity: 0.75 } }, '← ' + nextAct.label)
+            , React.createElement('span', { style: { marginLeft: "auto", fontSize: 11, color: C.sub, opacity: 0.50 } }, isExpanded ? "▲ recolher" : "▼ detalhes")
           )
         )
         );

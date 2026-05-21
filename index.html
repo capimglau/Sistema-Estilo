@@ -158,14 +158,15 @@ input[type=file]{display:none}
 #ag-liquid-blob {
   position: absolute;
   top: 50%;
+  transform: translateY(-50%);
   left: 0;
-  width: 80px;
-  height: 56px;
-  border-radius: 28px;
+  width: 60px;
+  height: 52px;
+  border-radius: 16px;
   pointer-events: none;
   z-index: 0;
   opacity: 0;
-  will-change: transform, width, border-radius, opacity;
+  will-change: left, width, opacity;
   /* Liquid Glass appearance */
   background:
     radial-gradient(ellipse at 38% 28%, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.22) 38%, transparent 68%),
@@ -179,12 +180,16 @@ input[type=file]{display:none}
     0 -1px 0 rgba(0,0,0,0.06) inset,
     0 6px 24px rgba(0,80,200,0.10),
     0 2px 8px rgba(255,255,255,0.18);
-  transition:
-    opacity 0.16s ease,
-    width 0.14s cubic-bezier(0.22,1,0.36,1),
-    border-radius 0.14s cubic-bezier(0.22,1,0.36,1);
+  /* transição controlada pelo JS — spring igual à App Store */
+  transition: opacity 0.16s ease;
 }
 #ag-liquid-blob.blob-visible { opacity: 1; }
+#ag-liquid-blob.blob-animate {
+  transition:
+    left  0.35s cubic-bezier(0.34,1.56,0.64,1),
+    width 0.35s cubic-bezier(0.34,1.56,0.64,1),
+    opacity 0.16s ease;
+}
 
 /* Dark/dim themes: adjust blob tint */
 body.dark #ag-liquid-blob,
@@ -35728,15 +35733,13 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
 
 <script>
 /* ══════════════════════════════════════════════
-   DOCK BUBBLE — simples, snapa para o botão mais próximo
+   DOCK BUBBLE — CSS transition spring, igual ao JSX da App Store
    ============================================== */
 (function() {
   'use strict';
   var blob = null, pill = null;
   var touching = false, blobVisible = false;
-  var curX = 0, curW = 60, tgtX = 0, tgtW = 60;
-  var raf = null;
-  var BLOB_H = 54;
+  var BLOB_H = 52, BLOB_R = 16;
 
   function getMainPill() {
     var all = document.querySelectorAll('.lg-nav-pill');
@@ -35761,55 +35764,44 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     return best;
   }
 
-  /* animação suave com lerp */
-  function step() {
-    raf = null;
-    if (!blob || !blobVisible) return;
-    curX += (tgtX - curX) * 0.28;
-    curW += (tgtW - curW) * 0.28;
-    blob.style.width     = curW + 'px';
-    blob.style.transform = 'translate(' + curX + 'px,-50%)';
-    if (Math.abs(tgtX - curX) > 0.4 || Math.abs(tgtW - curW) > 0.4) {
-      raf = requestAnimationFrame(step);
-    } else {
-      curX = tgtX; curW = tgtW;
-      blob.style.width     = curW + 'px';
-      blob.style.transform = 'translate(' + curX + 'px,-50%)';
-    }
-  }
-  function scheduleAnim() { if (!raf) raf = requestAnimationFrame(step); }
-
-  /* posiciona bolha exatamente sobre um botão */
-  function posOnBtn(btn) {
+  /* posiciona o blob sobre um botão, com ou sem animação spring */
+  function posOnBtn(btn, animate) {
+    if (!pill || !blob || !btn) return;
     var pr = pill.getBoundingClientRect();
     var br = btn.getBoundingClientRect();
     var sl = pill.scrollLeft || 0;
-    tgtX = br.left - pr.left + sl;
-    tgtW = br.width;
-    blob.style.height       = BLOB_H + 'px';
-    blob.style.borderRadius = (BLOB_H / 2) + 'px';
-    blob.style.top          = '50%';
+    var x  = br.left - pr.left + sl;
+    var w  = br.width;
+
+    if (animate) {
+      blob.classList.add('blob-animate');
+    } else {
+      blob.classList.remove('blob-animate');
+    }
+    blob.style.left   = x + 'px';
+    blob.style.width  = w + 'px';
+    blob.style.height = BLOB_H + 'px';
+    blob.style.borderRadius = BLOB_R + 'px';
   }
 
-  function showOnNearest(clientX) {
+  function showOnNearest(clientX, animate) {
     var btn = getNearestBtn(clientX);
     if (!btn) return;
-    posOnBtn(btn);
     if (!blobVisible) {
+      /* 1ª aparição: posiciona sem anim, depois fade-in */
+      posOnBtn(btn, false);
       blobVisible = true;
-      curX = tgtX; curW = tgtW;
-      blob.style.left      = '0';
-      blob.style.width     = curW + 'px';
-      blob.style.transform = 'translate(' + curX + 'px,-50%)';
-      requestAnimationFrame(function() { if (blob) blob.classList.add('blob-visible'); });
+      requestAnimationFrame(function() {
+        if (blob) blob.classList.add('blob-visible');
+      });
     } else {
-      scheduleAnim();
+      posOnBtn(btn, animate !== false);
     }
   }
 
   function hideBlob() {
     blobVisible = false;
-    if (blob) blob.classList.remove('blob-visible');
+    if (blob) { blob.classList.remove('blob-visible'); blob.classList.remove('blob-animate'); }
   }
 
   function pillContains(x, y) {
@@ -35818,16 +35810,16 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
 
-  /* touch handlers — capture phase */
+  /* ── touch handlers ── */
   function onStart(e) {
     var t = e.touches[0];
     if (!pillContains(t.clientX, t.clientY)) return;
     touching = true;
-    showOnNearest(t.clientX);
+    showOnNearest(t.clientX, false); /* snap imediato ao toque */
   }
   function onMove(e) {
     if (!touching) return;
-    showOnNearest(e.touches[0].clientX);
+    showOnNearest(e.touches[0].clientX, true); /* spring ao deslizar */
   }
   function onEnd(e) {
     if (!touching) return;
@@ -35840,11 +35832,10 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
       var d = Math.abs(cx-(r.left+r.width/2)) + Math.abs(cy-(r.top+r.height/2));
       if (d < bestD) { bestD = d; best = b; }
     });
-    if (best && bestD < 100) {
-      posOnBtn(best);
-      scheduleAnim();
+    if (best && bestD < 120) {
+      posOnBtn(best, true);
       best.click();
-      setTimeout(hideBlob, 200);
+      setTimeout(hideBlob, 260);
     } else {
       hideBlob();
     }
@@ -35856,7 +35847,7 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     if (!pill) return;
     var r = pill.getBoundingClientRect();
     if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
-      showOnNearest(e.clientX);
+      showOnNearest(e.clientX, true);
     } else {
       hideBlob();
     }
@@ -35881,13 +35872,11 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     pill = p;
     blob = document.createElement('div');
     blob.id = 'ag-liquid-blob';
-    curW = tgtW = 60; curX = tgtX = 0;
     pill.insertBefore(blob, pill.firstChild);
     attachListeners();
     return true;
   }
 
-  /* re-init quando React recria a pill */
   new MutationObserver(function() {
     var p = getMainPill();
     if (p && !document.getElementById('ag-liquid-blob')) {

@@ -24709,6 +24709,9 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   const [budEmpState, setBudEmpState] = useState(function(){ try{ return JSON.parse(localStorage.getItem("ag_budgets_emp_v1")||"{}"); }catch(e){ return {}; } });
   function saveBudEmp(nb){ localStorage.setItem("ag_budgets_emp_v1",JSON.stringify(nb)); setBudEmpState(nb); }
   const [subOrcState, setSubOrcState] = useState("visao");
+  const [filtroModeloVei, setFiltroModeloVei] = useState("todos");
+  const [sortLucVeiState, setSortLucVeiState] = useState("lucro");
+  const [expandedVeiId, setExpandedVeiId] = useState(null);
   const [highlightDespId, setHighlightDespId] = useState(null);
   const highlightTimer = React.useRef(null);
   useEffect(function() {
@@ -26599,128 +26602,262 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 var lucrativos=lucVei.filter(function(x){return x.liq>=0;}).length;
                 var margGeral=totRec>0?Math.round((totLiq/totRec)*100):0;
                 var maxRec=Math.max.apply(null,lucVei.map(function(x){return x.rec;}).concat([1]));
+                var avgLuc=lucVei.length>0?Math.round(totLiq/lucVei.length):0;
+
+                /* Dados do mês anterior para tendência */
+                var dsMesAnt=idxSel>0?dadosMeses[idxSel-1]:null;
+                var nomeMesAnt=idxSel>0?new Date(todosMeses[idxSel-1]+"-15").toLocaleString("pt-BR",{month:"short"}):"";
+                var lucVeiAnt=dsMesAnt?(veiculos||[]).map(function(v){
+                  var cts=(contratos||[]).filter(function(c){ return c.veiculo_id==v.id&&c.status!=="cancelado"&&(c.previsao_pagamento||c.data_fim||"").slice(0,7)===todosMeses[idxSel-1]; });
+                  var rec=cts.reduce(function(s,c){ if(c.status_pagamento==="pago"||c.status_pagamento==="isento") return s+parseFloat(c.valor_total||0); if(c.status_pagamento==="parcial") return s+parseFloat(c.valor_pago||0); return s; },0);
+                  var man=(manutencoes||[]).filter(function(mn){ return mn.veiculo_id==v.id&&(mn.data||"").slice(0,7)===todosMeses[idxSel-1]; }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
+                  var mult=(multas||[]).filter(function(mu){ return mu.veiculo_id==v.id&&((mu.data||"").slice(0,7)===todosMeses[idxSel-1]||(mu.vencimento||"").slice(0,7)===todosMeses[idxSel-1]); }).reduce(function(s,mu){ return s+Math.max(0,parseFloat(mu.valor||0)-(mu.cobrado_cliente==="pago"?parseFloat(mu.valor_cobrado||0):0)); },0);
+                  return {rec:rec,man:man,mult:mult,liq:rec-man-mult};
+                }):null;
+                var totRecAnt=lucVeiAnt?lucVeiAnt.reduce(function(s,x){return s+x.rec;},0):0;
+                var totDespAnt=lucVeiAnt?lucVeiAnt.reduce(function(s,x){return s+x.man+x.mult;},0):0;
+                var totLiqAnt=lucVeiAnt?lucVeiAnt.reduce(function(s,x){return s+x.liq;},0):0;
+                var avgLucAnt=lucVeiAnt&&lucVei.length>0?Math.round(totLiqAnt/lucVei.length):0;
+                function pctDiff(cur,ant){ if(!dsMesAnt||!ant) return null; return Math.round(((cur-ant)/Math.abs(ant))*100); }
+                function trendEl(pct,invertColor){
+                  if(pct===null) return null;
+                  var isPos=pct>=0; var isGood=invertColor?!isPos:isPos;
+                  return React.createElement('div',{style:{fontSize:10,color:isGood?C.green:C.red,marginTop:3,fontWeight:600}},
+                    (isPos?"↑ ":"↓ ")+Math.abs(pct)+"% vs. "+nomeMesAnt);
+                }
+
+                /* Modelos únicos para filter chips */
+                var modelosUnicos=[];
+                lucVei.forEach(function(x){
+                  var m=(x.v.modelo||x.v.marca||"").split(" ").slice(0,2).join(" ");
+                  if(m&&modelosUnicos.indexOf(m)<0) modelosUnicos.push(m);
+                });
+
+                /* Aplica filtro de modelo e ordenação */
+                var lucVeiFilt=lucVei.filter(function(x){
+                  if(filtroModeloVei==="todos") return true;
+                  return (x.v.modelo||x.v.marca||"").split(" ").slice(0,2).join(" ")===filtroModeloVei;
+                });
+                if(sortLucVeiState==="margem"){
+                  lucVeiFilt=lucVeiFilt.slice().sort(function(a,b){ var ma=a.rec>0?a.liq/a.rec:0; var mb=b.rec>0?b.liq/b.rec:0; return mb-ma; });
+                } else if(sortLucVeiState==="receita"){
+                  lucVeiFilt=lucVeiFilt.slice().sort(function(a,b){ return b.rec-a.rec; });
+                }
+
+                /* Ring SVG para eficiência */
+                var ringR=24; var ringCirc=2*Math.PI*ringR;
+                var ringPct=Math.max(0,Math.min(100,margGeral));
+                var ringOffset=ringCirc*(1-ringPct/100);
+                var ringColor=margGeral>=20?C.green:margGeral>=0?C.orange:C.red;
+
                 return React.createElement(React.Fragment,null,
 
-                  /* ── Hero banner resumo ── */
-                  React.createElement('div',{style:{background:"linear-gradient(135deg,"+C.purple+"22 0%,"+C.blue+"11 100%)",borderRadius:20,padding:"16px",border:"1px solid "+C.purple+"33",marginBottom:2}},
-                    React.createElement('div',{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}},
-                      React.createElement('div',null,
-                        React.createElement('div',{style:{fontSize:10,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:.6,marginBottom:3}},"\uD83D\uDCCA RESUMO GERAL · "+lucVei.length+" VEÍ"+"CULO"+(lucVei.length!==1?"S":"")),
-                        React.createElement('div',{style:{fontSize:22,fontWeight:900,color:totLiq>=0?C.green:C.red,lineHeight:1}},
-                          (totLiq>=0?"+":"")+fmtBRL(totLiq))
+                  /* ── Filter chips por modelo ── */
+                  modelosUnicos.length>1&&React.createElement('div',{style:{display:"flex",gap:6,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",paddingBottom:2,flexWrap:"nowrap"}},
+                    ["todos"].concat(modelosUnicos).map(function(m){
+                      var isSel=filtroModeloVei===m;
+                      return React.createElement('button',{key:m,onClick:function(){ setFiltroModeloVei(m); },
+                        style:{flexShrink:0,background:isSel?C.purple+"22":"transparent",border:"1.5px solid "+(isSel?C.purple:C.border),
+                          borderRadius:20,padding:"5px 12px",fontSize:11,fontWeight:700,cursor:"pointer",
+                          color:isSel?C.purple:C.sub,whiteSpace:"nowrap",fontFamily:"inherit",transition:"all .18s"}},
+                        isSel&&React.createElement('span',{style:{marginRight:4}},"✓"),
+                        m==="todos"?"🚗 Todos":m);
+                    })
+                  ),
+
+                  /* ── KPI 2×2 com tendência ── */
+                  React.createElement('div',{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}},
+                    [
+                      ["Receita Total",   totRec,  C.green,  pctDiff(totRec,totRecAnt),   false],
+                      ["Despesas",        totDesp, C.red,    pctDiff(totDesp,totDespAnt), true],
+                      ["Lucro Líquido",   totLiq,  totLiq>=0?C.green:C.red, pctDiff(totLiq,totLiqAnt), false],
+                      ["Lucro / Veículo", avgLuc,  avgLuc>=0?C.purple:C.red, pctDiff(avgLuc,avgLucAnt), false]
+                    ].map(function(r,i){
+                      return React.createElement('div',{key:i,style:{
+                        background:"var(--c-card)",borderRadius:16,border:"1px solid "+C.border,
+                        padding:"12px 14px",position:"relative",overflow:"hidden"
+                      }},
+                        React.createElement('div',{style:{position:"absolute",top:0,left:0,right:0,height:2,borderRadius:"16px 16px 0 0",background:r[2]}}),
+                        React.createElement('div',{style:{fontSize:9,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:.7,marginBottom:5}},r[0]),
+                        React.createElement('div',{style:{fontSize:16,fontWeight:900,color:r[2],lineHeight:1,letterSpacing:"-.3px"}},fmtBRL(r[1])),
+                        trendEl(r[3],r[4])
+                      );
+                    })
+                  ),
+
+                  /* ── Ring de eficiência ── */
+                  React.createElement('div',{style:{
+                    background:"var(--c-card)",border:"1px solid "+C.border,borderRadius:16,
+                    padding:"12px 16px",display:"flex",alignItems:"center",gap:14
+                  }},
+                    React.createElement('div',{style:{position:"relative",width:60,height:60,flexShrink:0}},
+                      React.createElement('svg',{width:60,height:60,viewBox:"0 0 60 60",style:{transform:"rotate(-90deg)"}},
+                        React.createElement('circle',{cx:30,cy:30,r:ringR,fill:"none",stroke:C.border,strokeWidth:6}),
+                        React.createElement('circle',{cx:30,cy:30,r:ringR,fill:"none",stroke:ringColor,strokeWidth:6,
+                          strokeDasharray:String(ringCirc),strokeDashoffset:String(ringOffset),strokeLinecap:"round"})
                       ),
-                      React.createElement('div',{style:{textAlign:"right"}},
-                        React.createElement('div',{style:{fontSize:10,color:C.sub,marginBottom:2}},"Margem Líquida"),
-                        React.createElement('div',{style:{fontSize:24,fontWeight:900,color:margGeral>=20?C.green:margGeral>=0?C.orange:C.red}},margGeral+"%")
+                      React.createElement('div',{style:{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}},
+                        React.createElement('div',{style:{fontSize:13,fontWeight:900,color:ringColor,lineHeight:1}},margGeral+"%"),
+                        React.createElement('div',{style:{fontSize:8,color:C.sub,fontWeight:600,marginTop:1}},"ROI")
                       )
                     ),
-                    React.createElement('div',{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}},
-                      [["Receita Total",totRec,C.green,"↑"],["Custos Totais",totDesp,C.red,"↓"],["Lucrativos",lucrativos+"/"+lucVei.length,lucrativos===lucVei.length?C.green:lucrativos>0?C.orange:C.red,"🚗"]
-                      ].map(function(r,i){
-                        return React.createElement('div',{key:i,style:{background:"var(--c-card)",borderRadius:13,padding:"10px 10px",textAlign:"center"}},
-                          React.createElement('div',{style:{fontSize:8,color:C.sub,fontWeight:700,textTransform:"uppercase",letterSpacing:.4,marginBottom:3}},r[0]),
-                          React.createElement('div',{style:{fontSize:i===2?15:13,fontWeight:900,color:r[2],lineHeight:1}},i===2?r[1]:fmtBRL(r[1]))
-                        );
-                      })
-                    ),
-                    React.createElement('div',null,
-                      React.createElement('div',{style:{display:"flex",justifyContent:"space-between",marginBottom:4}},
-                        React.createElement('span',{style:{fontSize:10,color:C.sub,fontWeight:600}},"Eficiência da frota"),
-                        React.createElement('span',{style:{fontSize:10,fontWeight:800,color:margGeral>=0?C.green:C.red}},margGeral+"%")
-                      ),
-                      React.createElement('div',{style:{background:"var(--c-border)",borderRadius:6,height:6,overflow:"hidden"}},
-                        React.createElement('div',{style:{height:"100%",width:Math.max(0,Math.min(100,margGeral))+"%",background:margGeral>=20?C.green:margGeral>=0?C.orange:C.red,borderRadius:6,transition:"width .5s"}})
+                    React.createElement('div',{style:{flex:1,minWidth:0}},
+                      React.createElement('div',{style:{fontSize:12,fontWeight:700,color:"var(--c-text)",marginBottom:3}},"Eficiência da Frota"),
+                      React.createElement('div',{style:{fontSize:10,color:C.sub,lineHeight:1.5}},lucVei.length+" veículos · "+nomeMesSel),
+                      React.createElement('div',{style:{display:"flex",gap:5,marginTop:6,flexWrap:"wrap"}},
+                        React.createElement('span',{style:{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:5,background:C.green+"20",color:C.green}},lucrativos+" lucrativos"),
+                        (lucVei.length-lucrativos)>0&&React.createElement('span',{style:{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:5,background:C.red+"20",color:C.red}},(lucVei.length-lucrativos)+" no negativo")
                       )
                     )
                   ),
 
-                  /* ── Ranking cards por veículo ── */
-                  React.createElement('div',{style:{background:"var(--c-card)",borderRadius:20,border:"1px solid "+C.border,overflow:"hidden"}},
-                    React.createElement('div',{style:{padding:"14px 16px 10px",borderBottom:"1px solid "+C.border,display:"flex",alignItems:"center",justifyContent:"space-between"}},
-                      React.createElement('div',{style:{fontSize:12,fontWeight:800}},"Ranking de Lucratividade"),
-                      React.createElement('div',{style:{fontSize:10,color:C.sub}},"ordenado por resultado líquido")
-                    ),
-                    React.createElement('div',{style:{display:"flex",flexDirection:"column"}},
-                      lucVei.map(function(x,i){
-                        var corLiq=x.liq>=0?C.green:C.red;
-                        var margem=x.rec>0?Math.round((x.liq/x.rec)*100):0;
-                        var pRec=Math.round((x.rec/maxRec)*100);
-                        var pDesp=x.rec>0?Math.min(100,Math.round(((x.man+x.mult)/x.rec)*100)):0;
-                        var medalha=i===0?"🥇":i===1?"🥈":i===2?"🥉":null;
-                        var placa=(x.v.placa||"S/P").toUpperCase();
-                        var modelo=(x.v.modelo||x.v.marca||"Veículo");
-                        var isLast=i===lucVei.length-1;
-                        var isNeg=x.liq<0;
-                        return React.createElement('div',{key:x.v.id,style:{
-                            padding:"12px 16px",
-                            borderBottom:isLast?"none":"1px solid "+C.border,
-                            background:isNeg?C.red+"08":"transparent",
-                            transition:"background .15s"
-                          }},
-                          /* Linha topo: posição + nome + resultado */
-                          React.createElement('div',{style:{display:"flex",alignItems:"center",gap:8,marginBottom:8}},
-                            /* Badge posição */
-                            React.createElement('div',{style:{
-                                width:28,height:28,borderRadius:9,flexShrink:0,
-                                background:i===0?"linear-gradient(135deg,#F5C842,#E8A020)":i===1?"linear-gradient(135deg,#C0C8D4,#8E9BAA)":i===2?"linear-gradient(135deg,#D4956A,#B0724A)":"var(--c-bg)",
-                                display:"flex",alignItems:"center",justifyContent:"center",
-                                fontSize:i<3?14:10,fontWeight:900,
-                                color:i<3?"#fff":C.sub,
-                                border:i>=3?"1px solid "+C.border:"none",
-                                boxShadow:i<3?"0 2px 6px rgba(0,0,0,0.18)":"none"
-                              }},
-                              i<3?medalha:"#"+(i+1)
-                            ),
-                            /* Placa + modelo */
-                            React.createElement('div',{style:{flex:1,minWidth:0}},
-                              React.createElement('div',{style:{display:"flex",alignItems:"center",gap:6,marginBottom:1}},
-                                React.createElement('span',{style:{
-                                    background:isNeg?C.red+"22":C.blue+"18",
-                                    color:isNeg?C.red:C.blue,
-                                    fontSize:9,fontWeight:800,letterSpacing:.6,
-                                    padding:"2px 6px",borderRadius:5,fontFamily:"monospace"
-                                  }},placa),
-                                React.createElement('span',{style:{fontSize:12,fontWeight:700,color:"var(--c-text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},modelo)
-                              ),
-                              React.createElement('div',{style:{fontSize:10,color:C.sub}},
-                                x.nCts+" contrato"+(x.nCts!==1?"s":"")+" · "+x.nDias+" dia"+(x.nDias!==1?"s":"")+" locado"+(x.nDias!==1?"s":""))
-                            ),
-                            /* Resultado líquido */
-                            React.createElement('div',{style:{textAlign:"right",flexShrink:0}},
-                              React.createElement('div',{style:{fontSize:14,fontWeight:900,color:corLiq,lineHeight:1}},
-                                (x.liq>=0?"+":"")+fmtBRL(x.liq)),
-                              React.createElement('div',{style:{
-                                  display:"inline-block",marginTop:3,
-                                  fontSize:9,fontWeight:800,letterSpacing:.3,
-                                  background:isNeg?C.red+"20":C.green+"20",
-                                  color:isNeg?C.red:C.green,
-                                  padding:"2px 6px",borderRadius:5
-                                }},
-                                (margem>=0?"+":"")+margem+"% margem")
-                            )
-                          ),
-                          /* Barras duplas */
-                          React.createElement('div',{style:{display:"flex",flexDirection:"column",gap:4}},
-                            /* Receita */
-                            React.createElement('div',{style:{display:"flex",alignItems:"center",gap:6}},
-                              React.createElement('span',{style:{fontSize:9,color:C.sub,fontWeight:600,width:48,flexShrink:0}},"Receita"),
-                              React.createElement('div',{style:{flex:1,background:"var(--c-bg)",borderRadius:4,height:6,overflow:"hidden"}},
-                                React.createElement('div',{style:{height:"100%",width:pRec+"%",background:C.green,borderRadius:4,transition:"width .5s"}})
-                              ),
-                              React.createElement('span',{style:{fontSize:9,fontWeight:700,color:C.green,width:72,textAlign:"right",flexShrink:0}},fmtBRL(x.rec))
-                            ),
-                            /* Custos */
-                            React.createElement('div',{style:{display:"flex",alignItems:"center",gap:6}},
-                              React.createElement('span',{style:{fontSize:9,color:C.sub,fontWeight:600,width:48,flexShrink:0}},"Custos"),
-                              React.createElement('div',{style:{flex:1,background:"var(--c-bg)",borderRadius:4,height:6,overflow:"hidden"}},
-                                React.createElement('div',{style:{height:"100%",width:pDesp+"%",background:isNeg?C.red:C.orange,borderRadius:4,transition:"width .5s"}})
-                              ),
-                              React.createElement('span',{style:{fontSize:9,fontWeight:700,color:isNeg?C.red:C.orange,width:72,textAlign:"right",flexShrink:0}},fmtBRL(x.man+x.mult))
-                            )
-                          )
-                        );
+                  /* ── Sort chips + título ── */
+                  React.createElement('div',{style:{display:"flex",alignItems:"center",justifyContent:"space-between"}},
+                    React.createElement('div',{style:{fontSize:11,fontWeight:800,color:"var(--c-text)"}},
+                      "Ranking"+(filtroModeloVei!=="todos"?" · "+filtroModeloVei:"")),
+                    React.createElement('div',{style:{display:"flex",gap:4}},
+                      ["lucro","margem","receita"].map(function(s){
+                        var isSel=sortLucVeiState===s;
+                        return React.createElement('button',{key:s,onClick:function(){ setSortLucVeiState(s); },
+                          style:{background:isSel?"var(--c-bg)":"transparent",
+                            border:"1px solid "+(isSel?C.purple+"66":C.border),
+                            borderRadius:8,padding:"4px 9px",fontSize:10,fontWeight:600,
+                            color:isSel?C.purple:C.sub,cursor:"pointer",fontFamily:"inherit",transition:"all .15s"}},
+                          s==="lucro"?"Lucro":s==="margem"?"Margem":"Receita");
                       })
                     )
+                  ),
+
+                  /* ── Cards por veículo ── */
+                  React.createElement('div',{style:{display:"flex",flexDirection:"column",gap:8}},
+                    lucVeiFilt.map(function(x,i){
+                      var corLiq=x.liq>=0?C.green:C.red;
+                      var margem=x.rec>0?Math.round((x.liq/x.rec)*100):0;
+                      var pRec=Math.round((x.rec/maxRec)*100);
+                      var pDesp=x.rec>0?Math.min(100,Math.round(((x.man+x.mult)/x.rec)*100)):0;
+                      var medalha=i===0?"🥇":i===1?"🥈":i===2?"🥉":null;
+                      var placa=(x.v.placa||"S/P").toUpperCase();
+                      var modelo=(x.v.modelo||x.v.marca||"Veículo");
+                      var isNeg=x.liq<0;
+                      var isExpanded=expandedVeiId===x.v.id;
+                      var roiMes=x.man>0?Math.round(((x.rec-x.man)/x.man)*100):0;
+
+                      /* Cor da accent bar lateral */
+                      var accentBg=i===0?"linear-gradient(180deg,#F5C842,#E8A020)":
+                                   i===1?"linear-gradient(180deg,#C0C8D4,#8E9BAA)":
+                                   i===2?"linear-gradient(180deg,#D4956A,#B0724A)":
+                                   isNeg?"linear-gradient(180deg,"+C.red+","+C.red+")":
+                                         "linear-gradient(180deg,"+C.green+","+C.green+")";
+
+                      return React.createElement('div',{key:x.v.id,style:{
+                        background:isNeg?C.red+"08":"var(--c-card)",
+                        borderRadius:16,
+                        border:"1px solid "+(isNeg?C.red+"44":C.border),
+                        overflow:"hidden",position:"relative",transition:"all .2s"
+                      }},
+
+                        /* Accent bar lateral */
+                        React.createElement('div',{style:{
+                          position:"absolute",left:0,top:0,bottom:0,width:3,
+                          background:accentBg,borderRadius:"3px 0 0 3px"
+                        }}),
+
+                        /* Card body (clicável para expandir) */
+                        React.createElement('div',{
+                          onClick:function(){ setExpandedVeiId(isExpanded?null:x.v.id); },
+                          style:{padding:"11px 14px 11px 18px",cursor:"pointer"}
+                        },
+                          /* Linha topo */
+                          React.createElement('div',{style:{display:"flex",alignItems:"center",gap:7,marginBottom:9}},
+                            /* Badge posição */
+                            React.createElement('div',{style:{
+                              width:26,height:26,borderRadius:8,flexShrink:0,
+                              background:i===0?"linear-gradient(135deg,#F5C842,#E8A020)":i===1?"linear-gradient(135deg,#C0C8D4,#8E9BAA)":i===2?"linear-gradient(135deg,#D4956A,#B0724A)":"var(--c-bg)",
+                              display:"flex",alignItems:"center",justifyContent:"center",
+                              fontSize:i<3?12:9,fontWeight:900,color:i<3?"#fff":C.sub,
+                              border:i>=3?"1px solid "+C.border:"none",
+                              boxShadow:i<3?"0 2px 6px rgba(0,0,0,0.18)":"none"
+                            }}, i<3?medalha:"#"+(i+1)),
+
+                            /* Placa + modelo + meta */
+                            React.createElement('div',{style:{flex:1,minWidth:0}},
+                              React.createElement('div',{style:{marginBottom:2}},
+                                React.createElement('span',{style:{
+                                  background:isNeg?C.red+"20":C.blue+"18",color:isNeg?C.red:C.blue,
+                                  fontSize:9,fontWeight:800,letterSpacing:.6,
+                                  padding:"2px 6px",borderRadius:5,fontFamily:"monospace"
+                                }},placa)
+                              ),
+                              React.createElement('div',{style:{fontSize:12,fontWeight:700,color:"var(--c-text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},modelo),
+                              React.createElement('div',{style:{fontSize:9,color:C.sub,marginTop:1}},
+                                x.nCts+" contrato"+(x.nCts!==1?"s":"")+" · "+x.nDias+" dia"+(x.nDias!==1?"s":""))
+                            ),
+
+                            /* Resultado */
+                            React.createElement('div',{style:{textAlign:"right",flexShrink:0}},
+                              React.createElement('div',{style:{fontSize:14,fontWeight:900,color:corLiq,lineHeight:1}},(x.liq>=0?"+":"")+fmtBRL(x.liq)),
+                              React.createElement('div',{style:{
+                                display:"inline-block",marginTop:3,fontSize:9,fontWeight:800,letterSpacing:.3,
+                                background:isNeg?C.red+"20":C.green+"20",color:isNeg?C.red:C.green,
+                                padding:"2px 6px",borderRadius:5
+                              }},(margem>=0?"+":"")+margem+"%")
+                            )
+                          ),
+
+                          /* Barras */
+                          React.createElement('div',{style:{display:"flex",flexDirection:"column",gap:5}},
+                            React.createElement('div',{style:{display:"flex",alignItems:"center",gap:6}},
+                              React.createElement('span',{style:{fontSize:9,color:C.sub,fontWeight:600,width:44,flexShrink:0}},"Receita"),
+                              React.createElement('div',{style:{flex:1,background:"var(--c-bg)",borderRadius:4,height:7,overflow:"hidden"}},
+                                React.createElement('div',{style:{height:"100%",width:pRec+"%",background:C.green,borderRadius:4,transition:"width .5s cubic-bezier(.4,0,.2,1)"}})
+                              ),
+                              React.createElement('span',{style:{fontSize:9,fontWeight:700,color:C.green,width:68,textAlign:"right",flexShrink:0}},fmtBRL(x.rec))
+                            ),
+                            React.createElement('div',{style:{display:"flex",alignItems:"center",gap:6}},
+                              React.createElement('span',{style:{fontSize:9,color:C.sub,fontWeight:600,width:44,flexShrink:0}},"Custos"),
+                              React.createElement('div',{style:{flex:1,background:"var(--c-bg)",borderRadius:4,height:7,overflow:"hidden"}},
+                                React.createElement('div',{style:{height:"100%",width:pDesp+"%",background:isNeg?C.red:C.orange,borderRadius:4,transition:"width .5s cubic-bezier(.4,0,.2,1)"}})
+                              ),
+                              React.createElement('span',{style:{fontSize:9,fontWeight:700,color:isNeg?C.red:C.orange,width:68,textAlign:"right",flexShrink:0}},fmtBRL(x.man+x.mult))
+                            )
+                          ),
+
+                          /* Alerta inline para veículo negativo */
+                          isNeg&&React.createElement('div',{style:{
+                            background:C.red+"12",border:"1px solid "+C.red+"30",
+                            borderRadius:8,padding:"5px 9px",marginTop:8,
+                            fontSize:10,color:C.red,fontWeight:600,display:"flex",alignItems:"center",gap:5
+                          }},React.createElement('span',null,"⚠️"),"Veículo com prejuízo — revisar despesas"),
+
+                          /* Expand hint */
+                          React.createElement('div',{style:{
+                            display:"flex",alignItems:"center",justifyContent:"center",gap:3,
+                            marginTop:8,fontSize:9,color:C.sub,fontWeight:600
+                          }}, isExpanded?"▴ fechar":"▾ detalhar")
+                        ),
+
+                        /* Seção expandida */
+                        isExpanded&&React.createElement('div',{style:{
+                          borderTop:"1px solid "+C.border,padding:"10px 14px 10px 18px",
+                          background:"var(--c-bg)"
+                        }},
+                          React.createElement('div',{style:{display:"flex",flexDirection:"column",gap:7}},
+                            [
+                              ["🔧 Manutenção",     fmtBRL(x.man),                          C.red],
+                              ["⚠️ Multas (líq.)",  fmtBRL(x.mult),                         C.red],
+                              ["📅 Dias locados",   x.nDias+" dia"+(x.nDias!==1?"s":""),    C.sub],
+                              ["📈 ROI mensal",     (x.man>0?roiMes:0)+"%",                 x.liq>=0?C.green:C.red],
+                              ["📊 Margem líquida", margem+"%",                              margem>=0?C.green:C.red]
+                            ].map(function(d,di){
+                              return React.createElement('div',{key:di,style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
+                                React.createElement('span',{style:{fontSize:11,color:C.sub}},d[0]),
+                                React.createElement('span',{style:{fontSize:11,fontWeight:700,color:d[2]}},d[1])
+                              );
+                            })
+                          )
+                        )
+                      );
+                    })
                   )
                 );
               })()

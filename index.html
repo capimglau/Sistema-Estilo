@@ -22276,10 +22276,16 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     /* ── Modo Dashboard: alterna entre Locadora e Pessoal ao clicar no logo ── */
     , modoDash === "pessoal"
       ? React.createElement(React.Fragment, null
-          /* Indicador de modo */
-          , React.createElement('div', { style: { display:'flex', alignItems:'center', justifyContent:'space-between', padding:'2px 4px 0' } },
-              React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', fontWeight:600 } }, '👤 Orçamento Pessoal'),
-              React.createElement('button', { onClick:function(){ setModoDash("locadora"); }, style:{ border:'none', background:'transparent', fontSize:11, color:'#007AFF', fontWeight:700, cursor:'pointer', padding:'2px 6px', borderRadius:8 } }, '← Locadora')
+          /* Indicador de modo — barra profissional */
+          , React.createElement('div', { style: { display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 4px 4px', gap:8 } },
+              React.createElement('div', { style:{ display:'flex', alignItems:'center', gap:8 } },
+                React.createElement('div', { style:{ width:32, height:32, borderRadius:'50%', background:'linear-gradient(135deg,#AF52DE22,#007AFF22)', border:'1.5px solid #AF52DE44', display:'flex', alignItems:'center', justifyContent:'center', fontSize:16 } }, '👤'),
+                React.createElement('div', null,
+                  React.createElement('div', { style:{ fontSize:13, fontWeight:800, color:'var(--c-text)', letterSpacing:-0.3 } }, 'Orçamento Pessoal'),
+                  React.createElement('div', { style:{ fontSize:10, color:'var(--c-sub)', fontWeight:500, marginTop:1 } }, 'Toque no logo para voltar à locadora')
+                )
+              ),
+              React.createElement('button', { onClick:function(){ setModoDash("locadora"); }, style:{ border:'1px solid #007AFF44', background:'#007AFF12', fontSize:11, color:'#007AFF', fontWeight:700, cursor:'pointer', padding:'5px 12px', borderRadius:20 } }, '← Locadora')
             )
           , React.createElement(OrcamentoPessoalInline, {
               contratos: contratos, despesas: despesas, receitas: receitas, manutencoes: manutencoes, multas: multas,
@@ -29758,6 +29764,174 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
         ),
         React.createElement(BarChartSVG, {months:mesesBar6, entradas:entradasBar6, saidas:saidasBar6, height:100})
       )
+
+      /* ══ FLUXO DE CAIXA PESSOAL ══ */
+      , (function(){
+        /* Gera os próximos 30 dias (ou dias do mês corrente, dependendo do filtro) */
+        var hoje3 = new Date().toISOString().split('T')[0];
+        var anoMes = filtroMes;
+        var anoN = parseInt(anoMes.slice(0,4),10);
+        var mesN = parseInt(anoMes.slice(5,7),10);
+        var numDias = new Date(anoN, mesN, 0).getDate();
+        /* Monta lista de dias do mês filtrado */
+        var dias3 = [];
+        for(var d3=1;d3<=numDias;d3++){
+          var ds = anoMes+'-'+(d3<10?'0'+d3:d3);
+          dias3.push(ds);
+        }
+        /* Para cada dia: entradas e saídas previstas */
+        var entDia = {};
+        var saiDia = {};
+        dias3.forEach(function(ds){ entDia[ds]=0; saiDia[ds]=0; });
+
+        /* Receita da locadora: distribui proporcionalmente nos dias com contratos previstos */
+        var ctsMesFluxo = contratos.filter(function(c){
+          if(c.status==='cancelado') return false;
+          if(c.status_pagamento==='pago'&&c.data_pagamento) return c.data_pagamento.slice(0,7)===anoMes;
+          return c.previsao_pagamento && c.previsao_pagamento.slice(0,7)===anoMes;
+        });
+        ctsMesFluxo.forEach(function(c){
+          var dtKey = (c.status_pagamento==='pago'&&c.data_pagamento)?c.data_pagamento:(c.previsao_pagamento||anoMes+'-01');
+          if(entDia[dtKey]!==undefined) entDia[dtKey] += parseFloat(c.valor_total||0);
+          else entDia[anoMes+'-01'] = (entDia[anoMes+'-01']||0) + parseFloat(c.valor_total||0);
+        });
+        /* Receitas avulsas */
+        receitas.filter(function(r){ return !r.ref_fatura && receitaDoMes(r,anoMes); }).forEach(function(r){
+          var dtKey = (r.data_pagamento||r.data||anoMes+'-01').slice(0,10);
+          if(entDia[dtKey]!==undefined) entDia[dtKey] += parseFloat(r.valor||0);
+        });
+        /* Lançamentos pessoais de receita */
+        todosVisiveis.filter(function(it){ return it.tipo==='receita'; }).forEach(function(it){
+          var dtKey = (it.data||anoMes+'-01').slice(0,10);
+          if(entDia[dtKey]!==undefined) entDia[dtKey] += parseFloat(it.valor||0);
+        });
+        /* Lançamentos pessoais de despesa */
+        todosVisiveis.filter(function(it){ return it.tipo==='despesa'; }).forEach(function(it){
+          var dtKey = (it.data||anoMes+'-28').slice(0,10);
+          if(saiDia[dtKey]!==undefined) saiDia[dtKey] += parseFloat(it.valor||0);
+        });
+
+        /* Acumula saldo corrente */
+        var saldoAcum3 = 0;
+        var fluxoPts = dias3.map(function(ds){
+          saldoAcum3 += (entDia[ds]||0) - (saiDia[ds]||0);
+          return { ds:ds, ent:entDia[ds]||0, sai:saiDia[ds]||0, saldo:saldoAcum3 };
+        });
+
+        /* SVG fluxo de caixa (linha de saldo + barras de entrada/saída) */
+        var W3=320, H3=120, PAD_L=8, PAD_R=8, PAD_T=14, PAD_B=24;
+        var innerW=W3-PAD_L-PAD_R;
+        var innerH=H3-PAD_T-PAD_B;
+        var maxSaldo=Math.max.apply(null,fluxoPts.map(function(p){return p.saldo;}));
+        var minSaldo=Math.min.apply(null,fluxoPts.map(function(p){return p.saldo;}));
+        var rangeY=Math.max(Math.abs(maxSaldo),Math.abs(minSaldo),1)*1.15;
+        var midY=PAD_T+innerH/2;
+        function toY3(v){ return midY - (v/rangeY)*(innerH/2); }
+        function toX3(i){ return PAD_L + (i/(fluxoPts.length-1||1))*innerW; }
+
+        /* Linha do saldo */
+        var pts3 = fluxoPts.map(function(p,i){ return toX3(i)+','+toY3(p.saldo).toFixed(1); }).join(' ');
+        /* Área preenchida */
+        var areaPath = 'M '+toX3(0)+','+midY+' '+fluxoPts.map(function(p,i){ return 'L '+toX3(i)+','+toY3(p.saldo).toFixed(1); }).join(' ')+' L '+toX3(fluxoPts.length-1)+','+midY+' Z';
+
+        /* Barras de entrada (verde) e saída (vermelho) */
+        var barW = Math.max(2, innerW/numDias*0.45);
+        var maxBar=Math.max.apply(null,fluxoPts.map(function(p){return Math.max(p.ent,p.sai);}),1);
+        function barH3(v){ return v>0 ? Math.max(2,(v/maxBar)*innerH*0.38) : 0; }
+
+        /* KPIs do fluxo */
+        var totalEntFluxo = fluxoPts.reduce(function(s,p){return s+p.ent;},0);
+        var totalSaiFluxo = fluxoPts.reduce(function(s,p){return s+p.sai;},0);
+        var saldoFinal = fluxoPts.length>0?fluxoPts[fluxoPts.length-1].saldo:0;
+
+        return React.createElement('div', {style:{background:'var(--c-card)',borderRadius:18,padding:'14px 16px',border:'1px solid '+C.border}},
+          /* Header */
+          React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+            React.createElement('div', {style:{fontSize:12,fontWeight:700,color:'var(--c-text)'}}, '💧 Fluxo de Caixa — '+new Date(anoMes+'-15').toLocaleString('pt-BR',{month:'long'})),
+            React.createElement('div', {style:{fontSize:11,fontWeight:800,color:saldoFinal>=0?C.green:C.red}}, (saldoFinal>=0?'+':'')+fmtBRL(saldoFinal))
+          ),
+          /* KPIs linha */
+          React.createElement('div', {style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:12}},
+            React.createElement('div', {style:{background:C.green+'11',borderRadius:10,padding:'7px 10px',textAlign:'center'}},
+              React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',marginBottom:2}}, 'Receitas Previstas'),
+              React.createElement('div', {style:{fontSize:12,fontWeight:800,color:C.green}}, fmtBRL(totalReceita))
+            ),
+            React.createElement('div', {style:{background:C.red+'11',borderRadius:10,padding:'7px 10px',textAlign:'center'}},
+              React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',marginBottom:2}}, 'Despesas'),
+              React.createElement('div', {style:{fontSize:12,fontWeight:800,color:C.red}}, fmtBRL(despPessoais))
+            ),
+            React.createElement('div', {style:{background:(saldo>=0?C.blue:C.orange)+'11',borderRadius:10,padding:'7px 10px',textAlign:'center'}},
+              React.createElement('div', {style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',marginBottom:2}}, 'Saldo Previsto'),
+              React.createElement('div', {style:{fontSize:12,fontWeight:800,color:saldo>=0?C.blue:C.orange}}, fmtBRL(saldo))
+            )
+          ),
+          /* Legenda receitas */
+          React.createElement('div', {style:{display:'flex',gap:12,fontSize:10,color:C.sub,marginBottom:8,flexWrap:'wrap'}},
+            React.createElement('span', null, '🚗 Locadora: ',React.createElement('b', {style:{color:C.blue}}, fmtBRL(lucroLocadora))),
+            entradasExtras>0&&React.createElement('span', null, '➕ Extras: ',React.createElement('b', {style:{color:C.teal}}, fmtBRL(entradasExtras)))
+          ),
+          /* SVG chart */
+          React.createElement('div', {style:{overflowX:'auto',WebkitOverflowScrolling:'touch'}},
+            React.createElement('svg', {
+              viewBox:'0 0 '+W3+' '+H3,
+              width:'100%', height:H3,
+              style:{display:'block',minWidth:240}
+            },
+              /* Grade zero */
+              React.createElement('line', {x1:PAD_L,y1:midY,x2:W3-PAD_R,y2:midY,stroke:C.border,strokeWidth:1,strokeDasharray:'3 3'}),
+              /* Barras de entrada */
+              fluxoPts.map(function(p,i){
+                if(!p.ent) return null;
+                var bh=barH3(p.ent);
+                return React.createElement('rect', {key:'e'+i,
+                  x:toX3(i)-barW, y:midY-bh, width:barW, height:bh,
+                  fill:C.green, opacity:0.55, rx:1.5});
+              }),
+              /* Barras de saída */
+              fluxoPts.map(function(p,i){
+                if(!p.sai) return null;
+                var bh=barH3(p.sai);
+                return React.createElement('rect', {key:'s'+i,
+                  x:toX3(i)+1, y:midY, width:barW, height:bh,
+                  fill:C.red, opacity:0.45, rx:1.5});
+              }),
+              /* Área saldo */
+              React.createElement('path', {d:areaPath, fill:'url(#fluxoGrad)', opacity:0.3}),
+              /* Linha saldo */
+              React.createElement('polyline', {points:pts3, fill:'none', stroke:saldoFinal>=0?C.blue:C.orange, strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round'}),
+              /* Gradiente */
+              React.createElement('defs', null,
+                React.createElement('linearGradient', {id:'fluxoGrad',x1:'0',y1:'0',x2:'0',y2:'1'},
+                  React.createElement('stop', {offset:'0%',stopColor:saldoFinal>=0?C.blue:C.orange,stopOpacity:0.6}),
+                  React.createElement('stop', {offset:'100%',stopColor:saldoFinal>=0?C.blue:C.orange,stopOpacity:0.0})
+                )
+              ),
+              /* Marcador dia atual */
+              (function(){
+                var idx3=fluxoPts.findIndex(function(p){return p.ds===hoje3;});
+                if(idx3<0) return null;
+                var x3=toX3(idx3);
+                return React.createElement('g', null,
+                  React.createElement('line', {x1:x3,y1:PAD_T,x2:x3,y2:H3-PAD_B,stroke:C.orange,strokeWidth:1.5,strokeDasharray:'2 2',opacity:0.7}),
+                  React.createElement('text', {x:x3,y:PAD_T-2,textAnchor:'middle',fontSize:7,fontWeight:700,fill:C.orange}, 'HOJE')
+                );
+              })(),
+              /* Eixo X: só início e fim */
+              React.createElement('text', {x:PAD_L,y:H3-PAD_B+10,fontSize:7,fill:C.sub,textAnchor:'start'}, '1'),
+              React.createElement('text', {x:W3-PAD_R,y:H3-PAD_B+10,fontSize:7,fill:C.sub,textAnchor:'end'}, numDias),
+              /* Label saldo máx */
+              maxSaldo>0&&React.createElement('text', {x:W3-PAD_R,y:PAD_T,fontSize:7,fill:C.green,textAnchor:'end'}, '+'+fmtBRL(maxSaldo).replace('R$ ','R$')),
+              minSaldo<0&&React.createElement('text', {x:W3-PAD_R,y:H3-PAD_B,fontSize:7,fill:C.red,textAnchor:'end'}, fmtBRL(minSaldo).replace('R$ ','-R$'))
+            )
+          ),
+          /* Legenda chart */
+          React.createElement('div', {style:{display:'flex',gap:14,fontSize:10,color:C.sub,marginTop:8,justifyContent:'center'}},
+            React.createElement('span', null, React.createElement('span', {style:{display:'inline-block',width:8,height:8,borderRadius:2,background:C.green,marginRight:3,opacity:0.7}}), 'Entradas'),
+            React.createElement('span', null, React.createElement('span', {style:{display:'inline-block',width:8,height:8,borderRadius:2,background:C.red,marginRight:3,opacity:0.6}}), 'Saídas'),
+            React.createElement('span', null, React.createElement('span', {style:{display:'inline-block',width:16,height:2,background:saldoFinal>=0?C.blue:C.orange,marginRight:3,verticalAlign:'middle'}}), 'Saldo acumulado')
+          )
+        );
+      })()
 
       /* Próximas contas a vencer */
       , proxVencer.length > 0 && React.createElement('div', {style:{background:'var(--c-card)',borderRadius:18,padding:'14px 16px',border:'1px solid '+C.orange+'44'}},

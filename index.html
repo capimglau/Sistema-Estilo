@@ -41572,29 +41572,60 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     var r = pill.getBoundingClientRect();
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
+
+  /* Retorna o botão de aba principal mais próximo de x (ignora sub-abas) */
+  function nearestMainTab(x) {
+    if (!pill) return null;
+    var btns = Array.from(pill.querySelectorAll('.lg-nav-btn[data-tab-id]'));
+    var best = null, bd = Infinity;
+    btns.forEach(function(b) {
+      var r = b.getBoundingClientRect();
+      var d = Math.abs(x - (r.left + r.width / 2));
+      if (d < bd) { bd = d; best = b; }
+    });
+    return best;
+  }
+
   document.addEventListener('touchstart', function (e) {
     var t = e.touches[0];
     if (!inPill(t.clientX, t.clientY)) return;
     touching = true;
+    _swipeMainBtn = nearestMainTab(t.clientX);
     snapTo(nearest(t.clientX), false);
   }, { passive: true, capture: true });
 
+  var _swipeMainBtn = null;
+  var _swipeNavTs   = 0;
   document.addEventListener('touchmove', function (e) {
     if (!touching) return;
-    snapTo(nearest(e.touches[0].clientX), true);
+    var x = e.touches[0].clientX;
+    snapTo(nearest(x), true);
+
+    /* Troca aba principal ao passar o dedo — sem tocar em sub-abas */
+    var mb = nearestMainTab(x);
+    if (mb && mb !== _swipeMainBtn) {
+      _swipeMainBtn = mb;
+      var now = Date.now();
+      if (now - _swipeNavTs > 280) {
+        _swipeNavTs = now;
+        var tid = mb.getAttribute('data-tab-id');
+        if (tid && window.__ag_navTab) window.__ag_navTab(tid);
+      }
+    }
   }, { passive: true, capture: true });
 
   var _blobNavTs = 0;
   document.addEventListener('touchend', function (e) {
     if (!touching) return;
     touching = false;
+    _swipeMainBtn = null;
     var t = e.changedTouches[0];
-    /* Se soltou dentro da pill, navega para a aba mais próxima */
+    /* Se soltou dentro da pill, confirma a aba (ou clica sub-aba se for o caso) */
     if (inPill(t.clientX, t.clientY)) {
       var btn = nearest(t.clientX);
       if (btn) {
         var now = Date.now();
-        if (now - _blobNavTs > 350) {   /* debounce: evita double-fire com click nativo */
+        if (now - _blobNavTs > 350 && now - _swipeNavTs > 350) {
           _blobNavTs = now;
           btn.click();
         }
@@ -41794,89 +41825,75 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
 </script>
 
 <script id="ag-dock-magnify">
-/* ── Dock Magnify — efeito App Store ──────────────────────────────
-   Swipe: ícones crescem (1.55×) ao arrastar. Tap: sem escala (blob já dá feedback).
-   Funciona com touch e mouse. Reset suave ao soltar.                    */
+/* ── Dock Magnify — listeners no document, sobrevivem a re-renders React ──
+   Swipe: ícones crescem 1.55×. Tap: sem escala (blob dá feedback).         */
 (function(){
-  var MAX_SCALE  = 1.55;   // escala máxima no swipe
-  var NEIGHBOR   = 1.22;
+  var MAX_SCALE  = 1.55;
   var RADIUS     = 90;
   var TRANSITION = 'transform 0.18s cubic-bezier(0.34,1.4,0.64,1)';
   var RESET_TR   = 'transform 0.30s cubic-bezier(0.22,1,0.36,1)';
 
-  function getButtons(pill) {
-    return Array.from(pill.querySelectorAll('.lg-nav-btn'));
+  function getPill() {
+    var all = document.querySelectorAll('.lg-nav-pill');
+    for (var i = all.length - 1; i >= 0; i--)
+      if (all[i].querySelector('.lg-nav-btn')) return all[i];
+    return null;
   }
-
-  function applyMagnify(pill, clientX, maxScale) {
+  function getButtons() {
+    var p = getPill(); return p ? Array.from(p.querySelectorAll('.lg-nav-btn')) : [];
+  }
+  function inPill(x, y) {
+    var p = getPill(); if (!p) return false;
+    var r = p.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+  function applyMagnify(clientX, maxScale) {
     var ms = (maxScale !== undefined) ? maxScale : MAX_SCALE;
-    var btns = getButtons(pill);
-    btns.forEach(function(btn) {
-      var rect = btn.getBoundingClientRect();
-      var center = rect.left + rect.width / 2;
-      var dist = Math.abs(clientX - center);
-      var t = Math.max(0, 1 - dist / RADIUS);
+    getButtons().forEach(function(btn) {
+      var r = btn.getBoundingClientRect();
+      var t = Math.max(0, 1 - Math.abs(clientX - (r.left + r.width/2)) / RADIUS);
       t = t * t;
-      var scale = 1 + (ms - 1) * t;
-      btn.style.transition = TRANSITION;
-      btn.style.transform = 'scale(' + scale + ')';
+      btn.style.transition     = TRANSITION;
+      btn.style.transform      = 'scale(' + (1 + (ms-1)*t) + ')';
       btn.style.transformOrigin = 'center center';
-      btn.style.zIndex = t > 0.5 ? '10' : '1';
+      btn.style.zIndex         = t > 0.5 ? '10' : '1';
     });
   }
-
-  function resetMagnify(pill) {
-    var btns = getButtons(pill);
-    btns.forEach(function(btn) {
+  function resetMagnify() {
+    getButtons().forEach(function(btn) {
       btn.style.transition = RESET_TR;
-      btn.style.transform = 'scale(1)';
-      btn.style.zIndex = '';
+      btn.style.transform  = 'scale(1)';
+      btn.style.zIndex     = '';
     });
   }
 
-  function attachToPill(pill) {
-    if (pill._magnifyAttached) return;
-    pill._magnifyAttached = true;
+  var _touching = false;
 
-    var _moved = false;
+  document.addEventListener('touchstart', function(e) {
+    var t = e.touches[0];
+    if (!inPill(t.clientX, t.clientY)) return;
+    _touching = true;
+    applyMagnify(t.clientX, 1.0); /* tap: sem escala */
+  }, { passive: true });
 
-    // Touch
-    pill.addEventListener('touchstart', function(e) {
-      _moved = false;
-      /* tap: escala 1.0 = sem jump; o blob já indica a aba */
-      applyMagnify(pill, e.touches[0].clientX, 1.0);
-    }, { passive: true });
-    pill.addEventListener('touchmove', function(e) {
-      _moved = true;
-      /* swipe: escala completa 1.55 */
-      applyMagnify(pill, e.touches[0].clientX, MAX_SCALE);
-    }, { passive: true });
-    pill.addEventListener('touchend', function() {
-      resetMagnify(pill);
-    }, { passive: true });
-    pill.addEventListener('touchcancel', function() {
-      resetMagnify(pill);
-    }, { passive: true });
+  document.addEventListener('touchmove', function(e) {
+    if (!_touching) return;
+    applyMagnify(e.touches[0].clientX, MAX_SCALE); /* swipe: 1.55× */
+  }, { passive: true });
 
-    // Mouse (desktop)
-    pill.addEventListener('mouseenter', function(e) {
-      applyMagnify(pill, e.clientX, MAX_SCALE);
-    });
-    pill.addEventListener('mousemove', function(e) {
-      applyMagnify(pill, e.clientX, MAX_SCALE);
-    });
-    pill.addEventListener('mouseleave', function() {
-      resetMagnify(pill);
-    });
-  }
+  document.addEventListener('touchend', function() {
+    if (!_touching) return;
+    _touching = false; resetMagnify();
+  }, { passive: true });
 
-  function init() {
-    var pills = document.querySelectorAll('.lg-nav-pill');
-    pills.forEach(attachToPill);
-  }
+  document.addEventListener('touchcancel', function() {
+    _touching = false; resetMagnify();
+  }, { passive: true });
 
-  setTimeout(init, 600);
-  setInterval(init, 2000);
+  document.addEventListener('mousemove', function(e) {
+    if (inPill(e.clientX, e.clientY)) applyMagnify(e.clientX, MAX_SCALE);
+    else if (!_touching) resetMagnify();
+  }, { passive: true });
 })();
 </script>
 

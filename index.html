@@ -25129,40 +25129,97 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
         )
       ),
 
-      // ── Resumo Geral (apenas quando "Todos os veículos") ──
+      // ── Gráfico ROI por cenário de venda ──
       veicFiltro === 'todos' && (function(){
         var base = dadosComFipe;
-        var totRec    = base.reduce(function(s,d){return s+d.receitaTotal;},0);
-        var totDesp   = base.reduce(function(s,d){return s+d.custoSemManut+d.custoManut;},0);
-        var totDeprecTotal = base.reduce(function(s,d){return s+d.deprecMensal;},0);
-        var totLucro  = base.reduce(function(s,d){return s+(deprecMeses>0?d.lucroLiqDeprec:d.lucroTotal);},0);
+        var totLucro  = base.reduce(function(s,d){return s+d.lucroTotal;},0);
         var totInvest = base.reduce(function(s,d){return s+(d.baseInvest||d.valorAq||0);},0);
-        var nVeics    = base.length;
-        var lucroMedio = nVeics > 0 ? totLucro / nVeics : 0;
-        var roiMedio   = totInvest > 0 ? (totLucro / totInvest * 100) : 0;
-        if (nVeics === 0) return null;
-        return React.createElement('div',{style:{marginTop:14,paddingTop:14,borderTop:'1px solid var(--c-border)'}},
-          // Resumo compacto — 1 linha
-          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',
-            background:'var(--c-card)',borderRadius:14,padding:'12px 14px',marginTop:10,marginBottom:2,
-            boxShadow:'0 1px 6px rgba(0,0,0,0.05)'}},
-            [{l:'Receita',v:fR2(totRec),c:'var(--c-green)'},
-             {l:'Despesa',v:fR2(totDesp),c:'var(--c-red)'},
-             {l:'Lucro',v:fR2(totLucro),c:totLucro>=0?'var(--c-blue)':'var(--c-red)'},
-             {l:'ROI',v:(roiMedio>=0?'+':'')+roiMedio.toFixed(2).replace('.',',')+'%',c:roiMedio>=0?'#C9A227':'var(--c-red)'},
-            ].map(function(s,i){
-              return React.createElement('div',{key:i,style:{textAlign:'center'}},
-                React.createElement('div',{style:{fontSize:10,color:'var(--c-sub)',marginBottom:2}},s.l),
-                React.createElement('div',{style:{fontSize:13,fontWeight:800,color:s.c}},s.v)
+        if(base.length===0 || totInvest===0) return null;
+
+        // Calcula ROI para cada cenário (bruto = sem deprec; 12/24/36/48/60 = com deprec proporcional)
+        var cenarios = [
+          {key:0,   label:'Bruto'},
+          {key:12,  label:'12m'},
+          {key:24,  label:'24m'},
+          {key:36,  label:'36m'},
+          {key:48,  label:'48m'},
+          {key:60,  label:'60m'},
+        ].map(function(c){
+          var lucroC;
+          if(c.key===0){
+            lucroC = totLucro;
+          } else {
+            var totDeprecC = base.reduce(function(s,d){
+              var bi = d.baseInvest||d.valorAq||0;
+              return s + (bi>0 ? (bi*0.20)/c.key : 0);
+            },0);
+            lucroC = totLucro - totDeprecC;
+          }
+          return Object.assign({},c,{ roi: totInvest>0 ? lucroC/totInvest*100 : 0, lucro: lucroC });
+        });
+
+        var maxAbs = Math.max.apply(null, cenarios.map(function(c){ return Math.abs(c.roi); }).concat([0.01]));
+
+        return React.createElement('div',{style:{
+          marginTop:14, paddingTop:14, borderTop:'1px solid var(--c-border)'
+        }},
+          React.createElement('div',{style:{
+            fontSize:10,fontWeight:700,color:'var(--c-sub)',
+            textTransform:'uppercase',letterSpacing:0.7,marginBottom:10
+          }},'ROI mensal por prazo de venda'),
+
+          React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:5}},
+            cenarios.map(function(c){
+              var isSel  = c.key === deprecMeses;
+              var isPos  = c.roi >= 0;
+              var pct    = Math.abs(c.roi) / maxAbs * 100;
+              var cor    = isPos ? C.green : C.red;
+              var roiTxt = (isPos?'+':'')+c.roi.toFixed(2).replace('.',',')+'%';
+              return React.createElement('div',{
+                key:c.key,
+                onClick:function(){ setDeprecMeses(c.key); },
+                style:{
+                  display:'flex', alignItems:'center', gap:8,
+                  cursor:'pointer',
+                  padding:'5px 8px',
+                  borderRadius:9,
+                  background: isSel ? 'rgba(120,120,128,0.09)' : 'transparent',
+                  border: isSel ? '1px solid var(--c-border)' : '1px solid transparent',
+                  transition:'background .15s'
+                }
+              },
+                // Label
+                React.createElement('span',{style:{
+                  fontSize:11, fontWeight: isSel?800:500,
+                  color: isSel ? 'var(--c-text)' : 'var(--c-sub)',
+                  width:34, flexShrink:0, textAlign:'right'
+                }},c.label),
+                // Bar track
+                React.createElement('div',{style:{
+                  flex:1, height:8,
+                  background:'rgba(120,120,128,0.10)',
+                  borderRadius:99, overflow:'hidden'
+                }},
+                  React.createElement('div',{style:{
+                    width:pct+'%', height:'100%',
+                    background: isSel
+                      ? (isPos?'linear-gradient(90deg,#15803d,#22c55e)':'rgba(255,59,48,0.85)')
+                      : (isPos?'rgba(34,197,94,0.55)':'rgba(255,59,48,0.45)'),
+                    borderRadius:99,
+                    transition:'width .5s cubic-bezier(.4,0,.2,1)'
+                  }})
+                ),
+                // Value
+                React.createElement('span',{style:{
+                  fontSize:12, fontWeight: isSel?800:600,
+                  color: isSel ? cor : 'var(--c-sub)',
+                  width:54, textAlign:'right', flexShrink:0
+                }},roiTxt),
+                // Selecionado indicator
+                isSel && React.createElement('span',{style:{fontSize:9,color:C.blue,flexShrink:0}},'✓')
               );
             })
-          ),
-          // Lucro médio
-          nVeics > 1 && React.createElement('div',{style:{display:'flex',justifyContent:'space-between',
-            background:'rgba(120,120,128,0.07)',borderRadius:10,padding:'7px 14px',marginTop:6}},
-            React.createElement('span',{style:{fontSize:12,color:'var(--c-sub)'}},'Lucro médio por veículo'),
-            React.createElement('span',{style:{fontSize:12,fontWeight:700,color:lucroMedio>=0?'var(--c-blue)':'var(--c-red)'}},fR2(lucroMedio))
-          ),
+          )
         );
       })(),
 

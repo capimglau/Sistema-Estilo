@@ -170,7 +170,7 @@ input[type=file]{display:none}
   pointer-events: none;
   z-index: 0;          /* botões (position:relative, sem z-index) pintam por cima */
   opacity: 1;
-  will-change: left, width, height, top;
+  will-change: left, width;
   background:
     radial-gradient(ellipse at 38% 28%, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.22) 38%, transparent 68%),
     radial-gradient(ellipse at 68% 72%, rgba(180,210,255,0.28) 0%, transparent 58%),
@@ -39688,7 +39688,7 @@ if (!__viewerMode) {
   function attachBounce(btn) {
     if (btn.dataset.agB) return; btn.dataset.agB = '1';
     btn.addEventListener('click', function() {
-      if (btn.closest('.lg-nav-pill')) return; /* dock: blob já dá feedback visual */
+      if (btn.closest('.lg-nav-pill')) return;
       btn.classList.add('icon-bouncing');
       btn.addEventListener('animationend', function h() { btn.classList.remove('icon-bouncing'); btn.removeEventListener('animationend', h); });
     }, { passive: true });
@@ -41442,7 +41442,7 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
 </script>
 
 <script>
-/* DOCK BUBBLE v8 — blob cresce verticalmente na aba ativa (Apple Music style) */
+/* DOCK BUBBLE v8 — blob original + ícone ativo sobe (translateY) */
 (function () {
   var blob      = null;
   var pill      = null;
@@ -41450,10 +41450,7 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
   var savedLeft = -999;
   var savedWidth = 60;
   var pillObs   = null;
-
-  var H_FLAT = 54;   /* altura normal (durante swipe) */
-  var H_TALL = 72;   /* altura elevada (aba ativa) */
-  var Y_LIFT = 9;    /* px que o ícone sobe */
+  var Y_LIFT    = 9; /* px que o ícone ativo sobe */
 
   function getPill() {
     var all = document.querySelectorAll('.lg-nav-pill');
@@ -41481,61 +41478,45 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     });
     return best;
   }
-  function nearestMain(clientX) {
-    if (!pill) return null;
-    var best = null, bd = Infinity;
-    Array.from(pill.querySelectorAll('.lg-nav-btn[data-tab-id]')).forEach(function (b) {
-      var r = b.getBoundingClientRect();
-      var d = Math.abs(clientX - (r.left + r.width / 2));
-      if (d < bd) { bd = d; best = b; }
-    });
-    return best;
-  }
 
-  /* tall=true → bolha alta (aba ativa); tall=false → bolha plana (durante swipe) */
-  function snapTo(btn, animate, tall) {
+  /* posiciona blob — usa getBCR para fidelidade de posição */
+  function snapTo(btn, animate) {
     if (!pill || !blob || !btn) return;
-    var x = btn.offsetLeft;
-    var w = btn.offsetWidth;
+    var pr = pill.getBoundingClientRect();
+    var br = btn.getBoundingClientRect();
+    var x  = br.left - pr.left;
+    var w  = br.width;
     savedLeft  = x;
     savedWidth = w;
-    var h   = tall ? H_TALL : H_FLAT;
-    var top = tall ? 'calc(50% - ' + (Y_LIFT/2) + 'px)' : '50%';
-    var tr  = animate
-      ? 'left .32s cubic-bezier(.34,1.56,.64,1),' +
-        'width .32s cubic-bezier(.34,1.56,.64,1),' +
-        'height .32s cubic-bezier(.34,1.56,.64,1),' +
-        'top .32s cubic-bezier(.34,1.56,.64,1)'
-      : 'none';
-    blob.style.transition = tr;
-    blob.style.left   = x + 'px';
-    blob.style.width  = w + 'px';
-    blob.style.height = h + 'px';
-    blob.style.top    = top;
-    if (!animate) void blob.offsetWidth;
+    if (!animate) {
+      blob.style.transition = 'none';
+      blob.style.left  = x + 'px';
+      blob.style.width = w + 'px';
+      void blob.offsetWidth;
+    } else {
+      blob.style.transition =
+        'left .35s cubic-bezier(.34,1.56,.64,1),' +
+        'width .35s cubic-bezier(.34,1.56,.64,1)';
+      blob.style.left  = x + 'px';
+      blob.style.width = w + 'px';
+    }
   }
 
-  /* Eleva/abaixa os botões via transform translateY */
-  function updateBtnLifts(animate) {
+  /* sobe o ícone ativo, abaixa os demais */
+  function liftActive(animate) {
     getBtns().forEach(function (b) {
-      var active = b.classList.contains('lg-nav-btn-active');
-      var ty = active ? -Y_LIFT : 0;
+      var isActive = b.classList.contains('lg-nav-btn-active');
+      var ty = isActive ? -Y_LIFT : 0;
       b.style.transition = animate
         ? 'transform 0.32s cubic-bezier(0.34,1.56,0.64,1)'
-        : 'none';
-      /* preserva scale se magnify tiver atuado */
-      var cur = b.style.transform || '';
-      var scaleMatch = cur.match(/scale\([^)]+\)/);
-      var scaleStr = scaleMatch ? ' ' + scaleMatch[0] : ' scale(1)';
-      b.style.transform = 'translateY(' + ty + 'px)' + scaleStr;
+        : 'transform 0s';
+      b.style.transform      = 'translateY(' + ty + 'px) scale(1)';
+      b.style.transformOrigin = 'center center';
     });
   }
 
   var classObs = new MutationObserver(function () {
-    if (!touching) {
-      snapTo(getActiveBtn(), true, true);
-      updateBtnLifts(true);
-    }
+    if (!touching) { snapTo(getActiveBtn(), true); liftActive(true); }
   });
   function watchClasses() {
     classObs.disconnect();
@@ -41565,7 +41546,8 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
               np.insertBefore(blob, np.firstChild);
               pill = np;
               void blob.offsetWidth;
-              snapTo(getActiveBtn(), true, true);
+              snapTo(getActiveBtn(), true);
+              liftActive(true);
               watchClasses();
             }
             return;
@@ -41576,11 +41558,7 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     pillObs.observe(p, { childList: true });
     requestAnimationFrame(function () {
       var active = getActiveBtn();
-      if (active) {
-        snapTo(active, animate, true);
-        updateBtnLifts(false);
-        watchClasses();
-      }
+      if (active) { snapTo(active, animate); liftActive(false); watchClasses(); }
     });
   }
 
@@ -41597,61 +41575,47 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
   document.addEventListener('touchstart', function (e) {
     var t = e.touches[0];
     if (!inPill(t.clientX, t.clientY)) return;
-    touching = true;
-    _didMove  = false;
-    _startX   = t.clientX;
-    snapTo(nearest(t.clientX), false, false); /* bolha plana imediatamente */
+    touching = true; _didMove = false; _startX = t.clientX;
+    snapTo(nearest(t.clientX), false);
   }, { passive: true, capture: true });
 
   document.addEventListener('touchmove', function (e) {
     if (!touching) return;
     var x = e.touches[0].clientX;
     if (Math.abs(x - _startX) > 5) _didMove = true;
-    snapTo(nearest(x), true, false); /* bolha plana segue o dedo */
+    snapTo(nearest(x), true);
   }, { passive: true, capture: true });
 
   document.addEventListener('touchend', function (e) {
     if (!touching) return;
     touching = false;
-    var moved = _didMove;
-    _didMove = false;
+    var moved = _didMove; _didMove = false;
     var t = e.changedTouches[0];
     if (inPill(t.clientX, t.clientY)) {
       var btn = nearest(t.clientX);
       if (btn) {
-        var isSub = !!btn.getAttribute('data-subtab-id');
-        if (isSub && moved) btn = null;
+        if (btn.getAttribute('data-subtab-id') && moved) btn = null;
         if (btn) {
           var now = Date.now();
-          if (now - _blobNavTs > 350) {
-            _blobNavTs = now;
-            btn.click();
-          }
+          if (now - _blobNavTs > 350) { _blobNavTs = now; btn.click(); }
         }
       }
     }
-    setTimeout(function () {
-      snapTo(getActiveBtn(), true, true);
-      updateBtnLifts(true);
-      watchClasses();
-    }, 40);
+    setTimeout(function () { snapTo(getActiveBtn(), true); liftActive(true); watchClasses(); }, 40);
   }, { passive: true, capture: true });
 
   document.addEventListener('touchcancel', function () {
     touching = false; _didMove = false;
-    snapTo(getActiveBtn(), true, true);
-    updateBtnLifts(true);
+    snapTo(getActiveBtn(), true); liftActive(true);
   }, { passive: true, capture: true });
 
   document.addEventListener('mousemove', function (e) {
     if (!pill) return;
     var r = pill.getBoundingClientRect();
-    if (e.clientX >= r.left && e.clientX <= r.right &&
-        e.clientY >= r.top  && e.clientY <= r.bottom)
-      snapTo(nearest(e.clientX), true, false);
-    else if (!touching) {
-      snapTo(getActiveBtn(), true, true);
-    }
+    if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom)
+      snapTo(nearest(e.clientX), true);
+    else if (!touching)
+      snapTo(getActiveBtn(), true);
   }, { passive: true });
 
   function init() {
@@ -41825,69 +41789,60 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
 </script>
 
 <script id="ag-dock-magnify">
-/* ── Dock Magnify — respeita translateY do botão ativo + efeito swipe 1.55× ── */
+/* Dock Magnify — tap sem escala, swipe 1.55×, preserva translateY do ativo */
 (function(){
-  var MAX = 1.55;
-  var RAD = 90;
+  var MAX = 1.55, RAD = 90, Y_LIFT = 9;
   var TR  = 'transform 0.16s cubic-bezier(0.34,1.4,0.64,1)';
   var RST = 'transform 0.28s cubic-bezier(0.22,1,0.36,1)';
-  var Y_LIFT = 9; /* deve ser igual ao blob script */
 
   function getPill() {
     var all = document.querySelectorAll('.lg-nav-pill');
-    for (var i = all.length-1; i >= 0; i--)
+    for (var i = all.length-1; i>=0; i--)
       if (all[i].querySelector('.lg-nav-btn')) return all[i];
     return null;
   }
-  function getBtns() { var p = getPill(); return p ? Array.from(p.querySelectorAll('.lg-nav-btn')) : []; }
-  function inPill(x, y) {
-    var p = getPill(); if (!p) return false;
-    var r = p.getBoundingClientRect();
-    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  function getBtns() { var p=getPill(); return p?Array.from(p.querySelectorAll('.lg-nav-btn')):[];}
+  function inPill(x,y) {
+    var p=getPill(); if(!p) return false;
+    var r=p.getBoundingClientRect();
+    return x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom;
   }
-  function ty(b) { return b.classList.contains('lg-nav-btn-active') ? -Y_LIFT : 0; }
+  function ty(b){ return b.classList.contains('lg-nav-btn-active') ? -Y_LIFT : 0; }
 
-  function apply(x, maxScale) {
-    getBtns().forEach(function(b) {
-      var r = b.getBoundingClientRect();
-      var t = Math.max(0, 1 - Math.abs(x - (r.left + r.width/2)) / RAD);
-      t = t * t;
-      var s = 1 + (maxScale - 1) * t;
-      b.style.transition      = TR;
-      b.style.transform       = 'translateY(' + ty(b) + 'px) scale(' + s + ')';
-      b.style.transformOrigin = 'center center';
-      b.style.zIndex          = t > 0.5 ? '10' : '1';
+  function apply(x, ms) {
+    getBtns().forEach(function(b){
+      var r=b.getBoundingClientRect();
+      var t=Math.max(0,1-Math.abs(x-(r.left+r.width/2))/RAD); t=t*t;
+      var s=1+(ms-1)*t;
+      b.style.transition='transform 0.16s cubic-bezier(0.34,1.4,0.64,1)';
+      b.style.transform='translateY('+ty(b)+'px) scale('+s+')';
+      b.style.transformOrigin='center center';
+      b.style.zIndex=t>0.5?'10':'1';
     });
   }
   function reset() {
-    getBtns().forEach(function(b) {
-      b.style.transition = RST;
-      b.style.transform  = 'translateY(' + ty(b) + 'px) scale(1)';
-      b.style.zIndex     = '';
+    getBtns().forEach(function(b){
+      b.style.transition=RST;
+      b.style.transform='translateY('+ty(b)+'px) scale(1)';
+      b.style.zIndex='';
     });
   }
 
-  var _on = false;
-
-  document.addEventListener('touchstart', function(e) {
-    var t = e.touches[0];
-    if (!inPill(t.clientX, t.clientY)) return;
-    _on = true;
-    apply(t.clientX, 1.0);
-  }, { passive: true });
-
-  document.addEventListener('touchmove', function(e) {
-    if (!_on) return;
-    apply(e.touches[0].clientX, MAX);
-  }, { passive: true });
-
-  document.addEventListener('touchend',   function() { if (!_on) return; _on=false; reset(); }, { passive: true });
-  document.addEventListener('touchcancel',function() { _on=false; reset(); }, { passive: true });
-
-  document.addEventListener('mousemove', function(e) {
-    if (inPill(e.clientX, e.clientY)) apply(e.clientX, MAX);
-    else if (!_on) reset();
-  }, { passive: true });
+  var _on=false;
+  document.addEventListener('touchstart',function(e){
+    var t=e.touches[0];
+    if(!inPill(t.clientX,t.clientY))return;
+    _on=true; apply(t.clientX,1.0);
+  },{passive:true});
+  document.addEventListener('touchmove',function(e){
+    if(!_on)return; apply(e.touches[0].clientX,MAX);
+  },{passive:true});
+  document.addEventListener('touchend',function(){if(!_on)return;_on=false;reset();},{passive:true});
+  document.addEventListener('touchcancel',function(){_on=false;reset();},{passive:true});
+  document.addEventListener('mousemove',function(e){
+    if(inPill(e.clientX,e.clientY))apply(e.clientX,MAX);
+    else if(!_on)reset();
+  },{passive:true});
 })();
 </script>
 

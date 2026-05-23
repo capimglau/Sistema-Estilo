@@ -39688,7 +39688,7 @@ if (!__viewerMode) {
   function attachBounce(btn) {
     if (btn.dataset.agB) return; btn.dataset.agB = '1';
     btn.addEventListener('click', function() {
-      if (btn.closest('.lg-nav-pill')) return; /* dock: blob já dá o feedback */
+      if (btn.closest('.lg-nav-pill')) return; /* dock: blob já dá feedback visual */
       btn.classList.add('icon-bouncing');
       btn.addEventListener('animationend', function h() { btn.classList.remove('icon-bouncing'); btn.removeEventListener('animationend', h); });
     }, { passive: true });
@@ -41442,16 +41442,15 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
 </script>
 
 <script>
-/* DOCK BUBBLE v6 — dentro da pill, z-index:0, re-inject no microtask */
+/* DOCK BUBBLE v7 — blob tamanho fixo + swipe troca aba principal ao vivo */
 (function () {
-  var blob     = null;
-  var pill     = null;
-  var touching = false;
-  var savedLeft  = -999;
+  var blob      = null;
+  var pill      = null;
+  var touching  = false;
+  var savedLeft = -999;
   var savedWidth = 60;
-  var pillObs  = null;
+  var pillObs   = null;
 
-  /* ── seleciona a pill correta ── */
   function getPill() {
     var all = document.querySelectorAll('.lg-nav-pill');
     for (var i = all.length - 1; i >= 0; i--)
@@ -41459,7 +41458,6 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
         return all[i];
     return null;
   }
-
   function getBtns() {
     return pill ? Array.from(pill.querySelectorAll(
       '.lg-nav-btn[data-tab-id],.lg-nav-btn[data-subtab-id]')) : [];
@@ -41479,11 +41477,21 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     });
     return best;
   }
+  /* Apenas abas principais (ignora sub-abas) — para swipe live */
+  function nearestMain(clientX) {
+    if (!pill) return null;
+    var best = null, bd = Infinity;
+    Array.from(pill.querySelectorAll('.lg-nav-btn[data-tab-id]')).forEach(function (b) {
+      var r = b.getBoundingClientRect();
+      var d = Math.abs(clientX - (r.left + r.width / 2));
+      if (d < bd) { bd = d; best = b; }
+    });
+    return best;
+  }
 
-  /* ── posiciona (left relativo à pill) ── */
+  /* snapTo usa offsetLeft/offsetWidth — imune ao scale do magnify */
   function snapTo(btn, animate) {
     if (!pill || !blob || !btn) return;
-    /* offsetLeft/offsetWidth: layout sem transform — blob sempre do mesmo tamanho */
     var x = btn.offsetLeft;
     var w = btn.offsetWidth;
     savedLeft  = x;
@@ -41502,7 +41510,6 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     }
   }
 
-  /* ── watch: classe ativa mudou → move blob ── */
   var classObs = new MutationObserver(function () {
     if (!touching) snapTo(getActiveBtn(), true);
   });
@@ -41513,39 +41520,27 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     });
   }
 
-  /* ── insere blob na pill; observa remoção para reinserir antes de pintar ── */
   function attachBlob(p, animate) {
-    if (!blob) {
-      blob = document.createElement('div');
-      blob.id = 'ag-liquid-blob';
-    }
-    /* posiciona com valor salvo ANTES de inserir (evita flash em left:0) */
+    if (!blob) { blob = document.createElement('div'); blob.id = 'ag-liquid-blob'; }
     blob.style.transition = 'none';
     blob.style.left  = savedLeft + 'px';
     blob.style.width = savedWidth + 'px';
-
     p.insertBefore(blob, p.firstChild);
     pill = p;
-
-    /* observa remoção direta: quando React recria os filhos da pill,
-       reinserimos no mesmo microtask — antes do browser pintar */
     if (pillObs) pillObs.disconnect();
     pillObs = new MutationObserver(function (muts) {
       for (var i = 0; i < muts.length; i++) {
-        var removed = muts[i].removedNodes;
-        for (var j = 0; j < removed.length; j++) {
-          if (removed[j] === blob) {
-            /* reinsere imediatamente no microtask */
+        var rem = muts[i].removedNodes;
+        for (var j = 0; j < rem.length; j++) {
+          if (rem[j] === blob) {
             var np = getPill();
             if (np) {
-              /* esconde para evitar flash na posição errada */
               blob.style.transition = 'none';
-              blob.style.left  = '-9999px';
+              blob.style.left = '-9999px';
               blob.style.width = savedWidth + 'px';
               np.insertBefore(blob, np.firstChild);
               pill = np;
               void blob.offsetWidth;
-              /* anima para o botão ativo atual */
               snapTo(getActiveBtn(), true);
               watchClasses();
             }
@@ -41555,63 +41550,45 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
       }
     });
     pillObs.observe(p, { childList: true });
-
-    /* posiciona no botão ativo */
     requestAnimationFrame(function () {
       var active = getActiveBtn();
-      if (active) {
-        snapTo(active, animate);
-        watchClasses();
-      }
+      if (active) { snapTo(active, animate); watchClasses(); }
     });
   }
 
-  /* ── touch ── */
   function inPill(x, y) {
     if (!pill) return false;
     var r = pill.getBoundingClientRect();
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
 
-  /* Retorna o botão de aba principal mais próximo de x (ignora sub-abas) */
-  function nearestMainTab(x) {
-    if (!pill) return null;
-    var btns = Array.from(pill.querySelectorAll('.lg-nav-btn[data-tab-id]'));
-    var best = null, bd = Infinity;
-    btns.forEach(function(b) {
-      var r = b.getBoundingClientRect();
-      var d = Math.abs(x - (r.left + r.width / 2));
-      if (d < bd) { bd = d; best = b; }
-    });
-    return best;
-  }
+  var _didMove    = false;
+  var _startX     = 0;
+  var _lastMain   = null;
+  var _swipeNavTs = 0;
+  var _blobNavTs  = 0;
 
   document.addEventListener('touchstart', function (e) {
     var t = e.touches[0];
     if (!inPill(t.clientX, t.clientY)) return;
     touching = true;
-    _didMove = false;
-    _touchStartX = t.clientX;
-    _swipeMainBtn = nearestMainTab(t.clientX);
+    _didMove  = false;
+    _startX   = t.clientX;
+    _lastMain = nearestMain(t.clientX);
     snapTo(nearest(t.clientX), false);
   }, { passive: true, capture: true });
 
-  var _swipeMainBtn = null;
-  var _swipeNavTs   = 0;
-  var _didMove      = false;
-  var _touchStartX  = 0;
   document.addEventListener('touchmove', function (e) {
     if (!touching) return;
     var x = e.touches[0].clientX;
-    if (Math.abs(x - _touchStartX) > 6) _didMove = true;
+    if (Math.abs(x - _startX) > 5) _didMove = true;
     snapTo(nearest(x), true);
-
-    /* Troca aba principal ao passar o dedo — nunca sub-abas */
-    var mb = nearestMainTab(x);
-    if (mb && mb !== _swipeMainBtn) {
-      _swipeMainBtn = mb;
+    /* Troca aba principal ao vivo — nunca sub-aba */
+    var mb = nearestMain(x);
+    if (mb && mb !== _lastMain) {
+      _lastMain = mb;
       var now = Date.now();
-      if (now - _swipeNavTs > 280) {
+      if (now - _swipeNavTs > 260) {
         _swipeNavTs = now;
         var tid = mb.getAttribute('data-tab-id');
         if (tid && window.__ag_navTab) window.__ag_navTab(tid);
@@ -41619,19 +41596,18 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
     }
   }, { passive: true, capture: true });
 
-  var _blobNavTs = 0;
   document.addEventListener('touchend', function (e) {
     if (!touching) return;
     touching = false;
     var moved = _didMove;
-    _swipeMainBtn = null; _didMove = false;
+    _didMove = false; _lastMain = null;
     var t = e.changedTouches[0];
     if (inPill(t.clientX, t.clientY)) {
       var btn = nearest(t.clientX);
       if (btn) {
-        var isSubTab = !!btn.getAttribute('data-subtab-id');
-        /* Sub-aba: só abre se foi tap direto (sem arrastar) */
-        if (isSubTab && moved) btn = null;
+        var isSub = !!btn.getAttribute('data-subtab-id');
+        /* sub-aba: só abre em tap direto, nunca em swipe */
+        if (isSub && moved) btn = null;
         if (btn) {
           var now = Date.now();
           if (now - _blobNavTs > 350 && now - _swipeNavTs > 350) {
@@ -41645,11 +41621,10 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
   }, { passive: true, capture: true });
 
   document.addEventListener('touchcancel', function () {
-    touching = false;
+    touching = false; _didMove = false; _lastMain = null;
     snapTo(getActiveBtn(), true);
   }, { passive: true, capture: true });
 
-  /* ── desktop ── */
   document.addEventListener('mousemove', function (e) {
     if (!pill) return;
     var r = pill.getBoundingClientRect();
@@ -41660,21 +41635,17 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
       snapTo(getActiveBtn(), true);
   }, { passive: true });
 
-  /* ── init ── */
   function init() {
     var p = getPill();
     if (!p) return false;
-    if (pill === p && document.getElementById('ag-liquid-blob')) return true; /* já ok */
+    if (pill === p && document.getElementById('ag-liquid-blob')) return true;
     attachBlob(p, false);
     return true;
   }
-
-  /* re-init se a pill mudar de instância */
   new MutationObserver(function () {
     var p = getPill();
     if (p && p !== pill) { pill = null; init(); }
   }).observe(document.body, { childList: true, subtree: true });
-
   var n = 0;
   function boot() { if (!init() && ++n < 80) setTimeout(boot, n < 20 ? 100 : 300); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
@@ -41835,74 +41806,68 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
 </script>
 
 <script id="ag-dock-magnify">
-/* ── Dock Magnify — listeners no document, sobrevivem a re-renders React ──
-   Swipe: ícones crescem 1.55×. Tap: sem escala (blob dá feedback).         */
+/* ── Dock Magnify — listeners no document, sobrevivem a re-renders do React ──
+   Tap:   escala 1.0 — sem jump, blob dá o feedback (como Apple Music)
+   Swipe: escala 1.55 — efeito magnify ao arrastar entre ícones             */
 (function(){
-  var MAX_SCALE  = 1.55;
-  var RADIUS     = 90;
-  var TRANSITION = 'transform 0.18s cubic-bezier(0.34,1.4,0.64,1)';
-  var RESET_TR   = 'transform 0.30s cubic-bezier(0.22,1,0.36,1)';
+  var MAX   = 1.55;
+  var RAD   = 90;
+  var TR    = 'transform 0.16s cubic-bezier(0.34,1.4,0.64,1)';
+  var RST   = 'transform 0.28s cubic-bezier(0.22,1,0.36,1)';
 
   function getPill() {
     var all = document.querySelectorAll('.lg-nav-pill');
-    for (var i = all.length - 1; i >= 0; i--)
+    for (var i = all.length-1; i >= 0; i--)
       if (all[i].querySelector('.lg-nav-btn')) return all[i];
     return null;
   }
-  function getButtons() {
-    var p = getPill(); return p ? Array.from(p.querySelectorAll('.lg-nav-btn')) : [];
-  }
+  function getBtns() { var p = getPill(); return p ? Array.from(p.querySelectorAll('.lg-nav-btn')) : []; }
   function inPill(x, y) {
     var p = getPill(); if (!p) return false;
     var r = p.getBoundingClientRect();
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
-  function applyMagnify(clientX, maxScale) {
-    var ms = (maxScale !== undefined) ? maxScale : MAX_SCALE;
-    getButtons().forEach(function(btn) {
-      var r = btn.getBoundingClientRect();
-      var t = Math.max(0, 1 - Math.abs(clientX - (r.left + r.width/2)) / RADIUS);
+  function apply(x, maxScale) {
+    getBtns().forEach(function(b) {
+      var r = b.getBoundingClientRect();
+      var t = Math.max(0, 1 - Math.abs(x - (r.left + r.width/2)) / RAD);
       t = t * t;
-      btn.style.transition     = TRANSITION;
-      btn.style.transform      = 'scale(' + (1 + (ms-1)*t) + ')';
-      btn.style.transformOrigin = 'center center';
-      btn.style.zIndex         = t > 0.5 ? '10' : '1';
+      var s = 1 + (maxScale - 1) * t;
+      b.style.transition     = TR;
+      b.style.transform      = 'scale(' + s + ')';
+      b.style.transformOrigin = 'center center';
+      b.style.zIndex         = t > 0.5 ? '10' : '1';
     });
   }
-  function resetMagnify() {
-    getButtons().forEach(function(btn) {
-      btn.style.transition = RESET_TR;
-      btn.style.transform  = 'scale(1)';
-      btn.style.zIndex     = '';
+  function reset() {
+    getBtns().forEach(function(b) {
+      b.style.transition = RST;
+      b.style.transform  = 'scale(1)';
+      b.style.zIndex     = '';
     });
   }
 
-  var _touching = false;
+  var _on = false;
 
   document.addEventListener('touchstart', function(e) {
     var t = e.touches[0];
     if (!inPill(t.clientX, t.clientY)) return;
-    _touching = true;
-    applyMagnify(t.clientX, 1.0); /* tap: sem escala */
+    _on = true;
+    apply(t.clientX, 1.0); /* tap: sem escala */
   }, { passive: true });
 
   document.addEventListener('touchmove', function(e) {
-    if (!_touching) return;
-    applyMagnify(e.touches[0].clientX, MAX_SCALE); /* swipe: 1.55× */
+    if (!_on) return;
+    apply(e.touches[0].clientX, MAX); /* swipe: magnify completo */
   }, { passive: true });
 
-  document.addEventListener('touchend', function() {
-    if (!_touching) return;
-    _touching = false; resetMagnify();
-  }, { passive: true });
+  document.addEventListener('touchend',   function() { if(!_on) return; _on=false; reset(); }, { passive: true });
+  document.addEventListener('touchcancel',function() { _on=false; reset(); }, { passive: true });
 
-  document.addEventListener('touchcancel', function() {
-    _touching = false; resetMagnify();
-  }, { passive: true });
-
+  /* Desktop */
   document.addEventListener('mousemove', function(e) {
-    if (inPill(e.clientX, e.clientY)) applyMagnify(e.clientX, MAX_SCALE);
-    else if (!_touching) resetMagnify();
+    if (inPill(e.clientX, e.clientY)) apply(e.clientX, MAX);
+    else if (!_on) reset();
   }, { passive: true });
 })();
 </script>

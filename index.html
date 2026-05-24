@@ -22287,9 +22287,12 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
               ),
               React.createElement('button', { onClick:function(){ setModoDash("locadora"); }, style:{ border:'1px solid #007AFF44', background:'#007AFF12', fontSize:11, color:'#007AFF', fontWeight:700, cursor:'pointer', padding:'5px 12px', borderRadius:20 } }, '← Locadora')
             )
-          , React.createElement(OrcamentoPessoalInline, {
-              contratos: contratos, despesas: despesas, receitas: receitas, manutencoes: manutencoes, multas: multas,
-              filtroMes: dashMes, setFiltroMes: setDashMes
+          , React.createElement(PessoalDash, {
+              orcItens: orcItens, contratos: contratos, despesas: despesas,
+              receitas: receitas, manutencoes: manutencoes, multas: multas,
+              dashMes: dashMes, setDashMes: setDashMes, mesAtual: mesAtual,
+              prevDashMes: prevDashMes, nextDashMes: nextDashMes, nomeMes: nomeMes,
+              prevBannerTouch: prevBannerTouch, prevBannerWheel: prevBannerWheel
             })
         )
       : React.createElement(React.Fragment, null
@@ -29294,6 +29297,287 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
 }
 
 // -- ORCAMENTO PESSOAL ------------------------------------------------------
+
+// ── PessoalDash: dashboard pessoal estável (sem nested components) ──────────
+function PessoalDash({ orcItens, contratos, despesas, receitas, manutencoes, multas, dashMes, setDashMes, mesAtual, prevDashMes, nextDashMes, nomeMes, prevBannerTouch, prevBannerWheel }) {
+  var _oi = orcItens || [];
+  var _hoje = new Date().toISOString().split('T')[0];
+  var _mes = dashMes;
+
+  // helpers
+  function _fK(v) { var a=Math.abs(parseFloat(v)||0); if(a>=1e6)return 'R$'+(a/1e6).toFixed(1).replace('.',',')+' M'; if(a>=1000)return 'R$'+(a/1000).toFixed(1).replace('.',',')+' k'; return 'R$'+a.toLocaleString('pt-BR',{minimumFractionDigits:2}); }
+  function _vis(it,m) { var em=it.data?it.data.slice(0,7):it.mes; if(em===m)return true; if(!it.recorrente||!em||em>=m)return false; return true; }
+  function _addM(b,n) { var d=new Date(b+'-15'); d.setMonth(d.getMonth()+n); return d.toISOString().slice(0,7); }
+
+  // Cálculos do mês
+  var _itens  = _oi.filter(function(it){ return _vis(it,_mes); });
+  var _recs   = _itens.filter(function(it){ return it.tipo==='receita'; });
+  var _desps  = _itens.filter(function(it){ return it.tipo==='despesa'; });
+  var _totRec = _recs.reduce(function(s,it){ return s+parseFloat(it.valor||0); },0);
+  var _totDes = _desps.reduce(function(s,it){ return s+parseFloat(it.valor||0); },0);
+  var _recPag = _recs.filter(function(it){ return it.status==='recebido'||it.status==='pago'; }).reduce(function(s,it){ return s+parseFloat(it.valor||0); },0);
+  var _recPen = _totRec - _recPag;
+  var _desPag = _desps.filter(function(it){ return it.status==='pago'; }).reduce(function(s,it){ return s+parseFloat(it.valor||0); },0);
+  var _desPen = _totDes - _desPag;
+  var _saldo  = _totRec - _totDes;
+
+  // Lucro mês anterior
+  var _mesAnt = _addM(_mes,-1);
+  var _itAnt  = _oi.filter(function(it){ return _vis(it,_mesAnt); });
+  var _lucAnt = _itAnt.filter(function(it){return it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0)
+              - _itAnt.filter(function(it){return it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  var _nomMesAnt = new Date(_mesAnt+'-15').toLocaleString('pt-BR',{month:'long'});
+
+  // 6 meses
+  var _m6=[]; for(var _bi=-3;_bi<=2;_bi++) _m6.push(_addM(_mes,_bi));
+  var _r6=_m6.map(function(m){ return _oi.filter(function(it){return _vis(it,m)&&it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0); });
+  var _d6=_m6.map(function(m){ return _oi.filter(function(it){return _vis(it,m)&&it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0); });
+  var _maxRD=Math.max.apply(null,_r6.concat(_d6).concat([1]));
+  var _lucD6=_m6.map(function(_,i){ return _r6[i]-_d6[i]; });
+
+  // Fluxo diário do mês
+  var _anoN=parseInt(_mes.slice(0,4),10), _mesN=parseInt(_mes.slice(5,7),10);
+  var _nDias=new Date(_anoN,_mesN,0).getDate();
+  var _dias=[]; for(var _di=1;_di<=_nDias;_di++) _dias.push(_mes+'-'+(_di<10?'0':'')+_di);
+  var _entDia={}, _saiDia={};
+  _dias.forEach(function(ds){ _entDia[ds]=0; _saiDia[ds]=0; });
+  _itens.forEach(function(it){
+    if(!it.data||it.data.slice(0,7)!==_mes) return;
+    var dk=it.data.slice(0,10);
+    if(_entDia.hasOwnProperty(dk)){
+      if(it.tipo==='receita') _entDia[dk]+=parseFloat(it.valor||0);
+      else _saiDia[dk]+=parseFloat(it.valor||0);
+    }
+  });
+  var _diasFluxo=_dias.filter(function(dk){ return _entDia[dk]>0||_saiDia[dk]>0; });
+  var _maxF=Math.max.apply(null,_diasFluxo.map(function(dk){ return Math.max(_entDia[dk],_saiDia[dk]); }).concat([1]));
+  var _mag=Math.pow(10,Math.floor(Math.log10(_maxF))); _maxF=Math.ceil(_maxF/_mag)*_mag;
+
+  // Estado de acumulado
+  var _saldoAc=0;
+  var _saldoPts=_diasFluxo.map(function(dk){ _saldoAc+=_entDia[dk]-_saiDia[dk]; return _saldoAc; });
+  var _sldMin=Math.min.apply(null,_saldoPts.concat([0]));
+  var _sldMax=Math.max.apply(null,_saldoPts.concat([0]));
+  var _sldRng=Math.max(Math.abs(_sldMin),Math.abs(_sldMax),1);
+
+  var halfH=88, chartH=halfH*2, labH=44, svgH=chartH+labH, yAxisW=72, colW=56;
+  var _totW=_diasFluxo.length*colW;
+  var _yLabs=[{v:_maxF,y:6},{v:_maxF*.5,y:halfH*.5},{v:0,y:halfH},{v:-_maxF*.5,y:halfH+halfH*.5},{v:-_maxF,y:chartH-6}];
+
+  // Gráfico 6m
+  var W6=300, H6=100, p6={l:10,r:10,t:8,b:20};
+  var step6=(W6-p6.l-p6.r)/Math.max(_m6.length-1,1);
+  var _bW6=Math.floor((W6-p6.l-p6.r)/_m6.length*.38);
+  var _lucPts=_m6.map(function(m,i){
+    var lv=_lucD6[i];
+    var cy=H6-p6.b-(Math.max(-_maxRD,Math.min(_maxRD,lv||0))/_maxRD)*(H6-p6.t-p6.b)/2-(H6-p6.t-p6.b)/2;
+    return {cx:p6.l+i*step6, cy:Math.max(p6.t,Math.min(H6-p6.b,cy)), lv:lv};
+  });
+  var _lPath=_lucPts.length?'M'+_lucPts[0].cx.toFixed(1)+','+_lucPts[0].cy.toFixed(1)+' '+_lucPts.slice(1).map(function(p){return 'L'+p.cx.toFixed(1)+','+p.cy.toFixed(1);}).join(' '):'';
+  var _aPath=_lPath&&_lucPts.length?_lPath+' L'+_lucPts[_lucPts.length-1].cx.toFixed(1)+','+(H6-p6.b)+' L'+_lucPts[0].cx.toFixed(1)+','+(H6-p6.b)+' Z':'';
+
+  // Resumo mês selecionado
+  var _idxSel=_m6.indexOf(_mes); if(_idxSel<0)_idxSel=_m6.length-1;
+  var _recFoot=_r6[_idxSel]||0, _desFoot=_d6[_idxSel]||0, _lucFoot=_recFoot-_desFoot;
+  var _nomFoot=new Date(_mes+'-15').toLocaleString('pt-BR',{month:'long',year:'numeric'});
+  _nomFoot=_nomFoot.charAt(0).toUpperCase()+_nomFoot.slice(1);
+  var _nomeMes=new Date(_mes+'-15').toLocaleString('pt-BR',{month:'long',year:'numeric'});
+  _nomeMes=_nomeMes.charAt(0).toUpperCase()+_nomeMes.slice(1);
+
+  return React.createElement(React.Fragment, null
+
+    /* ══ 1. BANNER (idêntico locadora) ══ */
+    , React.createElement('div', {
+        onWheel:function(e){var d=Math.abs(e.deltaX)>Math.abs(e.deltaY)?e.deltaX:e.deltaY;var now=Date.now();if(now-prevBannerWheel.current<600)return;prevBannerWheel.current=now;if(d>0)nextDashMes();else prevDashMes();},
+        onTouchStart:function(e){prevBannerTouch.current=e.touches[0].clientX;},
+        onTouchEnd:function(e){if(prevBannerTouch.current===null)return;var dx=prevBannerTouch.current-e.changedTouches[0].clientX;prevBannerTouch.current=null;if(dx>28)nextDashMes();else if(dx<-28)prevDashMes();},
+        style:{background:C.card,backdropFilter:'blur(12px)',WebkitBackdropFilter:'blur(12px)',borderRadius:20,border:'1px solid '+C.border,boxShadow:'0 1px 8px rgba(0,0,0,0.05)',overflow:'hidden',userSelect:'none'}
+      }
+      , React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'9px 14px 0',gap:4}}
+        , React.createElement('button',{onClick:prevDashMes,style:{border:'none',background:'transparent',fontSize:17,color:C.sub,cursor:'pointer',padding:'0 2px',lineHeight:1,flexShrink:0}},'‹')
+        , React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'capitalize',textAlign:'center',cursor:'pointer',flex:1,letterSpacing:-0.1},onClick:function(){setDashMes(mesAtual);}},
+            _nomeMes, dashMes!==mesAtual?React.createElement('span',{style:{fontSize:10,color:C.blue,fontWeight:500,marginLeft:5}},'↩'):null)
+        , React.createElement('button',{onClick:nextDashMes,style:{border:'none',background:'transparent',fontSize:17,color:C.sub,cursor:'pointer',padding:'0 2px',lineHeight:1,flexShrink:0}},'›')
+      )
+      , React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:0,padding:'8px 16px 14px'}}
+        , React.createElement('div',null
+          , React.createElement('div',{style:{fontSize:10,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:0.8,marginBottom:4}},'Receitas Pessoais')
+          , React.createElement('div',{style:{fontSize:18,fontWeight:800,letterSpacing:-0.5,color:'var(--c-text)',lineHeight:1}},_fK(_totRec))
+          , React.createElement('div',{style:{fontSize:10,color:C.sub,marginTop:4}},'previsto para '+_nomeMes.split(' ')[0])
+        )
+        , React.createElement('div',{style:{borderLeft:'1px solid '+C.border,paddingLeft:16}}
+          , React.createElement('div',{style:{fontSize:10,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:0.8,marginBottom:4}},'Resultado Previsto')
+          , React.createElement('div',{style:{fontSize:18,fontWeight:800,letterSpacing:-0.5,color:_saldo>=0?C.green:C.red,lineHeight:1}},_fK(_saldo))
+          , React.createElement('div',{style:{fontSize:10,color:C.sub,marginTop:4}},'receitas − despesas')
+        )
+      )
+      , _lucAnt!==0&&React.createElement('div',{style:{background:(_lucAnt>=0?C.green:C.red)+'10',borderTop:'1px solid '+C.border,padding:'6px 16px',display:'flex',alignItems:'center',gap:6}}
+        , React.createElement('span',{style:{fontSize:10,color:C.sub}},'Sobrou de '+_nomMesAnt.split(' ')[0]+':')
+        , React.createElement('span',{style:{fontSize:11,fontWeight:700,color:_lucAnt>=0?C.green:C.red}},(_lucAnt>=0?'+':'')+_fK(_lucAnt))
+      )
+    )
+
+    /* ══ 2. BARRAS ══ */
+    , React.createElement('div',{style:{background:C.card,borderRadius:20,border:'1px solid '+C.border,overflow:'hidden'}}
+      , React.createElement('div',{style:{padding:'13px 16px 12px',borderBottom:'1px solid '+C.border}}
+        , React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}
+          , React.createElement('div',{style:{display:'flex',alignItems:'center',gap:7}}
+            , React.createElement('div',{style:{width:8,height:8,borderRadius:'50%',background:_recPag>=_totRec&&_totRec>0?C.green:C.orange,boxShadow:'0 0 0 3px '+(_recPag>=_totRec&&_totRec>0?C.green:C.orange)+'28',flexShrink:0}})
+            , React.createElement('span',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:0.7}},'Receitas')
+          )
+          , React.createElement('span',{style:{fontSize:11,color:C.sub}},_recs.length+' lançamento'+(_recs.length!==1?'s':''))
+        )
+        , React.createElement('div',{style:{display:'flex',height:18,borderRadius:9,overflow:'hidden',gap:1}}
+          , _recPag>0&&React.createElement('div',{style:{flex:_recPag,background:C.green,borderRadius:'9px 0 0 9px',minWidth:4}})
+          , _recPen>0&&React.createElement('div',{style:{flex:_recPen,background:C.orange,opacity:0.7,borderRadius:_recPag>0?'0 9px 9px 0':'9px',minWidth:4}})
+          , _totRec===0&&React.createElement('div',{style:{flex:1,background:C.border,borderRadius:9}})
+        )
+        , React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginTop:6,fontSize:10,color:C.sub}}
+          , React.createElement('span',{style:{color:C.green,fontWeight:600}},'✓ '+_fK(_recPag)+' recebido')
+          , React.createElement('span',null,_fK(_recPen)+' a receber')
+        )
+      )
+      , React.createElement('div',{style:{padding:'13px 16px 12px'}}
+        , React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}
+          , React.createElement('div',{style:{display:'flex',alignItems:'center',gap:7}}
+            , React.createElement('div',{style:{width:8,height:8,borderRadius:'50%',background:_desPag>=_totDes&&_totDes>0?C.green:C.red,boxShadow:'0 0 0 3px '+(_desPag>=_totDes&&_totDes>0?C.green:C.red)+'28',flexShrink:0}})
+            , React.createElement('span',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:0.7}},'Despesas')
+          )
+          , React.createElement('span',{style:{fontSize:11,color:C.sub}},_desps.length+' lançamento'+(_desps.length!==1?'s':''))
+        )
+        , React.createElement('div',{style:{display:'flex',height:18,borderRadius:9,overflow:'hidden',gap:1}}
+          , _desPag>0&&React.createElement('div',{style:{flex:_desPag,background:C.green,borderRadius:'9px 0 0 9px',minWidth:4}})
+          , _desPen>0&&React.createElement('div',{style:{flex:_desPen,background:C.red,opacity:0.75,borderRadius:_desPag>0?'0 9px 9px 0':'9px',minWidth:4}})
+          , _totDes===0&&React.createElement('div',{style:{flex:1,background:C.border,borderRadius:9}})
+        )
+        , React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginTop:6,fontSize:10,color:C.sub}}
+          , React.createElement('span',{style:{color:C.green,fontWeight:600}},'✓ '+_fK(_desPag)+' pago')
+          , React.createElement('span',{style:{color:C.red}},_fK(_desPen)+' a pagar')
+        )
+      )
+    )
+
+    /* ══ 3. FLUXO DE CAIXA ══ */
+    , React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:4,marginBottom:4}}
+      , React.createElement('div',{style:{fontSize:12,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:0.5}},'Fluxo de Caixa Pessoal')
+    )
+    , _diasFluxo.length===0
+      ? React.createElement('div',{style:{background:C.card,borderRadius:16,border:'1px solid '+C.border,padding:'24px',textAlign:'center',color:C.sub,fontSize:13}},'Nenhum lançamento com data informada neste mês')
+      : React.createElement('div',{style:{background:C.card,borderRadius:16,border:'1px solid '+C.border,overflow:'hidden'}}
+          , React.createElement('div',{style:{display:'flex',paddingTop:14}}
+            , React.createElement('div',{style:{width:yAxisW,flexShrink:0,height:svgH+'px',position:'relative'}}
+              , _yLabs.map(function(l,i){
+                  return React.createElement('div',{key:i,style:{position:'absolute',right:8,top:l.y,transform:'translateY(-50%)',fontSize:9,color:C.sub,fontWeight:500,textAlign:'right',whiteSpace:'nowrap'}},
+                    l.v===0?'0':(Math.abs(l.v)>=1000?'R$'+(l.v/1000).toFixed(0)+'k':'R$'+Math.abs(Math.round(l.v))));
+                })
+            )
+            , React.createElement('div',{style:{overflowX:'auto',flex:1,WebkitOverflowScrolling:'touch',scrollbarWidth:'none',msOverflowStyle:'none',cursor:'grab'}}
+              , React.createElement('svg',{width:Math.max(_totW,200),height:svgH,style:{display:'block'}}
+                , _yLabs.map(function(l,i){
+                    return React.createElement('line',{key:i,x1:0,x2:Math.max(_totW,200),y1:l.y,y2:l.y,stroke:C.border,strokeWidth:l.v===0?1.5:0.7});
+                  })
+                , _diasFluxo.map(function(dk,i){
+                    var cx=i*colW+colW/2, bw=Math.min(22,colW*.35);
+                    var isHoje=dk===_hoje;
+                    var isFut=dk>_hoje;
+                    var rH=_entDia[dk]>0?Math.max(4,(_entDia[dk]/_maxF)*(halfH-8)):0;
+                    var dH=_saiDia[dk]>0?Math.max(4,(_saiDia[dk]/_maxF)*(halfH-8)):0;
+                    var sy=halfH-(_saldoPts[i]/_sldRng)*(halfH-8);
+                    sy=Math.max(4,Math.min(chartH-4,sy));
+                    var dtLab=new Date(dk+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
+                    return React.createElement('g',{key:dk}
+                      , isHoje&&React.createElement('rect',{x:cx-colW/2,y:0,width:colW,height:chartH,fill:C.blue,fillOpacity:0.04})
+                      , _entDia[dk]>0&&React.createElement('rect',{x:cx-bw-1,y:halfH-rH,width:bw,height:rH,fill:C.green,opacity:isFut?0.45:0.9,rx:3})
+                      , _saiDia[dk]>0&&React.createElement('rect',{x:cx+1,y:halfH,width:bw,height:dH,fill:C.red,opacity:isFut?0.45:0.85,rx:3})
+                      , isHoje&&React.createElement('circle',{cx:cx,cy:halfH,r:3,fill:C.blue,opacity:0.8})
+                      , React.createElement('text',{x:cx,y:chartH+labH-18,textAnchor:'middle',fontSize:8,fill:isHoje?C.blue:C.sub,fontWeight:isHoje?700:400},dtLab)
+                    );
+                  })
+              )
+            )
+          )
+          , React.createElement('div',{style:{padding:'10px 16px 14px',borderTop:'1px solid '+C.border}}
+            , React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--c-text)',textTransform:'capitalize',marginBottom:8}},_nomFoot)
+            , React.createElement('div',{style:{display:'flex',justifyContent:'space-between'}}
+              , React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:2}}
+                , React.createElement('span',{style:{fontSize:10,color:C.sub}},'Receitas')
+                , React.createElement('span',{style:{fontSize:14,fontWeight:800,color:C.green}},_fK(_recFoot))
+              )
+              , React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:2,alignItems:'center'}}
+                , React.createElement('span',{style:{fontSize:10,color:C.sub}},'Despesas')
+                , React.createElement('span',{style:{fontSize:14,fontWeight:800,color:C.red}},_fK(_desFoot))
+              )
+              , React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}}
+                , React.createElement('span',{style:{fontSize:10,color:C.sub}},'Lucro')
+                , React.createElement('span',{style:{fontSize:14,fontWeight:800,color:_lucFoot>=0?C.blue:C.red}},_fK(_lucFoot))
+              )
+            )
+          )
+        )
+
+    /* ══ 4. GRÁFICO 6 MESES ══ */
+    , React.createElement('div',{style:{background:C.card,borderRadius:16,border:'1px solid '+C.border,overflow:'hidden'}}
+      , React.createElement('div',{style:{padding:'14px 14px 0',overflowX:'auto',WebkitOverflowScrolling:'touch',scrollbarWidth:'none'}}
+        , React.createElement('svg',{width:Math.max(W6,_m6.length*40),height:H6+30,style:{display:'block',overflow:'visible'}}
+          , _m6.map(function(m,i){
+              var rv=_r6[i]||0, dv=_d6[i]||0;
+              var isSel=m===_mes, isHj=m===mesAtual;
+              var cx6=p6.l+i*step6;
+              var hR=rv>0?Math.max(3,(rv/_maxRD)*(H6-p6.t-p6.b)):0;
+              var hD=dv>0?Math.max(3,(dv/_maxRD)*(H6-p6.t-p6.b)):0;
+              var nm=new Date(m+'-15').toLocaleString('pt-BR',{month:'short'}).replace('.','').toUpperCase().slice(0,3);
+              return React.createElement('g',{key:m}
+                , isSel&&React.createElement('rect',{x:cx6-_bW6-2,y:0,width:_bW6*2+8,height:H6-p6.b,fill:C.blue,fillOpacity:0.05,rx:4})
+                , React.createElement('rect',{x:cx6-_bW6-1,y:(H6-p6.b)-hR,width:_bW6,height:Math.max(hR,0),fill:C.green,opacity:isSel?1:0.55,rx:3})
+                , React.createElement('rect',{x:cx6+1,y:(H6-p6.b)-hD,width:_bW6,height:Math.max(hD,0),fill:C.red,opacity:isSel?1:0.5,rx:3})
+                , React.createElement('text',{x:cx6,y:H6+12,textAnchor:'middle',fontSize:8,fill:isSel?'var(--c-text)':C.sub,fontWeight:isSel?800:400},nm)
+                , isHj&&!isSel&&React.createElement('circle',{cx:cx6,cy:H6-p6.b+6,r:2,fill:C.blue})
+              );
+            })
+          , _aPath&&React.createElement('path',{d:_aPath,fill:C.blue,fillOpacity:0.1})
+          , _lPath&&React.createElement('path',{d:_lPath,fill:'none',stroke:C.blue,strokeWidth:2.5,strokeLinecap:'round',strokeLinejoin:'round'})
+          , _lucPts.map(function(p,i){
+              var act=_m6[i]===_mes;
+              return React.createElement('g',{key:i}
+                , React.createElement('circle',{cx:p.cx.toFixed(1),cy:p.cy.toFixed(1),r:act?5:3,fill:act?C.blue:'#fff',stroke:C.blue,strokeWidth:2})
+                , act&&React.createElement('g',null
+                    , React.createElement('rect',{x:(p.cx-28).toFixed(1),y:(p.cy-26).toFixed(1),width:56,height:18,rx:6,fill:C.blue})
+                    , React.createElement('text',{x:p.cx.toFixed(1),y:(p.cy-13).toFixed(1),textAnchor:'middle',fontSize:10,fontWeight:700,fill:'#fff'},_fK(p.lv))
+                  )
+              );
+            })
+        )
+      )
+      , React.createElement('div',{style:{padding:'10px 16px 14px',borderTop:'1px solid '+C.border}}
+        , React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--c-text)',textTransform:'capitalize',marginBottom:8}},_nomFoot)
+        , React.createElement('div',{style:{display:'flex',justifyContent:'space-between'}}
+          , React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:2}}
+            , React.createElement('span',{style:{fontSize:10,color:C.sub}},'Receitas')
+            , React.createElement('span',{style:{fontSize:14,fontWeight:800,color:C.green}},_fK(_recFoot))
+          )
+          , React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:2,alignItems:'center'}}
+            , React.createElement('span',{style:{fontSize:10,color:C.sub}},'Despesas')
+            , React.createElement('span',{style:{fontSize:14,fontWeight:800,color:C.red}},_fK(_desFoot))
+          )
+          , React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}}
+            , React.createElement('span',{style:{fontSize:10,color:C.sub}},'Lucro')
+            , React.createElement('span',{style:{fontSize:14,fontWeight:800,color:_lucFoot>=0?C.blue:C.red}},_fK(_lucFoot))
+          )
+        )
+      )
+    )
+
+    /* Botão + Lançamento */
+    , React.createElement('div',{style:{display:'flex',justifyContent:'flex-end'}}
+      , React.createElement('button',{
+          onClick:function(){window.dispatchEvent(new CustomEvent('autoguest:novo-lancamento'));},
+          style:{border:'none',background:C.purple,color:'#fff',borderRadius:14,padding:'10px 20px',fontSize:13,fontWeight:700,cursor:'pointer',boxShadow:'0 2px 12px '+C.purple+'44'}
+        },'+ Lançamento Pessoal')
+    )
+
+  );
+}
+
 // OrcamentoPessoalInline: versão para embutir na Dashboard (sem cabeçalho nem nav de meses próprios)
 // Usa filtroMes/setFiltroMes do Inicio (dashMes)
 function OrcamentoPessoalInline({ contratos, despesas, receitas, manutencoes, multas, filtroMes, setFiltroMes }) {

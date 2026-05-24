@@ -22314,7 +22314,30 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 _setPSaving(false);
               },
               pDel: async function(id){if(!window.confirm('Excluir?'))return;try{await db.del("orcamento_pessoal",id);_setOrcFresh(function(p){return(p||[]).filter(function(it){return it.id!==id;});});}catch(e){}},
-              pBaixar: async function(it){var dt=window.prompt('Data de '+(it.tipo==='receita'?'recebimento':'pagamento')+':', new Date().toISOString().split('T')[0]);if(!dt)return;var st=it.tipo==='receita'?'recebido':'pago';try{var u=await db.patch("orcamento_pessoal",it.id,{status:st,data_pagamento:dt});_setOrcFresh(function(p){return(p||[]).map(function(x){return x.id===it.id?Object.assign({},x,u):x;});});}catch(e){}}
+              pBaixar: async function(it){
+                var dt=new Date().toISOString().split('T')[0];
+                var st=it.tipo==='receita'?'recebido':'pago';
+                // Verifica se é recorrente projetado em mês diferente do original
+                var emOrig=it._origemMes||null;
+                var isProjetado=it.recorrente&&emOrig&&emOrig!==dashMes;
+                try{
+                  if(isProjetado){
+                    // Cria instância específica para este mês (igual ao OrcamentoPessoal)
+                    var anoN=parseInt(dashMes.slice(0,4),10),mesN=parseInt(dashMes.slice(5,7),10);
+                    var ult=new Date(anoN,mesN,0).getDate();
+                    var dia=it.data?parseInt(it.data.slice(8,10),10):1;
+                    var d=Math.min(dia,ult);
+                    var dtProj=dashMes+'-'+(d<10?'0':'')+d;
+                    var payload={descricao:it.descricao,categoria:it.categoria,valor:it.valor,tipo:it.tipo,
+                      mes:dashMes,data:dtProj,status:st,data_pagamento:dt,recorrente:false,recorrencia_origem_id:it.id};
+                    var c=await db.post("orcamento_pessoal",payload);
+                    _setOrcFresh(function(p){return[c].concat(p||[]);});
+                  }else{
+                    var u=await db.patch("orcamento_pessoal",it.id,{status:st,data_pagamento:dt});
+                    _setOrcFresh(function(p){return(p||[]).map(function(x){return x.id===it.id?Object.assign({},x,u):x;});});
+                  }
+                }catch(e){console.error('Baixar erro:',e);}
+              }
             })
         )
       , React.createElement('div', { style: { display: modoDash === 'pessoal' ? 'none' : 'contents' } }
@@ -29346,7 +29369,13 @@ function PessoalDash({
   function _vis(it,m){
     var em=it.data?it.data.slice(0,7):it.mes;
     if(em===m) return true;
-    if(it.recorrente&&em&&em<m) return true; // recorrente aparece em meses posteriores
+    if(it.recorrente&&em&&em<m){
+      // Oculta se já existe instância específica (baixa) para este mês
+      var hasInst=_oi.some(function(x){
+        return String(x.recorrencia_origem_id)===String(it.id)&&(x.data?x.data.slice(0,7):x.mes)===m;
+      });
+      return !hasInst;
+    }
     return false;
   }
   function _F(k,v)    { setPForm(function(p){ return Object.assign({},p,{[k]:v}); }); }
@@ -29371,13 +29400,14 @@ function PessoalDash({
   function _projetar(it,m){
     var em=it.data?it.data.slice(0,7):it.mes;
     if(em===m) return it; // item do próprio mês: sem alteração
-    // Recorrente de mês anterior: projeta data e trata como pendente
+    // Recorrente de mês anterior: projeta data, trata como pendente
     var dia=it.data?parseInt(it.data.slice(8,10),10):1;
     var anoN=parseInt(m.slice(0,4),10),mesN=parseInt(m.slice(5,7),10);
     var ult=new Date(anoN,mesN,0).getDate();
     var d=Math.min(dia,ult);
     var dtProj=m+'-'+(d<10?'0':'')+d;
-    return Object.assign({},it,{data:dtProj,status:'previsto',data_pagamento:null});
+    // _origemMes: guarda mês original para pBaixar saber que é projetado
+    return Object.assign({},it,{data:dtProj,status:'previsto',data_pagamento:null,_origemMes:em});
   }
   var _itens  = _oi.filter(function(it){ return _vis(it,_mes); }).map(function(it){ return _projetar(it,_mes); });
   var _recs   = _itens.filter(function(it){ return it.tipo==='receita'; });

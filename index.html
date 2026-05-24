@@ -29337,7 +29337,7 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
 
 // -- ORCAMENTO PESSOAL ------------------------------------------------------
 // ═══════════════════════════════════════════════════════════════════
-//  PessoalDash v3 — Fluxo de Caixa 100% idêntico à locadora
+//  PessoalDash v4 — barras idênticas locadora + fluxo com futuros
 // ═══════════════════════════════════════════════════════════════════
 function PessoalDash({
   orcItens, contratos, despesas, receitas, manutencoes, multas,
@@ -29363,6 +29363,7 @@ function PessoalDash({
   function _addM(b,n) { var d=new Date(b+'-15'); d.setMonth(d.getMonth()+n); return d.toISOString().slice(0,7); }
   function _F(k,v)    { setPForm(function(p){ return Object.assign({},p,{[k]:v}); }); }
   function _nomMesOf(m){ var s=new Date(m+'-15').toLocaleString('pt-BR',{month:'long',year:'numeric'}); return s.charAt(0).toUpperCase()+s.slice(1); }
+  function _projDate(data,m){ var dia=parseInt(data.slice(8,10),10); var anoN=parseInt(m.slice(0,4),10),mesN=parseInt(m.slice(5,7),10); var ult=new Date(anoN,mesN,0).getDate(); return m+'-'+(Math.min(dia,ult)<10?'0':'')+Math.min(dia,ult); }
 
   function _vis(it,m){
     var em=it.data?it.data.slice(0,7):it.mes;
@@ -29377,11 +29378,7 @@ function PessoalDash({
   function _projetar(it,m){
     var em=it.data?it.data.slice(0,7):it.mes;
     if(em===m) return it;
-    var dia=it.data?parseInt(it.data.slice(8,10),10):1;
-    var anoN=parseInt(m.slice(0,4),10),mesN=parseInt(m.slice(5,7),10);
-    var ult=new Date(anoN,mesN,0).getDate();
-    var d=Math.min(dia,ult);
-    var dtProj=m+'-'+(d<10?'0':'')+d;
+    var dtProj=it.data?_projDate(it.data,m):m+'-01';
     return Object.assign({},it,{data:dtProj,status:'previsto',data_pagamento:null,_origemMes:em});
   }
 
@@ -29399,6 +29396,7 @@ function PessoalDash({
   var _nomAnt = new Date(_mesAnt+'-15').toLocaleString('pt-BR',{month:'long'});
   var _nomMes = _nomMesOf(_mes);
 
+  // Itens do mês atual para resumo/barras
   var _itens  = _oi.filter(function(it){return _vis(it,_mes);}).map(function(it){return _projetar(it,_mes);});
   var _recs   = _itens.filter(function(it){return it.tipo==='receita';});
   var _desps  = _itens.filter(function(it){return it.tipo==='despesa';});
@@ -29409,15 +29407,28 @@ function PessoalDash({
   var _desPen = _totDes-_desPag;
   var _saldo  = _totRec-_totDes;
 
-  // ── Build eventos para fluxo de caixa ──────────────────────────────────────
+  // ── Build eventos: mês atual + 2 meses futuros ────────────────────────────
+  // Isso permite ver projeção de recorrentes e lucro futuro no fluxo de caixa
   var eventos = [];
-  if(_recLoc>0) eventos.push({dt:_mes+'-01',tipo:'rec',label:'Lucro Locadora — '+_nomAnt,val:_recLoc,pago:true});
-  _itens.forEach(function(it){
-    var dt=it.data_pagamento&&(it.status==='pago'||it.status==='recebido')?it.data_pagamento:it.data;
-    if(!dt){ dt=_mes+(it.tipo==='receita'?'-01':'-28'); }
-    dt=dt.slice(0,10);
-    if(dt.slice(0,7)!==_mes){ var dia=dt.slice(8,10); var anoN=parseInt(_mes.slice(0,4),10),mesN=parseInt(_mes.slice(5,7),10); var ult=new Date(anoN,mesN,0).getDate(); var d=Math.min(parseInt(dia,10),ult); dt=_mes+'-'+(d<10?'0':'')+d; }
-    eventos.push({dt:dt,tipo:it.tipo==='receita'?'rec':'desp',label:it.descricao||it.categoria||(it.tipo==='receita'?'Receita':'Despesa'),val:parseFloat(it.valor||0),pago:it.status==='pago'||it.status==='recebido',cat:it.categoria});
+  var _meses = [_mes, _addM(_mes,1), _addM(_mes,2)];
+
+  _meses.forEach(function(m){
+    var isFutMes = m > _mes;
+    // Lucro locadora do mês anterior como receita do dia 1
+    var lucroM = _lucroLoc(_addM(m,-1));
+    if(lucroM > 0){
+      eventos.push({dt:m+'-01',tipo:'rec',label:'Lucro Locadora — '+new Date(_addM(m,-1)+'-15').toLocaleString('pt-BR',{month:'long'}),val:lucroM,pago:!isFutMes});
+    }
+    // Itens do orcamento_pessoal para este mês
+    var itensM = _oi.filter(function(it){return _vis(it,m);}).map(function(it){return _projetar(it,m);});
+    itensM.forEach(function(it){
+      var dt = it.data_pagamento&&(it.status==='pago'||it.status==='recebido') ? it.data_pagamento : it.data;
+      if(!dt){ dt = m+(it.tipo==='receita'?'-01':'-28'); }
+      dt = dt.slice(0,10);
+      // Garante que a data está dentro do mês correto
+      if(dt.slice(0,7)!==m){ var dia=parseInt(dt.slice(8,10),10); var anoN=parseInt(m.slice(0,4),10),mesN=parseInt(m.slice(5,7),10); var ult=new Date(anoN,mesN,0).getDate(); dt=m+'-'+(Math.min(dia,ult)<10?'0':'')+Math.min(dia,ult); }
+      eventos.push({dt:dt,tipo:it.tipo==='receita'?'rec':'desp',label:it.descricao||it.categoria||(it.tipo==='receita'?'Receita':'Despesa'),val:parseFloat(it.valor||0),pago:it.status==='pago'||it.status==='recebido',cat:it.categoria});
+    });
   });
 
   var byDate={};
@@ -29432,13 +29443,13 @@ function PessoalDash({
     return {dt:dt,receitas:day.receitas,despesas:day.despesas,totalRec:totalRec,totalDesp:totalDesp,saldo:saldoAcum};
   });
 
-  // ── Dimensões IDÊNTICAS à locadora ─────────────────────────────────────────
+  // Chart dims idênticos locadora
   var maxRec=Math.max.apply(null,diasData.map(function(d){return d.totalRec;}).concat([1]));
   var maxDesp=Math.max.apply(null,diasData.map(function(d){return d.totalDesp;}).concat([1]));
   var maxVal=Math.max(maxRec,maxDesp,1);
   var _mag=Math.pow(10,Math.floor(Math.log10(maxVal)));
   maxVal=Math.ceil(maxVal/_mag)*_mag;
-  var halfH=92,chartH=halfH*2,zeroY=halfH,labH=44,svgH=chartH+labH,colW=60,totalW=diasData.length*colW;
+  var halfH=92,chartH=halfH*2,zeroY=halfH,labH=44,svgH=chartH+labH,colW=60,totalW=Math.max(diasData.length*colW,300);
   var saldoMin=Math.min.apply(null,diasData.map(function(d){return d.saldo;}).concat([0]));
   var saldoMax=Math.max.apply(null,diasData.map(function(d){return d.saldo;}).concat([0]));
   var maxAbsSaldo=Math.max(Math.abs(saldoMin),Math.abs(saldoMax),1);
@@ -29448,7 +29459,7 @@ function PessoalDash({
   var nextEventIdx=-1;
   for(var _ni=0;_ni<diasData.length;_ni++){if(diasData[_ni].dt>_hoje&&(diasData[_ni].totalRec>0||diasData[_ni].totalDesp>0)){nextEventIdx=_ni;break;}}
 
-  // ── Categorias ─────────────────────────────────────────────────────────────
+  // Categorias
   var catMap={};
   _desps.forEach(function(it){var c=it.categoria||'Outros';catMap[c]=(catMap[c]||0)+parseFloat(it.valor||0);});
   var catList=Object.keys(catMap).sort(function(a,b){return catMap[b]-catMap[a];});
@@ -29477,6 +29488,34 @@ function PessoalDash({
     )
   );
 
+  // ── BARRA helper (idêntico locadora: height 9, gradiente, brilho) ──────────
+  function _fC(v){ var a=Math.abs(parseFloat(v)||0); if(a>=1e6)return 'R$'+(v/1e6).toFixed(1).replace('.',',')+' M'; if(a>=1000)return 'R$ '+(Math.round(a/100)/10).toFixed(1).replace('.',',')+'k'; return 'R$ '+Math.round(a); }
+  function _barra(pago, vencido, pendente, total, label1, sub1, cor1, label2, sub2, cor2){
+    var pPago = total>0?pago/total:0;
+    var pVenc = total>0?vencido/total:0;
+    var pPend = total>0?pendente/total:0;
+    var gradG = 'linear-gradient(90deg,#15803d,#22c55e)';
+    var gradR = 'linear-gradient(90deg,rgba(185,28,28,.85),rgba(248,113,113,.75))';
+    var gradO = 'linear-gradient(90deg,#d97706,#fbbf24)';
+    var shine = React.createElement('div',{style:{position:'absolute',top:1,left:4,right:4,height:2,background:'rgba(255,255,255,0.32)',borderRadius:999}});
+    return React.createElement(React.Fragment,null
+      ,React.createElement('div',{style:{display:'flex',gap:3,width:'100%',alignItems:'center',marginBottom:10}}
+        ,pPago>0&&React.createElement('div',{style:{flex:pPago,height:9,borderRadius:(pVenc>0||pPend>0)?'5px 2px 2px 5px':5,background:gradG,boxShadow:'0 1px 6px '+C.green+'44',position:'relative',overflow:'hidden',transition:'flex .6s ease',flexShrink:0}},shine)
+        ,pVenc>0&&React.createElement('div',{style:{flex:pVenc,height:9,borderRadius:(pPago>0&&pPend>0)?2:pPago>0?'2px 5px 5px 2px':pPend>0?'5px 2px 2px 5px':5,background:gradR,position:'relative',overflow:'hidden',transition:'flex .6s ease'}},shine)
+        ,pPend>0&&React.createElement('div',{style:{flex:pPend,height:9,borderRadius:(pPago>0||pVenc>0)?'2px 5px 5px 2px':5,background:gradO,position:'relative',overflow:'hidden',transition:'flex .6s ease'}},shine)
+        ,(total===0)&&React.createElement('div',{style:{flex:1,height:9,borderRadius:5,background:C.border}})
+      )
+      ,React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}}
+        ,React.createElement('span',{style:{fontSize:13,fontWeight:700,color:cor1}},label1)
+        ,React.createElement('span',{style:{fontSize:13,fontWeight:700,color:cor2}},label2)
+      )
+      ,React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginTop:3}}
+        ,React.createElement('span',{style:{fontSize:10,color:C.sub}},sub1)
+        ,React.createElement('span',{style:{fontSize:10,color:C.sub}},sub2)
+      )
+    );
+  }
+
   return React.createElement(React.Fragment,null
     ,_modalEl
 
@@ -29486,21 +29525,43 @@ function PessoalDash({
       ,React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',padding:'8px 16px 12px'}},React.createElement('div',null,React.createElement('div',{style:{fontSize:10,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:.8,marginBottom:3}},'PREVISÃO'),React.createElement('div',{style:{fontSize:24,fontWeight:800,letterSpacing:-.5,color:'var(--c-text)',lineHeight:1}},_fFull(_totRec)),React.createElement('div',{style:{fontSize:10,color:C.sub,marginTop:3}},'lucro loc. '+_nomAnt+' + extras')),React.createElement('div',{style:{borderLeft:'1px solid '+C.border,paddingLeft:14}},React.createElement('div',{style:{fontSize:10,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:.8,marginBottom:3}},'RESULTADO PREVISTO'),React.createElement('div',{style:{fontSize:24,fontWeight:800,letterSpacing:-.5,color:_saldo>=0?C.green:C.red,lineHeight:1}},_fFull(_saldo)),React.createElement('div',{style:{fontSize:10,color:C.sub,marginTop:3}},'recei\u00e7as \u2212 despesas')))
     )
 
-    // ── BARRAS ──────────────────────────────────────────────────────────────
+    // ── BARRAS (idênticas locadora: height 9, gradiente, brilho) ────────────
     ,React.createElement('div',{style:{background:C.card,borderRadius:20,border:'1px solid '+C.border,overflow:'hidden'}}
-      ,React.createElement('div',{style:{padding:'12px 16px',borderBottom:'1px solid '+C.border}},React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}},React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6}},React.createElement('div',{style:{width:8,height:8,borderRadius:'50%',background:C.green,boxShadow:'0 0 0 3px '+C.green+'28'}}),React.createElement('span',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.7}},'RECEITA PESSOAL')),React.createElement('span',{style:{fontSize:11,color:C.sub}},(_recs.length+1)+' lançamento'+(_recs.length!==0?'s':''))),React.createElement('div',{style:{display:'flex',height:16,borderRadius:8,overflow:'hidden',gap:1}},_totRec>0?[_recPago>0&&React.createElement('div',{key:'rp',style:{flex:_recPago,background:C.green,borderRadius:(_totRec-_recPago)>0?'8px 0 0 8px':'8px',minWidth:4}}),(_totRec-_recPago)>0&&React.createElement('div',{key:'rn',style:{flex:_totRec-_recPago,background:C.orange,opacity:.7,borderRadius:_recPago>0?'0 8px 8px 0':'8px',minWidth:4}})]:React.createElement('div',{style:{flex:1,background:C.border,borderRadius:8}})),React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginTop:5,fontSize:10,color:C.sub}},React.createElement('span',{style:{color:C.green,fontWeight:600}},'\u2713 '+_fFull(_recPago)+' recebido'),React.createElement('span',null,'Total: '+_fFull(_totRec))))
-      ,React.createElement('div',{style:{padding:'12px 16px'}},React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}},React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6}},React.createElement('div',{style:{width:8,height:8,borderRadius:'50%',background:_desPen>0?C.red:C.green,boxShadow:'0 0 0 3px '+(_desPen>0?C.red:C.green)+'28'}}),React.createElement('span',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.7}},'DESPESAS PESSOAIS')),React.createElement('span',{style:{fontSize:11,color:C.sub}},_desps.length+' item'+(_desps.length!==1?'s':''))),React.createElement('div',{style:{display:'flex',height:16,borderRadius:8,overflow:'hidden',gap:1}},_totDes>0?[_desPag>0&&React.createElement('div',{key:'dp',style:{flex:_desPag,background:C.green,borderRadius:_desPen>0?'8px 0 0 8px':'8px',minWidth:4}}),_desPen>0&&React.createElement('div',{key:'dn',style:{flex:_desPen,background:C.red,opacity:.8,borderRadius:_desPag>0?'0 8px 8px 0':'8px',minWidth:4}})]:React.createElement('div',{style:{flex:1,background:C.border,borderRadius:8}})),React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginTop:5,fontSize:10,color:C.sub}},React.createElement('span',{style:{color:C.green,fontWeight:600}},'\u2713 '+_fFull(_desPag)+' pago'),React.createElement('span',{style:{color:_desPen>0?C.red:C.sub}},_fFull(_desPen)+' a pagar')))
+      // RECEITA PESSOAL
+      ,React.createElement('div',{style:{padding:'13px 16px 11px',borderBottom:'1px solid '+C.border}}
+        ,React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:7}}
+          ,React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6}},React.createElement('div',{style:{width:7,height:7,borderRadius:'50%',background:C.green,flexShrink:0}}),React.createElement('span',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.7}},'Receita Pessoal'))
+          ,React.createElement('span',{style:{fontSize:11,color:C.sub}},(_recs.length+1)+' lançamento'+(_recs.length!==0?'s':''))
+        )
+        ,_barra(_recPago,0,Math.max(0,_totRec-_recPago),_totRec,
+          _recPago>0?'\u2713 '+_fC(_recPago)+' recebido':'',
+          _totRec>0?'Total: '+_fC(_totRec):'',C.green,
+          _totRec-_recPago>0?(_fC(_totRec-_recPago)+' a receber'):'',
+          '','',C.orange)
+      )
+      // DESPESAS PESSOAIS
+      ,React.createElement('div',{style:{padding:'13px 16px 11px'}}
+        ,React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:7}}
+          ,React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6}},React.createElement('div',{style:{width:7,height:7,borderRadius:'50%',background:_desPen>0?C.red:C.green,flexShrink:0}}),React.createElement('span',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.7}},'Despesas Pessoais'))
+          ,React.createElement('span',{style:{fontSize:11,color:C.sub}},_desps.length+' item'+(_desps.length!==1?'s':''))
+        )
+        ,_barra(_desPag,0,_desPen,_totDes,
+          _desPag>0?'\u2713 '+_fC(_desPag)+' pago':'',
+          _totDes>0?'Previsto: '+_fC(_totDes):'',C.green,
+          _desPen>0?(_fC(_desPen)+' a pagar'):'',
+          '','',C.red)
+      )
     )
 
-    // ── FLUXO DE CAIXA — IDÊNTICO LOCADORA ──────────────────────────────────
+    // ── FLUXO DE CAIXA — IDÊNTICO LOCADORA (com futuros) ────────────────────
     ,_load
-      ? React.createElement('div',{style:{background:C.card,borderRadius:16,border:'1px solid '+C.border,padding:24,textAlign:'center',color:C.sub,fontSize:13}},'⏳ Carregando...')
-      : diasData.length===0
-        ? React.createElement(React.Fragment,null
+      ?React.createElement('div',{style:{background:C.card,borderRadius:16,border:'1px solid '+C.border,padding:24,textAlign:'center',color:C.sub}},'⏳ Carregando...')
+      :diasData.length===0
+        ?React.createElement(React.Fragment,null
             ,React.createElement('div',{style:{fontSize:12,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginTop:8}},'Fluxo de Caixa')
-            ,React.createElement('div',{style:{background:C.card,borderRadius:16,border:'1px solid '+C.border,padding:24,textAlign:'center',color:C.sub,fontSize:13}},'Nenhum lançamento no período')
+            ,React.createElement('div',{style:{background:C.card,borderRadius:16,border:'1px solid '+C.border,padding:24,textAlign:'center',color:C.sub}},'Nenhum lançamento no período')
           )
-        : React.createElement(React.Fragment,null
+        :React.createElement(React.Fragment,null
             ,React.createElement('div',{style:{fontSize:12,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginTop:8,marginBottom:5}},'Fluxo de Caixa')
             ,React.createElement('div',{style:{background:C.card,borderRadius:16,border:'1px solid '+C.border,overflow:'hidden'}}
               ,React.createElement('div',{style:{display:'flex',paddingTop:14}}
@@ -29550,7 +29611,6 @@ function PessoalDash({
                   )
                 )
               )
-              /* Painel tooltip ao clicar — IDÊNTICO locadora */
               ,(pfTooltip!==null||pfHover!==null)&&diasData[pfTooltip!==null?pfTooltip:pfHover]&&(function(){
                   var ttIdx=pfTooltip!==null?pfTooltip:pfHover;
                   var day=diasData[ttIdx];
@@ -29589,7 +29649,7 @@ function PessoalDash({
             )
           )
 
-    // ── DESPESAS POR CATEGORIA (barras horizontais estilo locadora) ──────────
+    // ── DESPESAS POR CATEGORIA ───────────────────────────────────────────────
     ,catList.length>0&&React.createElement(React.Fragment,null
       ,React.createElement('div',{style:{fontSize:12,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginTop:8,marginBottom:5}},'Despesas por Categoria')
       ,React.createElement('div',{style:{background:C.card,borderRadius:16,border:'1px solid '+C.border,padding:'14px 16px'}}
@@ -29597,13 +29657,10 @@ function PessoalDash({
             var val=catMap[cat],pct=_totDes>0?Math.round(val/_totDes*100):0;
             var barW=Math.max(3,Math.round(val/maxCat*100));
             var col=CAT_CL[cat]||'#A0A0A8',ic=CAT_IC[cat]||'📦';
-            return React.createElement('div',{key:cat,style:{marginBottom:i<catList.length-1?13:0}}
-              ,React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}
-                ,React.createElement('div',{style:{display:'flex',alignItems:'center',gap:7}},React.createElement('span',{style:{fontSize:14}},ic),React.createElement('span',{style:{fontSize:13,fontWeight:600,color:'var(--c-text)'}},cat))
-                ,React.createElement('div',{style:{display:'flex',gap:8,alignItems:'center'}},React.createElement('span',{style:{fontSize:11,color:C.sub}},pct+'%'),React.createElement('span',{style:{fontSize:13,fontWeight:700,color:'var(--c-text)'}},_fFull(val)))
-              )
-              ,React.createElement('div',{style:{height:6,background:C.border,borderRadius:4,overflow:'hidden'}}
-                ,React.createElement('div',{style:{height:'100%',width:barW+'%',background:'linear-gradient(90deg,'+col+'CC,'+col+')',borderRadius:4,boxShadow:'0 1px 4px '+col+'55'}})
+            return React.createElement('div',{key:cat,style:{marginBottom:i<catList.length-1?12:0}}
+              ,React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},React.createElement('div',{style:{display:'flex',alignItems:'center',gap:7}},React.createElement('span',{style:{fontSize:14}},ic),React.createElement('span',{style:{fontSize:13,fontWeight:600,color:'var(--c-text)'}},cat)),React.createElement('div',{style:{display:'flex',gap:8,alignItems:'center'}},React.createElement('span',{style:{fontSize:11,color:C.sub}},pct+'%'),React.createElement('span',{style:{fontSize:13,fontWeight:700,color:'var(--c-text)'}},_fFull(val))))
+              ,React.createElement('div',{style:{height:6,background:C.border,borderRadius:4,overflow:'hidden',position:'relative'}}
+                ,React.createElement('div',{style:{height:'100%',width:barW+'%',background:'linear-gradient(90deg,'+col+'CC,'+col+')',borderRadius:4,boxShadow:'0 1px 4px '+col+'55',position:'relative',overflow:'hidden'}},React.createElement('div',{style:{position:'absolute',top:1,left:4,right:4,height:2,background:'rgba(255,255,255,0.35)',borderRadius:999}}))
               )
             );
           })
@@ -29634,6 +29691,8 @@ function PessoalDash({
     ,React.createElement('div',{style:{height:24}})
   );
 }
+
+
 
 
 // OrcamentoPessoalInline: versão para embutir na Dashboard (sem cabeçalho nem nav de meses próprios)

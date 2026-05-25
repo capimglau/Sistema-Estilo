@@ -21965,6 +21965,10 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     if (card) card.scrollIntoView({ behavior:'smooth', block:'nearest', inline:'center' });
   }, [dashMultaSel]);
   const [_orcFresh,   _setOrcFresh]   = React.useState(null);
+  const [_orcCats,    _setOrcCats]    = React.useState([]);
+  const [_orcCatsMod, _setOrcCatsMod] = React.useState(false);
+  React.useEffect(function(){db.get('orcamento_categorias').then(function(d){_setOrcCats(d||[]);}).catch(function(){});}, []);
+  React.useEffect(function(){if(modoDash!=='pessoal')return;db.get('orcamento_categorias').then(function(d){_setOrcCats(d||[]);}).catch(function(){});}, [modoDash]);
   const [_pModal,    _setPModal]    = React.useState(false);
   const [_pForm,     _setPForm]     = React.useState({tipo:'despesa',categoria:'Moradia'});
   const [_pEdit,     _setPEdit]     = React.useState(null);
@@ -22287,6 +22291,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     , modoDash === "pessoal" && React.createElement(React.Fragment, null
           , React.createElement(PessoalDash, {
               orcItens: _orcFresh,
+              orcCats: _orcCats, setOrcCats: _setOrcCats,
+              orcCatsMod: _orcCatsMod, setOrcCatsMod: _setOrcCatsMod,
               contratos: contratos, despesas: despesas, receitas: receitas,
               manutencoes: manutencoes, multas: multas,
               dashMes: dashMes, setDashMes: setDashMes, mesAtual: mesAtual,
@@ -29346,7 +29352,8 @@ function PessoalDash({
   prevBannerTouch, prevBannerWheel,
   pModal, setPModal, pForm, setPForm,
   pEdit, setPEdit, pSaving, pSave, pDel, pBaixar,
-  pfTooltip, setPfTooltip, pfHover, setPfHover, pfSwipeX
+  pfTooltip, setPfTooltip, pfHover, setPfHover, pfSwipeX,
+  orcCats, setOrcCats, orcCatsMod, setOrcCatsMod
 }) {
   var _oi   = orcItens || [];
   var _hoje = new Date().toISOString().split('T')[0];
@@ -29419,6 +29426,18 @@ function PessoalDash({
   var catMap={};
   _desps.forEach(function(it){var c=it.categoria||'Outros';catMap[c]=(catMap[c]||0)+parseFloat(it.valor||0);});
   var catList=Object.keys(catMap).sort(function(a,b){return catMap[b]-catMap[a];}).slice(0,4);
+  // Orçamento por categoria — usa orcCats do DB; fallback = mês anterior
+  var _orcCatsArr=orcCats||[];
+  var catBudget={};
+  _orcCatsArr.filter(function(r){return r.mes===_mes;}).forEach(function(r){catBudget[r.categoria]=parseFloat(r.valor)||0;});
+  // fallback: mês anterior
+  var catMapAnt={};
+  _oi.filter(function(it){return _vis(it,_mesAnt);}).map(function(it){return _projetar(it,_mesAnt);}).filter(function(it){return it.tipo==='despesa';}).forEach(function(it){var _k=it.categoria||'Outros';catMapAnt[_k]=(catMapAnt[_k]||0)+parseFloat(it.valor||0);});
+  // "previsto" = orçamento cadastrado OU mês anterior como referência
+  function _budget(cat){ return catBudget[cat]||catMapAnt[cat]||catMap[cat]||1; }
+  var bCats=Object.keys(catMap).sort(function(a,b){return catMap[b]-catMap[a];}).slice(0,6);
+  var maxBullet=Math.max.apply(null,bCats.map(function(cat){return Math.max(catMap[cat]||0,_budget(cat));}).concat([1]));
+  var hasBudget=bCats.some(function(cat){return !!catBudget[cat];});
 
   // ── Timeline (Template 5): todos os eventos ordenados por data ────────────
   var _meses3=[_mes,_addM(_mes,1),_addM(_mes,2)];
@@ -29652,7 +29671,117 @@ function PessoalDash({
             )
           )
 
-    /* ══ TEMPLATE 5: TIMELINE DE PREVISÃO ════════════════════════════════════ */
+    /* ══ BULLET CHART: Orçamento vs Realizado ══════════════════════════════════ */
+    ,bCats.length>0&&React.createElement(React.Fragment,null
+      ,React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:8,marginBottom:5}}
+        ,React.createElement('div',{style:{fontSize:12,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5}},hasBudget?'Orçamento vs Realizado':'Despesas · Prev. vs Real')
+        ,React.createElement('button',{onClick:function(){setOrcCatsMod(true);},style:{border:'none',background:C.blue+'18',color:C.blue,borderRadius:10,padding:'5px 12px',fontSize:11,fontWeight:700,cursor:'pointer'}},hasBudget?'✏️ Orçamento':'+ Definir Orçamento')
+      )
+      ,React.createElement('div',{style:{background:C.card,borderRadius:16,border:'1px solid '+C.border,padding:'12px 16px'}}
+        ,React.createElement('div',{style:{display:'flex',gap:14,marginBottom:10}}
+          ,React.createElement('div',{style:{display:'flex',alignItems:'center',gap:5}},React.createElement('div',{style:{width:14,height:4,borderRadius:2,background:C.border}}),React.createElement('span',{style:{fontSize:10,color:C.sub}},hasBudget?'Orçamento':'Ref. '+_nomAnt))
+          ,React.createElement('div',{style:{display:'flex',alignItems:'center',gap:5}},React.createElement('div',{style:{width:14,height:8,borderRadius:2,background:C.blue}}),React.createElement('span',{style:{fontSize:10,color:C.sub}},'Realizado'))
+          ,!hasBudget&&React.createElement('div',{style:{fontSize:9,color:C.orange,fontWeight:600,marginLeft:'auto'}},'Defina metas por categoria →')
+        )
+        ,bCats.map(function(cat,i){
+          var real=catMap[cat]||0;
+          var prev=_budget(cat);
+          var pct=prev>0?Math.round(real/prev*100):100;
+          var over=pct>115,warn=pct>100&&!over;
+          var col=over?C.red:warn?C.orange:(CAT_CL[cat]||C.blue);
+          var wReal=Math.min(100,Math.round(real/maxBullet*100));
+          var wPrev=Math.min(100,Math.round(prev/maxBullet*100));
+          var hasMeta=!!catBudget[cat];
+          return React.createElement('div',{key:cat,style:{marginBottom:i<bCats.length-1?10:0}}
+            ,React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}
+              ,React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6}}
+                ,React.createElement('span',{style:{fontSize:14}},CAT_IC[cat]||'📦')
+                ,React.createElement('span',{style:{fontSize:12,fontWeight:600,color:'var(--c-text)'}},cat)
+                ,!hasMeta&&React.createElement('span',{style:{fontSize:8,color:C.sub,fontStyle:'italic'}},'(ref.)')
+              )
+              ,React.createElement('div',{style:{display:'flex',gap:7,alignItems:'center'}}
+                ,React.createElement('span',{style:{fontSize:10,color:C.sub}},fmtShort(prev))
+                ,React.createElement('span',{style:{fontSize:12,fontWeight:800,color:col}},fmtShort(real))
+                ,React.createElement('span',{style:{fontSize:9,fontWeight:700,background:col+'18',color:col,borderRadius:5,padding:'1px 6px'}},(over||warn?'↑':pct<85?'↓':'')+pct+'%')
+              )
+            )
+            ,React.createElement('div',{style:{position:'relative',height:14,background:(CAT_CL[cat]||'#A0A0A8')+'20',borderRadius:4,overflow:'hidden'}}
+              ,React.createElement('div',{style:{position:'absolute',top:0,bottom:0,left:wPrev+'%',width:2,background:'rgba(60,60,67,.35)',transform:'translateX(-100%)'}})
+              ,React.createElement('div',{style:{position:'absolute',top:'18%',bottom:'18%',left:0,width:wReal+'%',background:'linear-gradient(90deg,'+col+'BB,'+col+')',borderRadius:3,transition:'width .4s'}}
+                ,React.createElement('div',{style:{position:'absolute',top:1,left:3,right:3,height:2,background:'rgba(255,255,255,0.35)',borderRadius:999}})
+              )
+            )
+          );
+        })
+      )
+    )
+    /* Modal Orçamento por Categoria */
+    ,orcCatsMod&&React.createElement('div',{style:{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',zIndex:2000,display:'flex',alignItems:'flex-end',backdropFilter:'blur(6px)'}}
+      ,React.createElement('div',{style:{background:C.card,borderRadius:'22px 22px 0 0',width:'100%',maxHeight:'88vh',overflowY:'auto',padding:'20px 20px 44px'}}
+        ,React.createElement('div',{style:{width:36,height:4,background:C.border,borderRadius:2,margin:'0 auto 16px',cursor:'pointer'},onClick:function(){setOrcCatsMod(false);}})
+        ,React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}
+          ,React.createElement('div',{style:{fontSize:17,fontWeight:800,color:'var(--c-text)'}},'Orçamento Mensal')
+          ,React.createElement('div',{style:{fontSize:12,color:C.sub,fontWeight:600,textTransform:'capitalize'}},_nomMes)
+        )
+        ,React.createElement('div',{style:{fontSize:12,color:C.sub,marginBottom:20}},'Defina quanto planeja gastar em cada categoria este mês.')
+        ,(function(){
+          var ALL_CATS=['Moradia','Alimentacao','Transporte','Saude','Lazer','Educacao','Investimento','Vestuario','Servicos','Outros'];
+          return ALL_CATS.map(function(cat){
+            var existing=_orcCatsArr.find(function(r){return r.mes===_mes&&r.categoria===cat;});
+            var realVal=catMap[cat]||0;
+            var hasMeta=!!catBudget[cat];
+            var col=CAT_CL[cat]||'#A0A0A8';
+            return React.createElement('div',{key:cat,style:{display:'flex',alignItems:'center',gap:12,padding:'12px 0',borderBottom:'1px solid '+C.border}}
+              ,React.createElement('div',{style:{width:38,height:38,borderRadius:10,background:col+'20',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}},CAT_IC[cat]||'📦')
+              ,React.createElement('div',{style:{flex:1}}
+                ,React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--c-text)'}},cat)
+                ,realVal>0&&React.createElement('div',{style:{fontSize:10,color:C.sub}},'Gasto atual: '+fmtShort(realVal))
+              )
+              ,React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6,flexShrink:0}}
+                ,React.createElement('span',{style:{fontSize:12,color:C.sub,fontWeight:600}},'R$')
+                ,React.createElement('input',{
+                  type:'number',
+                  defaultValue:hasMeta?catBudget[cat]:'',
+                  placeholder:'0',
+                  id:'orc_'+cat,
+                  style:{width:90,padding:'8px 10px',borderRadius:10,border:'1.5px solid '+C.border,background:C.card,fontSize:14,fontWeight:700,color:'var(--c-text)',outline:'none',textAlign:'right'}
+                })
+              )
+            );
+          });
+        })()
+        ,React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginTop:20}}
+          ,React.createElement('button',{onClick:function(){setOrcCatsMod(false);},style:{border:'1.5px solid '+C.border,background:'transparent',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer',color:'var(--c-text)'}},'Cancelar')
+          ,React.createElement('button',{
+            onClick:async function(){
+              var ALL=['Moradia','Alimentacao','Transporte','Saude','Lazer','Educacao','Investimento','Vestuario','Servicos','Outros'];
+              var saved=[];
+              for(var i=0;i<ALL.length;i++){
+                var cat=ALL[i];
+                var inp=document.getElementById('orc_'+cat);
+                var val=parseFloat(inp&&inp.value)||0;
+                if(val<=0) continue;
+                var existing=(_orcCatsArr||[]).find(function(r){return r.mes===_mes&&r.categoria===cat;});
+                try{
+                  var row;
+                  if(existing){ row=await db.patch('orcamento_categorias',existing.id,{valor:val}); }
+                  else { row=await db.post('orcamento_categorias',{mes:_mes,categoria:cat,valor:val}); }
+                  saved.push(row);
+                }catch(e){console.error(e);}
+              }
+              // Deleta zeros que existiam
+              var toDelete=(_orcCatsArr||[]).filter(function(r){return r.mes===_mes;}).filter(function(r){var inp=document.getElementById('orc_'+r.categoria);return !inp||!(parseFloat(inp.value)||0);});
+              for(var j=0;j<toDelete.length;j++){try{await db.del('orcamento_categorias',toDelete[j].id);}catch(e){}}
+              var fresh=await db.get('orcamento_categorias');
+              setOrcCats(fresh||[]);
+              setOrcCatsMod(false);
+            },
+            style:{border:'none',background:'linear-gradient(135deg,#0055D4,#007AFF)',color:'#fff',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer'}
+          },'Salvar Orçamento')
+        )
+      )
+    )
+    /* ══ TEMPLATE 5: TIMELINE ══ */
     ,React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:16,marginBottom:8}}
       ,React.createElement('div',{style:{fontSize:12,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5}},'Previsão de Caixa')
       ,React.createElement('button',{onClick:function(){setPForm({tipo:'despesa',categoria:'Moradia',mes:_mes});setPEdit(null);setPModal(true);},style:{border:'none',background:C.purple,color:'#fff',borderRadius:12,padding:'7px 16px',fontSize:13,fontWeight:700,cursor:'pointer'}},'+ Adicionar')

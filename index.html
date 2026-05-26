@@ -29820,25 +29820,22 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
       data_pagamento: form.data_pagamento || null,
       forma_pagamento: form.forma_pagamento || null
     };
+    var _errModal = null;
     try {
       if (edit) {
-        /* Tenta PATCH; se retornar vazio (RLS) tenta upsert via POST */
-        var SB_URL2 = typeof SB_URL !== 'undefined' ? SB_URL : '';
-        var SB_KEY2 = typeof SB_KEY !== 'undefined' ? SB_KEY : '';
-        var HDR2 = { apikey: SB_KEY2, Authorization: 'Bearer ' + SB_KEY2, 'Content-Type': 'application/json', Prefer: 'return=representation' };
-        var r = await fetch(SB_URL2 + '/rest/v1/orcamento_pessoal?id=eq.' + edit, {
-          method: 'PATCH', headers: HDR2, body: JSON.stringify(payload)
+        /* USA return=minimal: só verifica se HTTP 200/204, sem precisar de SELECT */
+        var _hdr = { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY,
+          'Content-Type': 'application/json', 'Prefer': 'return=minimal' };
+        var _r = await fetch(SB_URL + '/rest/v1/orcamento_pessoal?id=eq.' + String(edit), {
+          method: 'PATCH', headers: _hdr, body: JSON.stringify(payload)
         });
-        var j = await r.json();
-        if (!r.ok) {
-          var errMsg = (j && (j.message || j.hint || j.details)) || ('Erro HTTP ' + r.status);
-          throw new Error(errMsg);
+        if (!_r.ok) {
+          var _ej = null;
+          try { _ej = await _r.json(); } catch(_){}
+          throw new Error((_ej && (_ej.message || _ej.hint)) || 'Erro HTTP ' + _r.status);
         }
-        if (Array.isArray(j) && j.length === 0) {
-          throw new Error('Supabase não atualizou o registro. Execute no SQL Editor:\ngrant update on orcamento_pessoal to anon;\nalter table orcamento_pessoal disable row level security;');
-        }
-        var updated = (Array.isArray(j) ? j[0] : j) || payload;
-        setItens(function(p){ return p.map(function(it){ return it.id === edit ? Object.assign({}, it, updated) : it; }); });
+        /* 200 ou 204 = sucesso — atualiza estado local com payload */
+        setItens(function(p){ return p.map(function(it){ return String(it.id) === String(edit) ? Object.assign({}, it, payload) : it; }); });
         toast("✅ Salvo!");
       } else {
         var nc = await db.post("orcamento_pessoal", payload);
@@ -29848,13 +29845,9 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
       setModal(false); setForm({}); setEdit(null);
     } catch(e) {
       console.error("save error:", e);
-      var msg = e.message || String(e);
-      /* Detecta erro de RLS */
-      if (msg.indexOf('RLS') > -1 || msg.indexOf('vazio') > -1 || msg.indexOf('0 rows') > -1) {
-        toast("❌ RLS bloqueou. Execute em Config: grant update on orcamento_pessoal to anon;", "error");
-      } else {
-        toast("❌ Erro: " + msg, "error");
-      }
+      var _em = (e.message || String(e));
+      alert('Erro ao salvar:\n' + _em + '\n\nSe for problema de permissão, execute no Supabase SQL Editor:\nalter table orcamento_pessoal disable row level security;\ngrant all on orcamento_pessoal to anon;');
+      toast("❌ Erro ao salvar", "error");
     }
     setSaving(false);
   }
@@ -30038,30 +30031,40 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   }).sort(function(a,b){return (a.data||'').localeCompare(b.data||'');}).slice(0,5);
 
   // ── Tetos por categoria (BUD) ──
-  return React.createElement('div', { "data-no-cm": "1", style: { display: 'flex', flexDirection: 'column', gap: 28 } }
+  return React.createElement('div', { "data-no-cm": "1", style: { display: 'flex', flexDirection: 'column', gap: 20 } }
 
-    /* ── Cabeçalho ── */
-    , !inlineMode && React.createElement('div', { style: { display:'flex', justifyContent:'space-between', alignItems:'center' } }
-      , React.createElement('div', { style: { fontSize:18, fontWeight:800 } }, 'Orçamento Pessoal')
-      , React.createElement('button', { className:bCls(Btn(C.purple)) + " ag-add-btn", style:bStyle(Btn(C.purple)),
-          onClick: function(){ setForm({tipo:'despesa',categoria:'Moradia'}); setEdit(null); setModal(true); } }, '+ Lançamento')
-    )
-    /* Botão + Lançamento no modo inline (cabeçalho oculto) */
-    , inlineMode && React.createElement('div', { style: { display:'flex', justifyContent:'flex-end' } }
-      , React.createElement('button', { className:bCls(Btn(C.purple)) + " ag-add-btn", style:bStyle(Btn(C.purple)),
-          onClick: function(){ setForm({tipo:'despesa',categoria:'Moradia'}); setEdit(null); setModal(true); } }, '+ Lançamento')
-    )
+    /* ── Header com mês + botão + ── */
+    , !inlineMode && React.createElement('div', {style:{background:'var(--c-card)',borderRadius:20,border:'1px solid '+C.border,overflow:'hidden'}},
+        React.createElement('div', {style:{display:'flex',alignItems:'center',gap:8,padding:'14px 16px',borderBottom:'1px solid '+C.border}},
+          React.createElement('button', {onClick:function(){var d=new Date(filtroMes+'-01');d.setMonth(d.getMonth()-1);setFiltroMes(d.toISOString().slice(0,7));},
+            style:{background:'rgba(120,120,128,0.12)',border:'none',borderRadius:10,width:34,height:34,fontSize:18,cursor:'pointer',color:'var(--c-text)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}, '‹'),
+          React.createElement('div', {style:{flex:1,textAlign:'center'}},
+            React.createElement('div', {style:{fontWeight:800,fontSize:16,color:'var(--c-text)',letterSpacing:-.3}}, nomeMesFiltro),
+            React.createElement('div', {style:{fontSize:10,color:C.sub,marginTop:1,textTransform:'uppercase',letterSpacing:.5}}, 'Orçamento Pessoal')
+          ),
+          React.createElement('button', {onClick:function(){var d=new Date(filtroMes+'-01');d.setMonth(d.getMonth()+1);setFiltroMes(d.toISOString().slice(0,7));},
+            style:{background:'rgba(120,120,128,0.12)',border:'none',borderRadius:10,width:34,height:34,fontSize:18,cursor:'pointer',color:'var(--c-text)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}, '›')
+        ),
+        React.createElement('div', {style:{display:'flex',gap:8,padding:'10px 16px'}},
+          React.createElement('button', {onClick:function(){setForm({tipo:'despesa',categoria:'Outros',data:new Date().toISOString().split('T')[0],status:'previsto'});setEdit(null);setModal(true);},
+            style:{flex:1,background:C.red+'15',color:C.red,border:'1px solid '+C.red+'30',borderRadius:12,padding:'10px',fontSize:13,fontWeight:700,cursor:'pointer'}}, '+ Despesa'),
+          React.createElement('button', {onClick:function(){setForm({tipo:'receita',categoria:'Outros',data:new Date().toISOString().split('T')[0],status:'previsto'});setEdit(null);setModal(true);},
+            style:{flex:1,background:C.green+'15',color:C.green,border:'1px solid '+C.green+'30',borderRadius:12,padding:'10px',fontSize:13,fontWeight:700,cursor:'pointer'}}, '+ Receita')
+        )
+      )
 
     /* ── Sub-tabs ── */
-    , React.createElement('div', { style:{display:'flex',gap:6,overflowX:'auto',flexWrap:'nowrap',WebkitOverflowScrolling:'touch',paddingBottom:2,scrollbarWidth:'none'} }
-      , [['dashboard','📊 Visão Geral'],['despesas','📉 Despesas'],['receitas','💰 Receitas'],['recorrentes','🔁 Fixas'],['projecao','📈 Projeção']].map(function(pair){
-        var v=pair[0],l=pair[1];
-        return React.createElement('button',{key:v,onClick:function(){setSubTab(v);},
-          style:{background:subTab===v?C.purple:'transparent',color:subTab===v?'#fff':C.sub,
-            border:'1.5px solid '+(subTab===v?C.purple:'#C7C7CC'),borderRadius:10,
-            padding:'8px 14px',fontSize:12,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}},l);
-      })
-    )
+    , React.createElement('div', {style:{display:'flex',gap:5,overflowX:'auto',paddingBottom:2,WebkitOverflowScrolling:'touch',scrollbarWidth:'none'}},
+        [['dashboard','📊','Visão'],['despesas','📉','Despesas'],['receitas','💰','Receitas'],['recorrentes','🔁','Fixas'],['projecao','📈','Projeção']].map(function(t){
+          var v=t[0],icon=t[1],lbl=t[2],sel=subTab===v;
+          return React.createElement('button',{key:v,onClick:function(){setSubTab(v);},
+            style:{flexShrink:0,padding:'8px 14px',borderRadius:20,border:'none',
+              background:sel?C.purple:'rgba(120,120,128,0.10)',
+              color:sel?'#fff':C.sub,fontSize:12,fontWeight:sel?800:500,
+              cursor:'pointer',whiteSpace:'nowrap',transition:'all .2s',
+              boxShadow:sel?'0 2px 8px '+C.purple+'55':'none'}}, icon+' '+lbl);
+        })
+      )
 
     /* ── Navegador de Meses ── (oculto no modo inline — usa nav do Inicio) */
     , !inlineMode && (function(){
@@ -30206,24 +30209,27 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
           }
         });
 
-        /* Lucro da locadora: mês anterior como receita no dia 1 */
-        function calcLucroLocadoraMes(mes){
-          var cts=contratos.filter(function(c2){ if(!c2.status||c2.status==='cancelado') return false; if(c2.status_pagamento==='pago'&&c2.data_pagamento) return c2.data_pagamento.slice(0,7)===mes; return c2.previsao_pagamento&&c2.previsao_pagamento.slice(0,7)===mes; });
-          var recLoc=cts.reduce(function(s,c2){return s+parseFloat(c2.valor_total||0);},0)+receitas.filter(function(r){return !r.ref_fatura&&receitaDoMes(r,mes);}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
-          var despLoc=despesas.filter(function(d){return !d.manutencao_id&&!isRetLucro(d)&&d.categoria!=='Salarios'&&despesaVisivelNoMes(d,mes);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
-          var manutLoc=(manutencoes||[]).filter(function(m){return manMesRefGlobal(m)===mes;}).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
-          var multasLoc=(multas||[]).filter(function(m){return (m.data_pagamento||m.data||'').slice(0,7)===mes&&m.status==='pago';}).reduce(function(s,m){return s+parseFloat(m.valor||0);},0);
-          return recLoc-despLoc-manutLoc-multasLoc;
+        /* Lucro da locadora: usa lucroLocadora (já calculado) para o mês atual,
+           e calcula manualmente para meses futuros */
+        function calcLucroMes(mes){
+          /* Para o mesmo mês de referência (_mesRef), usa o valor já calculado */
+          if(mes === _mesRef) return lucroLocadora;
+          var cts=contratos.filter(function(ct){ if(!ct.status||ct.status==='cancelado') return false; if(ct.status_pagamento==='pago'&&ct.data_pagamento) return ct.data_pagamento.slice(0,7)===mes; return ct.previsao_pagamento&&ct.previsao_pagamento.slice(0,7)===mes; });
+          var r2=cts.reduce(function(s,ct){return s+parseFloat(ct.valor_total||0);},0)+receitas.filter(function(r){return !r.ref_fatura&&receitaDoMes(r,mes);}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+          var d2=despesas.filter(function(d){return !d.manutencao_id&&!isRetLucro(d)&&d.categoria!=='Salarios'&&despesaVisivelNoMes(d,mes);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
+          var m2=(manutencoes||[]).filter(function(m){return manMesRefGlobal(m)===mes;}).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
+          return r2-d2-m2;
         }
         var mesesAdicionados={};
         diasRange.forEach(function(ds){
           var mes=ds.slice(0,7); if(mesesAdicionados[mes]) return; mesesAdicionados[mes]=true;
+          /* O orçamento pessoal de um mês usa o lucro do mês ANTERIOR da locadora */
           var d0=new Date(mes+'-01'); d0.setMonth(d0.getMonth()-1);
-          var mesAnterior=d0.toISOString().slice(0,7);
-          var lucro=calcLucroLocadoraMes(mesAnterior);
+          var mesRef2=d0.toISOString().slice(0,7);
+          var lucro=calcLucroMes(mesRef2);
           var diaRecebimento=mes+'-01';
           if(diaRecebimento>=hojeStr2M&&lucro!==0)
-            addMov(diaRecebimento,{tipo:lucro>=0?'receita':'despesa',descricao:'Lucro Locadora ('+mesAnterior+')',valor:Math.abs(lucro),cat:'Locadora'});
+            addMov(diaRecebimento,{tipo:lucro>=0?'receita':'despesa',descricao:'Lucro Locadora ('+mesRef2+')',valor:Math.abs(lucro),cat:'Locadora'});
         });
 
         var diasComMov=diasRange.filter(function(ds){return movDia[ds]&&movDia[ds].length>0;});

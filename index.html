@@ -29759,8 +29759,9 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   var itensRecorrentes = itens.filter(it => it.recorrente && efetivoMes(it) && efetivoMes(it) < filtroMes && itemVisivelNoMes(it, filtroMes) && !idsBaixados.has(it.id));
   var todosVisiveis = itensProprios.concat(itensRecorrentes);
 
-  // Receita prevista da locadora = mesma fórmula do prevMes da Dashboard (contratos + avulsas)
-  var _mesRef = filtroMes;
+  // Receita do orçamento pessoal = lucro da locadora do MÊS ANTERIOR
+  var _d0 = new Date(filtroMes+'-01'); _d0.setMonth(_d0.getMonth()-1);
+  var _mesRef = _d0.toISOString().slice(0,7); // mês anterior ao filtroMes
   var _ctsMes = contratos.filter(function(c) {
     if (c.status === "cancelado") return false;
     // Contratos pagos: mês do pagamento real; demais: mês da previsão (igual ao ctsMes da Dashboard)
@@ -30181,13 +30182,36 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
           }
         });
 
-        // 2. Lucro da locadora: distribui na data de previsão de pagamento dos contratos
-        contratos.filter(function(c2){
-          if(!c2.status||c2.status==='cancelado'||c2.status_pagamento==='pago') return false;
-          return c2.previsao_pagamento && c2.previsao_pagamento >= hojeStr2M;
-        }).forEach(function(c2){
-          var dt = c2.previsao_pagamento.slice(0,10);
-          addMov(dt,{tipo:'receita',descricao:'Locação #'+c2.id,valor:parseFloat(c2.valor_total||0),cat:'Locadora'});
+        // 2. Lucro da locadora do mês ANTERIOR como receita pessoal no dia 1 de cada mês
+        //    (regra: receita pessoal de maio = lucro locadora de abril)
+        function calcLucroLocadoraMes(mes){
+          var cts = contratos.filter(function(c2){
+            if(!c2.status||c2.status==='cancelado') return false;
+            if(c2.status_pagamento==='pago'&&c2.data_pagamento) return c2.data_pagamento.slice(0,7)===mes;
+            return c2.previsao_pagamento&&c2.previsao_pagamento.slice(0,7)===mes;
+          });
+          var recLoc = cts.reduce(function(s,c2){return s+parseFloat(c2.valor_total||0);},0)
+            + receitas.filter(function(r){return !r.ref_fatura&&receitaDoMes(r,mes);}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+          var despLoc = despesas.filter(function(d){return !d.manutencao_id&&!isRetLucro(d)&&d.categoria!=='Salarios'&&despesaVisivelNoMes(d,mes);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
+          var manutLoc = (manutencoes||[]).filter(function(m){return manMesRefGlobal(m)===mes;}).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
+          var multasLoc = (multas||[]).filter(function(m){var dm=m.data_pagamento||m.data||'';return dm.slice(0,7)===mes&&m.status==='pago';}).reduce(function(s,m){return s+parseFloat(m.valor||0);},0);
+          return recLoc - despLoc - manutLoc - multasLoc;
+        }
+        // Para cada mês no range, adiciona no dia 1 o lucro do mês anterior
+        var mesesAdicionados = {};
+        diasRange.forEach(function(ds){
+          var mes = ds.slice(0,7);
+          if(mesesAdicionados[mes]) return;
+          mesesAdicionados[mes] = true;
+          // mês anterior
+          var d0 = new Date(mes+'-01'); d0.setMonth(d0.getMonth()-1);
+          var mesAnterior = d0.toISOString().slice(0,7);
+          var lucro = calcLucroLocadoraMes(mesAnterior);
+          if(lucro !== 0) {
+            var diaRecebimento = mes+'-01'; // recebido no início do mês
+            if(diaRecebimento >= hojeStr2M)
+              addMov(diaRecebimento,{tipo: lucro>=0?'receita':'despesa', descricao:'Lucro Locadora ('+mesAnterior+')', valor:Math.abs(lucro), cat:'Locadora'});
+          }
         });
 
         // Filtra apenas dias com movimentação
@@ -30274,42 +30298,198 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     )
 
     /* ══════════ DESPESAS ══════════ */
-    , subTab === 'despesas' && React.createElement('div', {className:'lg-card graph4-premium-card',style:CARD},
-      React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
-        React.createElement('div', {style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:0.5}}, 'Despesas'),
-        React.createElement('select', {style:Object.assign({},FI,{width:'auto',fontSize:12,padding:'5px 8px',cursor:'pointer'}),
-          value:sortOP,onChange:function(e){setSortOP(e.target.value);}},
-          React.createElement('option', {value:'pendentes'}, 'Pendentes primeiro'),
-          React.createElement('option', {value:'data_asc'}, 'Data ↑'),
-          React.createElement('option', {value:'data_desc'}, 'Data ↓'),
-          React.createElement('option', {value:'valor_desc'}, 'Valor ↓')
-        )
-      ),
-      todosVisiveis.filter(function(it){return it.tipo==='despesa';}).length===0
-        && React.createElement('div', {style:{color:C.sub,textAlign:'center',padding:20}}, 'Nenhuma despesa'),
-      todosVisiveis.filter(function(it){return it.tipo==='despesa';}).sort(_sortOP).map(function(it,i,arr){
-        return React.createElement(ItemCard, {key:it.id+'-'+filtroMes,it:it,i:i,total:arr.length});
-      })
-    )
+    , subTab === 'despesas' && (function(){
+      var _desps2 = todosVisiveis.filter(function(it){return it.tipo==='despesa';});
+      var _dTot   = _desps2.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _dPg    = _desps2.filter(function(it){return it.status==='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _dPend  = _desps2.filter(function(it){return it.status!=='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _hoje3  = new Date().toISOString().slice(0,10);
+      var _dVenc  = _desps2.filter(function(it){return it.status!=='pago'&&it.data&&it.data<_hoje3;}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _pct    = _dTot>0?Math.min(100,Math.round(_dPg/_dTot*100)):0;
+      var _corPct = _pct>=90?C.green:_pct>=50?C.orange:C.red;
+      // Por categoria
+      var _byCat  = {}; _desps2.forEach(function(it){var k=it.categoria||'Outros'; _byCat[k]=(_byCat[k]||0)+parseFloat(it.valor||0);});
+      var _topCats= Object.entries(_byCat).sort(function(a,b){return b[1]-a[1];}).slice(0,4);
+      return React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:14}},
+        /* ── Painel de resumo ── */
+        React.createElement('div',{style:{background:'var(--c-card)',borderRadius:20,border:'1px solid '+C.border,overflow:'hidden',boxShadow:'0 2px 10px rgba(0,0,0,0.06)'}},
+          /* Header com botão + */
+          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 18px 12px',borderBottom:'1px solid '+C.border}},
+            React.createElement('div',null,
+              React.createElement('div',{style:{fontSize:14,fontWeight:800,color:'var(--c-text)'}}, '📉 Despesas — '+nomeMesFiltro),
+              React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:2}}, _desps2.length+' lançamento'+ (_desps2.length!==1?'s':''))
+            ),
+            React.createElement('button',{
+              style:{background:C.red,color:'#fff',border:'none',borderRadius:12,padding:'10px 18px',fontSize:13,fontWeight:800,cursor:'pointer',display:'flex',alignItems:'center',gap:6},
+              onClick:function(){setForm({tipo:'despesa',categoria:'Outros',data:new Date().toISOString().split('T')[0],status:'previsto'});setEdit(null);setModal(true);}
+            },'+ Despesa')
+          ),
+          /* KPIs */
+          React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:1,background:C.border}},
+            [
+              {label:'Total',valor:_dTot,cor:'var(--c-text)'},
+              {label:'Pago',valor:_dPg,cor:C.green},
+              {label:'A pagar',valor:_dPend,cor:_dVenc>0?C.red:C.orange},
+            ].map(function(k,i){
+              return React.createElement('div',{key:i,style:{background:'var(--c-card)',padding:'14px 14px 10px',textAlign:'center'}},
+                React.createElement('div',{style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:.6,marginBottom:4}},k.label),
+                React.createElement('div',{style:{fontSize:16,fontWeight:900,color:k.cor,letterSpacing:-.5}},fmtBRL(k.valor))
+              );
+            })
+          ),
+          /* Progress + vencidas */
+          React.createElement('div',{style:{padding:'12px 18px 14px'}},
+            _dVenc>0 && React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:10,background:C.red+'10',borderRadius:10,padding:'8px 12px',border:'1px solid '+C.red+'30'}},
+              React.createElement('span',{style:{fontSize:15}},'⚠️'),
+              React.createElement('div',null,
+                React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.red}},'Vencidas: '+fmtBRL(_dVenc)),
+                React.createElement('div',{style:{fontSize:10,color:C.sub}},_desps2.filter(function(it){return it.status!=='pago'&&it.data&&it.data<_hoje3;}).length+' item(s) em atraso')
+              )
+            ),
+            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:6}},
+              React.createElement('span',{style:{fontSize:11,fontWeight:700,color:'var(--c-text)'}},'Progresso de pagamento'),
+              React.createElement('span',{style:{fontSize:12,fontWeight:900,color:_corPct}},_pct+'%')
+            ),
+            React.createElement('div',{style:{background:'rgba(120,120,128,0.15)',borderRadius:6,height:10,overflow:'hidden'}},
+              React.createElement('div',{style:{height:10,width:_pct+'%',background:_corPct,borderRadius:6,transition:'width .4s'}})
+            )
+          ),
+          /* Top categorias */
+          _topCats.length>0 && React.createElement('div',{style:{borderTop:'1px solid '+C.border,padding:'12px 18px 14px'}},
+            React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginBottom:10}},'Por categoria'),
+            React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:8}},
+              _topCats.map(function(kv){
+                var cat=kv[0],val=kv[1],pct2=_dTot>0?Math.round(val/_dTot*100):0;
+                var cor2=CAT_COLORS[cat]||'#8E8E93';
+                return React.createElement('div',{key:cat},
+                  React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:4}},
+                    React.createElement('span',{style:{fontSize:12,fontWeight:600,color:'var(--c-text)'}},(CAT_IC[cat]||'📦')+' '+cat),
+                    React.createElement('span',{style:{fontSize:12,fontWeight:800,color:cor2}},fmtBRL(val)+' · '+pct2+'%')
+                  ),
+                  React.createElement('div',{style:{background:'rgba(120,120,128,0.12)',borderRadius:4,height:5,overflow:'hidden'}},
+                    React.createElement('div',{style:{height:5,width:pct2+'%',background:cor2,borderRadius:4}})
+                  )
+                );
+              })
+            )
+          )
+        ),
+        /* ── Lista ── */
+        React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'0 4px'}},
+          React.createElement('span',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5}},'Lançamentos'),
+          React.createElement('select',{style:Object.assign({},FI,{width:'auto',fontSize:12,padding:'5px 8px',cursor:'pointer'}),
+            value:sortOP,onChange:function(e){setSortOP(e.target.value);}},
+            React.createElement('option',{value:'pendentes'},'Pendentes primeiro'),
+            React.createElement('option',{value:'data_asc'},'Data ↑'),
+            React.createElement('option',{value:'data_desc'},'Data ↓'),
+            React.createElement('option',{value:'valor_desc'},'Valor ↓')
+          )
+        ),
+        _desps2.length===0
+          ? React.createElement('div',{style:{color:C.sub,textAlign:'center',padding:30,fontSize:13}},'Nenhuma despesa lançada neste mês')
+          : React.createElement('div',{style:{background:'var(--c-card)',borderRadius:16,border:'1px solid '+C.border,overflow:'hidden'}},
+              _desps2.sort(_sortOP).map(function(it,i,arr){
+                return React.createElement(ItemCard,{key:it.id+'-'+filtroMes,it:it,i:i,total:arr.length});
+              })
+            )
+      );
+    })()
 
     /* ══════════ RECEITAS ══════════ */
-    , subTab === 'receitas' && React.createElement('div', {className:'lg-card graph4-premium-card',style:CARD},
-      React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
-        React.createElement('div', {style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:0.5}}, 'Receitas Extras'),
-        React.createElement('select', {style:Object.assign({},FI,{width:'auto',fontSize:12,padding:'5px 8px',cursor:'pointer'}),
-          value:sortOP,onChange:function(e){setSortOP(e.target.value);}},
-          React.createElement('option', {value:'pendentes'}, 'Pendentes primeiro'),
-          React.createElement('option', {value:'data_asc'}, 'Data ↑'),
-          React.createElement('option', {value:'data_desc'}, 'Data ↓'),
-          React.createElement('option', {value:'valor_desc'}, 'Valor ↓')
-        )
-      ),
-      todosVisiveis.filter(function(it){return it.tipo==='receita';}).length===0
-        && React.createElement('div', {style:{color:C.sub,textAlign:'center',padding:20}}, 'Nenhuma receita extra'),
-      todosVisiveis.filter(function(it){return it.tipo==='receita';}).sort(_sortOP).map(function(it,i,arr){
-        return React.createElement(ItemCard, {key:it.id+'-'+filtroMes,it:it,i:i,total:arr.length});
-      })
-    )
+    , subTab === 'receitas' && (function(){
+      var _recs2   = todosVisiveis.filter(function(it){return it.tipo==='receita';});
+      var _rTot    = _recs2.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _rReceb  = _recs2.filter(function(it){return it.status==='recebido'||it.status==='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _rPend   = _recs2.filter(function(it){return it.status!=='recebido'&&it.status!=='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _totalEntradas = lucroLocadora + _rTot;
+      var _saldoFinal = _totalEntradas - despPessoais;
+      var _pctRec  = _rTot>0?Math.min(100,Math.round(_rReceb/_rTot*100)):100;
+      var _corSaldo = _saldoFinal>=0?C.green:C.red;
+      return React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:14}},
+        /* ── Painel de resumo ── */
+        React.createElement('div',{style:{background:'var(--c-card)',borderRadius:20,border:'1px solid '+C.border,overflow:'hidden',boxShadow:'0 2px 10px rgba(0,0,0,0.06)'}},
+          /* Header com botão + */
+          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 18px 12px',borderBottom:'1px solid '+C.border}},
+            React.createElement('div',null,
+              React.createElement('div',{style:{fontSize:14,fontWeight:800,color:'var(--c-text)'}},'💰 Receitas — '+nomeMesFiltro),
+              React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:2}},'Locadora + extras pessoais')
+            ),
+            React.createElement('button',{
+              style:{background:C.green,color:'#fff',border:'none',borderRadius:12,padding:'10px 18px',fontSize:13,fontWeight:800,cursor:'pointer',display:'flex',alignItems:'center',gap:6},
+              onClick:function(){setForm({tipo:'receita',categoria:'Outros',data:new Date().toISOString().split('T')[0],status:'previsto'});setEdit(null);setModal(true);}
+            },'+ Receita')
+          ),
+          /* KPIs — locadora + extras */
+          React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:1,background:C.border}},
+            [
+              {label:'Lucro Locadora ('+(new Date(_mesRef+'-15').toLocaleString('pt-BR',{month:'short'}).replace('.',''))+')',valor:lucroLocadora,cor:lucroLocadora>=0?C.green:C.red},
+              {label:'Extras pessoais',valor:_rTot,cor:C.blue},
+            ].map(function(k,i){
+              return React.createElement('div',{key:i,style:{background:'var(--c-card)',padding:'14px 14px 10px',textAlign:'center'}},
+                React.createElement('div',{style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,marginBottom:4}},k.label),
+                React.createElement('div',{style:{fontSize:15,fontWeight:900,color:k.cor,letterSpacing:-.5}},fmtBRL(k.valor))
+              );
+            })
+          ),
+          /* Resultado final */
+          React.createElement('div',{style:{padding:'14px 18px',background:_corSaldo+'08',borderTop:'1px solid '+C.border}},
+            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+              React.createElement('div',null,
+                React.createElement('div',{style:{fontSize:12,fontWeight:700,color:'var(--c-text)'}},'Resultado do mês'),
+                React.createElement('div',{style:{fontSize:10,color:C.sub,marginTop:2}},'Receitas totais − despesas pessoais')
+              ),
+              React.createElement('div',{style:{fontSize:20,fontWeight:900,color:_corSaldo,letterSpacing:-.5}},
+                (_saldoFinal>=0?'+':'')+fmtBRL(_saldoFinal))
+            ),
+            /* Barra receitas vs despesas */
+            React.createElement('div',null,
+              React.createElement('div',{style:{display:'flex',justifyContent:'space-between',fontSize:10,color:C.sub,marginBottom:4}},
+                React.createElement('span',null,'Entradas: '+fmtBRL(_totalEntradas)),
+                React.createElement('span',null,'Saídas: '+fmtBRL(despPessoais))
+              ),
+              React.createElement('div',{style:{background:'rgba(120,120,128,0.15)',borderRadius:6,height:10,overflow:'hidden',display:'flex'}},
+                React.createElement('div',{style:{height:10,width:(_totalEntradas>0?Math.min(100,Math.round(_totalEntradas/Math.max(_totalEntradas,despPessoais)*100)):0)+'%',background:C.green,borderRadius:6}})
+              ),
+              React.createElement('div',{style:{background:'rgba(120,120,128,0.08)',borderRadius:6,height:10,overflow:'hidden',display:'flex',marginTop:3}},
+                React.createElement('div',{style:{height:10,width:(despPessoais>0?Math.min(100,Math.round(despPessoais/Math.max(_totalEntradas,despPessoais)*100)):0)+'%',background:C.red,borderRadius:6}})
+              )
+            )
+          ),
+          /* Extras: recebido vs pendente */
+          _rTot>0 && React.createElement('div',{style:{padding:'12px 18px 14px',borderTop:'1px solid '+C.border}},
+            React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginBottom:10}},'Extras — status'),
+            React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}},
+              React.createElement('div',{style:{background:C.green+'0E',borderRadius:12,padding:'10px 12px',border:'1px solid '+C.green+'28',textAlign:'center'}},
+                React.createElement('div',{style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',marginBottom:3}},'Recebido'),
+                React.createElement('div',{style:{fontSize:15,fontWeight:900,color:C.green}},fmtBRL(_rReceb))
+              ),
+              React.createElement('div',{style:{background:C.orange+'0E',borderRadius:12,padding:'10px 12px',border:'1px solid '+C.orange+'28',textAlign:'center'}},
+                React.createElement('div',{style:{fontSize:9,color:C.sub,fontWeight:700,textTransform:'uppercase',marginBottom:3}},'A receber'),
+                React.createElement('div',{style:{fontSize:15,fontWeight:900,color:C.orange}},fmtBRL(_rPend))
+              )
+            )
+          )
+        ),
+        /* ── Lista ── */
+        React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'0 4px'}},
+          React.createElement('span',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5}},'Lançamentos extras'),
+          React.createElement('select',{style:Object.assign({},FI,{width:'auto',fontSize:12,padding:'5px 8px',cursor:'pointer'}),
+            value:sortOP,onChange:function(e){setSortOP(e.target.value);}},
+            React.createElement('option',{value:'pendentes'},'Pendentes primeiro'),
+            React.createElement('option',{value:'data_asc'},'Data ↑'),
+            React.createElement('option',{value:'data_desc'},'Data ↓'),
+            React.createElement('option',{value:'valor_desc'},'Valor ↓')
+          )
+        ),
+        _recs2.length===0
+          ? React.createElement('div',{style:{color:C.sub,textAlign:'center',padding:30,fontSize:13}},'Nenhuma receita extra lançada neste mês')
+          : React.createElement('div',{style:{background:'var(--c-card)',borderRadius:16,border:'1px solid '+C.border,overflow:'hidden'}},
+              _recs2.sort(_sortOP).map(function(it,i,arr){
+                return React.createElement(ItemCard,{key:it.id+'-'+filtroMes,it:it,i:i,total:arr.length});
+              })
+            )
+      );
+    })()
 
     /* ══════════ FIXAS / RECORRENTES ══════════ */
     , subTab === 'recorrentes' && (function(){

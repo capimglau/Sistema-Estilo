@@ -29806,17 +29806,50 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   async function save() {
     if (!form.descricao || !form.valor) return toast("Descrição e valor obrigatórios", "error");
     setSaving(true);
+    var payload = {
+      descricao: form.descricao || "",
+      valor: parseFloat(form.valor) || 0,
+      tipo: form.tipo || "despesa",
+      categoria: form.categoria || "Outros",
+      data: form.data || null,
+      mes: (form.data && form.data.length >= 7) ? form.data.slice(0,7) : filtroMes,
+      status: form.status || "previsto",
+      observacoes: form.observacoes || null,
+      recorrente: !!form.recorrente,
+      prazo_recorrencia: form.recorrente ? (parseInt(form.prazo_recorrencia) || null) : null,
+      data_pagamento: form.data_pagamento || null,
+      forma_pagamento: form.forma_pagamento || null
+    };
     try {
-      var payload = { descricao:form.descricao||"", valor:parseFloat(form.valor)||0, tipo:form.tipo||"despesa",
-        categoria:form.categoria||"Outros", data:form.data||null,
-        mes:(form.data&&form.data.length>=7)?form.data.slice(0,7):filtroMes,
-        status:form.status||"previsto", observacoes:form.observacoes||null,
-        recorrente:!!form.recorrente, prazo_recorrencia:form.recorrente?(parseInt(form.prazo_recorrencia)||null):null,
-        data_pagamento:form.data_pagamento||null, forma_pagamento:form.forma_pagamento||null };
-      if (edit) { var u=await db.patch("orcamento_pessoal",edit,payload); setItens(p=>p.map(it=>it.id===edit?Object.assign({},it,u||payload):it)); toast("Atualizado!"); }
-      else { var nc=await db.post("orcamento_pessoal",payload); setItens(p=>[nc||payload].concat(p)); toast("Adicionado!"); }
+      if (edit) {
+        /* Tenta PATCH; se retornar vazio (RLS) tenta upsert via POST */
+        var SB_URL2 = typeof SB_URL !== 'undefined' ? SB_URL : '';
+        var SB_KEY2 = typeof SB_KEY !== 'undefined' ? SB_KEY : '';
+        var HDR2 = { apikey: SB_KEY2, Authorization: 'Bearer ' + SB_KEY2, 'Content-Type': 'application/json', Prefer: 'return=representation' };
+        var r = await fetch(SB_URL2 + '/rest/v1/orcamento_pessoal?id=eq.' + edit, {
+          method: 'PATCH', headers: HDR2, body: JSON.stringify(payload)
+        });
+        var j = await r.json();
+        if (!r.ok) throw new Error((j && j.message) || 'Erro HTTP ' + r.status);
+        var updated = (Array.isArray(j) ? j[0] : j) || Object.assign({id: edit}, payload);
+        setItens(function(p){ return p.map(function(it){ return it.id === edit ? Object.assign({}, it, updated) : it; }); });
+        toast("✅ Salvo!");
+      } else {
+        var nc = await db.post("orcamento_pessoal", payload);
+        setItens(function(p){ return [nc || Object.assign({id: Date.now()}, payload)].concat(p); });
+        toast("✅ Adicionado!");
+      }
       setModal(false); setForm({}); setEdit(null);
-    } catch(e) { console.error("save:",e); toast("Erro ao salvar: "+(e.message||String(e)),"error"); }
+    } catch(e) {
+      console.error("save error:", e);
+      var msg = e.message || String(e);
+      /* Detecta erro de RLS */
+      if (msg.indexOf('RLS') > -1 || msg.indexOf('vazio') > -1 || msg.indexOf('0 rows') > -1) {
+        toast("❌ RLS bloqueou. Execute em Config: grant update on orcamento_pessoal to anon;", "error");
+      } else {
+        toast("❌ Erro: " + msg, "error");
+      }
+    }
     setSaving(false);
   }
   async function remove(id) { if (!confirm("Excluir?")) return; await db.del("orcamento_pessoal", id); setItens(p => p.filter(it => it.id !== id)); toast("Excluido!"); }
@@ -30103,41 +30136,6 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
             )
       )
 
-      /* Barras mensais: entradas vs saídas */
-      , React.createElement('div', {style:{background:'var(--c-card)',borderRadius:22,padding:'20px 18px 16px',border:'1px solid '+C.border,boxShadow:'0 2px 12px rgba(0,0,0,0.06)'}},
-        React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
-          React.createElement('div', null,
-            React.createElement('div', {style:{fontSize:13,fontWeight:800,color:'var(--c-text)'}}, '📊 Entradas vs Saídas'),
-            React.createElement('div', {style:{fontSize:11,color:C.sub,marginTop:2}}, 'Últimos 6 meses')
-          ),
-          React.createElement('div', {style:{display:'flex',gap:12,alignItems:'center'}},
-            React.createElement('div', {style:{display:'flex',alignItems:'center',gap:5}}, React.createElement('div', {style:{width:10,height:10,borderRadius:3,background:C.green}}), React.createElement('span', {style:{fontSize:10,fontWeight:600,color:C.sub}}, 'Entradas')),
-            React.createElement('div', {style:{display:'flex',alignItems:'center',gap:5}}, React.createElement('div', {style:{width:10,height:10,borderRadius:3,background:C.red}}), React.createElement('span', {style:{fontSize:10,fontWeight:600,color:C.sub}}, 'Saídas'))
-          )
-        ),
-        React.createElement('div', {style:{display:'flex',gap:6,marginBottom:14}},
-          ['previsto','efetivado'].map(function(m){
-            var sel=chartMode===m;
-            return React.createElement('button',{key:m,onClick:function(){setChartMode(m);},
-              style:{flex:1,padding:'7px 0',borderRadius:10,border:'1.5px solid '+(sel?C.blue:C.border),
-                background:sel?C.blue:'transparent',color:sel?'#fff':'var(--c-text)',
-                fontSize:12,fontWeight:sel?800:600,cursor:'pointer',transition:'all .2s'}},
-              m==='previsto'?'📋 Previsto':'✅ Efetivado');
-          })
-        ),
-        React.createElement('div', {style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:18,padding:'12px 14px',background:'rgba(120,120,128,0.06)',borderRadius:14}},
-          React.createElement('div', null,
-            React.createElement('div', {style:{fontSize:10,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,marginBottom:3}}, 'Entradas '+new Date(filtroMes+'-15').toLocaleString('pt-BR',{month:'short'}).replace('.','').toUpperCase()),
-            React.createElement('div', {style:{fontSize:18,fontWeight:900,color:C.green,letterSpacing:-.5}}, 'R$ '+(entradasBar6[mesesBar6.indexOf(filtroMes)]||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}))
-          ),
-          React.createElement('div', {style:{borderLeft:'1px solid '+C.border,paddingLeft:14}},
-            React.createElement('div', {style:{fontSize:10,color:C.sub,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,marginBottom:3}}, 'Saídas '+new Date(filtroMes+'-15').toLocaleString('pt-BR',{month:'short'}).replace('.','').toUpperCase()),
-            React.createElement('div', {style:{fontSize:18,fontWeight:900,color:C.red,letterSpacing:-.5}}, 'R$ '+(saidasBar6[mesesBar6.indexOf(filtroMes)]||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}))
-          )
-        ),
-        React.createElement(BarChartSVG, {months:mesesBar6, entradas:entradasBar6, saidas:saidasBar6, height:140})
-      )
-
       /* Próximas contas a vencer */
       , proxVencer.length > 0 && React.createElement('div', {style:{background:'var(--c-card)',borderRadius:18,padding:'14px 16px',border:'1px solid '+C.orange+'44'}},
         React.createElement('div', {style:{fontSize:12,fontWeight:700,color:C.orange,marginBottom:10}}, '⏰ Próximas Contas a Vencer'),
@@ -30153,179 +30151,6 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
           );
         })
       )
-
-      /* Teto por categoria */
-      , React.createElement('div', {style:{background:'var(--c-card)',borderRadius:18,padding:'14px 16px',border:'1px solid '+C.border}},
-        React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
-          React.createElement('div', {style:{fontSize:12,fontWeight:700,color:'var(--c-text)'}}, '🎯 Teto por Categoria'),
-          React.createElement('button', {style:{fontSize:10,color:C.sub,background:'transparent',border:'none',cursor:'pointer'},
-            onClick:function(){if(confirm('Limpar tetos?')){localStorage.removeItem(BUD_KEY_LOCAL);setBudgetsState({});toast('Tetos removidos');}}}, 'Limpar')
-        ),
-        React.createElement('div', {style:{fontSize:11,color:C.sub,marginBottom:10}}, 'Defina limites. 🔴 = ultrapassado · 🟡 = ≥80%'),
-        CATS.map(function(cat){
-          var gasto2=gastoPorCat2[cat]||0;
-          var teto=parseFloat((budgetsState||{})[cat]||0);
-          var pct2=teto>0?Math.min(150,Math.round(gasto2/teto*100)):0;
-          var cor2=pct2>=100?C.red:pct2>=80?C.orange:C.green;
-          return React.createElement('div', {key:cat,style:{marginBottom:10}},
-            React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}},
-              React.createElement('div', {style:{fontSize:13,fontWeight:600,flex:1,minWidth:0}},
-                (pct2>=100?'🔴 ':pct2>=80?'🟡 ':'🟢 ')+cat
-              ),
-              React.createElement('input', {style:Object.assign({},FI,{width:100,fontSize:12,padding:'4px 8px'}),
-                type:'number',step:'0.01',placeholder:'teto R$',
-                value:(budgetsState||{})[cat]||'',
-                onChange:function(e){var nb=Object.assign({},(budgetsState||{}),{[cat]:e.target.value});localStorage.setItem(BUD_KEY_LOCAL,JSON.stringify(nb));setBudgetsState(nb);}}),
-              React.createElement('div', {style:{fontSize:12,fontWeight:700,color:cor2,width:100,textAlign:'right',flexShrink:0}},
-                fmtBRL(gasto2)+(teto>0?' / '+fmtBRL(teto):''))
-            ),
-            teto>0 && React.createElement('div', {style:{marginTop:4,background:C.bg,borderRadius:999,height:5,overflow:'hidden'}},
-              React.createElement('div', {style:{height:5,width:Math.min(100,pct2)+'%',background:cor2,transition:'width .3s'}})
-            )
-          );
-        })
-      )
-
-
-      /* ══ Previsão Diária — Próximos 2 meses ══ */
-      , (function(){
-        var hoje2M = new Date(); hoje2M.setHours(0,0,0,0);
-        var hojeStr2M = hoje2M.toISOString().split('T')[0];
-        // Gera array dos próximos 62 dias
-        var diasRange = [];
-        for(var di=0;di<62;di++){
-          var d=new Date(hoje2M); d.setDate(hoje2M.getDate()+di);
-          diasRange.push(d.toISOString().split('T')[0]);
-        }
-        // Indexa movimentações por dia
-        var movDia = {}; // {date: [{tipo, descricao, valor, cat}]}
-        function addMov(date, mov){ if(!date||date<hojeStr2M) return; if(!movDia[date]) movDia[date]=[]; movDia[date].push(mov); }
-
-        // 1. Itens pessoais com data fixa
-        itens.forEach(function(it){
-          var valorIt = parseFloat(it.valor||0); if(!valorIt) return;
-          if(it.recorrente){
-            // projeta para cada mês no range
-            var dOrig = it.data||(it.mes?it.mes+'-01':null); if(!dOrig) return;
-            var diaNum = parseInt(dOrig.slice(8,10),10);
-            var mesOrigem = dOrig.slice(0,7);
-            var mesesVisto = {};
-            diasRange.forEach(function(ds){
-              var mes = ds.slice(0,7);
-              if(mesesVisto[mes]) return;
-              if(mes < mesOrigem) return;
-              var ultDia = new Date(parseInt(mes.slice(0,4)),parseInt(mes.slice(5,7)),0).getDate();
-              var dProj = mes+'-'+(Math.min(diaNum,ultDia)<10?'0':'')+Math.min(diaNum,ultDia);
-              if(dProj >= hojeStr2M) addMov(dProj,{tipo:it.tipo,descricao:it.descricao+(it.prazo_recorrencia?' 🔁':''),valor:valorIt,cat:it.categoria});
-              mesesVisto[mes]=1;
-            });
-          } else {
-            if(it.data && it.status!=='pago' && it.status!=='recebido') addMov(it.data,{tipo:it.tipo,descricao:it.descricao,valor:valorIt,cat:it.categoria});
-          }
-        });
-
-        // 2. Lucro da locadora do mês ANTERIOR como receita pessoal no dia 1 de cada mês
-        //    (regra: receita pessoal de maio = lucro locadora de abril)
-        function calcLucroLocadoraMes(mes){
-          var cts = contratos.filter(function(c2){
-            if(!c2.status||c2.status==='cancelado') return false;
-            if(c2.status_pagamento==='pago'&&c2.data_pagamento) return c2.data_pagamento.slice(0,7)===mes;
-            return c2.previsao_pagamento&&c2.previsao_pagamento.slice(0,7)===mes;
-          });
-          var recLoc = cts.reduce(function(s,c2){return s+parseFloat(c2.valor_total||0);},0)
-            + receitas.filter(function(r){return !r.ref_fatura&&receitaDoMes(r,mes);}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
-          var despLoc = despesas.filter(function(d){return !d.manutencao_id&&!isRetLucro(d)&&d.categoria!=='Salarios'&&despesaVisivelNoMes(d,mes);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
-          var manutLoc = (manutencoes||[]).filter(function(m){return manMesRefGlobal(m)===mes;}).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
-          var multasLoc = (multas||[]).filter(function(m){var dm=m.data_pagamento||m.data||'';return dm.slice(0,7)===mes&&m.status==='pago';}).reduce(function(s,m){return s+parseFloat(m.valor||0);},0);
-          return recLoc - despLoc - manutLoc - multasLoc;
-        }
-        // Para cada mês no range, adiciona no dia 1 o lucro do mês anterior
-        var mesesAdicionados = {};
-        diasRange.forEach(function(ds){
-          var mes = ds.slice(0,7);
-          if(mesesAdicionados[mes]) return;
-          mesesAdicionados[mes] = true;
-          // mês anterior
-          var d0 = new Date(mes+'-01'); d0.setMonth(d0.getMonth()-1);
-          var mesAnterior = d0.toISOString().slice(0,7);
-          var lucro = calcLucroLocadoraMes(mesAnterior);
-          if(lucro !== 0) {
-            var diaRecebimento = mes+'-01'; // recebido no início do mês
-            if(diaRecebimento >= hojeStr2M)
-              addMov(diaRecebimento,{tipo: lucro>=0?'receita':'despesa', descricao:'Lucro Locadora ('+mesAnterior+')', valor:Math.abs(lucro), cat:'Locadora'});
-          }
-        });
-
-        // Filtra apenas dias com movimentação
-        var diasComMov = diasRange.filter(function(ds){ return movDia[ds] && movDia[ds].length>0; });
-        if(diasComMov.length===0) return React.createElement('div',{style:{color:C.sub,textAlign:'center',padding:24,fontSize:13}},'Nenhuma movimentação prevista nos próximos 2 meses');
-
-        // Saldo acumulado
-        var saldoAcum = 0;
-
-        return React.createElement('div',{style:{background:'var(--c-card)',borderRadius:22,border:'1px solid '+C.border,overflow:'hidden',boxShadow:'0 2px 16px rgba(0,0,0,0.07)'}},
-          /* Header */
-          React.createElement('div',{style:{padding:'18px 20px 14px',borderBottom:'1px solid '+C.border}},
-            React.createElement('div',{style:{fontSize:15,fontWeight:800,color:'var(--c-text)',marginBottom:3}},'📅 Previsão de Caixa — Próximos 2 Meses'),
-            React.createElement('div',{style:{fontSize:12,color:C.sub}},'Dias com movimentação prevista · saldo acumulado')
-          ),
-          /* Lista de dias */
-          React.createElement('div',{style:{overflowY:'auto',maxHeight:520}},
-            diasComMov.map(function(ds,dIdx){
-              var movs = movDia[ds];
-              var entDia2 = movs.filter(function(m){return m.tipo==='receita';}).reduce(function(s,m){return s+m.valor;},0);
-              var saiDia2 = movs.filter(function(m){return m.tipo==='despesa';}).reduce(function(s,m){return s+m.valor;},0);
-              var saldoDia = entDia2 - saiDia2;
-              saldoAcum += saldoDia;
-              var isHoje2 = ds === hojeStr2M;
-              var dt2 = new Date(ds+'T12:00:00');
-              var diaSem = dt2.toLocaleString('pt-BR',{weekday:'short'}).replace('.','').toUpperCase();
-              var diaMes = dt2.toLocaleString('pt-BR',{day:'2-digit',month:'short'}).replace('.','');
-              var mesLabel = dt2.toLocaleString('pt-BR',{month:'long',year:'numeric'});
-              // Separador de mês
-              var showMesHeader = dIdx===0 || diasComMov[dIdx-1].slice(0,7)!==ds.slice(0,7);
-              return React.createElement(React.Fragment,{key:ds},
-                showMesHeader && React.createElement('div',{style:{padding:'10px 20px 6px',background:'rgba(120,120,128,0.06)',borderBottom:'1px solid '+C.border,fontSize:11,fontWeight:800,color:C.sub,textTransform:'uppercase',letterSpacing:1}},
-                  mesLabel),
-                React.createElement('div',{style:{padding:'14px 20px',borderBottom:dIdx<diasComMov.length-1?'1px solid '+C.border:'none',background:isHoje2?'rgba(0,122,255,0.04)':'transparent'}},
-                  /* Linha superior: data + saldo acumulado */
-                  React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
-                    React.createElement('div',{style:{display:'flex',alignItems:'center',gap:10}},
-                      React.createElement('div',{style:{textAlign:'center',minWidth:44,background:isHoje2?C.blue:C.border+'88',borderRadius:12,padding:'5px 8px'}},
-                        React.createElement('div',{style:{fontSize:9,fontWeight:700,color:isHoje2?'#fff':C.sub,textTransform:'uppercase',letterSpacing:.5}},diaSem),
-                        React.createElement('div',{style:{fontSize:18,fontWeight:900,color:isHoje2?'#fff':'var(--c-text)',lineHeight:1}},dt2.getDate())
-                      ),
-                      React.createElement('div',null,
-                        React.createElement('div',{style:{fontSize:11,color:C.sub,fontWeight:600}},diaMes),
-                        React.createElement('div',{style:{fontSize:11,fontWeight:700,color:saldoDia>=0?C.green:C.red,marginTop:1}},
-                          (saldoDia>=0?'+':'')+fmtBRL(saldoDia)+' no dia')
-                      )
-                    ),
-                    React.createElement('div',{style:{textAlign:'right'}},
-                      React.createElement('div',{style:{fontSize:10,color:C.sub,fontWeight:600,marginBottom:2}}, 'acumulado'),
-                      React.createElement('div',{style:{fontSize:16,fontWeight:900,color:saldoAcum>=0?C.green:C.red,letterSpacing:-.5}},
-                        (saldoAcum>=0?'+':'')+fmtBRL(saldoAcum))
-                    )
-                  ),
-                  /* Movimentos do dia */
-                  React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:6}},
-                    movs.map(function(m,mi){
-                      return React.createElement('div',{key:mi,style:{display:'flex',justifyContent:'space-between',alignItems:'center',background:m.tipo==='receita'?C.green+'10':C.red+'10',borderRadius:10,padding:'8px 12px',border:'1px solid '+(m.tipo==='receita'?C.green+'28':C.red+'28')}},
-                        React.createElement('div',{style:{flex:1,minWidth:0}},
-                          React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--c-text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},m.descricao),
-                          React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:1}},m.cat)
-                        ),
-                        React.createElement('div',{style:{fontSize:16,fontWeight:900,color:m.tipo==='receita'?C.green:C.red,marginLeft:12,flexShrink:0}},
-                          (m.tipo==='receita'?'+':'-')+fmtBRL(m.valor))
-                      );
-                    })
-                  )
-                )
-              );
-            })
-          )
-        );
-      })()
 
       /* Atalhos rápidos */
       , React.createElement('div', {style:{display:'flex',gap:8}},
@@ -34639,7 +34464,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
         React.createElement('button', {
           style:{background:C.blue,color:'#fff',border:'none',borderRadius:10,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer'},
           onClick:function(){
-            var sql="alter table clientes disable row level security;\ngrant all on clientes to anon;\nalter table veiculos disable row level security;\ngrant all on veiculos to anon;\nalter table contratos disable row level security;\ngrant all on contratos to anon;\nalter table multas disable row level security;\ngrant all on multas to anon;\nalter table manutencao disable row level security;\ngrant all on manutencao to anon;\ngrant usage, select on all sequences in schema public to anon;\ncreate table if not exists despesas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, observacoes text);\nalter table despesas disable row level security;\ngrant all on despesas to anon;\ncreate table if not exists receitas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, forma_pagamento text, observacoes text);\nalter table receitas disable row level security;\ngrant all on receitas to anon;\ncreate table if not exists contas (id bigserial primary key, descricao text, categoria text, valor numeric, vencimento date, status text default 'pendente', tipo text default 'pagar', observacoes text);\nalter table contas disable row level security;\ngrant all on contas to anon;\ncreate table if not exists orcamento_pessoal (id bigserial primary key, descricao text, categoria text, valor numeric, tipo text default 'despesa', mes text, data date, data_pagamento date, status text default 'previsto', observacoes text, recorrente boolean default false, prazo_recorrencia integer, recorrencia_origem_id bigint, forma_pagamento text);\nalter table orcamento_pessoal disable row level security;\ngrant all on orcamento_pessoal to anon;\ngrant usage, select on sequence orcamento_pessoal_id_seq to anon;\nalter table clientes add column if not exists bloqueado boolean default false;\nalter table veiculos add column if not exists venc_ipva date;\nalter table veiculos add column if not exists venc_seguro date;\nalter table contratos add column if not exists km_franquia numeric;\nalter table contratos add column if not exists forma_pagamento text;\nalter table contratos add column if not exists previsao_pagamento date;\nalter table contratos add column if not exists status_pagamento text default 'pendente';\nalter table despesas add column if not exists status text default 'previsto';\nalter table despesas add column if not exists data_pagamento date;\nalter table despesas add column if not exists recorrente boolean default false;\nalter table despesas add column if not exists prazo_recorrencia integer;\nalter table despesas add column if not exists recorrencia_origem_id bigint;\nalter table despesas add column if not exists manutencao_id bigint;\nalter table receitas add column if not exists status text default 'previsto';\nalter table receitas add column if not exists data_pagamento date;\nalter table receitas add column if not exists recorrente boolean default false;\nalter table receitas add column if not exists prazo_recorrencia integer;\nalter table manutencao add column if not exists status_financeiro text default 'pendente';\nalter table manutencao add column if not exists data_pagamento date;\nalter table manutencao add column if not exists data_previsao_pagamento date;\nalter table multas add column if not exists vencimento date;\nalter table multas add column if not exists data_pagamento date;\nalter table multas add column if not exists cobrado_cliente text default 'nao';\nalter table multas add column if not exists valor_cobrado numeric;\nalter table config add column if not exists claude_api_key text;\ncreate table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());\nalter table audit_log disable row level security;\ncreate table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);\nalter table ocupacao_historico disable row level security;";
+            var sql="alter table clientes disable row level security;\ngrant all on clientes to anon;\nalter table veiculos disable row level security;\ngrant all on veiculos to anon;\nalter table contratos disable row level security;\ngrant all on contratos to anon;\nalter table multas disable row level security;\ngrant all on multas to anon;\nalter table manutencao disable row level security;\ngrant all on manutencao to anon;\ngrant usage, select on all sequences in schema public to anon;\ncreate table if not exists despesas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, observacoes text);\nalter table despesas disable row level security;\ngrant all on despesas to anon;\ncreate table if not exists receitas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, forma_pagamento text, observacoes text);\nalter table receitas disable row level security;\ngrant all on receitas to anon;\ncreate table if not exists contas (id bigserial primary key, descricao text, categoria text, valor numeric, vencimento date, status text default 'pendente', tipo text default 'pagar', observacoes text);\nalter table contas disable row level security;\ngrant all on contas to anon;\ncreate table if not exists orcamento_pessoal (id bigserial primary key, descricao text, categoria text, valor numeric, tipo text default 'despesa', mes text, data date, data_pagamento date, status text default 'previsto', observacoes text, recorrente boolean default false, prazo_recorrencia integer, recorrencia_origem_id bigint, forma_pagamento text);\nalter table orcamento_pessoal disable row level security;\ngrant all on orcamento_pessoal to anon;\ngrant insert, update, delete on orcamento_pessoal to anon;\ngrant usage, select on sequence orcamento_pessoal_id_seq to anon;\nalter table clientes add column if not exists bloqueado boolean default false;\nalter table veiculos add column if not exists venc_ipva date;\nalter table veiculos add column if not exists venc_seguro date;\nalter table contratos add column if not exists km_franquia numeric;\nalter table contratos add column if not exists forma_pagamento text;\nalter table contratos add column if not exists previsao_pagamento date;\nalter table contratos add column if not exists status_pagamento text default 'pendente';\nalter table despesas add column if not exists status text default 'previsto';\nalter table despesas add column if not exists data_pagamento date;\nalter table despesas add column if not exists recorrente boolean default false;\nalter table despesas add column if not exists prazo_recorrencia integer;\nalter table despesas add column if not exists recorrencia_origem_id bigint;\nalter table despesas add column if not exists manutencao_id bigint;\nalter table receitas add column if not exists status text default 'previsto';\nalter table receitas add column if not exists data_pagamento date;\nalter table receitas add column if not exists recorrente boolean default false;\nalter table receitas add column if not exists prazo_recorrencia integer;\nalter table manutencao add column if not exists status_financeiro text default 'pendente';\nalter table manutencao add column if not exists data_pagamento date;\nalter table manutencao add column if not exists data_previsao_pagamento date;\nalter table multas add column if not exists vencimento date;\nalter table multas add column if not exists data_pagamento date;\nalter table multas add column if not exists cobrado_cliente text default 'nao';\nalter table multas add column if not exists valor_cobrado numeric;\nalter table config add column if not exists claude_api_key text;\ncreate table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());\nalter table audit_log disable row level security;\ncreate table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);\nalter table ocupacao_historico disable row level security;";
             if(navigator.clipboard){navigator.clipboard.writeText(sql).then(function(){toast('✅ SQL copiado! Cole no Supabase → SQL Editor','success');}).catch(function(){toast('Erro ao copiar','error');});}
             else{var ta=document.createElement('textarea');ta.value=sql;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();toast('✅ SQL copiado!','success');}
           }

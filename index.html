@@ -29755,9 +29755,12 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   }
 
   var itensProprios = itens.filter(it => efetivoMes(it) === filtroMes);
-  var idsBaixados = new Set(itensProprios.filter(it => it.recorrencia_origem_id).map(it => it.recorrencia_origem_id));
-  var itensRecorrentes = itens.filter(it => it.recorrente && efetivoMes(it) && efetivoMes(it) < filtroMes && itemVisivelNoMes(it, filtroMes) && !idsBaixados.has(it.id));
+  var idsBaixados = new Set(itensProprios.filter(function(it){return it.recorrencia_origem_id;}).map(function(it){return String(it.recorrencia_origem_id);}));
+  var itensRecorrentes = itens.filter(function(it){return it.recorrente && efetivoMes(it) && efetivoMes(it) < filtroMes && itemVisivelNoMes(it, filtroMes) && !idsBaixados.has(String(it.id));});
   var todosVisiveis = itensProprios.concat(itensRecorrentes);
+  // Deduplicação de segurança por id
+  var _vistosIds = new Set();
+  todosVisiveis = todosVisiveis.filter(function(it){ var k=String(it.id)+'-'+(it.recorrente?'r':''); if(_vistosIds.has(k)) return false; _vistosIds.add(k); return true; });
 
   // Receita do orçamento pessoal = lucro da locadora do MÊS ANTERIOR
   var _d0 = new Date(filtroMes+'-01'); _d0.setMonth(_d0.getMonth()-1);
@@ -29795,6 +29798,8 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
   var CATS = ["Moradia","Alimentacao","Transporte","Saude","Cartao de Credito","Lazer","Educacao","Investimento","Vestuario","Assinatura","Seguros","Pet","Beleza","Academia","Emprestimo","Servicos","Outros"];
   var BUD_KEY_LOCAL = "ag_budgets_v1";
+  var _chartM = React.useState('previsto');
+  var chartMode = _chartM[0]; var setChartMode = _chartM[1];
   var _bud = React.useState(function(){ try { return JSON.parse(localStorage.getItem("ag_budgets_v1") || "{}"); } catch(e) { return {}; } });
   var budgetsState = _bud[0]; var setBudgetsState = _bud[1];
 
@@ -29935,25 +29940,42 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     Seguros:'#7DB8D4', Pet:'#F0A060', Beleza:'#E890B8',
     Academia:'#60C8A0', Emprestimo:'#E06060', Servicos:'#B8A080', Outros:'#A0A0A8'
   };
-  var gastoPorCat2 = {};
-  todosVisiveis.filter(function(it){return it.tipo==='despesa';}).forEach(function(it){
-    var c = it.categoria||'Outros'; gastoPorCat2[c]=(gastoPorCat2[c]||0)+parseFloat(it.valor||0);
+  var _despBase = todosVisiveis.filter(function(it){
+    if(it.tipo!=='despesa') return false;
+    if(chartMode==='efetivado') return it.status==='pago'||it.status==='recebido';
+    return true;
   });
+  var gastoPorCat2 = {};
+  _despBase.forEach(function(it){ var cat=it.categoria||'Outros'; gastoPorCat2[cat]=(gastoPorCat2[cat]||0)+parseFloat(it.valor||0); });
   var pieData = Object.keys(gastoPorCat2).sort(function(a,b){return gastoPorCat2[b]-gastoPorCat2[a];}).slice(0,8).map(function(cat){
     return {label:cat, value:gastoPorCat2[cat], color:CAT_COLORS[cat]||'#8E8E93'};
   });
+  // despPessoais filtrado pelo chartMode (para exibição nos painéis)
+  var despPessoaisChart = _despBase.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
 
   // ── 6 meses para gráfico de barras ──
   var mesesBar6 = [];
   for(var bi=0;bi<6;bi++){var db6=new Date();db6.setDate(1);db6.setMonth(db6.getMonth()-3+bi);mesesBar6.push(db6.toISOString().slice(0,7));}
+  // chartMode applied to bar chart: efetivado = only pago/recebido
   var entradasBar6 = mesesBar6.map(function(m){
-    var recLoc2 = contratos.filter(function(c){if(!c.status||c.status==='cancelado')return false;if(c.status_pagamento==='pago'&&c.data_pagamento)return c.data_pagamento.slice(0,7)===m;return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m;}).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0);
+    // Efetivado: só contratos pagos + receitas avulsas pagas + extras recebidos
+    if(chartMode==='efetivado'){
+      var recLoc2ef = contratos.filter(function(ct){return ct.status_pagamento==='pago'&&ct.data_pagamento&&ct.data_pagamento.slice(0,7)===m;}).reduce(function(s,ct){return s+parseFloat(ct.valor_total||0);},0);
+      var recAv2ef  = receitas.filter(function(r){return receitaDoMes(r,m)&&!r.ref_fatura&&(r.status==='pago'||r.status==='recebido');}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+      var recP2ef   = itens.filter(function(it){return it.tipo==='receita'&&itemVisivelNoMes(it,m)&&(it.status==='recebido'||it.status==='pago');}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      return recLoc2ef+recAv2ef+recP2ef;
+    }
+    var recLoc2 = contratos.filter(function(ct){if(!ct.status||ct.status==='cancelado')return false;if(ct.status_pagamento==='pago'&&ct.data_pagamento)return ct.data_pagamento.slice(0,7)===m;return ct.previsao_pagamento&&ct.previsao_pagamento.slice(0,7)===m;}).reduce(function(s,ct){return s+parseFloat(ct.valor_total||0);},0);
     var recAv2 = receitas.filter(function(r){return receitaDoMes(r,m)&&!r.ref_fatura;}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
-    var recP2 = itens.filter(function(it){return it.tipo==='receita'&&itemVisivelNoMes(it,m);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+    var recP2  = itens.filter(function(it){return it.tipo==='receita'&&itemVisivelNoMes(it,m);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
     return recLoc2+recAv2+recP2;
   });
   var saidasBar6 = mesesBar6.map(function(m){
-    return itens.filter(function(it){return it.tipo==='despesa'&&itemVisivelNoMes(it,m);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+    return itens.filter(function(it){
+      if(!itemVisivelNoMes(it,m)||it.tipo!=='despesa') return false;
+      if(chartMode==='efetivado') return it.status==='pago';
+      return true;
+    }).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
   });
 
   // ── Próximas 5 contas a vencer ──
@@ -30041,12 +30063,22 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
       /* Gráfico pizza + legenda */
       , React.createElement('div', {style:{background:'var(--c-card)',borderRadius:22,padding:'20px 18px 18px',border:'1px solid '+C.border,boxShadow:'0 2px 12px rgba(0,0,0,0.06)'}},
-        React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}},
+        React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}},
           React.createElement('div', null,
             React.createElement('div', {style:{fontSize:13,fontWeight:800,color:'var(--c-text)'}}, '🍩 Despesas por Categoria'),
             React.createElement('div', {style:{fontSize:11,color:C.sub,marginTop:2}}, nomeMesFiltro)
           ),
-          React.createElement('div', {style:{fontSize:12,fontWeight:800,color:C.red,background:C.red+'12',borderRadius:10,padding:'4px 10px'}}, fmtBRL(despPessoais))
+          React.createElement('div', {style:{fontSize:12,fontWeight:800,color:C.red,background:C.red+'12',borderRadius:10,padding:'4px 10px'}}, fmtBRL(despPessoaisChart))
+        ),
+        React.createElement('div', {style:{display:'flex',gap:6,marginBottom:16}},
+          ['previsto','efetivado'].map(function(m){
+            var sel=chartMode===m;
+            return React.createElement('button',{key:m,onClick:function(){setChartMode(m);},
+              style:{flex:1,padding:'7px 0',borderRadius:10,border:'1.5px solid '+(sel?C.purple:C.border),
+                background:sel?C.purple:'transparent',color:sel?'#fff':'var(--c-text)',
+                fontSize:12,fontWeight:sel?800:600,cursor:'pointer',transition:'all .2s'}},
+              m==='previsto'?'📋 Previsto':'✅ Efetivado');
+          })
         ),
         pieData.length === 0
           ? React.createElement('div', {style:{color:C.sub,textAlign:'center',padding:24,fontSize:13}}, 'Nenhuma despesa lançada neste mês')
@@ -30073,7 +30105,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
       /* Barras mensais: entradas vs saídas */
       , React.createElement('div', {style:{background:'var(--c-card)',borderRadius:22,padding:'20px 18px 16px',border:'1px solid '+C.border,boxShadow:'0 2px 12px rgba(0,0,0,0.06)'}},
-        React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}},
+        React.createElement('div', {style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
           React.createElement('div', null,
             React.createElement('div', {style:{fontSize:13,fontWeight:800,color:'var(--c-text)'}}, '📊 Entradas vs Saídas'),
             React.createElement('div', {style:{fontSize:11,color:C.sub,marginTop:2}}, 'Últimos 6 meses')
@@ -30082,6 +30114,16 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
             React.createElement('div', {style:{display:'flex',alignItems:'center',gap:5}}, React.createElement('div', {style:{width:10,height:10,borderRadius:3,background:C.green}}), React.createElement('span', {style:{fontSize:10,fontWeight:600,color:C.sub}}, 'Entradas')),
             React.createElement('div', {style:{display:'flex',alignItems:'center',gap:5}}, React.createElement('div', {style:{width:10,height:10,borderRadius:3,background:C.red}}), React.createElement('span', {style:{fontSize:10,fontWeight:600,color:C.sub}}, 'Saídas'))
           )
+        ),
+        React.createElement('div', {style:{display:'flex',gap:6,marginBottom:14}},
+          ['previsto','efetivado'].map(function(m){
+            var sel=chartMode===m;
+            return React.createElement('button',{key:m,onClick:function(){setChartMode(m);},
+              style:{flex:1,padding:'7px 0',borderRadius:10,border:'1.5px solid '+(sel?C.blue:C.border),
+                background:sel?C.blue:'transparent',color:sel?'#fff':'var(--c-text)',
+                fontSize:12,fontWeight:sel?800:600,cursor:'pointer',transition:'all .2s'}},
+              m==='previsto'?'📋 Previsto':'✅ Efetivado');
+          })
         ),
         React.createElement('div', {style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:18,padding:'12px 14px',background:'rgba(120,120,128,0.06)',borderRadius:14}},
           React.createElement('div', null,
@@ -30363,7 +30405,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
                 var cor2=CAT_COLORS[cat]||'#8E8E93';
                 return React.createElement('div',{key:cat},
                   React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:4}},
-                    React.createElement('span',{style:{fontSize:12,fontWeight:600,color:'var(--c-text)'}},(CAT_IC[cat]||'📦')+' '+cat),
+                    React.createElement('span',{style:{fontSize:12,fontWeight:600,color:'var(--c-text)'}},({Moradia:'🏠',Alimentacao:'🍽️',Transporte:'🚗',Saude:'❤️','Cartao de Credito':'💳',Lazer:'🎮',Educacao:'📚',Investimento:'📈',Vestuario:'👕',Assinatura:'📺',Seguros:'🛡️',Pet:'🐾',Beleza:'💅',Academia:'🏋️',Emprestimo:'🏦',Servicos:'⚙️',Outros:'📦'}[cat]||'📦')+' '+cat),
                     React.createElement('span',{style:{fontSize:12,fontWeight:800,color:cor2}},fmtBRL(val)+' · '+pct2+'%')
                   ),
                   React.createElement('div',{style:{background:'rgba(120,120,128,0.12)',borderRadius:4,height:5,overflow:'hidden'}},

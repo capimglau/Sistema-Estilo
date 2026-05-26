@@ -29864,16 +29864,30 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     var _opHoje   = !_quitado && _dataOP === _hoje;
     var _opClass  = _opVencida?"ag-expirado":_opHoje?"ag-urgent":"";
     var showBaixar = isRecorrente||(it.status!=="pago"&&it.status!=="recebido");
-    var _baixar = async function(){
-      var dt = new Date().toISOString().split("T")[0];
+    var _baixar = function(){
+      /* Abre o modal pré-preenchido para o usuário confirmar/ajustar a data de pagamento */
       var novoStatus = it.tipo==="receita"?"recebido":"pago";
+      var dataProj   = isRecorrente && it.data ? projetarDataOP(it.data, filtroMes) : it.data;
+      var hoje       = new Date().toISOString().split("T")[0];
+      var baseForm   = Object.assign({}, it, {
+        status:         novoStatus,
+        data_pagamento: it.data_pagamento || hoje,
+        data:           dataProj || it.data,
+        mes:            filtroMes
+      });
       if(isRecorrente){
-        var dataProj=it.data?projetarDataOP(it.data,filtroMes):null;
-        var inst={descricao:it.descricao,categoria:it.categoria,valor:it.valor,tipo:it.tipo,data:dataProj,observacoes:it.observacoes,mes:filtroMes,recorrente:false,recorrencia_origem_id:it.id,status:novoStatus,data_pagamento:dt};
-        try{var nc=await db.post("orcamento_pessoal",inst);setItens(p=>[nc].concat(p));toast("Baixado!");}catch(e){toast("Erro: "+e.message,"error");}
+        /* Para recorrentes: cria uma instância nova via modal */
+        setForm(Object.assign({}, baseForm, {
+          id:                   undefined,
+          recorrente:           false,
+          recorrencia_origem_id: it.id
+        }));
+        setEdit(null); /* post novo */
       } else {
-        try{var upd=await db.patch("orcamento_pessoal",it.id,{status:novoStatus,data_pagamento:dt});setItens(p=>p.map(x=>x.id===it.id?Object.assign({},x,upd):x));toast("Baixado!");}catch(e){toast("Erro: "+e.message,"error");}
+        setForm(baseForm);
+        setEdit(it.id);
       }
+      setModal(true);
     };
     var _estornar = async function(){
       if(it.recorrencia_origem_id){await db.del("orcamento_pessoal",it.id);setItens(p=>p.filter(x=>x.id!==it.id));toast("Estornado!");}
@@ -30151,6 +30165,122 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
           );
         })
       )
+
+      /* ══ Previsão de Caixa — Próximos 2 Meses ══ */
+      , (function(){
+        var hoje2M = new Date(); hoje2M.setHours(0,0,0,0);
+        var hojeStr2M = hoje2M.toISOString().split('T')[0];
+        var diasRange = [];
+        for(var di=0;di<62;di++){
+          var d=new Date(hoje2M); d.setDate(hoje2M.getDate()+di);
+          diasRange.push(d.toISOString().split('T')[0]);
+        }
+        var movDia = {};
+        function addMov(date,mov){ if(!date||date<hojeStr2M) return; if(!movDia[date]) movDia[date]=[]; movDia[date].push(mov); }
+
+        /* Itens pessoais */
+        itens.forEach(function(it){
+          var valorIt=parseFloat(it.valor||0); if(!valorIt) return;
+          if(it.recorrente){
+            var dOrig=it.data||(it.mes?it.mes+'-01':null); if(!dOrig) return;
+            var diaNum=parseInt(dOrig.slice(8,10),10);
+            var mesOrigem=dOrig.slice(0,7);
+            var mesesVisto={};
+            diasRange.forEach(function(ds){
+              var mes=ds.slice(0,7);
+              if(mesesVisto[mes]) return;
+              if(mes<mesOrigem) return;
+              mesesVisto[mes]=1;
+              var ultDia=new Date(parseInt(mes.slice(0,4)),parseInt(mes.slice(5,7)),0).getDate();
+              var dProj=mes+'-'+(Math.min(diaNum,ultDia)<10?'0':'')+Math.min(diaNum,ultDia);
+              if(dProj>=hojeStr2M) addMov(dProj,{tipo:it.tipo,descricao:it.descricao+' 🔁',valor:valorIt,cat:it.categoria});
+            });
+          } else {
+            if(it.data && it.status!=='pago' && it.status!=='recebido') addMov(it.data,{tipo:it.tipo,descricao:it.descricao,valor:valorIt,cat:it.categoria});
+          }
+        });
+
+        /* Lucro da locadora: mês anterior como receita no dia 1 */
+        function calcLucroLocadoraMes(mes){
+          var cts=contratos.filter(function(c2){ if(!c2.status||c2.status==='cancelado') return false; if(c2.status_pagamento==='pago'&&c2.data_pagamento) return c2.data_pagamento.slice(0,7)===mes; return c2.previsao_pagamento&&c2.previsao_pagamento.slice(0,7)===mes; });
+          var recLoc=cts.reduce(function(s,c2){return s+parseFloat(c2.valor_total||0);},0)+receitas.filter(function(r){return !r.ref_fatura&&receitaDoMes(r,mes);}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+          var despLoc=despesas.filter(function(d){return !d.manutencao_id&&!isRetLucro(d)&&d.categoria!=='Salarios'&&despesaVisivelNoMes(d,mes);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
+          var manutLoc=(manutencoes||[]).filter(function(m){return manMesRefGlobal(m)===mes;}).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
+          var multasLoc=(multas||[]).filter(function(m){return (m.data_pagamento||m.data||'').slice(0,7)===mes&&m.status==='pago';}).reduce(function(s,m){return s+parseFloat(m.valor||0);},0);
+          return recLoc-despLoc-manutLoc-multasLoc;
+        }
+        var mesesAdicionados={};
+        diasRange.forEach(function(ds){
+          var mes=ds.slice(0,7); if(mesesAdicionados[mes]) return; mesesAdicionados[mes]=true;
+          var d0=new Date(mes+'-01'); d0.setMonth(d0.getMonth()-1);
+          var mesAnterior=d0.toISOString().slice(0,7);
+          var lucro=calcLucroLocadoraMes(mesAnterior);
+          var diaRecebimento=mes+'-01';
+          if(diaRecebimento>=hojeStr2M&&lucro!==0)
+            addMov(diaRecebimento,{tipo:lucro>=0?'receita':'despesa',descricao:'Lucro Locadora ('+mesAnterior+')',valor:Math.abs(lucro),cat:'Locadora'});
+        });
+
+        var diasComMov=diasRange.filter(function(ds){return movDia[ds]&&movDia[ds].length>0;});
+        if(diasComMov.length===0) return null;
+        var saldoAcum=0;
+
+        return React.createElement('div',{style:{background:'var(--c-card)',borderRadius:22,border:'1px solid '+C.border,overflow:'hidden',boxShadow:'0 2px 16px rgba(0,0,0,0.07)'}},
+          React.createElement('div',{style:{padding:'16px 20px 12px',borderBottom:'1px solid '+C.border}},
+            React.createElement('div',{style:{fontSize:14,fontWeight:800,color:'var(--c-text)',marginBottom:2}},'📅 Previsão de Caixa — Próximos 2 Meses'),
+            React.createElement('div',{style:{fontSize:11,color:C.sub}},'Dias com movimentação prevista · saldo acumulado')
+          ),
+          React.createElement('div',{style:{overflowY:'auto',maxHeight:520}},
+            diasComMov.map(function(ds,dIdx){
+              var movs=movDia[ds];
+              var entDia=movs.filter(function(m){return m.tipo==='receita';}).reduce(function(s,m){return s+m.valor;},0);
+              var saiDia=movs.filter(function(m){return m.tipo==='despesa';}).reduce(function(s,m){return s+m.valor;},0);
+              var saldoDia=entDia-saiDia;
+              saldoAcum+=saldoDia;
+              var isHoje2=ds===hojeStr2M;
+              var dt2=new Date(ds+'T12:00:00');
+              var diaSem=dt2.toLocaleString('pt-BR',{weekday:'short'}).replace('.','').toUpperCase();
+              var diaMes=dt2.toLocaleString('pt-BR',{day:'2-digit',month:'short'}).replace('.','');
+              var mesLabel=dt2.toLocaleString('pt-BR',{month:'long',year:'numeric'});
+              var showMesHeader=dIdx===0||diasComMov[dIdx-1].slice(0,7)!==ds.slice(0,7);
+              return React.createElement(React.Fragment,{key:ds},
+                showMesHeader&&React.createElement('div',{style:{padding:'8px 20px 5px',background:'rgba(120,120,128,0.06)',borderBottom:'1px solid '+C.border,fontSize:11,fontWeight:800,color:C.sub,textTransform:'uppercase',letterSpacing:1}},mesLabel),
+                React.createElement('div',{style:{padding:'14px 20px',borderBottom:dIdx<diasComMov.length-1?'1px solid '+C.border:'none',background:isHoje2?'rgba(0,122,255,0.04)':'transparent'}},
+                  React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+                    React.createElement('div',{style:{display:'flex',alignItems:'center',gap:10}},
+                      React.createElement('div',{style:{textAlign:'center',minWidth:44,background:isHoje2?C.blue:C.border+'88',borderRadius:12,padding:'5px 8px'}},
+                        React.createElement('div',{style:{fontSize:9,fontWeight:700,color:isHoje2?'#fff':C.sub,textTransform:'uppercase',letterSpacing:.5}},diaSem),
+                        React.createElement('div',{style:{fontSize:18,fontWeight:900,color:isHoje2?'#fff':'var(--c-text)',lineHeight:1}},dt2.getDate())
+                      ),
+                      React.createElement('div',null,
+                        React.createElement('div',{style:{fontSize:11,color:C.sub,fontWeight:600}},diaMes),
+                        React.createElement('div',{style:{fontSize:11,fontWeight:700,color:saldoDia>=0?C.green:C.red,marginTop:1}},(saldoDia>=0?'+':'')+fmtBRL(saldoDia)+' no dia')
+                      )
+                    ),
+                    React.createElement('div',{style:{textAlign:'right'}},
+                      React.createElement('div',{style:{fontSize:10,color:C.sub,fontWeight:600,marginBottom:2}},'acumulado'),
+                      React.createElement('div',{style:{fontSize:16,fontWeight:900,color:saldoAcum>=0?C.green:C.red,letterSpacing:-.5}},(saldoAcum>=0?'+':'')+fmtBRL(saldoAcum))
+                    )
+                  ),
+                  React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:6}},
+                    movs.map(function(m,mi){
+                      return React.createElement('div',{key:mi,style:{display:'flex',justifyContent:'space-between',alignItems:'center',
+                        background:m.tipo==='receita'?C.green+'10':C.red+'10',
+                        borderRadius:10,padding:'8px 12px',
+                        border:'1px solid '+(m.tipo==='receita'?C.green+'28':C.red+'28')}},
+                        React.createElement('div',{style:{flex:1,minWidth:0}},
+                          React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--c-text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},m.descricao),
+                          React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:1}},m.cat)
+                        ),
+                        React.createElement('div',{style:{fontSize:16,fontWeight:900,color:m.tipo==='receita'?C.green:C.red,marginLeft:12,flexShrink:0}},(m.tipo==='receita'?'+':'-')+fmtBRL(m.valor))
+                      );
+                    })
+                  )
+                )
+              );
+            })
+          )
+        );
+      })()
 
       /* Atalhos rápidos */
       , React.createElement('div', {style:{display:'flex',gap:8}},
@@ -30502,31 +30632,99 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
     /* ── Modal de lançamento ── */
     , React.createElement(Modal, {open:modal,onClose:function(){setModal(false);},title:edit?'Editar Lançamento':'Novo Lançamento'},
-      React.createElement('div', {style:{display:'flex',flexDirection:'column',gap:12}},
-        React.createElement('div', {style:{display:'flex',gap:10}},
-          React.createElement('button', {style:{flex:1,background:form.tipo==='despesa'?C.sub:'transparent',color:form.tipo==='despesa'?'#fff':C.sub,border:'1.5px solid '+C.sub,borderRadius:10,padding:'10px',fontWeight:600,cursor:'pointer'},onClick:function(){F('tipo','despesa');}}, 'Despesa'),
-          React.createElement('button', {style:{flex:1,background:form.tipo==='receita'?C.sub:'transparent',color:form.tipo==='receita'?'#fff':C.sub,border:'1.5px solid '+C.sub,borderRadius:10,padding:'10px',fontWeight:600,cursor:'pointer'},onClick:function(){F('tipo','receita');}}, 'Receita Extra')
+      React.createElement('div', {style:{display:'flex',flexDirection:'column',gap:14}},
+        /* Tipo */
+        React.createElement('div', {style:{display:'flex',gap:8}},
+          ['despesa','receita'].map(function(t){
+            var sel=form.tipo===t;
+            var cor=t==='despesa'?C.red:C.green;
+            return React.createElement('button',{key:t,style:{flex:1,background:sel?cor:'transparent',color:sel?'#fff':C.sub,border:'1.5px solid '+(sel?cor:C.border),borderRadius:12,padding:'11px',fontWeight:700,cursor:'pointer',fontSize:13,transition:'all .15s'},
+              onClick:function(){F('tipo',t);}},t==='despesa'?'📉 Despesa':'💰 Receita Extra');
+          })
         ),
-        React.createElement(Lbl, {label:'Descrição *'}, React.createElement('input', {style:FI,value:form.descricao||'',onChange:function(e){F('descricao',e.target.value);},placeholder:'Ex: Aluguel, Supermercado...'})),
-        React.createElement('div', {style:{display:'flex',gap:10}},
-          React.createElement(Lbl, {label:'Valor *',flex:1}, React.createElement('input', {style:FI,type:'number',step:'0.01',value:form.valor||'',onChange:function(e){F('valor',e.target.value);}})),
-          React.createElement(Lbl, {label:'Data Prevista',flex:1}, React.createElement('input', {style:FI,type:'date',value:form.data||'',onChange:function(e){F('data',e.target.value);}}))
+        /* Descrição */
+        React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginBottom:5}},'Descrição *'),
+          React.createElement('input',{style:Object.assign({},FI,{width:'100%',boxSizing:'border-box'}),value:form.descricao||'',
+            onChange:function(e){F('descricao',e.target.value);},placeholder:'Ex: Cartão Inter, Aluguel...'})
         ),
-        React.createElement(Lbl, {label:'Categoria'}, React.createElement('select', {style:FI,value:form.categoria||'',onChange:function(e){F('categoria',e.target.value);}},
-          CATS.map(function(c){return React.createElement('option',{key:c,value:c},c);})
-        )),
-        React.createElement(Lbl, {label:'Observações'}, React.createElement('input', {style:FI,value:form.observacoes||'',onChange:function(e){F('observacoes',e.target.value);}})),
-        React.createElement('div', {style:{display:'flex',alignItems:'center',gap:12,padding:'10px 0',cursor:'pointer'},onClick:function(){F('recorrente',!form.recorrente);}},
-          React.createElement('div', {style:{width:22,height:22,borderRadius:6,background:form.recorrente?C.purple:'transparent',border:'2px solid '+(form.recorrente?C.purple:C.sub),display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},
-            form.recorrente&&React.createElement('span', {style:{color:'#fff',fontSize:14,fontWeight:900}}, '✓')
+        /* Valor + Data Prevista */
+        React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}},
+          React.createElement('div',null,
+            React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginBottom:5}},'Valor R$ *'),
+            React.createElement('input',{style:Object.assign({},FI,{width:'100%',boxSizing:'border-box'}),type:'number',step:'0.01',
+              value:form.valor||'',onChange:function(e){F('valor',e.target.value);},placeholder:'0,00'})
           ),
-          React.createElement('div', null,
-            React.createElement('div', {style:{fontWeight:700,fontSize:14,color:form.recorrente?C.purple:'var(--c-text)'}}, '🔁 Lançamento recorrente'),
-            React.createElement('div', {style:{fontSize:12,color:C.sub}}, 'Aparece automaticamente nos próximos meses')
+          React.createElement('div',null,
+            React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginBottom:5}},'Data Prevista'),
+            React.createElement('input',{style:Object.assign({},FI,{width:'100%',boxSizing:'border-box'}),type:'date',
+              value:form.data||'',onChange:function(e){F('data',e.target.value);}})
           )
         ),
-        form.recorrente&&React.createElement(Lbl, {label:'Prazo da Recorrência (meses)'}, React.createElement('input', {style:FI,type:'number',min:'1',max:'60',value:form.prazo_recorrencia||'',onChange:function(e){F('prazo_recorrencia',e.target.value);},placeholder:'Vazio = sem prazo (indefinido)'})),
-        React.createElement('button', {className:bCls(Btn(C.purple)),style:bStyle(Btn(C.purple)),onClick:save,disabled:saving}, saving?'Salvando...':'Salvar')
+        /* Categoria */
+        React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginBottom:5}},'Categoria'),
+          React.createElement('select',{style:Object.assign({},FI,{width:'100%',boxSizing:'border-box'}),
+            value:form.categoria||'',onChange:function(e){F('categoria',e.target.value);}},
+            CATS.map(function(cat){return React.createElement('option',{key:cat,value:cat},cat);}))
+        ),
+        /* Status + Data de Pagamento */
+        React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}},
+          React.createElement('div',null,
+            React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginBottom:5}},'Status'),
+            React.createElement('select',{style:Object.assign({},FI,{width:'100%',boxSizing:'border-box'}),
+              value:form.status||'previsto',onChange:function(e){F('status',e.target.value);}},
+              React.createElement('option',{value:'previsto'},'⏳ Previsto'),
+              React.createElement('option',{value:'pago'},form.tipo==='receita'?'✅ Recebido':'✅ Pago'),
+              React.createElement('option',{value:'recebido'},'✅ Recebido')
+            )
+          ),
+          React.createElement('div',null,
+            React.createElement('div',{style:{fontSize:11,fontWeight:700,
+              color:(form.status==='pago'||form.status==='recebido')?C.green:C.sub,
+              textTransform:'uppercase',letterSpacing:.5,marginBottom:5}},
+              (form.status==='pago'||form.status==='recebido')?'📅 Data do Pagamento *':'📅 Data do Pagamento'),
+            React.createElement('input',{style:Object.assign({},FI,{width:'100%',boxSizing:'border-box',
+              border:(form.status==='pago'||form.status==='recebido')?'1.5px solid '+C.green:undefined}),
+              type:'date',value:form.data_pagamento||'',
+              onChange:function(e){F('data_pagamento',e.target.value);}})
+          )
+        ),
+        /* Observações */
+        React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginBottom:5}},'Observações'),
+          React.createElement('input',{style:Object.assign({},FI,{width:'100%',boxSizing:'border-box'}),
+            value:form.observacoes||'',placeholder:'Opcional...',
+            onChange:function(e){F('observacoes',e.target.value);}})
+        ),
+        /* Recorrente */
+        React.createElement('div',{style:{display:'flex',alignItems:'center',gap:12,padding:'10px 14px',cursor:'pointer',
+          background:form.recorrente?C.purple+'12':'rgba(120,120,128,0.06)',borderRadius:12,border:'1px solid '+(form.recorrente?C.purple+'40':C.border)},
+          onClick:function(){F('recorrente',!form.recorrente);}},
+          React.createElement('div',{style:{width:22,height:22,borderRadius:6,flexShrink:0,
+            background:form.recorrente?C.purple:'transparent',
+            border:'2px solid '+(form.recorrente?C.purple:C.sub),
+            display:'flex',alignItems:'center',justifyContent:'center'}},
+            form.recorrente&&React.createElement('span',{style:{color:'#fff',fontSize:14,fontWeight:900}},'✓')
+          ),
+          React.createElement('div',null,
+            React.createElement('div',{style:{fontWeight:700,fontSize:13,color:form.recorrente?C.purple:'var(--c-text)'}},'🔁 Lançamento recorrente'),
+            React.createElement('div',{style:{fontSize:11,color:C.sub}},'Aparece automaticamente nos próximos meses')
+          )
+        ),
+        form.recorrente&&React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5,marginBottom:5}},'Prazo (meses)'),
+          React.createElement('input',{style:Object.assign({},FI,{width:'100%',boxSizing:'border-box'}),
+            type:'number',min:'1',max:'60',value:form.prazo_recorrencia||'',
+            onChange:function(e){F('prazo_recorrencia',e.target.value);},placeholder:'Deixe vazio = sem prazo'})
+        ),
+        /* Botão Salvar */
+        React.createElement('button',{style:{width:'100%',padding:'14px',borderRadius:14,
+          background:saving?C.sub:C.purple,color:'#fff',border:'none',
+          fontSize:15,fontWeight:800,cursor:saving?'default':'pointer',
+          boxShadow:saving?'none':'0 4px 16px '+C.purple+'44'},
+          onClick:save,disabled:saving},
+          saving?'Salvando...':'💾 Salvar')
       )
     )
   );

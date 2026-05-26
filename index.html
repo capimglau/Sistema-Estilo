@@ -29762,30 +29762,37 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   var _vistosIds = new Set();
   todosVisiveis = todosVisiveis.filter(function(it){ var k=String(it.id)+'-'+(it.recorrente?'r':''); if(_vistosIds.has(k)) return false; _vistosIds.add(k); return true; });
 
-  // Receita do orçamento pessoal = lucro da locadora do MÊS ANTERIOR
+  // ── Lucro da Locadora — SEMPRE PREVISTO (mês anterior ao filtroMes) ──────────
+  // Fórmula: Receitas Previstas − Despesas Previstas − Manutenções Previstas
   var _d0 = new Date(filtroMes+'-01'); _d0.setMonth(_d0.getMonth()-1);
-  var _mesRef = _d0.toISOString().slice(0,7); // mês anterior ao filtroMes
-  var _ctsMes = contratos.filter(function(c) {
-    if (c.status === "cancelado") return false;
-    // Contratos pagos: mês do pagamento real; demais: mês da previsão (igual ao ctsMes da Dashboard)
-    if (c.status_pagamento === "pago" && c.data_pagamento) return c.data_pagamento.slice(0,7) === _mesRef;
-    return c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === _mesRef;
+  var _mesRef = _d0.toISOString().slice(0,7); // mês anterior
+
+  // 1. Receita prevista: TODOS os contratos com previsão_pagamento no mês (ignora se foi pago ou não)
+  var _ctsMes = contratos.filter(function(ct){
+    if(!ct.status || ct.status === 'cancelado') return false;
+    return ct.previsao_pagamento && ct.previsao_pagamento.slice(0,7) === _mesRef;
   });
-  var _recAvulsas = receitas.filter(function(r){ return !r.ref_fatura && receitaDoMes(r, _mesRef); }).reduce((s,r)=>s+parseFloat(r.valor||0),0);
-  // Receita prevista = total de contratos do mês + receitas avulsas (idêntico ao prevMes da Dashboard)
-  var _totalPrevisto = _ctsMes.reduce((s,c)=>s+parseFloat(c.valor_total||0),0) + _recAvulsas;
-  var _despMes = despesas.filter(function(d) { return !d.manutencao_id && !isRetLucro(d) && d.categoria !== "Salarios" && despesaVisivelNoMes(d, _mesRef); }).reduce((s,d)=>s+parseFloat(d.valor||0),0);
-  var _manutMes = (manutencoes||[]).filter(function(m){ return manMesRefGlobal(m) === _mesRef; }).reduce((s,m)=>s+parseFloat(m.custo||0),0);
-  var _multasMes = (multas||[]).filter(function(m){
-    return (m.data||"").slice(0,7) === _mesRef || (m.vencimento||"").slice(0,7) === _mesRef;
-  }).reduce(function(s,m){
-    var v = parseFloat(m.valor||0);
-    var cobrado = (m.cobrado_cliente==="pago"||m.cobrado_cliente==="pendente") ? parseFloat(m.valor_cobrado||m.valor||0) : 0;
-    return s + Math.max(0, v - cobrado);
-  }, 0);
-  // Receita da locadora no orçamento pessoal = LUCRO da locadora
-  // = faturamento previsto − despesas − manutenções − multas (resultado previsto da locadora)
-  var lucroLocadora = _totalPrevisto - _despMes - _manutMes - _multasMes;
+  var _recContratos = _ctsMes.reduce(function(s,ct){return s + parseFloat(ct.valor_total||0);}, 0);
+
+  // 2. Receitas avulsas previstas no mês (não ligadas a faturas)
+  var _recAvulsas = receitas.filter(function(r){
+    return !r.ref_fatura && receitaDoMes(r, _mesRef);
+  }).reduce(function(s,r){return s + parseFloat(r.valor||0);}, 0);
+
+  var _totalPrevisto = _recContratos + _recAvulsas;
+
+  // 3. Despesas previstas (todas visíveis no mês, pagas ou não)
+  var _despMes = despesas.filter(function(d){
+    return !d.manutencao_id && !isRetLucro(d) && d.categoria !== 'Salarios' && despesaVisivelNoMes(d, _mesRef);
+  }).reduce(function(s,d){return s + parseFloat(d.valor||0);}, 0);
+
+  // 4. Manutenções previstas no mês
+  var _manutMes = (manutencoes||[]).filter(function(m){
+    return manMesRefGlobal(m) === _mesRef;
+  }).reduce(function(s,m){return s + parseFloat(m.custo||0);}, 0);
+
+  // Lucro previsto = Receitas previstas − Despesas previstas − Manutenções previstas
+  var lucroLocadora = _totalPrevisto - _despMes - _manutMes;
   var entradasExtras = todosVisiveis.filter(it => it.tipo === "receita").reduce((s,it)=>s+parseFloat(it.valor||0),0);
   var despPessoais = todosVisiveis.filter(it => it.tipo === "despesa").reduce((s,it)=>s+parseFloat(it.valor||0),0);
   var despPago = todosVisiveis.filter(it => it.tipo === "despesa" && (it.status === "pago" || it.status === "recebido") && efetivoMes(it) === filtroMes).reduce((s,it)=>s+parseFloat(it.valor||0),0);
@@ -30211,10 +30218,16 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
         /* Lucro da locadora: usa lucroLocadora (já calculado) para o mês atual,
            e calcula manualmente para meses futuros */
         function calcLucroMes(mes){
-          /* Para o mesmo mês de referência (_mesRef), usa o valor já calculado */
+          /* Sempre PREVISTO: usa o _mesRef já calculado; para outros meses recalcula */
           if(mes === _mesRef) return lucroLocadora;
-          var cts=contratos.filter(function(ct){ if(!ct.status||ct.status==='cancelado') return false; if(ct.status_pagamento==='pago'&&ct.data_pagamento) return ct.data_pagamento.slice(0,7)===mes; return ct.previsao_pagamento&&ct.previsao_pagamento.slice(0,7)===mes; });
-          var r2=cts.reduce(function(s,ct){return s+parseFloat(ct.valor_total||0);},0)+receitas.filter(function(r){return !r.ref_fatura&&receitaDoMes(r,mes);}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+          /* Receitas previstas: contratos com previsao_pagamento no mês */
+          var cts=contratos.filter(function(ct){
+            if(!ct.status||ct.status==='cancelado') return false;
+            return ct.previsao_pagamento&&ct.previsao_pagamento.slice(0,7)===mes;
+          });
+          var r2=cts.reduce(function(s,ct){return s+parseFloat(ct.valor_total||0);},0)
+            +receitas.filter(function(r){return !r.ref_fatura&&receitaDoMes(r,mes);}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+          /* Despesas e manutenções previstas */
           var d2=despesas.filter(function(d){return !d.manutencao_id&&!isRetLucro(d)&&d.categoria!=='Salarios'&&despesaVisivelNoMes(d,mes);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
           var m2=(manutencoes||[]).filter(function(m){return manMesRefGlobal(m)===mes;}).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
           return r2-d2-m2;
@@ -30235,12 +30248,89 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
         if(diasComMov.length===0) return null;
         var saldoAcum=0;
 
-        return React.createElement('div',{style:{background:'var(--c-card)',borderRadius:22,border:'1px solid '+C.border,overflow:'hidden',boxShadow:'0 2px 16px rgba(0,0,0,0.07)'}},
-          React.createElement('div',{style:{padding:'16px 20px 12px',borderBottom:'1px solid '+C.border}},
-            React.createElement('div',{style:{fontSize:14,fontWeight:800,color:'var(--c-text)',marginBottom:2}},'📅 Previsão de Caixa — Próximos 2 Meses'),
-            React.createElement('div',{style:{fontSize:11,color:C.sub}},'Dias com movimentação prevista · saldo acumulado')
+        /* ── Heatmap calendário (Modelo 4) ── */
+        var allDays = diasRange;
+        var firstDay = new Date(hojeStr2M+'T12:00:00');
+        firstDay.setDate(1); /* começa no dia 1 do mês atual */
+        var startOffset = new Date(firstDay.toISOString().split('T')[0]+'T12:00:00').getDay();
+        /* 35 células = 5 semanas */
+        var cells = [];
+        for(var ci=0; ci<35; ci++){
+          var d2 = new Date(firstDay); d2.setDate(1 + ci - startOffset);
+          var ds2 = d2.toISOString().split('T')[0];
+          var inRange = ds2 >= hojeStr2M;
+          var movs2 = movDia[ds2];
+          var hasIn  = movs2 && movs2.some(function(m){return m.tipo==='receita';});
+          var hasOut = movs2 && movs2.some(function(m){return m.tipo==='despesa';});
+          var isToday2 = ds2 === hojeStr2M;
+          var isOtherMonth = d2.getMonth() !== firstDay.getMonth();
+          cells.push({ds:ds2, day:d2.getDate(), inRange:inRange, hasIn:hasIn, hasOut:hasOut, isToday:isToday2, isOther:isOtherMonth, movs:movs2});
+        }
+
+        return React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:0,
+          background:'var(--c-card)',borderRadius:22,border:'1px solid '+C.border,
+          overflow:'hidden',boxShadow:'0 4px 20px rgba(0,0,0,0.10)'}},
+
+          /* ── Header ── */
+          React.createElement('div',{style:{padding:'16px 18px 12px',background:'var(--c-card)',borderBottom:'1px solid '+C.border}},
+            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+              React.createElement('div',null,
+                React.createElement('div',{style:{fontSize:14,fontWeight:800,color:'var(--c-text)',letterSpacing:-.3}},'📅 Previsão de Caixa'),
+                React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:2}},'Próximos 2 meses · dia a dia')
+              ),
+              React.createElement('div',{style:{display:'flex',gap:10,alignItems:'center'}},
+                React.createElement('div',{style:{display:'flex',alignItems:'center',gap:4}},
+                  React.createElement('div',{style:{width:10,height:10,borderRadius:3,background:C.green}}),
+                  React.createElement('span',{style:{fontSize:10,color:C.sub,fontWeight:600}},'Entrada')),
+                React.createElement('div',{style:{display:'flex',alignItems:'center',gap:4}},
+                  React.createElement('div',{style:{width:10,height:10,borderRadius:3,background:C.red}}),
+                  React.createElement('span',{style:{fontSize:10,color:C.sub,fontWeight:600}},'Saída'))
+              )
+            )
           ),
-          React.createElement('div',{style:{overflowY:'auto',maxHeight:520}},
+
+          /* ── Heatmap Calendar (Modelo 4) ── */
+          React.createElement('div',{style:{padding:'14px 14px 10px',background:'var(--c-card)',borderBottom:'1px solid '+C.border}},
+            /* Cabeçalho semana */
+            React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3,marginBottom:6}},
+              ['D','S','T','Q','Q','S','S'].map(function(d,i){
+                return React.createElement('div',{key:i,style:{textAlign:'center',fontSize:9,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.5}},d);
+              })
+            ),
+            /* Células */
+            React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3}},
+              cells.map(function(cell,ci){
+                var bg, dayColor, dotColor=null;
+                if(cell.isOther){
+                  bg='transparent'; dayColor='rgba(120,120,128,0.15)';
+                } else if(cell.isToday){
+                  bg=C.purple; dayColor='#fff';
+                } else if(cell.hasIn && cell.hasOut){
+                  bg='rgba(120,120,128,0.10)'; dayColor='var(--c-text)'; dotColor=C.green;
+                } else if(cell.hasIn){
+                  bg=C.green+'18'; dayColor=C.green; dotColor=C.green;
+                } else if(cell.hasOut){
+                  bg=C.red+'18'; dayColor=C.red; dotColor=C.red;
+                } else if(!cell.inRange){
+                  bg='transparent'; dayColor='rgba(120,120,128,0.2)';
+                } else {
+                  bg='rgba(120,120,128,0.06)'; dayColor=C.sub;
+                }
+                return React.createElement('div',{key:ci,style:{
+                  aspectRatio:'1',borderRadius:8,background:bg,
+                  display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+                  position:'relative',
+                  boxShadow:cell.isToday?'0 2px 8px '+C.purple+'55':'none',
+                  border:cell.isToday?'none':(cell.hasIn||cell.hasOut)?'1px solid '+(cell.hasIn?C.green+'30':C.red+'30'):'none'}},
+                  React.createElement('span',{style:{fontSize:12,fontWeight:cell.isToday?900:(cell.hasIn||cell.hasOut)?700:400,color:dayColor,lineHeight:1}},cell.day),
+                  dotColor && React.createElement('div',{style:{width:4,height:4,borderRadius:'50%',background:dotColor,marginTop:2}})
+                );
+              })
+            )
+          ),
+
+          /* ── Lista Glassmorphism (Modelo 5) ── */
+          React.createElement('div',{style:{overflowY:'auto',maxHeight:460}},
             diasComMov.map(function(ds,dIdx){
               var movs=movDia[ds];
               var entDia=movs.filter(function(m){return m.tipo==='receita';}).reduce(function(s,m){return s+m.valor;},0);
@@ -30249,42 +30339,76 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
               saldoAcum+=saldoDia;
               var isHoje2=ds===hojeStr2M;
               var dt2=new Date(ds+'T12:00:00');
-              var diaSem=dt2.toLocaleString('pt-BR',{weekday:'short'}).replace('.','').toUpperCase();
-              var diaMes=dt2.toLocaleString('pt-BR',{day:'2-digit',month:'short'}).replace('.','');
+              var diaSem=dt2.toLocaleString('pt-BR',{weekday:'short'}).replace('.','').toUpperCase().slice(0,3);
               var mesLabel=dt2.toLocaleString('pt-BR',{month:'long',year:'numeric'});
               var showMesHeader=dIdx===0||diasComMov[dIdx-1].slice(0,7)!==ds.slice(0,7);
+              var acumColor = saldoAcum>=0 ? C.green : C.red;
+              var saldoColor = saldoDia>=0 ? C.green : C.red;
               return React.createElement(React.Fragment,{key:ds},
-                showMesHeader&&React.createElement('div',{style:{padding:'8px 20px 5px',background:'rgba(120,120,128,0.06)',borderBottom:'1px solid '+C.border,fontSize:11,fontWeight:800,color:C.sub,textTransform:'uppercase',letterSpacing:1}},mesLabel),
-                React.createElement('div',{style:{padding:'14px 20px',borderBottom:dIdx<diasComMov.length-1?'1px solid '+C.border:'none',background:isHoje2?'rgba(0,122,255,0.04)':'transparent'}},
-                  React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
-                    React.createElement('div',{style:{display:'flex',alignItems:'center',gap:10}},
-                      React.createElement('div',{style:{textAlign:'center',minWidth:44,background:isHoje2?C.blue:C.border+'88',borderRadius:12,padding:'5px 8px'}},
-                        React.createElement('div',{style:{fontSize:9,fontWeight:700,color:isHoje2?'#fff':C.sub,textTransform:'uppercase',letterSpacing:.5}},diaSem),
-                        React.createElement('div',{style:{fontSize:18,fontWeight:900,color:isHoje2?'#fff':'var(--c-text)',lineHeight:1}},dt2.getDate())
-                      ),
-                      React.createElement('div',null,
-                        React.createElement('div',{style:{fontSize:11,color:C.sub,fontWeight:600}},diaMes),
-                        React.createElement('div',{style:{fontSize:11,fontWeight:700,color:saldoDia>=0?C.green:C.red,marginTop:1}},(saldoDia>=0?'+':'')+fmtBRL(saldoDia)+' no dia')
-                      )
+                showMesHeader && React.createElement('div',{style:{
+                  padding:'8px 18px 6px',
+                  background:C.purple+'10',
+                  borderTop:dIdx>0?'1px solid '+C.purple+'20':'none',
+                  display:'flex',alignItems:'center',gap:8}},
+                  React.createElement('div',{style:{width:3,height:14,borderRadius:2,background:C.purple}}),
+                  React.createElement('span',{style:{fontSize:11,fontWeight:800,color:C.purple,textTransform:'uppercase',letterSpacing:1}}),
+                  React.createElement('span',{style:{fontSize:12,fontWeight:700,color:'var(--c-text)'}}),
+                  React.createElement('span',{style:{fontSize:11,fontWeight:800,color:C.purple,textTransform:'uppercase',letterSpacing:.8}},mesLabel)
+                ),
+                React.createElement('div',{style:{
+                  margin:'8px 12px',
+                  borderRadius:16,
+                  background:isHoje2?C.purple+'12':'rgba(120,120,128,0.04)',
+                  border:'1px solid '+(isHoje2?C.purple+'30':C.border),
+                  overflow:'hidden'}},
+                  /* Linha superior: data badge grande + saldo dia + acumulado */
+                  React.createElement('div',{style:{display:'flex',alignItems:'center',gap:0}},
+                    /* Date badge — maior e na cor do tema */
+                    React.createElement('div',{style:{
+                      padding:'14px 12px',
+                      background:isHoje2?C.purple:C.purple+'18',
+                      display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+                      minWidth:58,alignSelf:'stretch'}},
+                      React.createElement('span',{style:{fontSize:10,fontWeight:700,
+                        color:isHoje2?'rgba(255,255,255,0.7)':C.purple,
+                        textTransform:'uppercase',letterSpacing:.8,lineHeight:1}},diaSem),
+                      React.createElement('span',{style:{fontSize:26,fontWeight:900,
+                        color:isHoje2?'#fff':C.purple,
+                        lineHeight:1.1,letterSpacing:-1}},dt2.getDate()),
+                      React.createElement('span',{style:{fontSize:9,fontWeight:600,
+                        color:isHoje2?'rgba(255,255,255,0.6)':C.sub,marginTop:1}},
+                        dt2.toLocaleString('pt-BR',{month:'short'}).replace('.','').toUpperCase())
                     ),
-                    React.createElement('div',{style:{textAlign:'right'}},
-                      React.createElement('div',{style:{fontSize:10,color:C.sub,fontWeight:600,marginBottom:2}},'acumulado'),
-                      React.createElement('div',{style:{fontSize:16,fontWeight:900,color:saldoAcum>=0?C.green:C.red,letterSpacing:-.5}},(saldoAcum>=0?'+':'')+fmtBRL(saldoAcum))
+                    /* Conteúdo */
+                    React.createElement('div',{style:{flex:1,padding:'12px 14px'}},
+                      React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+                        React.createElement('span',{style:{fontSize:14,fontWeight:800,color:saldoColor}},
+                          (saldoDia>=0?'+':'')+fmtBRL(saldoDia)),
+                        React.createElement('div',{style:{
+                          background:acumColor+'15',border:'1px solid '+acumColor+'30',
+                          borderRadius:20,padding:'3px 10px',
+                          fontSize:11,fontWeight:700,color:acumColor,
+                          fontFamily:'-apple-system,monospace'}},
+                          (saldoAcum>=0?'+':'')+fmtBRL(saldoAcum))
+                      ),
+                      /* Chips dos itens */
+                      React.createElement('div',{style:{display:'flex',flexWrap:'wrap',gap:5}},
+                        movs.map(function(m,mi){
+                          var isIn=m.tipo==='receita';
+                          return React.createElement('div',{key:mi,style:{
+                            background:isIn?C.green+'12':C.red+'12',
+                            border:'1px solid '+(isIn?C.green+'25':C.red+'25'),
+                            borderRadius:20,padding:'4px 10px',
+                            display:'flex',alignItems:'center',gap:5}},
+                            React.createElement('span',{style:{fontSize:11,fontWeight:700,
+                              color:isIn?C.green:C.red}},
+                              (isIn?'+':'-')+fmtBRL(m.valor)),
+                            React.createElement('span',{style:{fontSize:11,color:C.sub,overflow:'hidden',
+                              textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:130}},m.descricao)
+                          );
+                        })
+                      )
                     )
-                  ),
-                  React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:6}},
-                    movs.map(function(m,mi){
-                      return React.createElement('div',{key:mi,style:{display:'flex',justifyContent:'space-between',alignItems:'center',
-                        background:m.tipo==='receita'?C.green+'10':C.red+'10',
-                        borderRadius:10,padding:'8px 12px',
-                        border:'1px solid '+(m.tipo==='receita'?C.green+'28':C.red+'28')}},
-                        React.createElement('div',{style:{flex:1,minWidth:0}},
-                          React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'var(--c-text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},m.descricao),
-                          React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:1}},m.cat)
-                        ),
-                        React.createElement('div',{style:{fontSize:16,fontWeight:900,color:m.tipo==='receita'?C.green:C.red,marginLeft:12,flexShrink:0}},(m.tipo==='receita'?'+':'-')+fmtBRL(m.valor))
-                      );
-                    })
                   )
                 )
               );

@@ -30226,17 +30226,18 @@ function PessoalDash({
     var dtProj=it.data?_projDate(it.data,m):m+'-01';
     return Object.assign({},it,{data:dtProj,status:'previsto',data_pagamento:null,_origemMes:em});
   }
-  function _lucroLoc(m){
+  // Mesma fórmula do banner da locadora (resultPrevBanner = prevMes - despesas - manutencoes)
+  function _resultPrevLoc(m){
     var cts=(contratos||[]).filter(function(c){if(!c.status||c.status==='cancelado')return false;if(c.status_pagamento==='pago'&&c.data_pagamento)return c.data_pagamento.slice(0,7)===m;return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m;});
-    var totR=cts.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0);
-    totR+=(receitas||[]).filter(function(r){return !r.ref_fatura&&receitaDoMes(r,m);}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
-    var totD=(despesas||[]).filter(function(d){return !d.manutencao_id&&!isRetLucro(d)&&(d.categoria||'')!=='Salarios'&&despesaVisivelNoMes(d,m);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
-    var totM=(manutencoes||[]).filter(function(m2){return manMesRefGlobal(m2)===m;}).reduce(function(s,m2){return s+parseFloat(m2.valor||0);},0);
-    return totR-totD-totM;
+    var recAv=(receitas||[]).filter(function(r){return !r.ref_fatura&&receitaDoMes(r,m);});
+    var prev=cts.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+recAv.reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+    var desp=resolverDespesasDoMes((despesas||[]).filter(function(d){return !isRetLucro(d);}),m).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
+    var man=filtrarManParaBarras(manutencoes,despesas,m).reduce(function(s,m2){return s+parseFloat(m2.custo||0);},0);
+    return prev-desp-man;
   }
 
   var _mesAnt = _addM(_mes,-1);
-  var _recLoc = _lucroLoc(_mesAnt);
+  var _recLoc = _resultPrevLoc(_mesAnt);
   var _nomAnt = new Date(_mesAnt+'-15').toLocaleString('pt-BR',{month:'long'});
   var _nomMes = _nomMesOf(_mes);
 
@@ -30244,16 +30245,16 @@ function PessoalDash({
   var _itens  = _oi.filter(function(it){return _vis(it,_mes);}).map(function(it){return _projetar(it,_mes);});
   var _recs   = _itens.filter(function(it){return it.tipo==='receita';});
   var _desps  = _itens.filter(function(it){return it.tipo==='despesa';});
-  var _totRec = _recs.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  var _totRec = _recLoc;
   var _totDes = _desps.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-  var _recPg  = _recs.filter(function(it){return it.status==='recebido'||it.status==='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  var _recPg  = _recLoc > 0 ? _recLoc : 0;
   var _desPg  = _desps.filter(function(it){return it.status==='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
   var _saldo  = _totRec-_totDes;
 
   // ── 6 meses para o gráfico (Template 4) ─────────────────────────────────
   var _m6=[]; for(var _bi=-2;_bi<=3;_bi++) _m6.push(_addM(_mes,_bi));
   var _d6=_m6.map(function(m){
-    var rec=_oi.filter(function(it){return _vis(it,m)&&it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+    var rec=Math.max(0,_resultPrevLoc(_addM(m,-1)));
     var dep=_oi.filter(function(it){return _vis(it,m)&&it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
     var nm=new Date(m+'-15').toLocaleString('pt-BR',{month:'short'}).replace('.','').toUpperCase().slice(0,3);
     return {m:m,rec:rec,dep:dep,luc:rec-dep,nm:nm};
@@ -30629,13 +30630,13 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     return manMesRefGlobal(m) === _mesRef;
   }).reduce(function(s,m){return s + parseFloat(m.custo||0);}, 0);
 
-  // Lucro previsto = Receitas previstas − Despesas previstas − Manutenções previstas
-  var lucroLocadora = _totalPrevisto - _despMes - _manutMes;
+  // Resultado Previsto Locadora = mesma fórmula do banner (mês anterior)
+  var lucroLocadora = _resultLocBanner(_mesRef);
   var entradasExtras = todosVisiveis.filter(it => it.tipo === "receita").reduce((s,it)=>s+parseFloat(it.valor||0),0);
   var despPessoais = todosVisiveis.filter(it => it.tipo === "despesa").reduce((s,it)=>s+parseFloat(it.valor||0),0);
   var despPago = todosVisiveis.filter(it => it.tipo === "despesa" && (it.status === "pago" || it.status === "recebido") && efetivoMes(it) === filtroMes).reduce((s,it)=>s+parseFloat(it.valor||0),0);
   var despRecorrente = itensRecorrentes.filter(it => it.tipo === "despesa").reduce((s,it)=>s+parseFloat(it.valor||0),0);
-  var totalReceita = entradasExtras;
+  var totalReceita = _resultLocBanner(_mesRef);
   var saldo = totalReceita - despPessoais;
   var saldoReal = totalReceita - despPago;
   var percentGasto = totalReceita > 0 ? Math.min(100, Math.round((despPessoais / totalReceita) * 100)) : 0;
@@ -30858,6 +30859,16 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     });
   }
 
+  // Resultado Previsto da Locadora — mesma fórmula do banner da Início
+  function _resultLocBanner(m) {
+    var cts=(contratos||[]).filter(function(c){if(!c.status||c.status==='cancelado')return false;if(c.status_pagamento==='pago'&&c.data_pagamento)return c.data_pagamento.slice(0,7)===m;return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m;});
+    var recAv=(receitas||[]).filter(function(r){return !r.ref_fatura&&receitaDoMes(r,m);});
+    var prev=cts.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+recAv.reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+    var desp=resolverDespesasDoMes((despesas||[]).filter(function(d){return !isRetLucro(d);}),m).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
+    var man=filtrarManParaBarras(manutencoes,despesas,m).reduce(function(s,m2){return s+parseFloat(m2.custo||0);},0);
+    return prev-desp-man;
+  }
+
   // Função auxiliar: lucro da locadora para um dado mês de referência (modo previsto)
   function _lucroLocadoraMes(mesLoc) {
     var cts2 = contratos.filter(function(ct){
@@ -30882,11 +30893,8 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   }
 
   var entradasBar6 = mesesBar6.map(function(m){
-    return itens.filter(function(it){
-      if(!_visOrc(it,m)||it.tipo!=='receita') return false;
-      if(chartMode==='efetivado') return it.status==='recebido'||it.status==='pago';
-      return true;
-    }).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+    var mAnt=(function(s){var d=new Date(s+'-15');d.setMonth(d.getMonth()-1);return d.toISOString().slice(0,7);})(m);
+    return Math.max(0, _resultLocBanner(mAnt));
   });
 
   var saidasBar6 = mesesBar6.map(function(m){
@@ -30946,8 +30954,8 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
             var nc=new Date(m+'-15').toLocaleString('pt-BR',{month:'short'}).replace('.','').toUpperCase().slice(0,3);
             var yr=m.slice(2,4);
             var itensM=itens.filter(function(it){return itemVisivelNoMes(it,m);});
-            var _recLocM=(function(){var _cM=contratos.filter(function(c){if(c.status==='cancelado')return false;if(c.status_pagamento==='pago'&&c.data_pagamento)return c.data_pagamento.slice(0,7)===m;return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m;});var _rAv=receitas.filter(function(r){return !r.ref_fatura&&receitaDoMes(r,m);});return _cM.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+_rAv.reduce(function(s,r){return s+parseFloat(r.valor||0);},0);})();
-            var saldoM=_recLocM+itensM.filter(function(it){return it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0)
+            var _mAntNav=(function(s){var d=new Date(s+'-15');d.setMonth(d.getMonth()-1);return d.toISOString().slice(0,7);})(m);
+            var saldoM=_resultLocBanner(_mAntNav)+itensM.filter(function(it){return it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0)
               - itensM.filter(function(it){return it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
             return React.createElement('button',{key:m,onClick:function(){setFiltroMes(m);},
               style:{flexShrink:0,width:68,padding:'8px 4px',borderRadius:12,cursor:'pointer',textAlign:'center',

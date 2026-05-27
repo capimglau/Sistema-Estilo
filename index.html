@@ -30637,7 +30637,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   var despPessoais = todosVisiveis.filter(it => it.tipo === "despesa").reduce((s,it)=>s+parseFloat(it.valor||0),0);
   var despPago = todosVisiveis.filter(it => it.tipo === "despesa" && (it.status === "pago" || it.status === "recebido") && efetivoMes(it) === filtroMes).reduce((s,it)=>s+parseFloat(it.valor||0),0);
   var despRecorrente = itensRecorrentes.filter(it => it.tipo === "despesa").reduce((s,it)=>s+parseFloat(it.valor||0),0);
-  var totalReceita = lucroLocadora + entradasExtras;
+  var totalReceita = entradasExtras;
   var saldo = totalReceita - despPessoais;
   var saldoReal = totalReceita - despPago;
   var percentGasto = totalReceita > 0 ? Math.min(100, Math.round((despPessoais / totalReceita) * 100)) : 0;
@@ -30876,20 +30876,10 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   }
 
   var entradasBar6 = mesesBar6.map(function(m){
-    // Mês de referência da locadora = mês anterior ao mês pessoal
-    var d0loc = new Date(m+'-01'); d0loc.setMonth(d0loc.getMonth()-1);
-    var mesLoc = d0loc.toISOString().slice(0,7);
-    // Lucro da locadora
-    var lucroLoc = chartMode==='efetivado' ? _lucroLocadoraMesEfetivado(mesLoc) : _lucroLocadoraMes(mesLoc);
-    // Extras pessoais (receitas lançadas no orcamento_pessoal para o mês m)
-    var recExtras = itens.filter(function(it){
-      if(it.tipo!=='receita') return false;
-      if(!itemVisivelNoMes(it,m)) return false;
-      if(chartMode==='efetivado') return it.status==='recebido'||it.status==='pago';
-      return true;
-    }).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-    // Total: lucro (se positivo) + extras
-    return Math.max(0, lucroLoc) + recExtras;
+    if(chartMode==='efetivado'){
+      return itens.filter(function(it){return it.tipo==='receita'&&itemVisivelNoMes(it,m)&&(it.status==='recebido'||it.status==='pago');}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+    }
+    return itens.filter(function(it){return it.tipo==='receita'&&itemVisivelNoMes(it,m);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
   });
 
   var saidasBar6 = mesesBar6.map(function(m){
@@ -30908,7 +30898,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   }).sort(function(a,b){return (a.data||'').localeCompare(b.data||'');}).slice(0,5);
 
   // ── Tetos por categoria (BUD) ──
-  return React.createElement('div', { "data-no-cm": "1", style: { display: 'flex', flexDirection: 'column', gap: 20 } }
+  return React.createElement('div', { "data-no-cm": "1", style: { display: 'flex', flexDirection: 'column', gap: 40 } }
 
     /* ── Header com mês + botão + ── */
     , !inlineMode && React.createElement('div', {style:{background:'var(--c-card)',borderRadius:20,border:'1px solid '+C.border,overflow:'hidden'}},
@@ -30922,20 +30912,6 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
           React.createElement('button', {onClick:function(){var d=new Date(filtroMes+'-01');d.setMonth(d.getMonth()+1);setFiltroMes(d.toISOString().slice(0,7));},
             style:{background:'rgba(120,120,128,0.12)',border:'none',borderRadius:10,width:34,height:34,fontSize:18,cursor:'pointer',color:'var(--c-text)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}, '›')
         ),
-      )
-
-    /* ── Botões de Adição ── */
-    , React.createElement('div', {style:{display:'flex',gap:8}},
-        React.createElement('button', {
-          onClick:function(){setForm({tipo:'despesa',categoria:'Outros',data:new Date().toISOString().split('T')[0],status:'previsto'});setEdit(null);setModal(true);},
-          style:{flex:1,background:C.red,color:'#fff',border:'none',borderRadius:14,padding:'12px',fontSize:13,fontWeight:800,cursor:'pointer',
-            boxShadow:'0 3px 12px '+C.red+'44',display:'flex',alignItems:'center',justifyContent:'center',gap:6}},
-          React.createElement('span',{style:{fontSize:16}},'−'), '  Despesa'),
-        React.createElement('button', {
-          onClick:function(){setForm({tipo:'receita',categoria:'Outros',data:new Date().toISOString().split('T')[0],status:'previsto'});setEdit(null);setModal(true);},
-          style:{flex:1,background:C.green,color:'#fff',border:'none',borderRadius:14,padding:'12px',fontSize:13,fontWeight:800,cursor:'pointer',
-            boxShadow:'0 3px 12px '+C.green+'44',display:'flex',alignItems:'center',justifyContent:'center',gap:6}},
-          React.createElement('span',{style:{fontSize:16}},'+'), '  Receita')
       )
 
     /* ── Sub-tabs ── */
@@ -31187,34 +31163,6 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
           }
         });
 
-        /* Lucro da locadora: usa lucroLocadora (já calculado) para o mês atual,
-           e calcula manualmente para meses futuros */
-        function calcLucroMes(mes){
-          /* Sempre PREVISTO: usa o _mesRef já calculado; para outros meses recalcula */
-          if(mes === _mesRef) return lucroLocadora;
-          /* Receitas previstas: contratos com previsao_pagamento no mês */
-          var cts=contratos.filter(function(ct){
-            if(!ct.status||ct.status==='cancelado') return false;
-            return ct.previsao_pagamento&&ct.previsao_pagamento.slice(0,7)===mes;
-          });
-          var r2=cts.reduce(function(s,ct){return s+parseFloat(ct.valor_total||0);},0)
-            +receitas.filter(function(r){return !r.ref_fatura&&receitaDoMes(r,mes);}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
-          /* Despesas e manutenções previstas */
-          var d2=despesas.filter(function(d){return !d.manutencao_id&&!isRetLucro(d)&&d.categoria!=='Salarios'&&despesaVisivelNoMes(d,mes);}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
-          var m2=(manutencoes||[]).filter(function(m){return manMesRefGlobal(m)===mes;}).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
-          return r2-d2-m2;
-        }
-        var mesesAdicionados={};
-        diasRange.forEach(function(ds){
-          var mes=ds.slice(0,7); if(mesesAdicionados[mes]) return; mesesAdicionados[mes]=true;
-          /* O orçamento pessoal de um mês usa o lucro do mês ANTERIOR da locadora */
-          var d0=new Date(mes+'-01'); d0.setMonth(d0.getMonth()-1);
-          var mesRef2=d0.toISOString().slice(0,7);
-          var lucro=calcLucroMes(mesRef2);
-          var diaRecebimento=mes+'-01';
-          if(diaRecebimento>=hojeStr2M&&lucro!==0)
-            addMov(diaRecebimento,{tipo:lucro>=0?'receita':'despesa',descricao:'Lucro Locadora ('+mesRef2+')',valor:Math.abs(lucro),cat:'Locadora'});
-        });
 
         var diasComMov=diasRange.filter(function(ds){return movDia[ds]&&movDia[ds].length>0;});
         if(diasComMov.length===0) return null;

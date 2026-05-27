@@ -22896,17 +22896,24 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         if (d.manutencao_id) return;
         if (fluxoVeiculo && String(d.veiculo_id||"") !== fluxoVeiculo) return;
         if (d.recorrente && d.data) {
+          var _mesIni = d.data.slice(0,7);
           mesesRange.forEach(function(mes){
+            if (mes < _mesIni) return;
+            // Respeita prazo_recorrencia
+            if (d.prazo_recorrencia) {
+              var _diffM = (parseInt(mes.slice(0,4))-parseInt(_mesIni.slice(0,4)))*12 + (parseInt(mes.slice(5,7))-parseInt(_mesIni.slice(5,7)));
+              if (_diffM >= parseInt(d.prazo_recorrencia)) return;
+            }
             var mY2 = parseInt(mes.slice(0,4),10), mM2 = parseInt(mes.slice(5,7),10);
-            if (mes < d.data.slice(0,7)) return;
             var _ult = new Date(mY2, mM2, 0).getDate();
             var _dia = parseInt(d.data.slice(8,10),10);
             var _df  = Math.min(_dia, _ult);
             var _dtProj = mes + "-" + (_df<10?"0":"")+_df;
             if (_dtProj < periodoInicio || _dtProj > periodoFim) return;
-            var _pago = d.status==="pago" || !!d.data_pagamento;
-            var _dt   = _pago && d.data_pagamento && d.data_pagamento.slice(0,7)===mes ? d.data_pagamento : _dtProj;
-            eventos.push({ dt:_dt, tipo:"desp", label:d.descricao||d.categoria||"Despesa", val:parseFloat(d.valor||0), pago:_pago && d.data_pagamento && d.data_pagamento.slice(0,7)===mes });
+            // Só marca pago no mês em que realmente foi pago
+            var _pagoDesseMes = (d.status==="pago"||!!d.data_pagamento) && d.data_pagamento && d.data_pagamento.slice(0,7)===mes;
+            var _dt = _pagoDesseMes ? d.data_pagamento : _dtProj;
+            eventos.push({ dt:_dt, tipo:"desp", label:d.descricao||d.categoria||"Despesa", val:parseFloat(d.valor||0), pago:!!_pagoDesseMes });
           });
           return;
         }
@@ -22919,6 +22926,15 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         var dt = m.data_pagamento||m.data_previsao_pagamento||m.data_entrada; if (!dt||dt<periodoInicio||dt>periodoFim) return;
         var ve = (veiculos||[]).find(v=>v.id==m.veiculo_id);
         eventos.push({ dt:dt, tipo:"man", label:(m.descricao||m.tipo||"Manutenção")+(ve?" · "+ve.placa:""), val:parseFloat(m.custo||0), pago:m.status_financeiro==="pago"||!!m.data_pagamento });
+      });
+
+      // Deduplicar por (dt, tipo, label, val) — evita duplicatas de recorrente + entrada manual
+      var _evSeen = {};
+      eventos = eventos.filter(function(e){
+        var k = e.dt+"|"+e.tipo+"|"+e.label+"|"+e.val;
+        if (_evSeen[k]) return false;
+        _evSeen[k] = true;
+        return true;
       });
 
       // Agrupar por dia

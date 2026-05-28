@@ -21156,6 +21156,32 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab, searchBarEl, onItemNav }
 }
 function fmtDate(d) { if (!d) return "--"; var p = d.split("-"); if (p.length !== 3) return d; return p[2] + "/" + p[1] + "/" + p[0]; }
 function isRetLucro(d) { var c = d.categoria || ""; return c === "Retirada de Lucro" || c === "Ajuste de Saldo"; }
+
+/* Saldo real do caixa desde o início dos lançamentos até (exclusive) ateDt */
+function saldoCaixaAte(contratos, receitas, despesas, manutencoes, ateDt) {
+  var s = 0;
+  (contratos||[]).forEach(function(c){
+    if(c.status==='cancelado') return;
+    var dt=c.data_pagamento; if(!dt||dt>=ateDt) return;
+    if(c.status_pagamento==='pago') s+=parseFloat(c.valor_total||0);
+    else if(c.status_pagamento==='parcial'&&parseFloat(c.valor_pago||0)>0) s+=parseFloat(c.valor_pago);
+  });
+  (receitas||[]).forEach(function(r){
+    if(r.ref_fatura) return;
+    var dt=r.data_pagamento||r.data; if(!dt||dt>=ateDt) return;
+    if(r.status==='recebido'||r.status==='pago') s+=parseFloat(r.valor||0);
+  });
+  (despesas||[]).forEach(function(d){
+    var dt=d.data_pagamento||d.data; if(!dt||dt>=ateDt) return;
+    if(d.status==='pago'||d.data_pagamento) s-=parseFloat(d.valor||0);
+  });
+  (manutencoes||[]).forEach(function(m){
+    var dt=m.data_pagamento; if(!dt||dt>=ateDt) return;
+    s-=parseFloat(m.custo||0);
+  });
+  return s;
+}
+
 function retiradaLucroDoMes(despesas, m) {
   return resolverDespesasDoMes(despesas||[], m).filter(isRetLucro).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
 }
@@ -23003,7 +23029,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         else byDate[e.dt].despesas.push(e);
       });
       var datesAll = Object.keys(byDate).sort();
-      var saldoAcum = 0;
+      var saldoAcum = saldoCaixaAte(contratos, receitas, despesas, manutencoes, periodoInicio);
       var diasData = datesAll.map(function(dt){
         var day = byDate[dt];
         var totalRec  = day.receitas.reduce(function(s,e){return s+e.val;},0);
@@ -23310,14 +23336,10 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                   , React.createElement("div", { style:{ fontSize:11, color:C.red, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 } }, "Despesas")
                   , React.createElement("div", { style:{ fontSize:18, fontWeight:800, color:C.red } }, day.totalDesp > 0 ? fmtBRL(day.totalDesp).split(",")[0] : "—")
                 )
-                , (function(){
-                    var _mesDt=day.dt.slice(0,7);
-                    var _saldoMes=diasData.filter(function(d){return d.dt.slice(0,7)===_mesDt&&d.dt<=day.dt;}).reduce(function(s,d){return s+(d.totalRec-d.totalDesp);},0);
-                    return React.createElement("div", { style:{ flex:1, padding:"12px 16px" } }
-                      , React.createElement("div", { style:{ fontSize:11, color:_saldoMes>=0?C.blue:C.red, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 } }, "Saldo mês")
-                      , React.createElement("div", { style:{ fontSize:18, fontWeight:800, color:_saldoMes>=0?C.blue:C.red } }, (_saldoMes>=0?"+":"")+fmtBRL(_saldoMes).split(",")[0])
-                    );
-                  })()
+                , React.createElement("div", { style:{ flex:1, padding:"12px 16px" } }
+                  , React.createElement("div", { style:{ fontSize:11, color:day.saldo>=0?C.blue:C.red, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 } }, "Saldo caixa")
+                  , React.createElement("div", { style:{ fontSize:18, fontWeight:800, color:day.saldo>=0?C.blue:C.red } }, (day.saldo>=0?"+":"")+fmtBRL(day.saldo).split(",")[0])
+                )
               )
               /* Detalhe lançamentos em duas colunas */
               , React.createElement("div", { style:{ padding:"12px 16px" } }
@@ -23420,19 +23442,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         var diasComMovLoc=diasRange.filter(function(ds){return movDiaLoc[ds]&&movDiaLoc[ds].length>0;});
         if(diasComMovLoc.length===0) return null;
         var _foundFirstFutLoc=false;
-        /* ── Saldo realizado do início do mês até ontem ── */
-        var _mesCorrLoc=hojeLocStr.slice(0,7);
-        var _recRealizadoLoc=(contratos||[]).filter(function(c){
-          return (c.status_pagamento==='pago'||c.status_pagamento==='parcial')&&c.data_pagamento&&c.data_pagamento.slice(0,7)===_mesCorrLoc&&c.data_pagamento<hojeLocStr;
-        }).reduce(function(s,c){return s+parseFloat(c.status_pagamento==='parcial'?c.valor_pago||0:c.valor_total||0);},0)
-        +(receitas||[]).filter(function(r){return !r.ref_fatura&&(r.status==='recebido'||r.status==='pago')&&(r.data_pagamento||r.data||'').slice(0,7)===_mesCorrLoc&&(r.data_pagamento||r.data||'')<hojeLocStr;}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
-        var _despRealizadaLoc=resolverDespesasDoMes(despesas||[],_mesCorrLoc).filter(function(d){
-          return (d.status==='pago'||!!d.data_pagamento)&&(d.data_pagamento||d.data||'').slice(0,7)===_mesCorrLoc&&(d.data_pagamento||d.data||'')<hojeLocStr;
-        }).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
-        var _manRealizadaLoc=(manutencoes||[]).filter(function(mn){
-          return (mn.status_financeiro==='pago'||mn.status==='concluida')&&(mn.data_pagamento||mn.data_saida||'').slice(0,7)===_mesCorrLoc&&(mn.data_pagamento||mn.data_saida||'')<hojeLocStr;
-        }).reduce(function(s,mn){return s+parseFloat(mn.custo||0);},0);
-        var saldoAcumLoc=_recRealizadoLoc-_despRealizadaLoc-_manRealizadaLoc;
+        /* ── Saldo real do caixa desde o início dos lançamentos até o início do range ── */
+        var saldoAcumLoc=saldoCaixaAte(contratos,receitas,despesas,manutencoes,_priLocStr);
         return React.createElement('div',{style:{
           background:'var(--c-card)',borderRadius:22,
           border:'1px solid var(--c-border)',

@@ -50,6 +50,20 @@ Branch ativo: `claude/placeholder-task-nsnXx`
 
 Sempre que uma mudança afetar um cálculo ou resultado (ex: fórmula de receita, saldo, lucro), implementar em **todos os locais afetados** do app — painéis, gráficos, fluxo de caixa, previsão, navegação mensal, sub-tabs, etc. Nunca atualizar só um ponto isolado.
 
+## Regra de cobertura de dados — OBRIGATÓRIO
+
+**Toda receita ou despesa avulsa (standalone) DEVE alimentar TODOS os painéis do sistema.**
+
+Isso inclui, mas não se limita a:
+- Fluxo de caixa (locadora)
+- Previsão de caixa (locadora e pessoal)
+- KPIs / scorecards de receita e saldo do mês
+- Gráficos de receita × despesa (barras, linhas)
+- Navegação mensal e sub-tabs
+- Qualquer outro painel que exiba receitas, despesas ou saldo
+
+Ao implementar ou corrigir qualquer painel financeiro, **verificar explicitamente** se `receitas` avulsas (`!r.ref_fatura`), `despesas` avulsas e contratos parciais estão incluídos em TODAS as fontes de dados daquele painel. Nunca assumir que "está coberto" — checar o código.
+
 ## Fluxo de trabalho Git
 
 Após cada push:

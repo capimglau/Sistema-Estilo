@@ -30323,8 +30323,26 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
         setItens(function(p){ return p.map(function(it){ return String(it.id) === String(edit) ? Object.assign({}, it, payload) : it; }); });
         toast("✅ Salvo!");
       } else {
+        /* Baixa de item recorrente: limpar registros órfãos do mesmo mês antes de inserir */
+        var _orfaosIds = new Set();
+        if (payload.recorrencia_origem_id) {
+          var _orfaos = itens.filter(function(x){
+            return !x.recorrencia_origem_id &&
+                   x.descricao === payload.descricao &&
+                   parseFloat(x.valor) === parseFloat(payload.valor) &&
+                   efetivoMes(x) === payload.mes &&
+                   (x.status === "pago" || x.status === "recebido");
+          });
+          for (var _oi = 0; _oi < _orfaos.length; _oi++) {
+            try { await db.del("orcamento_pessoal", _orfaos[_oi].id); } catch(_e2) {}
+            _orfaosIds.add(_orfaos[_oi].id);
+          }
+        }
         var nc = await db.post("orcamento_pessoal", payload);
-        setItens(function(p){ return [nc || Object.assign({id: Date.now()}, payload)].concat(p); });
+        setItens(function(p){
+          var semOrfaos = _orfaosIds.size > 0 ? p.filter(function(x){ return !_orfaosIds.has(x.id); }) : p;
+          return [nc || Object.assign({id: Date.now()}, payload)].concat(semOrfaos);
+        });
         toast("✅ Adicionado!");
       }
       setModal(false); setForm({}); setEdit(null);
@@ -30360,13 +30378,18 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
         mes:            filtroMes
       });
       if(isRecorrente){
-        /* Para recorrentes: cria uma instância nova via modal */
-        setForm(Object.assign({}, baseForm, {
-          id:                   undefined,
-          recorrente:           false,
-          recorrencia_origem_id: it.id
-        }));
-        setEdit(null); /* post novo */
+        /* Para recorrentes: editar filho existente ou criar novo */
+        var _filhoExist = itens.find(function(x){ return String(x.recorrencia_origem_id)===String(it.id)&&efetivoMes(x)===filtroMes; });
+        if(_filhoExist){
+          setForm(Object.assign({},_filhoExist)); setEdit(_filhoExist.id);
+        } else {
+          setForm(Object.assign({}, baseForm, {
+            id:                   undefined,
+            recorrente:           false,
+            recorrencia_origem_id: it.id
+          }));
+          setEdit(null);
+        }
       } else {
         setForm(baseForm);
         setEdit(it.id);

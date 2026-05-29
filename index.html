@@ -21558,7 +21558,9 @@ function BottomSheet({ open, onClose, title, children }) {
       React.createElement('div', { className:'ag-sheet-cancel', onClick:onClose }, 'Cancelar')
     )
   );
-  return ReactDOM.createPortal(sheetContent, document.body);
+  var _portal = (window.ReactDOMFull||window.ReactDOM||{}).createPortal;
+  if(_portal) return _portal(sheetContent, document.body);
+  return sheetContent;
 }
 
 /* ── EFFECT 10 · SwipeRow ── */
@@ -27568,7 +27570,35 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                   })();
                 }
                 else if (action === "contrato") printContrato(c, cl, ve, empresa);
-                else if (action === "fatura") printFatura(c, cl, ve, empresa);
+                else if (action === "fatura") {
+                  printFatura(c, cl, ve, empresa);
+                  // Registrar emissão no sistema
+                  (async function(){
+                    try {
+                      var _mesFat=(c.previsao_pagamento||c.data_fim||hoje).slice(0,7);
+                      var _refFat="fat_"+c.id+"_"+_mesFat;
+                      var _dtEm=hoje;
+                      var _recExist=(receitas||[]).find(function(r){return r.ref_fatura===_refFat;});
+                      if(_recExist){
+                        if(_recExist.status==="prevista"||!_recExist.status){
+                          await db.patch("receitas",_recExist.id,{status:"emitida",data_emissao:_dtEm});
+                          setReceitas(function(p){return p.map(function(r){return r.id===_recExist.id?Object.assign({},r,{status:"emitida",data_emissao:_dtEm}):r;});});
+                        }
+                      } else {
+                        var _novaFat=await db.post("receitas",{
+                          descricao:"Fatura locação #"+numCt(c.id),
+                          valor:parseFloat(c.valor_total||0).toFixed(2),
+                          data:_dtEm,data_emissao:_dtEm,
+                          data_vencimento:c.previsao_pagamento,
+                          status:"emitida",tipo:"locacao",
+                          cliente_id:c.cliente_id,contrato_id:c.id,
+                          ref_fatura:_refFat
+                        });
+                        setReceitas(function(p){return p.concat([_novaFat]);});
+                      }
+                    } catch(e){ console.warn("Erro ao registrar emissão:",e); }
+                  })();
+                }
                 else if (action === "uso") { setUsoContrato(c); setUsoForm({ data_inicio: hoje, data_fim: hoje, km_inicial: c.km_inicial || "", km_final: "", observacoes: "" }); setUsoModal(true); }
                 else if (action === "extras") { setExtrasContrato(c); setExtrasList(c.despesas_extras ? JSON.parse(c.despesas_extras) : []); setExtrasModal(true); }
                 else if (action === "checklist") { setCheckContrato(c); setCheckModal(true); }

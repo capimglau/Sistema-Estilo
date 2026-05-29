@@ -30048,6 +30048,123 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
 
 // -- ORCAMENTO PESSOAL ------------------------------------------------------
 // ═══════════════════════════════════════════════════════════════════
+//  computePrevisaoPessoal — FONTE ÚNICA de fluxo de caixa pessoal.
+//  Usada TANTO pelo fluxo (PessoalDash) QUANTO pela previsão de caixa
+//  (OrcamentoPessoal) para garantir que entradas, saídas e saldo
+//  acumulado sejam SEMPRE idênticos para a mesma data.
+//
+//  Modelo (conta corrente comum):
+//   - Passado/hoje: realizado = só itens pagos/recebidos + retirada locadora
+//   - Futuro: projeção = realizado até hoje + movimentos projetados dia a dia
+//  opts.pri = data inicial (default: 1º dia do mês corrente)
+//  opts.fim = data final (default: último dia do mês seguinte)
+// ═══════════════════════════════════════════════════════════════════
+function computePrevisaoPessoal(itens, despesas, opts){
+  itens = itens || [];
+  opts = opts || {};
+  var hoje2M = new Date(); hoje2M.setHours(0,0,0,0);
+  var hojeStr = hoje2M.toISOString().split('T')[0];
+  var priStr = opts.pri || (hojeStr.slice(0,7)+'-01');
+  var fimStr = opts.fim;
+  if(!fimStr){
+    var _f=new Date(hoje2M); _f.setDate(1); _f.setMonth(_f.getMonth()+2); _f.setDate(0);
+    fimStr=_f.toISOString().split('T')[0];
+  }
+  var diasRange = [];
+  var _dpIter=new Date(priStr+'T12:00:00');
+  while(_dpIter.toISOString().split('T')[0]<=fimStr){diasRange.push(_dpIter.toISOString().split('T')[0]);_dpIter.setDate(_dpIter.getDate()+1);}
+  var movDia = {};
+  function addMov(date,mov){ if(!date||date<priStr||date>fimStr) return; if(!movDia[date]) movDia[date]=[]; movDia[date].push(mov); }
+
+  /* Resultado Locadora — dia 1 de cada mês (retirada do mês anterior) */
+  var _mVistosLoc={};
+  diasRange.forEach(function(ds){
+    var mes=ds.slice(0,7);
+    if(_mVistosLoc[mes]) return;
+    _mVistosLoc[mes]=1;
+    var _anoM=parseInt(mes.slice(0,4)),_mesM=parseInt(mes.slice(5,7));
+    var _mesAnt=new Date(_anoM,_mesM-2,15).toISOString().slice(0,7);
+    var _rl=retiradaLucroDoMes(despesas,_mesAnt);
+    if(_rl>0) addMov(mes+'-01',{tipo:'receita',descricao:'Retirada Locadora 🏢',valor:_rl,cat:'Locadora'});
+  });
+
+  /* Itens pessoais — passado: só pago; futuro: projeção */
+  itens.forEach(function(it){
+    var valorIt=parseFloat(it.valor||0); if(!valorIt) return;
+    var itPago=it.status==='pago'||it.status==='recebido';
+    if(it.recorrente){
+      var dOrig=it.data||null;
+      if(!dOrig) return;
+      var diaNum=parseInt(dOrig.slice(8,10),10);
+      if(diaNum===1 && !it.data) return;
+      var mesOrigem=dOrig.slice(0,7);
+      var mesesVisto={};
+      diasRange.forEach(function(ds){
+        var mes=ds.slice(0,7);
+        if(mesesVisto[mes]) return;
+        if(mes<mesOrigem) return;
+        mesesVisto[mes]=1;
+        var ultDia=new Date(parseInt(mes.slice(0,4)),parseInt(mes.slice(5,7)),0).getDate();
+        var dProj=mes+'-'+(Math.min(diaNum,ultDia)<10?'0':'')+Math.min(diaNum,ultDia);
+        if(dProj<hojeStr){
+          if(itPago) addMov(dProj,{tipo:it.tipo,descricao:it.descricao,valor:valorIt,cat:it.categoria});
+        } else {
+          addMov(dProj,{tipo:it.tipo,descricao:it.descricao+' 🔁',valor:valorIt,cat:it.categoria});
+        }
+      });
+    } else {
+      if(it.data){
+        if(it.data<hojeStr){
+          if(itPago) addMov(it.data,{tipo:it.tipo,descricao:it.descricao,valor:valorIt,cat:it.categoria});
+        } else {
+          addMov(it.data,{tipo:it.tipo,descricao:it.descricao,valor:valorIt,cat:it.categoria});
+        }
+      }
+    }
+  });
+
+  /* ── Saldo realizado — helper que computa pagos até qualquer data ── */
+  var _nd=function(d){var x=new Date(d+'T12:00:00');x.setDate(x.getDate()+1);return x.toISOString().split('T')[0];};
+  var _saldoAte=function(ateDt){
+    var s=0;
+    Object.keys(_mVistosLoc).forEach(function(mes){
+      var dtL=mes+'-01'; if(dtL>=ateDt) return;
+      var _aM=parseInt(mes.slice(0,4)),_mM=parseInt(mes.slice(5,7));
+      var _mesAL=new Date(_aM,_mM-2,15).toISOString().slice(0,7);
+      var _rlL=retiradaLucroDoMes(despesas,_mesAL);
+      if(_rlL>0) s+=_rlL;
+    });
+    itens.forEach(function(it){
+      var dt=it.data_pagamento||it.data; if(!dt||dt<priStr||dt>=ateDt) return;
+      if(it.status==='pago'||it.status==='recebido'){
+        if(it.tipo==='receita') s+=parseFloat(it.valor||0);
+        else s-=parseFloat(it.valor||0);
+      }
+    });
+    return s;
+  };
+  var realizadoHoje=_saldoAte(_nd(hojeStr));
+
+  /* ── Dias com movimento + saldo acumulado (mesma lógica para ambos os painéis) ── */
+  var diasComMov=diasRange.filter(function(ds){return movDia[ds]&&movDia[ds].length>0;});
+  var run=realizadoHoje;
+  var dias=diasComMov.map(function(ds){
+    var movs=movDia[ds];
+    var entrada=movs.filter(function(m){return m.tipo==='receita';}).reduce(function(s,m){return s+m.valor;},0);
+    var saida=movs.filter(function(m){return m.tipo==='despesa';}).reduce(function(s,m){return s+m.valor;},0);
+    var saldoDia=entrada-saida;
+    var saldoAcum;
+    if(ds<=hojeStr){ saldoAcum=_saldoAte(_nd(ds)); }
+    else { run+=saldoDia; saldoAcum=run; }
+    return {dt:ds, movs:movs, entrada:entrada, saida:saida, saldoDia:saldoDia, saldoAcum:saldoAcum, isPast:ds<=hojeStr};
+  });
+
+  return {dias:dias, movDia:movDia, diasRange:diasRange, diasComMov:diasComMov,
+          realizadoHoje:realizadoHoje, priStr:priStr, fimStr:fimStr, hojeStr:hojeStr,
+          saldoAte:_saldoAte, nextDay:_nd};
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  PessoalDash v5 — Template 4 (header gradient) + Template 5 (timeline)
 //  com previsão de despesas e receitas
 // ═══════════════════════════════════════════════════════════════════
@@ -30151,39 +30268,23 @@ function PessoalDash({
   var maxBullet=Math.max.apply(null,bCats.map(function(cat){return Math.max(catMap[cat]||0,_budget(cat));}).concat([1]));
   var hasBudget=bCats.some(function(cat){return !!catBudget[cat];});
 
-  // ── Timeline (Template 5): todos os eventos ordenados por data ────────────
+  // ── Fluxo de caixa — usa a MESMA engine da previsão de caixa (fonte única) ──
   var _meses3=[_mes,_addM(_mes,1),_addM(_mes,2)];
-  var allEvents=[];
-  _meses3.forEach(function(m){
-    var isFut=m>_mes;
-    // Retirada da locadora: cada mês usa o lucro do mês anterior ao próprio mês
-    var _mRecLoc=retiradaLucroDoMes(despesas,_addM(m,-1));
-    if(_mRecLoc>0) allEvents.push({dt:m+'-01',tipo:'rec',label:'Retirada Locadora',val:_mRecLoc,pago:!isFut,cat:'Locadora',fut:isFut,itRef:null});
-    _itSrc.filter(function(it){return _vis(it,m);}).map(function(it){return _projetar(it,m);}).forEach(function(it){
-      var dt=it.data_pagamento&&(it.status==='pago'||it.status==='recebido')?it.data_pagamento:it.data;
-      if(!dt) dt=m+(it.tipo==='receita'?'-01':'-28');
-      dt=dt.slice(0,10);
-      if(dt.slice(0,7)!==m){ var dia=parseInt(dt.slice(8,10),10); var aN=parseInt(m.slice(0,4),10),mN=parseInt(m.slice(5,7),10); var ult=new Date(aN,mN,0).getDate(); dt=m+'-'+(Math.min(dia,ult)<10?'0':'')+Math.min(dia,ult); }
-      allEvents.push({dt:dt,tipo:it.tipo==='receita'?'rec':'desp',label:it.descricao||it.categoria||(it.tipo==='receita'?'Receita':'Despesa'),val:parseFloat(it.valor||0),pago:it.status==='pago'||it.status==='recebido',cat:it.categoria,fut:m>_mes,itRef:it});
-    });
+  // Janela da engine: do mês corrente (ou do mês navegado, se passado) até dashMes+2.
+  // O saldo acumulado é ancorado em HOJE, então bate exatamente com a previsão de caixa.
+  var _curMesIni=_hoje.slice(0,7)+'-01';
+  var _fluxPri=(_mes+'-01')<_curMesIni?(_mes+'-01'):_curMesIni;
+  var _fimMes=_addM(_mes,2);
+  var _fimUlt=new Date(parseInt(_fimMes.slice(0,4),10),parseInt(_fimMes.slice(5,7),10),0).getDate();
+  var _fluxFim=_fimMes+'-'+(_fimUlt<10?'0':'')+_fimUlt;
+  var _fluxEng=computePrevisaoPessoal(_itSrc,despesas,{pri:_fluxPri,fim:_fluxFim});
+  // Exibe apenas os 3 meses da janela navegada; o saldo acumulado já considera tudo desde _fluxPri
+  var _mesesDisp={}; _meses3.forEach(function(m){_mesesDisp[m]=1;});
+  var diasData=_fluxEng.dias.filter(function(d){return _mesesDisp[d.dt.slice(0,7)];}).map(function(d){
+    var receitasD=d.movs.filter(function(m){return m.tipo==='receita';}).map(function(m){return {label:m.descricao,val:m.valor,cat:m.cat};});
+    var despesasD=d.movs.filter(function(m){return m.tipo==='despesa';}).map(function(m){return {label:m.descricao,val:m.valor,cat:m.cat};});
+    return {dt:d.dt, receitas:receitasD, despesas:despesasD, totalRec:d.entrada, totalDesp:d.saida, saldo:d.saldoAcum};
   });
-  allEvents.sort(function(a,b){return a.dt.localeCompare(b.dt);});
-  var sAcum=0;
-  var tlData=allEvents.map(function(e){sAcum+=e.tipo==='rec'?e.val:-e.val;return Object.assign({},e,{saldo:sAcum});});
-
-  // ── Fluxo SVG (locadora-style) ────────────────────────────────────────────
-  var byDate={};
-  tlData.forEach(function(e){if(!byDate[e.dt])byDate[e.dt]={receitas:[],despesas:[]};if(e.tipo==='rec')byDate[e.dt].receitas.push(e);else byDate[e.dt].despesas.push(e);});
-  var datesAll=Object.keys(byDate).sort();
-  // Saldo realizado pessoal — mesma base da previsão de caixa (desde início do mês corrente do calendário)
-  var _flxPriMes=_hoje.slice(0,7)+'-01';
-  var _flxHoje=0;
-  // Retirada da locadora: lucro do mês anterior ao mês corrente (creditado no dia 1 do mês corrente)
-  if(_flxPriMes<=_hoje){var _flxRetLoc=retiradaLucroDoMes(despesas,_addM(_hoje.slice(0,7),-1));if(_flxRetLoc>0)_flxHoje+=_flxRetLoc;}
-  // Itens pessoais pagos desde início do mês corrente até hoje
-  _itSrc.forEach(function(it2){var _dt2=it2.data_pagamento||it2.data;if(!_dt2||_dt2<_flxPriMes||_dt2>_hoje)return;if(it2.status==='pago'||it2.status==='recebido'){if(it2.tipo==='receita')_flxHoje+=parseFloat(it2.valor||0);else _flxHoje-=parseFloat(it2.valor||0);}});
-  var _flxProj=_flxHoje;
-  var diasData=datesAll.map(function(dt){var day=byDate[dt];var tR=day.receitas.reduce(function(s,e){return s+e.val;},0);var tD=day.despesas.reduce(function(s,e){return s+e.val;},0);var sldV;if(dt<=_hoje){var _sv=0;if(_flxPriMes<=dt){var _svLoc=retiradaLucroDoMes(despesas,_addM(dt.slice(0,7),-1));if(_svLoc>0)_sv+=_svLoc;}_itSrc.forEach(function(it2){var _dt2=it2.data_pagamento||it2.data;if(!_dt2||_dt2<_flxPriMes||_dt2>dt)return;if(it2.status==='pago'||it2.status==='recebido'){if(it2.tipo==='receita')_sv+=parseFloat(it2.valor||0);else _sv-=parseFloat(it2.valor||0);}});sldV=_sv;}else{_flxProj+=tR-tD;sldV=_flxProj;}return {dt:dt,receitas:day.receitas,despesas:day.despesas,totalRec:tR,totalDesp:tD,saldo:sldV};});
   var maxRec=Math.max.apply(null,diasData.map(function(d){return d.totalRec;}).concat([1]));
   var maxDesp=Math.max.apply(null,diasData.map(function(d){return d.totalDesp;}).concat([1]));
   var maxVal=Math.max(maxRec,maxDesp,1);
@@ -30963,94 +31064,17 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
       /* ══ Previsão de Caixa — Próximos 2 Meses ══ */
       , (function(){
-        var hoje2M = new Date(); hoje2M.setHours(0,0,0,0);
-        var hojeStr2M = hoje2M.toISOString().split('T')[0];
-        var _priPes=hojeStr2M.slice(0,7)+'-01';
-        var diasRange = [];
-        var _fimPes=new Date(hoje2M); _fimPes.setDate(1); _fimPes.setMonth(_fimPes.getMonth()+2); _fimPes.setDate(0);
-        var _fimPesStr=_fimPes.toISOString().split('T')[0];
-        var _dpIter=new Date(_priPes+'T12:00:00');
-        while(_dpIter.toISOString().split('T')[0]<=_fimPesStr){diasRange.push(_dpIter.toISOString().split('T')[0]);_dpIter.setDate(_dpIter.getDate()+1);}
-        var movDia = {};
-        function addMov(date,mov){ if(!date||date<_priPes||date>_fimPesStr) return; if(!movDia[date]) movDia[date]=[]; movDia[date].push(mov); }
-
-        /* Resultado Locadora — dia 1 de cada mês (retirada do mês anterior) */
-        var _mVistosLocP={};
-        diasRange.forEach(function(ds){
-          var mes=ds.slice(0,7);
-          if(_mVistosLocP[mes]) return;
-          _mVistosLocP[mes]=1;
-          var _anoM=parseInt(mes.slice(0,4)),_mesM=parseInt(mes.slice(5,7));
-          var _mesAnt=new Date(_anoM,_mesM-2,15).toISOString().slice(0,7);
-          var _rl=retiradaLucroDoMes(despesas,_mesAnt);
-          if(_rl>0) addMov(mes+'-01',{tipo:'receita',descricao:'Retirada Locadora 🏢',valor:_rl,cat:'Locadora'});
-        });
-
-        /* Itens pessoais — passado: só pago; futuro: projeção */
-        itens.forEach(function(it){
-          var valorIt=parseFloat(it.valor||0); if(!valorIt) return;
-          var itPago=it.status==='pago'||it.status==='recebido';
-          if(it.recorrente){
-            var dOrig=it.data||null;
-            if(!dOrig && it.mes){ return; }
-            if(!dOrig) return;
-            var diaNum=parseInt(dOrig.slice(8,10),10);
-            if(diaNum===1 && !it.data) return;
-            var mesOrigem=dOrig.slice(0,7);
-            var mesesVisto={};
-            diasRange.forEach(function(ds){
-              var mes=ds.slice(0,7);
-              if(mesesVisto[mes]) return;
-              if(mes<mesOrigem) return;
-              mesesVisto[mes]=1;
-              var ultDia=new Date(parseInt(mes.slice(0,4)),parseInt(mes.slice(5,7)),0).getDate();
-              var dProj=mes+'-'+(Math.min(diaNum,ultDia)<10?'0':'')+Math.min(diaNum,ultDia);
-              if(dProj<hojeStr2M){
-                /* Passado: só mostra se efetivamente pago */
-                if(itPago) addMov(dProj,{tipo:it.tipo,descricao:it.descricao,valor:valorIt,cat:it.categoria});
-              } else {
-                /* Hoje/Futuro: projeta */
-                addMov(dProj,{tipo:it.tipo,descricao:it.descricao+' 🔁',valor:valorIt,cat:it.categoria});
-              }
-            });
-          } else {
-            if(it.data){
-              if(it.data<hojeStr2M){
-                /* Passado: só mostra se pago */
-                if(itPago) addMov(it.data,{tipo:it.tipo,descricao:it.descricao,valor:valorIt,cat:it.categoria});
-              } else {
-                addMov(it.data,{tipo:it.tipo,descricao:it.descricao,valor:valorIt,cat:it.categoria});
-              }
-            }
-          }
-        });
-
-
-        var diasComMov=diasRange.filter(function(ds){return movDia[ds]&&movDia[ds].length>0;});
+        /* Fonte única — mesma engine usada pelo fluxo de caixa da PessoalDash */
+        var _pvEng=computePrevisaoPessoal(itens,despesas);
+        var hojeStr2M=_pvEng.hojeStr;
+        var _priPes=_pvEng.priStr;
+        var movDia=_pvEng.movDia;
+        var diasRange=_pvEng.diasRange;
+        var diasComMov=_pvEng.diasComMov;
         if(diasComMov.length===0) return null;
-        /* ── Saldo realizado — helper que computa pagos até qualquer data ── */
-        var _ndPes=function(d){var x=new Date(d+'T12:00:00');x.setDate(x.getDate()+1);return x.toISOString().split('T')[0];};
-        var _saldoPesAte=function(ateDt){
-          var s=0;
-          // retiradas da locadora (dia 1 de cada mês no range)
-          Object.keys(_mVistosLocP).forEach(function(mes){
-            var dtL=mes+'-01'; if(dtL>=ateDt) return;
-            var _aM=parseInt(mes.slice(0,4)),_mM=parseInt(mes.slice(5,7));
-            var _mesAL=new Date(_aM,_mM-2,15).toISOString().slice(0,7);
-            var _rlL=retiradaLucroDoMes(despesas,_mesAL);
-            if(_rlL>0) s+=_rlL;
-          });
-          // itens pessoais pagos/recebidos no range do painel (>= _priPes) e antes de ateDt
-          itens.forEach(function(it){
-            var dt=it.data_pagamento||it.data; if(!dt||dt<_priPes||dt>=ateDt) return;
-            if(it.status==='pago'||it.status==='recebido'){
-              if(it.tipo==='receita') s+=parseFloat(it.valor||0);
-              else s-=parseFloat(it.valor||0);
-            }
-          });
-          return s;
-        };
-        var saldoAcum=_saldoPesAte(_ndPes(hojeStr2M));
+        var _ndPes=_pvEng.nextDay;
+        var _saldoPesAte=_pvEng.saldoAte;
+        var saldoAcum=_pvEng.realizadoHoje;
 
         /* ── Heatmap calendário (Modelo 4) ── */
         var allDays = diasRange;

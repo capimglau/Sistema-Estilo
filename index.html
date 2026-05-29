@@ -30076,16 +30076,24 @@ function computePrevisaoPessoal(itens, despesas, opts){
   var movDia = {};
   function addMov(date,mov){ if(!date||date<priStr||date>fimStr) return; if(!movDia[date]) movDia[date]=[]; movDia[date].push(mov); }
 
-  /* Resultado Locadora — dia 1 de cada mês (retirada do mês anterior) */
-  var _mVistosLoc={};
-  diasRange.forEach(function(ds){
-    var mes=ds.slice(0,7);
-    if(_mVistosLoc[mes]) return;
-    _mVistosLoc[mes]=1;
-    var _anoM=parseInt(mes.slice(0,4)),_mesM=parseInt(mes.slice(5,7));
-    var _mesAnt=new Date(_anoM,_mesM-2,15).toISOString().slice(0,7);
-    var _rl=retiradaLucroDoMes(despesas,_mesAnt);
-    if(_rl>0) addMov(mes+'-01',{tipo:'receita',descricao:'Retirada Locadora 🏢',valor:_rl,cat:'Locadora'});
+  /* Retiradas da Locadora — usa as datas reais de cada despesa "Retirada de Lucro",
+     não um único lançamento agregado no dia 1 do mês seguinte */
+  var _retiradasLoc = (despesas||[]).filter(function(d){
+    // isRetLucro inline
+    var c=d.categoria||''; return c==='Retirada de Lucro'||c==='Ajuste de Saldo';
+  });
+  _retiradasLoc.forEach(function(d){
+    var valor=parseFloat(d.valor||0); if(!valor) return;
+    var dtEfetiva=d.data_pagamento||d.data; if(!dtEfetiva) return;
+    dtEfetiva=dtEfetiva.slice(0,10);
+    var isPago=d.status==='pago'||!!d.data_pagamento;
+    if(dtEfetiva<hojeStr){
+      /* Passado: só mostra se efetivamente pago */
+      if(isPago) addMov(dtEfetiva,{tipo:'receita',descricao:'Retirada Locadora 🏢',valor:valor,cat:'Locadora'});
+    } else {
+      /* Futuro/hoje: projeta na data agendada */
+      addMov(dtEfetiva,{tipo:'receita',descricao:'Retirada Locadora 🏢',valor:valor,cat:'Locadora'});
+    }
   });
 
   /* Itens pessoais — passado: só pago; futuro: projeção */
@@ -30127,12 +30135,10 @@ function computePrevisaoPessoal(itens, despesas, opts){
   var _nd=function(d){var x=new Date(d+'T12:00:00');x.setDate(x.getDate()+1);return x.toISOString().split('T')[0];};
   var _saldoAte=function(ateDt){
     var s=0;
-    Object.keys(_mVistosLoc).forEach(function(mes){
-      var dtL=mes+'-01'; if(dtL>=ateDt) return;
-      var _aM=parseInt(mes.slice(0,4)),_mM=parseInt(mes.slice(5,7));
-      var _mesAL=new Date(_aM,_mM-2,15).toISOString().slice(0,7);
-      var _rlL=retiradaLucroDoMes(despesas,_mesAL);
-      if(_rlL>0) s+=_rlL;
+    // Retiradas da locadora: soma as que foram efetivamente pagas antes de ateDt
+    _retiradasLoc.forEach(function(d){
+      var dt=d.data_pagamento||d.data; if(!dt||dt<priStr||dt>=ateDt) return;
+      if(d.status==='pago'||!!d.data_pagamento) s+=parseFloat(d.valor||0);
     });
     itens.forEach(function(it){
       var dt=it.data_pagamento||it.data; if(!dt||dt<priStr||dt>=ateDt) return;

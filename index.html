@@ -30141,8 +30141,10 @@ function PessoalDash({
   var byDate={};
   tlData.forEach(function(e){if(!byDate[e.dt])byDate[e.dt]={receitas:[],despesas:[]};if(e.tipo==='rec')byDate[e.dt].receitas.push(e);else byDate[e.dt].despesas.push(e);});
   var datesAll=Object.keys(byDate).sort();
-  var fcAcum=0;
-  var diasData=datesAll.map(function(dt){var day=byDate[dt];var tR=day.receitas.reduce(function(s,e){return s+e.val;},0);var tD=day.despesas.reduce(function(s,e){return s+e.val;},0);fcAcum+=tR-tD;return {dt:dt,receitas:day.receitas,despesas:day.despesas,totalRec:tR,totalDesp:tD,saldo:fcAcum};});
+  // Realizado (pago) até hoje — base da projeção futura do fluxo pessoal
+  var _flxHoje=allEvents.filter(function(e){return e.pago&&e.dt<=_hoje;}).reduce(function(s,e){return s+(e.tipo==='rec'?e.val:-e.val);},0);
+  var _flxProj=_flxHoje;
+  var diasData=datesAll.map(function(dt){var day=byDate[dt];var tR=day.receitas.reduce(function(s,e){return s+e.val;},0);var tD=day.despesas.reduce(function(s,e){return s+e.val;},0);var sldV;if(dt<=_hoje){sldV=allEvents.filter(function(e){return e.pago&&e.dt<=dt;}).reduce(function(s,e){return s+(e.tipo==='rec'?e.val:-e.val);},0);}else{_flxProj+=tR-tD;sldV=_flxProj;}return {dt:dt,receitas:day.receitas,despesas:day.despesas,totalRec:tR,totalDesp:tD,saldo:sldV};});
   var maxRec=Math.max.apply(null,diasData.map(function(d){return d.totalRec;}).concat([1]));
   var maxDesp=Math.max.apply(null,diasData.map(function(d){return d.totalDesp;}).concat([1]));
   var maxVal=Math.max(maxRec,maxDesp,1);
@@ -30977,18 +30979,29 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
         var diasComMov=diasRange.filter(function(ds){return movDia[ds]&&movDia[ds].length>0;});
         if(diasComMov.length===0) return null;
-        /* ── Saldo realizado do início do mês até ontem ── */
-        var _mesCorrPes=hojeStr2M.slice(0,7);
-        var _recRealizadoPes=itens.filter(function(it){
-          return it.tipo==='receita'&&(it.status==='recebido'||it.status==='pago')&&(it.data_pagamento||it.data||'').slice(0,7)===_mesCorrPes&&(it.data_pagamento||it.data||'')<hojeStr2M;
-        }).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-        var _anoMCP=parseInt(_mesCorrPes.slice(0,4)),_mesMCP=parseInt(_mesCorrPes.slice(5,7));
-        var _mesAntCP=new Date(_anoMCP,_mesMCP-2,15).toISOString().slice(0,7);
-        var _lucroLocRealPes=Math.max(0,retiradaLucroDoMes(despesas,_mesAntCP));
-        var _despRealizadaPes=itens.filter(function(it){
-          return it.tipo==='despesa'&&(it.status==='pago'||it.status==='recebido')&&(it.data_pagamento||it.data||'').slice(0,7)===_mesCorrPes&&(it.data_pagamento||it.data||'')<hojeStr2M;
-        }).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-        var saldoAcum=_lucroLocRealPes+_recRealizadoPes-_despRealizadaPes;
+        /* ── Saldo realizado — helper que computa pagos até qualquer data ── */
+        var _ndPes=function(d){var x=new Date(d+'T12:00:00');x.setDate(x.getDate()+1);return x.toISOString().split('T')[0];};
+        var _saldoPesAte=function(ateDt){
+          var s=0;
+          // retiradas da locadora (dia 1 de cada mês no range)
+          Object.keys(_mVistosLocP).forEach(function(mes){
+            var dtL=mes+'-01'; if(dtL>=ateDt) return;
+            var _aM=parseInt(mes.slice(0,4)),_mM=parseInt(mes.slice(5,7));
+            var _mesAL=new Date(_aM,_mM-2,15).toISOString().slice(0,7);
+            var _rlL=retiradaLucroDoMes(despesas,_mesAL);
+            if(_rlL>0) s+=_rlL;
+          });
+          // itens pessoais pagos/recebidos antes de ateDt
+          itens.forEach(function(it){
+            var dt=it.data_pagamento||it.data; if(!dt||dt>=ateDt) return;
+            if(it.status==='pago'||it.status==='recebido'){
+              if(it.tipo==='receita') s+=parseFloat(it.valor||0);
+              else s-=parseFloat(it.valor||0);
+            }
+          });
+          return s;
+        };
+        var saldoAcum=_saldoPesAte(_ndPes(hojeStr2M));
 
         /* ── Heatmap calendário (Modelo 4) ── */
         var allDays = diasRange;
@@ -31050,8 +31063,13 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
               var entDia=movs.filter(function(m){return m.tipo==='receita';}).reduce(function(s,m){return s+m.valor;},0);
               var saiDia=movs.filter(function(m){return m.tipo==='despesa';}).reduce(function(s,m){return s+m.valor;},0);
               var saldoDia=entDia-saiDia;
-              // só projeta a partir de hoje; dias passados mostram o realizado base (sem dupla contagem)
-              if(ds>=hojeStr2M) saldoAcum+=saldoDia;
+              var _acumDisp;
+              if(ds<=hojeStr2M){
+                _acumDisp=_saldoPesAte(_ndPes(ds));
+              } else {
+                saldoAcum+=saldoDia;
+                _acumDisp=saldoAcum;
+              }
               var isHoje2=ds===hojeStr2M;
               var _isPastPes=ds<hojeStr2M;
               var _isFirstFutPes=!_foundFirstFutPes&&ds>=hojeStr2M;
@@ -31060,7 +31078,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
               var diaSem=dt2.toLocaleString('pt-BR',{weekday:'short'}).replace('.','').toUpperCase().slice(0,3);
               var mesLabel=dt2.toLocaleString('pt-BR',{month:'long',year:'numeric'});
               var showMesHeader=dIdx===0||diasComMov[dIdx-1].slice(0,7)!==ds.slice(0,7);
-              var acumColor = saldoAcum>=0 ? C.green : C.red;
+              var acumColor = _acumDisp>=0 ? C.green : C.red;
               var saldoColor = saldoDia>=0 ? C.green : C.red;
               return React.createElement(React.Fragment,{key:ds},
                 showMesHeader && React.createElement('div',{style:{
@@ -31108,7 +31126,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
                           borderRadius:20,padding:'3px 10px',
                           fontSize:11,fontWeight:700,color:acumColor,
                           fontFamily:'-apple-system,monospace'}},
-                          (saldoAcum>=0?'+':'')+fmtBRL(saldoAcum))
+                          (_acumDisp>=0?'+':'')+fmtBRL(_acumDisp))
                       ),
                       /* Chips dos itens */
                       React.createElement('div',{style:{display:'flex',flexWrap:'wrap',gap:5}},

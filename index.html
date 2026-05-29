@@ -22819,8 +22819,9 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                 function _renderCtRow(c, i) {
                   var cl = (clientes||[]).find(function(x){ return x.id==c.cliente_id; });
                   var ve = (veiculos||[]).find(function(x){ return x.id==c.veiculo_id; });
-                  var isPago = c.status_pagamento === "pago";
-                  var isParcial = c.status_pagamento === "parcial";
+                  var _vp22=parseFloat(c.valor_pago||0), _vt22=parseFloat(c.valor_total||0);
+                  var isPago = c.status_pagamento === "pago" || (c.status_pagamento === "parcial" && _vp22 > 0 && _vt22 > 0 && _vp22 >= _vt22);
+                  var isParcial = c.status_pagamento === "parcial" && !isPago;
                   var isAtras = !isPago && !isParcial && c.previsao_pagamento && c.previsao_pagamento < hoje;
                   var itemCor = isPago ? C.green : isParcial ? C.orange : (isAtras ? C.red : C.orange);
                   var valorExibido = isParcial && c.valor_pago ? parseFloat(c.valor_pago||0) : parseFloat(c.valor_total||0);
@@ -26977,6 +26978,14 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         else if (_form[k] !== null) _form[k] = parseFloat(_form[k]) || null;
       });
       const payload = Object.assign({}, _form, { valor_total: valorFinal });
+      // Auto-upgrade parcial → pago quando valor_pago cobre o valor total
+      if (payload.status_pagamento === "parcial") {
+        var _vpAuto = parseFloat(payload.valor_pago || 0);
+        var _vtAuto = parseFloat(payload.valor_total || valorFinal || 0);
+        if (_vpAuto > 0 && _vpAuto >= _vtAuto) {
+          payload.status_pagamento = "pago";
+        }
+      }
       if (edit) {
         const ctAntes = contratos.find(function(x){ return x.id === edit; });
         const u = await db.patch("contratos", edit, payload);
@@ -40785,7 +40794,18 @@ function App() {
       var veics = results[0] || [];
       var cts = results[1] || [];
       marcarAcordado();
-      setContratos(cts);
+      // Normaliza "parcial" com valor_pago >= valor_total → "pago" (upgrade automático)
+      var ctsNorm = cts.map(function(c) {
+        if (c.status_pagamento !== "parcial") return c;
+        var vp = parseFloat(c.valor_pago || 0), vt = parseFloat(c.valor_total || 0);
+        if (vp > 0 && vt > 0 && vp >= vt) return Object.assign({}, c, { status_pagamento: "pago" });
+        return c;
+      });
+      // Persiste correções (background)
+      ctsNorm.forEach(function(c, i) {
+        if (c !== cts[i]) db.patch("contratos", c.id, { status_pagamento: "pago" }).catch(function(){});
+      });
+      setContratos(ctsNorm);
       // Aplica statusEfetivoVeiculo nos dados do banco antes de setar o state
       var veicsCorrigidos = veics.map(function(v) {
         if (v.status !== "alugado" && v.status !== "disponivel") return v;

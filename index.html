@@ -30344,22 +30344,38 @@ function DiagnosticoFinanceiro({ contratos, receitas, despesas, manutencoes, mul
   var manutPorVeicMes=(veiculos||[]).length>0?totalManut6/(veiculos||[]).length/6:0;
 
   // Financeiro calculado
-  var reservaFiscalSug=avgRec3*0.12;
-  var reservaManutSug=manutPorVeicMes*(veiculos||[]).length*1.5;
-  var prolaboreSug=Math.min(25000,Math.max(3000,avgLucro3*0.6));
-  var indiceRet=avgLucro3>0?(avgRet3/avgLucro3)*100:null;
+  var reservaFiscalSug=Math.round(avgRec3*0.12);
+  var reservaManutSug=Math.round(manutPorVeicMes*(veiculos||[]).length*1.5);
+  var prolaboreSug=Math.round(Math.min(25000,Math.max(3000,avgLucro3*0.6)));
+  var indiceRet=avgLucro3>0?Math.round((avgRet3/avgLucro3)*100):null;
+  // Arredondar médias para evitar decimais espúrios
+  var avgRec3r=Math.round(avgRec3), avgDesp3r=Math.round(avgDesp3), avgLucro3r=Math.round(avgLucro3);
+  var avgRet3r=Math.round(avgRet3), avgRecPorVeicR=Math.round(avgRec3/(Math.max(1,(veiculos||[]).length)));
 
-  // Orçamento pessoal
+  // Orçamento pessoal — custo médio mensal (últimos 3 meses)
   var pesItens=orcItens||[];
-  // Despesas fixas mensais recorrentes (meta de cobertura pessoal)
-  var pesDesp=pesItens.filter(function(it){return it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-  var pesRec=pesItens.filter(function(it){return it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-  var pesPagar=pesItens.filter(function(it){return it.tipo==='despesa'&&it.status!=='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-  var pesReceber=pesItens.filter(function(it){return it.tipo==='receita'&&it.status!=='recebido';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  function _pesMesFn(m, tipo) {
+    return pesItens.filter(function(it){
+      var itMes=it.mes||(it.data?it.data.slice(0,7):'');
+      return it.tipo===tipo&&itMes===m;
+    }).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  }
+  var _pesDespArr=meses3.map(function(m){return _pesMesFn(m,'despesa');});
+  var _pesRecArr =meses3.map(function(m){return _pesMesFn(m,'receita');});
+  // Média apenas dos meses com dados (ignora meses zerados)
+  var _pesDespNZ=_pesDespArr.filter(function(v){return v>0;});
+  var pesMeta=_pesDespNZ.length>0?Math.round(_pesDespNZ.reduce(function(s,v){return s+v;},0)/_pesDespNZ.length):0;
+  // Mês atual: pendentes
+  var pesPagar=pesItens.filter(function(it){
+    var itMes=it.mes||(it.data?it.data.slice(0,7):'');
+    return it.tipo==='despesa'&&it.status!=='pago'&&itMes===mesAtual;
+  }).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  var pesReceber=pesItens.filter(function(it){
+    var itMes=it.mes||(it.data?it.data.slice(0,7):'');
+    return it.tipo==='receita'&&it.status!=='recebido'&&itMes===mesAtual;
+  }).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
   var pesSaldoPrev=pesReceber-pesPagar;
-  // Meta: quanto precisa de renda mensal para equilibrar pessoal
-  var pesMeta=pesDesp>0?pesDesp:pesPagar;
-  var gapPessoal=pesMeta-avgRet3; // > 0 = precisa retirar mais
+  var gapPessoal=pesMeta-Math.round(avgRet3); // > 0 = precisa retirar mais
 
   // Score 0-100
   var score=100;
@@ -30373,17 +30389,15 @@ function DiagnosticoFinanceiro({ contratos, receitas, despesas, manutencoes, mul
   var scoreColor=score>=75?'#34C759':score>=50?'#FF9500':'#FF3B30';
 
   // Simulador de investimento: 1 veículo adicional
-  var simVeicRec=avgRecPorVeic*0.70; // 70% ocupação estimada
-  var simVeicDesp=manutPorVeicMes+(avgDesp3>0?(avgDesp3/(veiculos||[]).length||1)*0.1:500);
+  var simVeicRec=Math.round(avgRecPorVeicR*0.70);
+  var simVeicDesp=Math.round(manutPorVeicMes+(avgDesp3r>0?(avgDesp3r/Math.max(1,(veiculos||[]).length))*0.1:500));
   var simVeicLucro=simVeicRec-simVeicDesp;
-  var simNovoLucro=avgLucro3+simVeicLucro;
-  var simNovoProlabore=Math.min(25000,Math.max(3000,simNovoLucro*0.6));
+  var simNovoLucro=Math.round(avgLucro3r+simVeicLucro);
+  var simNovoProlabore=Math.round(Math.min(25000,Math.max(3000,simNovoLucro*0.6)));
   var simGanho=simNovoProlabore-prolaboreSug;
 
   // Projeção de equilíbrio pessoal
-  // Se reduzir retirada para prolaboreSug: sobra por mês na empresa
-  var economiaMes=Math.max(0,avgRet3-prolaboreSug);
-  // Deficit pessoal mensal = quanto falta cobrir
+  var economiaMes=Math.max(0,avgRet3r-prolaboreSug);
   var deficitMes=Math.max(0,gapPessoal);
   // Meses para equilibrar cortando gastos pessoais + ajustando pro-labore
   var mesesEquil=deficitMes>0&&simNovoLucro>0?Math.ceil(deficitMes/(simVeicLucro||1)):0;
@@ -30461,9 +30475,9 @@ function DiagnosticoFinanceiro({ contratos, receitas, despesas, manutencoes, mul
         )
         , React.createElement('div', { style:{ display:'flex', gap:8, marginTop:10, flexWrap:'wrap' } }
           , [
-              {label:'Receita',  val:fmtBRLint(avgRec3),  color:'#34C759'},
-              {label:'Despesa',  val:fmtBRLint(avgDesp3), color:'#FF3B30'},
-              {label:'Lucro',    val:fmtBRLint(avgLucro3),color:avgLucro3>=0?'#34C759':'#FF3B30'},
+              {label:'Receita',  val:fmtBRLint(avgRec3r),   color:'#34C759'},
+              {label:'Despesa',  val:fmtBRLint(avgDesp3r),  color:'#FF3B30'},
+              {label:'Lucro',    val:fmtBRLint(avgLucro3r), color:avgLucro3r>=0?'#34C759':'#FF3B30'},
             ].map(function(k){
               return React.createElement('div', { key:k.label, style:{ background:'rgba(255,255,255,0.06)', borderRadius:9, padding:'5px 9px', textAlign:'center' } }
                 , React.createElement('div', { style:{ fontSize:11, fontWeight:800, color:k.color } }, k.val)
@@ -30502,10 +30516,10 @@ function DiagnosticoFinanceiro({ contratos, receitas, despesas, manutencoes, mul
           , React.createElement('div', { style:{ fontSize:10, color:'var(--c-sub)' } }, 'Retirada atual/mês')
         )
       )
-      , Row({ label:'Gap (precisar − retirar)', value:(gapPessoal>0?'+':'')+fmtBRL(gapPessoal), color:gapPessoal>0?'#FF3B30':'#34C759', bold:true })
-      , Row({ label:'Pro-labore ideal (60% lucro)', value:fmtBRL(prolaboreSug), color:'#007AFF' })
+      , Row({ label:'Gap (precisar − retirar)', value:(gapPessoal>0?'+':'')+fmtBRLint(gapPessoal), color:gapPessoal>0?'#FF3B30':'#34C759', bold:true })
+      , Row({ label:'Pro-labore ideal (60% lucro)', value:fmtBRLint(prolaboreSug), color:'#007AFF' })
       , gapPessoal>0
-        ? React.createElement(Alert, { color:'#FF3B30', bg:'rgba(255,59,48,0.08)' }, '🚨 Retirada atual ('+fmtBRL(avgRet3)+') cobre menos que o custo pessoal ('+fmtBRL(pesMeta)+'). Duas saídas: reduzir gastos pessoais ou expandir a locadora.')
+        ? React.createElement(Alert, { color:'#FF3B30', bg:'rgba(255,59,48,0.08)' }, '🚨 Retirada atual ('+fmtBRLint(avgRet3r)+') cobre menos que o custo pessoal ('+fmtBRLint(pesMeta)+'). Duas saídas: reduzir gastos pessoais ou expandir a locadora.')
         : React.createElement(Alert, { color:'#34C759', bg:'rgba(52,199,89,0.08)' }, '✓ Retirada atual cobre o custo pessoal.')
     )
 
@@ -30524,25 +30538,25 @@ function DiagnosticoFinanceiro({ contratos, receitas, despesas, manutencoes, mul
             );
           })
       )
-      , Row({ label:'Novo lucro médio/mês', value:fmtBRL(simNovoLucro), color:simNovoLucro>=0?'#34C759':'#FF3B30' })
-      , Row({ label:'Novo pro-labore possível', value:fmtBRL(simNovoProlabore), color:'#AF52DE', bold:true })
-      , Row({ label:'Ganho mensal extra p/ você', value:(simGanho>=0?'+':'')+fmtBRL(simGanho), color:simGanho>=0?'#34C759':'#FF3B30', bold:true })
+      , Row({ label:'Novo lucro médio/mês', value:fmtBRLint(simNovoLucro), color:simNovoLucro>=0?'#34C759':'#FF3B30' })
+      , Row({ label:'Novo pro-labore possível', value:fmtBRLint(simNovoProlabore), color:'#AF52DE', bold:true })
+      , Row({ label:'Ganho mensal extra p/ você', value:(simGanho>=0?'+':'')+fmtBRLint(simGanho), color:simGanho>=0?'#34C759':'#FF3B30', bold:true })
       , simGanho>0&&deficitMes>0
-        ? React.createElement(Alert, { color:'#AF52DE', bg:'rgba(175,82,222,0.08)' }, '💡 Com +1 veículo você poderia retirar mais '+fmtBRL(simGanho)+'/mês, cobrindo '+(Math.min(100,Math.round(simGanho/deficitMes*100)))+'% do déficit pessoal.')
+        ? React.createElement(Alert, { color:'#AF52DE', bg:'rgba(175,82,222,0.08)' }, '💡 Com +1 veículo você poderia retirar mais '+fmtBRLint(simGanho)+'/mês, cobrindo '+(Math.min(100,Math.round(simGanho/deficitMes*100)))+'% do déficit pessoal.')
         : simGanho<=0
         ? React.createElement(Alert, { color:'#FF9500', bg:'rgba(255,149,0,0.08)' }, '⚠️ Frota com baixa ocupação média — veículo novo pode não ser rentável agora.')
-        : React.createElement(Alert, { color:'#34C759', bg:'rgba(52,199,89,0.08)' }, '✓ +1 veículo geraria '+fmtBRL(simGanho)+'/mês de margem adicional.')
+        : React.createElement(Alert, { color:'#34C759', bg:'rgba(52,199,89,0.08)' }, '✓ +1 veículo geraria '+fmtBRLint(simGanho)+'/mês de margem adicional.')
     )
 
     // ── Projeção de equilíbrio ────────────────────────────────────
     , React.createElement(DCard, { title:'Projeção de equilíbrio', icon:'📅', accent:'#5AC8FA' }
       , deficitMes>0
         ? React.createElement('div', null
-          , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', marginBottom:10, lineHeight:1.5 } }, 'Para zerar o déficit pessoal de '+fmtBRL(deficitMes)+'/mês, escolha um caminho:')
+          , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', marginBottom:10, lineHeight:1.5 } }, 'Para zerar o déficit pessoal de '+fmtBRLint(deficitMes)+'/mês, escolha um caminho:')
           , [
-              { path:'Reduzir gastos pessoais', desc:'Cortar '+fmtBRL(deficitMes)+'/mês nas despesas pessoais — sem alterar a empresa.', viable: true },
-              { path:'Ajustar pro-labore', desc:avgLucro3>=prolaboreSug+deficitMes?'Aumentar retirada para '+fmtBRL(avgRet3+deficitMes)+'/mês — dentro do lucro atual.':'Lucro atual ainda não suporta — expanda a receita primeiro.', viable: avgLucro3>=prolaboreSug+deficitMes },
-              { path:'Expandir a frota', desc:simVeicLucro>0?'Com +1 veículo, +'+fmtBRL(simGanho)+'/mês cobriria '+(Math.min(100,Math.round(simGanho/deficitMes*100)))+'% do déficit em ~1 mês.':'Rentabilidade atual da frota não justifica expansão agora.', viable: simVeicLucro>0&&simGanho>0 },
+              { path:'Reduzir gastos pessoais', desc:'Cortar '+fmtBRLint(deficitMes)+'/mês nas despesas pessoais — sem alterar a empresa.', viable: true },
+              { path:'Ajustar pro-labore', desc:avgLucro3r>=prolaboreSug+deficitMes?'Aumentar retirada para '+fmtBRLint(avgRet3r+deficitMes)+'/mês — dentro do lucro atual.':'Lucro atual ainda não suporta — expanda a receita primeiro.', viable: avgLucro3r>=prolaboreSug+deficitMes },
+              { path:'Expandir a frota', desc:simVeicLucro>0?'Com +1 veículo, +'+fmtBRLint(simGanho)+'/mês cobriria '+(Math.min(100,Math.round(simGanho/(deficitMes||1)*100)))+'% do déficit.':'Rentabilidade atual da frota não justifica expansão agora.', viable: simVeicLucro>0&&simGanho>0 },
             ].map(function(p,i){
               return React.createElement('div', { key:i, style:{ display:'flex', gap:10, padding:'8px 10px', borderRadius:11, background:p.viable?'rgba(52,199,89,0.07)':'rgba(255,59,48,0.06)', marginBottom:6 } }
                 , React.createElement('span', { style:{ fontSize:16, flexShrink:0 } }, p.viable?'✅':'❌')
@@ -30563,11 +30577,11 @@ function DiagnosticoFinanceiro({ contratos, receitas, despesas, manutencoes, mul
         , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', paddingBottom:4 } }, 'sugerido/mês')
       )
       , Bar({ pct: avgRet3>0?(prolaboreSug/Math.max(prolaboreSug,avgRet3))*100:100, color:'#007AFF' })
-      , Row({ label:'Retirada atual', value:fmtBRL(avgRet3), color:avgRet3>prolaboreSug*1.2?'#FF9500':avgRet3>prolaboreSug?'#FF9500':'#34C759' })
-      , Row({ label:'Índice retirada/lucro', value:indiceRet!==null?indiceRet.toFixed(0)+'%':'n/a', color:indiceRet&&indiceRet>80?'#FF3B30':indiceRet&&indiceRet>60?'#FF9500':'#34C759' })
+      , Row({ label:'Retirada atual', value:fmtBRLint(avgRet3r), color:avgRet3r>prolaboreSug*1.2?'#FF9500':avgRet3r>prolaboreSug?'#FF9500':'#34C759' })
+      , Row({ label:'Índice retirada/lucro', value:indiceRet!==null?indiceRet+'%':'n/a', color:indiceRet&&indiceRet>80?'#FF3B30':indiceRet&&indiceRet>60?'#FF9500':'#34C759' })
       , indiceRet!==null ? Bar({ pct:indiceRet, color:indiceRet>80?'#FF3B30':indiceRet>60?'#FF9500':'#34C759', h:5 }) : null
-      , avgRet3>prolaboreSug*1.2
-        ? React.createElement(Alert, { color:'#FF9500', bg:'rgba(255,149,0,0.08)' }, '⚠️ Retirada '+Math.round(avgRet3/prolaboreSug*100)+'% acima do sugerido — risco de descapitalizar a empresa.')
+      , avgRet3r>prolaboreSug*1.2
+        ? React.createElement(Alert, { color:'#FF9500', bg:'rgba(255,149,0,0.08)' }, '⚠️ Retirada '+Math.round(avgRet3r/prolaboreSug*100)+'% acima do sugerido — risco de descapitalizar a empresa.')
         : React.createElement(Alert, { color:'#34C759', bg:'rgba(52,199,89,0.08)' }, '✓ Retirada dentro do limite saudável.')
     )
 
@@ -30628,8 +30642,8 @@ function DiagnosticoFinanceiro({ contratos, receitas, despesas, manutencoes, mul
           , React.createElement('div', { style:{ fontSize:10, color:'var(--c-sub)' } }, 'Manutenção (1.5×)')
         )
       )
-      , Row({ label:'Total reservas/mês', value:fmtBRL(reservaFiscalSug+reservaManutSug), bold:true, color:'#30B0C7' })
-      , Row({ label:'Custo médio manut./veículo', value:fmtBRL(manutPorVeicMes)+'/mês' })
+      , Row({ label:'Total reservas/mês', value:fmtBRLint(reservaFiscalSug+reservaManutSug), bold:true, color:'#30B0C7' })
+      , Row({ label:'Custo médio manut./veículo', value:fmtBRLint(manutPorVeicMes)+'/mês' })
     )
 
     // ── Plano de ação ─────────────────────────────────────────────
@@ -30638,8 +30652,8 @@ function DiagnosticoFinanceiro({ contratos, receitas, despesas, manutencoes, mul
         , [
             {ok:avgLucro3>0,        ok:'Lucro positivo nos últimos 3 meses',         nok:'Lucro médio negativo — revise todas as despesas operacionais'},
             {ok:inadPerc<=10,       ok:'Inadimplência abaixo de 10%',                nok:'Implemente cobrança D-3 e pré-requisito de fiador nos novos contratos'},
-            {ok:avgRet3<=prolaboreSug*1.2,  ok:'Retiradas dentro do limite saudável',nok:'Fixe pro-labore em '+fmtBRL(prolaboreSug)+'/mês — distribua excedente só após reservas'},
-            {ok:gapPessoal<=0,      ok:'Contas pessoais cobertas pela retirada',     nok:'Déficit de '+fmtBRL(deficitMes)+'/mês — reduza gastos pessoais ou amplie receita da locadora'},
+            {ok:avgRet3r<=prolaboreSug*1.2,  ok:'Retiradas dentro do limite saudável',nok:'Fixe pro-labore em '+fmtBRLint(prolaboreSug)+'/mês — distribua excedente só após reservas'},
+            {ok:gapPessoal<=0,      ok:'Contas pessoais cobertas pela retirada',     nok:'Déficit de '+fmtBRLint(deficitMes)+'/mês — reduza gastos pessoais ou amplie receita da locadora'},
             {ok:veicRec.every(function(v){return v.recMensal>0;}), ok:'Toda a frota gerando receita', nok:'Veículos ociosos — realoque ou venda os de menor ROI'},
             {ok:(reservaFiscalSug+reservaManutSug)<=avgLucro3*0.5, ok:'Reservas operacionais viáveis no lucro atual', nok:'Lucro insuficiente para as reservas sugeridas — priorize inadimplência e custos'},
           ].map(function(item,i){

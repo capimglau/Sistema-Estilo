@@ -23060,13 +23060,24 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         else byDate[e.dt].despesas.push(e);
       });
       var datesAll = Object.keys(byDate).sort();
-      var saldoAcum = saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, periodoInicio);
+      var _ndFlx = function(d){var x=new Date(d+'T12:00:00');x.setDate(x.getDate()+1);return x.toISOString().split('T')[0];};
+      // Saldo realizado (pago) até hoje — base da projeção futura
+      var _saldoRealHoje = saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _ndFlx(hojeStr));
+      var _projAcum = _saldoRealHoje;
       var diasData = datesAll.map(function(dt){
         var day = byDate[dt];
         var totalRec  = day.receitas.reduce(function(s,e){return s+e.val;},0);
         var totalDesp = day.despesas.reduce(function(s,e){return s+e.val;},0);
-        saldoAcum += totalRec - totalDesp;
-        return { dt:dt, receitas:day.receitas, despesas:day.despesas, totalRec:totalRec, totalDesp:totalDesp, saldo:saldoAcum };
+        var saldoVal;
+        if(dt<=hojeStr){
+          // passado/hoje: saldo real pago até o fim do dia
+          saldoVal = saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _ndFlx(dt));
+        } else {
+          // futuro: realizado-até-hoje + projeção acumulada das movimentações previstas
+          _projAcum += totalRec - totalDesp;
+          saldoVal = _projAcum;
+        }
+        return { dt:dt, receitas:day.receitas, despesas:day.despesas, totalRec:totalRec, totalDesp:totalDesp, saldo:saldoVal };
       });
 
       if (diasData.length === 0) {
@@ -23368,8 +23379,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                   , React.createElement("div", { style:{ fontSize:18, fontWeight:800, color:C.red } }, day.totalDesp > 0 ? fmtBRL(day.totalDesp).split(",")[0] : "—")
                 )
                 , (function(){
-                  var _ndF=(function(d){var x=new Date(d+'T12:00:00');x.setDate(x.getDate()+1);return x.toISOString().split('T')[0];})(day.dt);
-                  var _sc=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_ndF);
+                  var _sc=day.saldo;
                   return React.createElement("div", { style:{ flex:1, padding:"12px 16px" } }
                     , React.createElement("div", { style:{ fontSize:11, color:_sc>=0?C.blue:C.red, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5, marginBottom:4 } }, "Saldo caixa")
                     , React.createElement("div", { style:{ fontSize:18, fontWeight:800, color:_sc>=0?C.blue:C.red } }, (_sc>=0?"+":"")+fmtBRL(_sc).split(",")[0])
@@ -23497,8 +23507,9 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         var _foundFirstFutLoc=false;
         /* ── Saldo real do caixa desde o início dos lançamentos ── */
         var _nextDayFn=function(d){var x=new Date(d+'T12:00:00');x.setDate(x.getDate()+1);return x.toISOString().split('T')[0];};
-        var saldoAcumLoc=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_priLocStr);
-        var _saldoRealizadoHdr=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_nextDayFn(hojeLocStr));
+        // Projeção parte do saldo realizado (pago) até hoje, independente de haver lançamento hoje
+        var saldoAcumLoc=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_nextDayFn(hojeLocStr));
+        var _saldoRealizadoHdr=saldoAcumLoc;
         return React.createElement('div',{style:{
           background:'var(--c-card)',borderRadius:22,
           border:'1px solid var(--c-border)',
@@ -23538,9 +23549,15 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
               var entDia=movs.filter(function(m){return m.tipo==='receita';}).reduce(function(s,m){return s+m.valor;},0);
               var saiDia=movs.filter(function(m){return m.tipo==='despesa';}).reduce(function(s,m){return s+m.valor;},0);
               var saldoDia=entDia-saiDia;
-              saldoAcumLoc+=saldoDia;
-              var _acumDisplay=ds<=hojeLocStr?saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_nextDayFn(ds)):saldoAcumLoc;
-              if(ds===hojeLocStr) saldoAcumLoc=_acumDisplay;
+              var _acumDisplay;
+              if(ds<=hojeLocStr){
+                // passado/hoje: saldo real pago até o fim do dia
+                _acumDisplay=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_nextDayFn(ds));
+              } else {
+                // futuro: realizado-até-hoje + projeção acumulada
+                saldoAcumLoc+=saldoDia;
+                _acumDisplay=saldoAcumLoc;
+              }
               var isHoje2=ds===hojeLocStr;
               var _isPastLoc=ds<hojeLocStr;
               var _isFirstFutLoc=!_foundFirstFutLoc&&ds>=hojeLocStr;
@@ -31033,7 +31050,8 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
               var entDia=movs.filter(function(m){return m.tipo==='receita';}).reduce(function(s,m){return s+m.valor;},0);
               var saiDia=movs.filter(function(m){return m.tipo==='despesa';}).reduce(function(s,m){return s+m.valor;},0);
               var saldoDia=entDia-saiDia;
-              saldoAcum+=saldoDia;
+              // só projeta a partir de hoje; dias passados mostram o realizado base (sem dupla contagem)
+              if(ds>=hojeStr2M) saldoAcum+=saldoDia;
               var isHoje2=ds===hojeStr2M;
               var _isPastPes=ds<hojeStr2M;
               var _isFirstFutPes=!_foundFirstFutPes&&ds>=hojeStr2M;

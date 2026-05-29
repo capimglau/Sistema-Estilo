@@ -22069,6 +22069,9 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
   const [_pfTooltip, _setPfTooltip] = React.useState(null);
   const [_pfHover,   _setPfHover]   = React.useState(null);
   const _pfSwipeX = React.useRef(null);
+  var _diagPanelRef = React.useRef(null);
+  var _diagDragRef  = React.useRef({ active: false, startX: 0, inDiag: false });
+  var _prevModoDash = React.useRef('locadora');
   React.useEffect(function(){db.get("orcamento_pessoal").then(function(d){_setOrcFresh(d||[]);}).catch(function(){});}, []);
   React.useEffect(function(){if(modoDash!=='pessoal'&&modoDash!=='diagnostico')return;db.get("orcamento_pessoal").then(function(d){_setOrcFresh(d||[]);}).catch(function(){});}, [modoDash]);
   // Listener do toggle de modo: logo alterna locadora ↔ pessoal (diagnostico não entra no ciclo)
@@ -22371,8 +22374,69 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     }
   }
 
-  return React.createElement('div', { className: "inicio-fade-top", style: { display: "flex", flexDirection: "column", gap: 18 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 339}}
+  // Handlers para swipe de abertura (borda esquerda)
+  function _edgeTouchStart(e) {
+    _diagDragRef.current = { active: true, startX: e.touches[0].clientX };
+    e.stopPropagation();
+  }
+  function _edgeTouchMove(e) {
+    var s = _diagDragRef.current;
+    if (!s.active) return;
+    var dx = e.touches[0].clientX - s.startX;
+    if (dx <= 0) return;
+    var panel = _diagPanelRef.current;
+    if (!panel) return;
+    panel.style.transform = 'translateX('+Math.min(0,-window.innerWidth+dx)+'px)';
+    panel.style.transition = 'none';
+    e.stopPropagation();
+  }
+  function _edgeTouchEnd(e) {
+    var s = _diagDragRef.current;
+    if (!s.active) return;
+    _diagDragRef.current.active = false;
+    var dx = e.changedTouches[0].clientX - s.startX;
+    var panel = _diagPanelRef.current;
+    if (!panel) return;
+    panel.style.transition = '';
+    if (dx > 60) {
+      _prevModoDash.current = modoDash;
+      panel.style.transform = '';
+      setModoDash('diagnostico');
+    } else {
+      panel.style.transform = 'translateX(-100%)';
+    }
+  }
+  // Handlers para swipe de fechamento (dentro do painel)
+  function _panelTouchStart(e) {
+    _diagDragRef.current = { active: true, startX: e.touches[0].clientX };
+  }
+  function _panelTouchMove(e) {
+    var s = _diagDragRef.current;
+    if (!s.active) return;
+    var dx = e.touches[0].clientX - s.startX;
+    if (dx >= 0) return;
+    var panel = _diagPanelRef.current;
+    if (!panel) return;
+    panel.style.transform = 'translateX('+Math.max(-window.innerWidth,dx)+'px)';
+    panel.style.transition = 'none';
+  }
+  function _panelTouchEnd(e) {
+    var s = _diagDragRef.current;
+    if (!s.active) return;
+    _diagDragRef.current.active = false;
+    var dx = e.changedTouches[0].clientX - s.startX;
+    var panel = _diagPanelRef.current;
+    if (!panel) return;
+    panel.style.transition = '';
+    if (dx < -60) {
+      setModoDash(_prevModoDash.current || 'locadora');
+      panel.style.transform = '';
+    } else {
+      panel.style.transform = 'translateX(0)';
+    }
+  }
 
+  return React.createElement('div', { className: "inicio-fade-top", style: { display: "flex", flexDirection: "column", gap: 18 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 339}}
     /* Banners Liquid Glass fixos (posição igual ao Dock) */
     , React.createElement('div', { className:"lg-top-banner", style:{ position:"relative", zIndex:90, paddingTop:"calc(env(safe-area-inset-top,0px) + 3px)", paddingBottom:4, pointerEvents:"none" } }
       , React.createElement('div', { style:{ pointerEvents:"all", width:"100%" } }
@@ -22396,7 +22460,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
               pEdit: _pEdit, setPEdit: _setPEdit, pSaving: _pSaving,
               pfTooltip: _pfTooltip, setPfTooltip: _setPfTooltip,
               pfHover: _pfHover, setPfHover: _setPfHover, pfSwipeX: _pfSwipeX,
-              onDiag: function() { setModoDash('diagnostico'); },
+              onDiag: function() { _prevModoDash.current = 'pessoal'; setModoDash('diagnostico'); },
               pSave: async function(){
                 if(!_pForm.descricao||!_pForm.valor)return;
                 _setPSaving(true);
@@ -22434,13 +22498,34 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
               }
             })
         )
-      , modoDash === 'diagnostico' && React.createElement(DiagnosticoFinanceiro, {
-          contratos: contratos, receitas: receitas, despesas: despesas,
-          manutencoes: manutencoes, multas: multas, veiculos: veiculos,
-          orcItens: _orcFresh,
-          onBack: function() { setModoDash('locadora'); }
+      /* ── Zona de toque invisível: borda esquerda → abre drawer ── */
+      , modoDash !== 'diagnostico' && React.createElement('div', {
+          onTouchStart: _edgeTouchStart, onTouchMove: _edgeTouchMove, onTouchEnd: _edgeTouchEnd,
+          style: { position:'fixed', left:0, top:0, bottom:0, width:22, zIndex:496, touchAction:'pan-y', WebkitTouchAction:'pan-y' }
         })
-      , React.createElement('div', { style: { display: (modoDash === 'pessoal' || modoDash === 'diagnostico') ? 'none' : 'contents' } }
+      /* ── Diagnóstico Financeiro — drawer fixo da esquerda ── */
+      , React.createElement('div', {
+          ref: _diagPanelRef,
+          onTouchStart: _panelTouchStart, onTouchMove: _panelTouchMove, onTouchEnd: _panelTouchEnd,
+          style: {
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            zIndex: 500, overflowY: 'auto', overflowX: 'hidden',
+            background: 'var(--c-bg)',
+            transform: modoDash === 'diagnostico' ? 'translateX(0)' : 'translateX(-100%)',
+            transition: 'transform 0.35s cubic-bezier(0.4,0,0.2,1)',
+            willChange: 'transform',
+            padding: '0 16px 40px',
+            paddingTop: 'calc(env(safe-area-inset-top,0px) + 56px)',
+          }
+        }
+        , React.createElement(DiagnosticoFinanceiro, {
+            contratos: contratos, receitas: receitas, despesas: despesas,
+            manutencoes: manutencoes, multas: multas, veiculos: veiculos,
+            orcItens: _orcFresh,
+            onBack: function() { setModoDash(_prevModoDash.current || 'locadora'); }
+          })
+      )
+      , React.createElement('div', { style: { display: modoDash === 'pessoal' ? 'none' : 'contents' } }
 /* Espaçador removido — banner agora flui com a página */
 
     /* Banner Previsão de Faturamento — swipe horizontal muda mês */
@@ -24998,19 +25083,6 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         receitas:receitas, manutencoes:manutencoes, multas:multas,
         clientes:clientes, empresa:empresa, toast:toast
       })
-
-    /* ── Botão Diagnóstico Financeiro ── */
-    , React.createElement('div', {
-        onClick: function() { setModoDash('diagnostico'); },
-        style:{ background:'linear-gradient(135deg,rgba(175,82,222,0.13),rgba(0,122,255,0.10))', border:'1.5px solid rgba(175,82,222,0.30)', borderRadius:18, padding:'16px 18px', cursor:'pointer', display:'flex', alignItems:'center', gap:14 }
-      }
-      , React.createElement('div', { style:{ width:42, height:42, borderRadius:12, background:'rgba(175,82,222,0.15)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:22 } }, '🩺')
-      , React.createElement('div', { style:{ flex:1 } }
-        , React.createElement('div', { style:{ fontSize:14, fontWeight:800, color:'var(--c-text)', letterSpacing:-0.2 } }, 'Diagnóstico Financeiro')
-        , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', marginTop:2 } }, 'Score de saúde · pro-labore · inadimplência · ROI por veículo')
-      )
-      , React.createElement('div', { style:{ fontSize:17, color:'rgba(175,82,222,0.7)' } }, '›')
-    )
         )
   );
 }
@@ -30215,291 +30287,365 @@ function computePrevisaoPessoal(itens, despesas, opts){
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  DiagnosticoFinanceiro — painel de saúde financeira
+//  DiagnosticoFinanceiro v2 — drawer redesenhado
 // ═══════════════════════════════════════════════════════════════════
 function DiagnosticoFinanceiro({ contratos, receitas, despesas, manutencoes, multas, veiculos, orcItens, onBack }) {
   var hoje = new Date().toISOString().split('T')[0];
   var mesAtual = hoje.slice(0,7);
-  function _addM(base, n) { var d = new Date(base + '-15'); d.setMonth(d.getMonth() + n); return d.toISOString().slice(0,7); }
-  function _ultDia(m) { var p = m.split('-'); return new Date(+p[0], +p[1], 0).getDate(); }
+  function _addM(base, n) { var d = new Date(base+'-15'); d.setMonth(d.getMonth()+n); return d.toISOString().slice(0,7); }
 
-  // Últimos 3 e 6 meses
   var meses3 = [_addM(mesAtual,-2), _addM(mesAtual,-1), mesAtual];
-  var meses6 = [_addM(mesAtual,-5), _addM(mesAtual,-4), _addM(mesAtual,-3), _addM(mesAtual,-2), _addM(mesAtual,-1), mesAtual];
+  var meses6 = [_addM(mesAtual,-5),_addM(mesAtual,-4),_addM(mesAtual,-3),_addM(mesAtual,-2),_addM(mesAtual,-1),mesAtual];
 
   function _recMes(m) {
-    var cts = (contratos||[]).filter(function(c){
-      if (c.status_pagamento === 'pago' && c.data_pagamento) return c.data_pagamento.slice(0,7) === m;
-      return c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === m && c.status_pagamento === 'pago';
-    });
     var ctsAll = (contratos||[]).filter(function(c){
-      var ref = (c.status_pagamento==='pago' && c.data_pagamento) ? c.data_pagamento : c.previsao_pagamento;
-      return ref && ref.slice(0,7) === m && c.status_pagamento === 'pago';
+      var ref = (c.status_pagamento==='pago'&&c.data_pagamento)?c.data_pagamento:c.previsao_pagamento;
+      return ref&&ref.slice(0,7)===m&&c.status_pagamento==='pago';
     });
     var recAv = (receitas||[]).filter(function(r){
-      if (r.ref_fatura) return false;
-      var dt = r.data_pagamento || r.data || (r.mes ? r.mes+'-01' : '');
-      return dt.slice(0,7) === m && (r.status === 'recebido');
+      if(r.ref_fatura) return false;
+      var dt=r.data_pagamento||r.data||(r.mes?r.mes+'-01':'');
+      return dt.slice(0,7)===m&&r.status==='recebido';
     });
     return ctsAll.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)
-         + recAv.reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
+          +recAv.reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
   }
-
   function _despMes(m) {
-    return resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), m)
+    return resolverDespesasDoMes((despesas||[]).filter(function(d){return !isRetLucro(d);}),m)
       .reduce(function(s,d){return s+parseFloat(d.valor||0);},0)
-      + filtrarManParaBarras(manutencoes, despesas, m).reduce(function(s,mn){return s+parseFloat(mn.custo||0);},0);
+      +filtrarManParaBarras(manutencoes,despesas,m).reduce(function(s,mn){return s+parseFloat(mn.custo||0);},0);
   }
+  function _retMes(m) { return resolverDespesasDoMes(despesas||[],m).filter(isRetLucro).reduce(function(s,d){return s+parseFloat(d.valor||0);},0); }
+  function _lucroMes(m) { return _recMes(m)-_despMes(m); }
 
-  function _retMes(m) {
-    return resolverDespesasDoMes(despesas||[], m).filter(isRetLucro).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
-  }
-
-  function _lucroMes(m) { return _recMes(m) - _despMes(m); }
-
-  var rec3 = meses3.map(_recMes);
-  var desp3 = meses3.map(_despMes);
-  var lucro3 = meses3.map(_lucroMes);
-  var avgRec3 = rec3.reduce(function(s,v){return s+v;},0) / 3;
-  var avgDesp3 = desp3.reduce(function(s,v){return s+v;},0) / 3;
-  var avgLucro3 = lucro3.reduce(function(s,v){return s+v;},0) / 3;
-  var ret3 = meses3.map(_retMes);
-  var avgRet3 = ret3.reduce(function(s,v){return s+v;},0) / 3;
+  var rec3=meses3.map(_recMes), desp3=meses3.map(_despMes), lucro3=meses3.map(_lucroMes);
+  var avgRec3=rec3.reduce(function(s,v){return s+v;},0)/3;
+  var avgDesp3=desp3.reduce(function(s,v){return s+v;},0)/3;
+  var avgLucro3=lucro3.reduce(function(s,v){return s+v;},0)/3;
+  var ret3=meses3.map(_retMes);
+  var avgRet3=ret3.reduce(function(s,v){return s+v;},0)/3;
 
   // Inadimplência últimos 6 meses
-  var ctsUlt6 = (contratos||[]).filter(function(c){
-    var ref = c.previsao_pagamento;
-    return ref && ref.slice(0,7) >= meses6[0] && ref.slice(0,7) <= mesAtual;
-  });
-  var inadTotal = ctsUlt6.length;
-  var inadPago  = ctsUlt6.filter(function(c){ return c.status_pagamento==='pago'; }).length;
-  var inadPerc  = inadTotal > 0 ? Math.round(((inadTotal - inadPago) / inadTotal) * 100) : 0;
+  var ctsUlt6=(contratos||[]).filter(function(c){ var ref=c.previsao_pagamento; return ref&&ref.slice(0,7)>=meses6[0]&&ref.slice(0,7)<=mesAtual; });
+  var inadTotal=ctsUlt6.length, inadPago=ctsUlt6.filter(function(c){return c.status_pagamento==='pago';}).length;
+  var inadPerc=inadTotal>0?Math.round(((inadTotal-inadPago)/inadTotal)*100):0;
 
-  // Receita por veículo (últimos 3 meses)
-  var veicRec = (veiculos||[]).map(function(v){
-    var r = meses3.reduce(function(s,m){
-      var r2 = (contratos||[]).filter(function(c){
-        var ref = (c.status_pagamento==='pago'&&c.data_pagamento)?c.data_pagamento:c.previsao_pagamento;
-        return String(c.veiculo_id)===String(v.id) && c.status_pagamento==='pago' && ref && ref.slice(0,7)===m;
-      }).reduce(function(s2,c){return s2+parseFloat(c.valor_total||0);},0);
-      return s + r2;
+  // Receita e ROI por veículo
+  var avgRecPorVeic=(veiculos||[]).length>0?avgRec3/(veiculos||[]).length:0;
+  var veicRec=(veiculos||[]).map(function(v){
+    var r=meses3.reduce(function(s,m){
+      return s+(contratos||[]).filter(function(c){ var ref=(c.status_pagamento==='pago'&&c.data_pagamento)?c.data_pagamento:c.previsao_pagamento; return String(c.veiculo_id)===String(v.id)&&c.status_pagamento==='pago'&&ref&&ref.slice(0,7)===m; }).reduce(function(s2,c){return s2+parseFloat(c.valor_total||0);},0);
     },0);
-    return { placa: v.placa||v.modelo||'–', rec: r, recMensal: r/3 };
-  }).sort(function(a,b){ return a.recMensal - b.recMensal; });
+    return {placa:v.placa||v.modelo||'–',rec:r,recMensal:r/3};
+  }).sort(function(a,b){return a.recMensal-b.recMensal;});
 
-  // Custo médio manutenção por veículo por mês
-  var totalManut6 = (manutencoes||[]).filter(function(m){
-    var dt = m.data_previsao_pagamento || m.data_entrada || '';
-    return dt.slice(0,7) >= meses6[0] && dt.slice(0,7) <= mesAtual;
-  }).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
-  var manutPorVeicMes = (veiculos||[]).length > 0 ? totalManut6 / (veiculos||[]).length / 6 : 0;
+  // Custo manutenção por veículo/mês (6 meses)
+  var totalManut6=(manutencoes||[]).filter(function(m){ var dt=m.data_previsao_pagamento||m.data_entrada||''; return dt.slice(0,7)>=meses6[0]&&dt.slice(0,7)<=mesAtual; }).reduce(function(s,m){return s+parseFloat(m.custo||0);},0);
+  var manutPorVeicMes=(veiculos||[]).length>0?totalManut6/(veiculos||[]).length/6:0;
 
-  // Reserva fiscal sugerida (12% da receita média)
-  var reservaFiscalSug = avgRec3 * 0.12;
-  // Reserva manutenção sugerida (1.5x custo histórico por veículo)
-  var reservaManutSug = manutPorVeicMes * ((veiculos||[]).length) * 1.5;
-  // Prolabore sugerido: 60% do lucro médio, limitado entre R$3k e R$25k
-  var prolaboreSug = Math.min(25000, Math.max(3000, avgLucro3 * 0.6));
+  // Financeiro calculado
+  var reservaFiscalSug=avgRec3*0.12;
+  var reservaManutSug=manutPorVeicMes*(veiculos||[]).length*1.5;
+  var prolaboreSug=Math.min(25000,Math.max(3000,avgLucro3*0.6));
+  var indiceRet=avgLucro3>0?(avgRet3/avgLucro3)*100:null;
 
-  // Saldo pessoal atual
-  var pesItens = orcItens || [];
-  var pesReceber = pesItens.filter(function(it){ return it.tipo==='receita' && it.status!=='recebido'; }).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-  var pesPagar   = pesItens.filter(function(it){ return it.tipo==='despesa' && it.status!=='pago'; }).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-  var pesSaldoPrev = pesReceber - pesPagar;
+  // Orçamento pessoal
+  var pesItens=orcItens||[];
+  // Despesas fixas mensais recorrentes (meta de cobertura pessoal)
+  var pesDesp=pesItens.filter(function(it){return it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  var pesRec=pesItens.filter(function(it){return it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  var pesPagar=pesItens.filter(function(it){return it.tipo==='despesa'&&it.status!=='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  var pesReceber=pesItens.filter(function(it){return it.tipo==='receita'&&it.status!=='recebido';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  var pesSaldoPrev=pesReceber-pesPagar;
+  // Meta: quanto precisa de renda mensal para equilibrar pessoal
+  var pesMeta=pesDesp>0?pesDesp:pesPagar;
+  var gapPessoal=pesMeta-avgRet3; // > 0 = precisa retirar mais
 
-  // Índice retirada/lucro
-  var indiceRet = avgLucro3 > 0 ? (avgRet3 / avgLucro3) * 100 : null;
+  // Score 0-100
+  var score=100;
+  if(inadPerc>20) score-=25; else if(inadPerc>10) score-=12;
+  if(avgLucro3<0) score-=30; else if(avgLucro3<avgRec3*0.1) score-=15;
+  if(indiceRet!==null&&indiceRet>80) score-=20; else if(indiceRet!==null&&indiceRet>60) score-=10;
+  if(gapPessoal>3000) score-=15; else if(gapPessoal>0) score-=8;
+  score=Math.max(0,Math.min(100,score));
 
-  // Score de saúde (0-100)
-  var score = 100;
-  if (inadPerc > 20) score -= 25;
-  else if (inadPerc > 10) score -= 12;
-  if (avgLucro3 < 0) score -= 30;
-  else if (avgLucro3 < avgRec3 * 0.1) score -= 15;
-  if (indiceRet !== null && indiceRet > 80) score -= 20;
-  else if (indiceRet !== null && indiceRet > 60) score -= 10;
-  if (pesSaldoPrev < -3000) score -= 15;
-  else if (pesSaldoPrev < 0) score -= 8;
-  score = Math.max(0, Math.min(100, score));
+  var scoreLabel=score>=75?'Saudável':score>=50?'Atenção':'Crítico';
+  var scoreColor=score>=75?'#34C759':score>=50?'#FF9500':'#FF3B30';
 
-  var scoreLabel = score >= 75 ? 'Saudável' : score >= 50 ? 'Atenção' : 'Crítico';
-  var scoreColor = score >= 75 ? '#34C759' : score >= 50 ? '#FF9500' : '#FF3B30';
-  var scoreBg    = score >= 75 ? 'rgba(52,199,89,0.12)' : score >= 50 ? 'rgba(255,149,0,0.12)' : 'rgba(255,59,48,0.12)';
+  // Simulador de investimento: 1 veículo adicional
+  var simVeicRec=avgRecPorVeic*0.70; // 70% ocupação estimada
+  var simVeicDesp=manutPorVeicMes+(avgDesp3>0?(avgDesp3/(veiculos||[]).length||1)*0.1:500);
+  var simVeicLucro=simVeicRec-simVeicDesp;
+  var simNovoLucro=avgLucro3+simVeicLucro;
+  var simNovoProlabore=Math.min(25000,Math.max(3000,simNovoLucro*0.6));
+  var simGanho=simNovoProlabore-prolaboreSug;
 
-  var nomeMesShort = function(m) {
-    return new Date(m+'-15').toLocaleString('pt-BR',{month:'short'}).replace('.','');
-  };
+  // Projeção de equilíbrio pessoal
+  // Se reduzir retirada para prolaboreSug: sobra por mês na empresa
+  var economiaMes=Math.max(0,avgRet3-prolaboreSug);
+  // Deficit pessoal mensal = quanto falta cobrir
+  var deficitMes=Math.max(0,gapPessoal);
+  // Meses para equilibrar cortando gastos pessoais + ajustando pro-labore
+  var mesesEquil=deficitMes>0&&simNovoLucro>0?Math.ceil(deficitMes/(simVeicLucro||1)):0;
 
-  function Card(_ref) {
-    var title=_ref.title, icon=_ref.icon, children=_ref.children, accent=_ref.accent;
-    return React.createElement('div', { style:{ background:'var(--c-card)', border:'1px solid var(--c-border)', borderRadius:16, padding:'14px 16px', display:'flex', flexDirection:'column', gap:8 } }
-      , React.createElement('div', { style:{ display:'flex', alignItems:'center', gap:6 } }
-        , React.createElement('span', { style:{ fontSize:17 } }, icon)
-        , React.createElement('span', { style:{ fontSize:12, fontWeight:700, color: accent||'var(--c-sub)', textTransform:'uppercase', letterSpacing:0.5 } }, title)
+  var nomeMesShort=function(m){return new Date(m+'-15').toLocaleString('pt-BR',{month:'short'}).replace('.','');};
+
+  // ── Sub-componentes visuais ──────────────────────────────────────
+  function DCard(p) {
+    var borderColor=p.accent||'rgba(120,120,128,0.3)';
+    return React.createElement('div', { style:{
+      background:'var(--c-card)', borderRadius:18,
+      border:'1px solid var(--c-border)',
+      borderLeft:'3px solid '+borderColor,
+      overflow:'hidden', boxShadow:'0 1px 8px rgba(0,0,0,0.04)'
+    }}
+      , React.createElement('div', { style:{ padding:'13px 16px 0', display:'flex', alignItems:'center', gap:8, borderBottom:'1px solid var(--c-border)', paddingBottom:10 } }
+        , React.createElement('span', { style:{ fontSize:18, lineHeight:1 } }, p.icon)
+        , React.createElement('span', { style:{ fontSize:11, fontWeight:700, color:p.accent||'var(--c-sub)', textTransform:'uppercase', letterSpacing:0.6 } }, p.title)
+        , p.badge ? React.createElement('span', { style:{ marginLeft:'auto', fontSize:10, fontWeight:700, color:p.badge.color, background:p.badge.bg, borderRadius:7, padding:'2px 7px' } }, p.badge.text) : null
       )
-      , children
+      , React.createElement('div', { style:{ padding:'12px 16px 14px' } }, p.children)
     );
   }
-
-  function Row(_ref2) {
-    var label=_ref2.label, value=_ref2.value, sub=_ref2.sub, color=_ref2.color, bold=_ref2.bold;
-    return React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:8 } }
-      , React.createElement('span', { style:{ fontSize:12, color:'var(--c-sub)', flex:1 } }, label)
-      , React.createElement('div', { style:{ textAlign:'right' } }
-        , React.createElement('span', { style:{ fontSize: bold?14:13, fontWeight: bold?700:600, color: color||'var(--c-text)' } }, value)
-        , sub ? React.createElement('div', { style:{ fontSize:10, color:'var(--c-sub)' } }, sub) : null
-      )
+  function Row(p) {
+    return React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'4px 0', borderBottom:'0.5px solid var(--c-border)' } }
+      , React.createElement('span', { style:{ fontSize:12, color:'var(--c-sub)', flex:1 } }, p.label)
+      , React.createElement('span', { style:{ fontSize: p.bold?14:13, fontWeight: p.bold?800:600, color:p.color||'var(--c-text)', letterSpacing:-0.3 } }, p.value)
     );
   }
-
-  function Divider() { return React.createElement('div', { style:{ height:1, background:'var(--c-border)', margin:'2px 0' } }); }
-
-  function MiniBar(_ref3) {
-    var pct=_ref3.pct, color=_ref3.color;
-    return React.createElement('div', { style:{ height:5, background:'var(--c-border)', borderRadius:3, overflow:'hidden', marginTop:2 } }
-      , React.createElement('div', { style:{ height:'100%', width: Math.min(100,Math.max(0,pct))+'%', background:color||'#007AFF', borderRadius:3, transition:'width 0.5s' } })
+  function Bar(p) {
+    var pct=Math.min(100,Math.max(0,p.pct||0));
+    return React.createElement('div', { style:{ height: p.h||6, background:'rgba(120,120,128,0.15)', borderRadius:999, overflow:'hidden', margin:'5px 0' } }
+      , React.createElement('div', { style:{ height:'100%', width:pct+'%', background:p.color||'#007AFF', borderRadius:999, transition:'width 0.6s cubic-bezier(.4,0,.2,1)' } })
     );
   }
+  function Alert(p) {
+    return React.createElement('div', { style:{ fontSize:11, color:p.color, background:p.bg, borderRadius:10, padding:'7px 11px', lineHeight:1.5, marginTop:6 } }, p.children);
+  }
+  function Num(p) {
+    return React.createElement('div', { style:{ fontSize: p.size||28, fontWeight:800, color:p.color||'var(--c-text)', letterSpacing:-0.8, lineHeight:1, marginBottom:2 } }, p.children);
+  }
 
-  var mesLabels = meses3.map(nomeMesShort);
+  // Score SVG arc
+  var _r=38, _circ=2*Math.PI*_r, _offset=_circ*(1-score/100);
+  var scoreArc=React.createElement('svg', { width:100, height:100, viewBox:'0 0 100 100', style:{flexShrink:0} }
+    , React.createElement('circle', { cx:50, cy:50, r:_r, fill:'none', stroke:'rgba(120,120,128,0.15)', strokeWidth:8 })
+    , React.createElement('circle', { cx:50, cy:50, r:_r, fill:'none', stroke:scoreColor, strokeWidth:8, strokeDasharray:_circ, strokeDashoffset:_offset, strokeLinecap:'round', transform:'rotate(-90 50 50)', style:{transition:'stroke-dashoffset 1s ease'} })
+    , React.createElement('text', { x:50, y:46, textAnchor:'middle', dominantBaseline:'middle', fontSize:22, fontWeight:800, fill:scoreColor }, score)
+    , React.createElement('text', { x:50, y:63, textAnchor:'middle', dominantBaseline:'middle', fontSize:9, fontWeight:700, fill:'var(--c-sub)' }, scoreLabel.toUpperCase())
+  );
 
-  return React.createElement('div', { style:{ display:'flex', flexDirection:'column', gap:14, paddingBottom:30 } }
+  return React.createElement('div', { style:{ display:'flex', flexDirection:'column', gap:14, paddingBottom:40 } }
 
-    // Header
-    , React.createElement('div', { style:{ display:'flex', alignItems:'center', gap:10, padding:'2px 0' } }
-      , React.createElement('button', {
-          onClick: onBack,
-          style:{ border:'none', background:'var(--c-card)', borderRadius:10, padding:'6px 10px', cursor:'pointer', fontSize:13, color:'var(--c-sub)', display:'flex', alignItems:'center', gap:4 }
-        }, '‹ Voltar'
+    // ── Topo: handle + navegação ──────────────────────────────────
+    , React.createElement('div', { style:{ display:'flex', flexDirection:'column', alignItems:'center', gap:6 } }
+      , React.createElement('div', { style:{ width:36, height:4, borderRadius:2, background:'rgba(120,120,128,0.4)', marginBottom:2 } })
+      , React.createElement('div', { style:{ width:'100%', display:'flex', alignItems:'center', gap:8 } }
+        , React.createElement('button', { onClick:onBack, style:{ border:'none', background:'rgba(120,120,128,0.12)', borderRadius:10, padding:'6px 12px', cursor:'pointer', fontSize:13, fontWeight:600, color:'var(--c-sub)', display:'flex', alignItems:'center', gap:4 } }
+          , '‹ Fechar'
+        )
+        , React.createElement('div', { style:{ flex:1 } })
+        , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', background:'rgba(120,120,128,0.10)', borderRadius:8, padding:'3px 9px' } }, 'Arrastar ← para fechar')
       )
-      , React.createElement('div', { style:{ flex:1, fontSize:14, fontWeight:700, color:'var(--c-text)' } }, 'Diagnóstico Financeiro')
     )
 
-    // Score geral
-    , React.createElement('div', { style:{ background: scoreBg, border:'1.5px solid '+scoreColor, borderRadius:18, padding:'16px 18px', display:'flex', alignItems:'center', gap:14 } }
-      , React.createElement('div', { style:{ width:56, height:56, borderRadius:'50%', border:'3px solid '+scoreColor, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 } }
-        , React.createElement('span', { style:{ fontSize:20, fontWeight:800, color:scoreColor, lineHeight:1 } }, score)
-      )
-      , React.createElement('div', null
-        , React.createElement('div', { style:{ fontSize:16, fontWeight:800, color:scoreColor } }, scoreLabel)
-        , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', marginTop:2 } }, 'Score de saúde · 0–100')
-        , React.createElement('div', { style:{ fontSize:10, color:'var(--c-sub)', marginTop:4, lineHeight:1.4 } },
-            score >= 75 ? 'Finanças equilibradas. Foque em reservas e crescimento.' :
-            score >= 50 ? 'Alguns pontos críticos — veja as recomendações abaixo.' :
-            'Atenção imediata: déficit ou inadimplência alta comprometem o negócio.'
+    // ── Score hero ───────────────────────────────────────────────
+    , React.createElement('div', { style:{ background:'linear-gradient(135deg,rgba(175,82,222,0.10),rgba(0,122,255,0.08))', border:'1px solid rgba(175,82,222,0.20)', borderRadius:20, padding:'18px 20px', display:'flex', alignItems:'center', gap:18 } }
+      , scoreArc
+      , React.createElement('div', { style:{ flex:1 } }
+        , React.createElement('div', { style:{ fontSize:20, fontWeight:800, letterSpacing:-0.5, color:scoreColor } }, scoreLabel)
+        , React.createElement('div', { style:{ fontSize:12, color:'var(--c-sub)', marginTop:3, lineHeight:1.5 } },
+            score>=75?'Finanças equilibradas. Foque em crescimento e reservas.':
+            score>=50?'Pontos de atenção identificados — veja os planos abaixo.':
+            'Ação imediata necessária: déficit e/ou inadimplência críticos.'
+        )
+        , React.createElement('div', { style:{ display:'flex', gap:8, marginTop:10, flexWrap:'wrap' } }
+          , [
+              {label:'Receita',  val:fmtBRLint(avgRec3),  color:'#34C759'},
+              {label:'Despesa',  val:fmtBRLint(avgDesp3), color:'#FF3B30'},
+              {label:'Lucro',    val:fmtBRLint(avgLucro3),color:avgLucro3>=0?'#34C759':'#FF3B30'},
+            ].map(function(k){
+              return React.createElement('div', { key:k.label, style:{ background:'rgba(255,255,255,0.06)', borderRadius:9, padding:'5px 9px', textAlign:'center' } }
+                , React.createElement('div', { style:{ fontSize:11, fontWeight:800, color:k.color } }, k.val)
+                , React.createElement('div', { style:{ fontSize:9, color:'var(--c-sub)', textTransform:'uppercase', letterSpacing:0.4 } }, k.label+'/mês')
+              );
+            })
         )
       )
     )
 
-    // Resumo 3 meses
-    , React.createElement(Card, { title:'Últimos 3 meses (locadora)', icon:'📊' }
-      , React.createElement('div', { style:{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:6, textAlign:'center' } }
-        , meses3.map(function(m, i) {
-            var lc = lucro3[i];
-            return React.createElement('div', { key:m, style:{ background:'var(--c-bg)', borderRadius:10, padding:'8px 4px' } }
-              , React.createElement('div', { style:{ fontSize:10, fontWeight:700, color:'var(--c-sub)', textTransform:'uppercase', marginBottom:4 } }, nomeMesShort(m))
-              , React.createElement('div', { style:{ fontSize:11, color:'#34C759', fontWeight:600 } }, fmtBRL(rec3[i]))
-              , React.createElement('div', { style:{ fontSize:11, color:'#FF3B30', fontWeight:600 } }, '–'+fmtBRL(desp3[i]))
-              , React.createElement('div', { style:{ fontSize:12, fontWeight:800, color: lc>=0?'#34C759':'#FF3B30', borderTop:'1px solid var(--c-border)', marginTop:4, paddingTop:4 } }, fmtBRL(lc))
+    // ── Últimos 3 meses ──────────────────────────────────────────
+    , React.createElement(DCard, { title:'Evolução mensal', icon:'📊', accent:'#5AC8FA' }
+      , React.createElement('div', { style:{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8 } }
+        , meses3.map(function(m,i){
+            var lc=lucro3[i], isAct=m===mesAtual;
+            return React.createElement('div', { key:m, style:{ background:isAct?'rgba(0,122,255,0.08)':'rgba(120,120,128,0.06)', borderRadius:12, padding:'10px 6px', textAlign:'center', border:isAct?'1px solid rgba(0,122,255,0.20)':'1px solid transparent' } }
+              , React.createElement('div', { style:{ fontSize:10, fontWeight:700, color:isAct?'#007AFF':'var(--c-sub)', textTransform:'uppercase', letterSpacing:0.5, marginBottom:6 } }, nomeMesShort(m))
+              , React.createElement('div', { style:{ fontSize:11, color:'#34C759', fontWeight:600, marginBottom:1 } }, fmtBRLint(rec3[i]))
+              , React.createElement('div', { style:{ fontSize:11, color:'#FF3B30', fontWeight:600, marginBottom:6 } }, '−'+fmtBRLint(desp3[i]))
+              , React.createElement('div', { style:{ fontSize:13, fontWeight:800, color:lc>=0?'#34C759':'#FF3B30', borderTop:'1px solid var(--c-border)', paddingTop:5 } }, fmtBRLint(lc))
+              , React.createElement('div', { style:{ fontSize:9, color:'var(--c-sub)' } }, lc>=0?'lucro':'déficit')
             );
           })
       )
-      , Divider()
-      , React.createElement(Row, { label:'Receita média/mês', value:fmtBRL(avgRec3), color:'#34C759', bold:true })
-      , React.createElement(Row, { label:'Despesa média/mês', value:fmtBRL(avgDesp3), color:'#FF3B30' })
-      , React.createElement(Row, { label:'Lucro médio/mês', value:fmtBRL(avgLucro3), color:avgLucro3>=0?'#34C759':'#FF3B30', bold:true })
     )
 
-    // Pro-labore
-    , React.createElement(Card, { title:'Pro-labore sugerido', icon:'💼', accent:'#007AFF' }
-      , React.createElement('div', { style:{ fontSize:24, fontWeight:800, color:'#007AFF', marginBottom:2 } }, fmtBRL(prolaboreSug))
-      , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)' } }, '= 60% do lucro médio — retirada fixa e previsível')
-      , Divider()
-      , React.createElement(Row, { label:'Retirada média atual', value:fmtBRL(avgRet3), color: avgRet3>prolaboreSug?'#FF9500':'#34C759' })
-      , React.createElement(Row, { label:'Diferença', value: (avgRet3 > prolaboreSug ? '+' : '') + fmtBRL(avgRet3 - prolaboreSug), color: avgRet3>prolaboreSug?'#FF9500':'#34C759' })
-      , avgRet3 > prolaboreSug
-        ? React.createElement('div', { style:{ fontSize:11, color:'#FF9500', background:'rgba(255,149,0,0.10)', borderRadius:8, padding:'6px 10px' } }, '⚠️ Retirada acima do sugerido. Risco de descapitalizar a empresa.')
-        : React.createElement('div', { style:{ fontSize:11, color:'#34C759', background:'rgba(52,199,89,0.10)', borderRadius:8, padding:'6px 10px' } }, '✓ Retirada dentro do limite saudável.')
-      , indiceRet !== null ? React.createElement('div', null
-          , React.createElement(Row, { label:'Índice retirada/lucro', value: indiceRet.toFixed(0)+'%', color: indiceRet>80?'#FF3B30':indiceRet>60?'#FF9500':'#34C759' })
-          , React.createElement(MiniBar, { pct: indiceRet, color: indiceRet>80?'#FF3B30':indiceRet>60?'#FF9500':'#34C759' })
-        ) : null
-    )
-
-    // Inadimplência
-    , React.createElement(Card, { title:'Inadimplência (6 meses)', icon:'📋', accent: inadPerc>20?'#FF3B30':inadPerc>10?'#FF9500':'#34C759' }
-      , React.createElement('div', { style:{ display:'flex', alignItems:'baseline', gap:6 } }
-        , React.createElement('span', { style:{ fontSize:28, fontWeight:800, color: inadPerc>20?'#FF3B30':inadPerc>10?'#FF9500':'#34C759' } }, inadPerc+'%')
-        , React.createElement('span', { style:{ fontSize:12, color:'var(--c-sub)' } }, 'de contratos não quitados')
+    // ── Meta pessoal & gap ────────────────────────────────────────
+    , React.createElement(DCard, { title:'Meta das contas pessoais', icon:'🏠', accent:gapPessoal>0?'#FF3B30':'#34C759', badge:gapPessoal>0?{text:'Déficit',color:'#FF3B30',bg:'rgba(255,59,48,0.12)'}:{text:'OK',color:'#34C759',bg:'rgba(52,199,89,0.12)'} }
+      , React.createElement('div', { style:{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:8 } }
+        , React.createElement('div', { style:{ textAlign:'center', background:'rgba(255,59,48,0.07)', borderRadius:12, padding:'10px 8px' } }
+          , React.createElement(Num, { size:22, color:'#FF3B30' }, fmtBRLint(pesMeta))
+          , React.createElement('div', { style:{ fontSize:10, color:'var(--c-sub)' } }, 'Custo pessoal/mês')
+        )
+        , React.createElement('div', { style:{ textAlign:'center', background:'rgba(0,122,255,0.07)', borderRadius:12, padding:'10px 8px' } }
+          , React.createElement(Num, { size:22, color:'#007AFF' }, fmtBRLint(avgRet3))
+          , React.createElement('div', { style:{ fontSize:10, color:'var(--c-sub)' } }, 'Retirada atual/mês')
+        )
       )
-      , React.createElement(MiniBar, { pct: inadPerc, color: inadPerc>20?'#FF3B30':inadPerc>10?'#FF9500':'#34C759' })
-      , Divider()
-      , React.createElement(Row, { label:'Contratos avaliados', value: inadTotal+' contratos' })
-      , React.createElement(Row, { label:'Pagos', value: inadPago, color:'#34C759' })
-      , React.createElement(Row, { label:'Pendentes/atrasados', value: inadTotal-inadPago, color: inadPerc>10?'#FF3B30':'var(--c-text)' })
-      , inadPerc > 20
-        ? React.createElement('div', { style:{ fontSize:11, color:'#FF3B30', background:'rgba(255,59,48,0.10)', borderRadius:8, padding:'6px 10px' } }, '🚨 Alta inadimplência. Implemente cobrança ativa e pré-requisito de fiador.')
-        : inadPerc > 10
-        ? React.createElement('div', { style:{ fontSize:11, color:'#FF9500', background:'rgba(255,149,0,0.10)', borderRadius:8, padding:'6px 10px' } }, '⚠️ Inadimplência moderada. Reforce o contato no vencimento.')
-        : React.createElement('div', { style:{ fontSize:11, color:'#34C759', background:'rgba(52,199,89,0.10)', borderRadius:8, padding:'6px 10px' } }, '✓ Inadimplência sob controle.')
+      , Row({ label:'Gap (precisar − retirar)', value:(gapPessoal>0?'+':'')+fmtBRL(gapPessoal), color:gapPessoal>0?'#FF3B30':'#34C759', bold:true })
+      , Row({ label:'Pro-labore ideal (60% lucro)', value:fmtBRL(prolaboreSug), color:'#007AFF' })
+      , gapPessoal>0
+        ? React.createElement(Alert, { color:'#FF3B30', bg:'rgba(255,59,48,0.08)' }, '🚨 Retirada atual ('+fmtBRL(avgRet3)+') cobre menos que o custo pessoal ('+fmtBRL(pesMeta)+'). Duas saídas: reduzir gastos pessoais ou expandir a locadora.')
+        : React.createElement(Alert, { color:'#34C759', bg:'rgba(52,199,89,0.08)' }, '✓ Retirada atual cobre o custo pessoal.')
     )
 
-    // Rentabilidade por veículo
-    , React.createElement(Card, { title:'Rentabilidade por veículo (3 meses)', icon:'🚗' }
-      , React.createElement('div', { style:{ display:'flex', flexDirection:'column', gap:6 } }
-        , veicRec.slice(0, 8).map(function(v) {
-            var pct = avgRec3 > 0 ? (v.recMensal / (avgRec3/(veicRec.length||1))) * 100 : 0;
-            var col = v.recMensal === 0 ? '#FF3B30' : v.recMensal < (avgRec3/(veicRec.length||1)) * 0.5 ? '#FF9500' : '#34C759';
-            return React.createElement('div', { key: v.placa }
+    // ── Simulador de investimento ─────────────────────────────────
+    , React.createElement(DCard, { title:'Simulador: +1 veículo na frota', icon:'🚀', accent:'#AF52DE' }
+      , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', marginBottom:10, lineHeight:1.5 } }, 'Baseado na média atual da frota com 70% de ocupação estimada para o novo veículo:')
+      , React.createElement('div', { style:{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8, marginBottom:10 } }
+        , [
+            {label:'Receita est.', val:fmtBRLint(simVeicRec),  color:'#34C759'},
+            {label:'Custo est.',   val:fmtBRLint(simVeicDesp), color:'#FF3B30'},
+            {label:'Lucro líq.',   val:fmtBRLint(simVeicLucro),color:simVeicLucro>=0?'#34C759':'#FF3B30'},
+          ].map(function(k){
+            return React.createElement('div', { key:k.label, style:{ background:'rgba(175,82,222,0.07)', borderRadius:11, padding:'8px 5px', textAlign:'center' } }
+              , React.createElement('div', { style:{ fontSize:12, fontWeight:800, color:k.color } }, k.val)
+              , React.createElement('div', { style:{ fontSize:9, color:'var(--c-sub)', marginTop:2 } }, k.label)
+            );
+          })
+      )
+      , Row({ label:'Novo lucro médio/mês', value:fmtBRL(simNovoLucro), color:simNovoLucro>=0?'#34C759':'#FF3B30' })
+      , Row({ label:'Novo pro-labore possível', value:fmtBRL(simNovoProlabore), color:'#AF52DE', bold:true })
+      , Row({ label:'Ganho mensal extra p/ você', value:(simGanho>=0?'+':'')+fmtBRL(simGanho), color:simGanho>=0?'#34C759':'#FF3B30', bold:true })
+      , simGanho>0&&deficitMes>0
+        ? React.createElement(Alert, { color:'#AF52DE', bg:'rgba(175,82,222,0.08)' }, '💡 Com +1 veículo você poderia retirar mais '+fmtBRL(simGanho)+'/mês, cobrindo '+(Math.min(100,Math.round(simGanho/deficitMes*100)))+'% do déficit pessoal.')
+        : simGanho<=0
+        ? React.createElement(Alert, { color:'#FF9500', bg:'rgba(255,149,0,0.08)' }, '⚠️ Frota com baixa ocupação média — veículo novo pode não ser rentável agora.')
+        : React.createElement(Alert, { color:'#34C759', bg:'rgba(52,199,89,0.08)' }, '✓ +1 veículo geraria '+fmtBRL(simGanho)+'/mês de margem adicional.')
+    )
+
+    // ── Projeção de equilíbrio ────────────────────────────────────
+    , React.createElement(DCard, { title:'Projeção de equilíbrio', icon:'📅', accent:'#5AC8FA' }
+      , deficitMes>0
+        ? React.createElement('div', null
+          , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', marginBottom:10, lineHeight:1.5 } }, 'Para zerar o déficit pessoal de '+fmtBRL(deficitMes)+'/mês, escolha um caminho:')
+          , [
+              { path:'Reduzir gastos pessoais', desc:'Cortar '+fmtBRL(deficitMes)+'/mês nas despesas pessoais — sem alterar a empresa.', viable: true },
+              { path:'Ajustar pro-labore', desc:avgLucro3>=prolaboreSug+deficitMes?'Aumentar retirada para '+fmtBRL(avgRet3+deficitMes)+'/mês — dentro do lucro atual.':'Lucro atual ainda não suporta — expanda a receita primeiro.', viable: avgLucro3>=prolaboreSug+deficitMes },
+              { path:'Expandir a frota', desc:simVeicLucro>0?'Com +1 veículo, +'+fmtBRL(simGanho)+'/mês cobriria '+(Math.min(100,Math.round(simGanho/deficitMes*100)))+'% do déficit em ~1 mês.':'Rentabilidade atual da frota não justifica expansão agora.', viable: simVeicLucro>0&&simGanho>0 },
+            ].map(function(p,i){
+              return React.createElement('div', { key:i, style:{ display:'flex', gap:10, padding:'8px 10px', borderRadius:11, background:p.viable?'rgba(52,199,89,0.07)':'rgba(255,59,48,0.06)', marginBottom:6 } }
+                , React.createElement('span', { style:{ fontSize:16, flexShrink:0 } }, p.viable?'✅':'❌')
+                , React.createElement('div', null
+                  , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:p.viable?'#34C759':'var(--c-sub)' } }, p.path)
+                  , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', lineHeight:1.4 } }, p.desc)
+                )
+              );
+            })
+        )
+        : React.createElement(Alert, { color:'#34C759', bg:'rgba(52,199,89,0.08)' }, '✅ Contas pessoais equilibradas com a retirada atual.')
+    )
+
+    // ── Pro-labore vs retirada ────────────────────────────────────
+    , React.createElement(DCard, { title:'Pro-labore vs retirada', icon:'💼', accent:'#007AFF' }
+      , React.createElement('div', { style:{ display:'flex', alignItems:'flex-end', gap:6, marginBottom:6 } }
+        , React.createElement(Num, { size:30, color:'#007AFF' }, fmtBRL(prolaboreSug))
+        , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', paddingBottom:4 } }, 'sugerido/mês')
+      )
+      , Bar({ pct: avgRet3>0?(prolaboreSug/Math.max(prolaboreSug,avgRet3))*100:100, color:'#007AFF' })
+      , Row({ label:'Retirada atual', value:fmtBRL(avgRet3), color:avgRet3>prolaboreSug*1.2?'#FF9500':avgRet3>prolaboreSug?'#FF9500':'#34C759' })
+      , Row({ label:'Índice retirada/lucro', value:indiceRet!==null?indiceRet.toFixed(0)+'%':'n/a', color:indiceRet&&indiceRet>80?'#FF3B30':indiceRet&&indiceRet>60?'#FF9500':'#34C759' })
+      , indiceRet!==null ? Bar({ pct:indiceRet, color:indiceRet>80?'#FF3B30':indiceRet>60?'#FF9500':'#34C759', h:5 }) : null
+      , avgRet3>prolaboreSug*1.2
+        ? React.createElement(Alert, { color:'#FF9500', bg:'rgba(255,149,0,0.08)' }, '⚠️ Retirada '+Math.round(avgRet3/prolaboreSug*100)+'% acima do sugerido — risco de descapitalizar a empresa.')
+        : React.createElement(Alert, { color:'#34C759', bg:'rgba(52,199,89,0.08)' }, '✓ Retirada dentro do limite saudável.')
+    )
+
+    // ── Inadimplência ─────────────────────────────────────────────
+    , React.createElement(DCard, { title:'Inadimplência · 6 meses', icon:'📋', accent:inadPerc>20?'#FF3B30':inadPerc>10?'#FF9500':'#34C759' }
+      , React.createElement('div', { style:{ display:'flex', alignItems:'flex-end', gap:10, marginBottom:4 } }
+        , React.createElement(Num, { size:36, color:inadPerc>20?'#FF3B30':inadPerc>10?'#FF9500':'#34C759' }, inadPerc+'%')
+        , React.createElement('div', { style:{ paddingBottom:5 } }
+          , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:'var(--c-text)' } }, inadTotal-inadPago+' inadimplentes')
+          , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)' } }, 'de '+inadTotal+' contratos')
+        )
+      )
+      , Bar({ pct:inadPerc, color:inadPerc>20?'#FF3B30':inadPerc>10?'#FF9500':'#34C759', h:8 })
+      , inadPerc>20
+        ? React.createElement(Alert, { color:'#FF3B30', bg:'rgba(255,59,48,0.08)' }, '🚨 Alta inadimplência. Ação: cobrança automática (D-3), contrato com fiador, bloqueio de renovação para devedores.')
+        : inadPerc>10
+        ? React.createElement(Alert, { color:'#FF9500', bg:'rgba(255,149,0,0.08)' }, '⚠️ Reforce contato no vencimento e monitore pendentes semanalmente.')
+        : React.createElement(Alert, { color:'#34C759', bg:'rgba(52,199,89,0.08)' }, '✓ Inadimplência sob controle.')
+    )
+
+    // ── ROI por veículo ───────────────────────────────────────────
+    , React.createElement(DCard, { title:'ROI por veículo · 3 meses', icon:'🚗', accent:'#5AC8FA' }
+      , React.createElement('div', { style:{ display:'flex', flexDirection:'column', gap:8 } }
+        , veicRec.slice(0,8).map(function(v){
+            var benchmark=avgRecPorVeic||1;
+            var pct=benchmark>0?(v.recMensal/benchmark)*100:0;
+            var col=v.recMensal===0?'#FF3B30':v.recMensal<benchmark*0.5?'#FF9500':'#34C759';
+            return React.createElement('div', { key:v.placa }
               , React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', marginBottom:2 } }
-                , React.createElement('span', { style:{ fontSize:12, fontWeight:600, color:'var(--c-text)' } }, v.placa)
-                , React.createElement('span', { style:{ fontSize:12, fontWeight:700, color:col } }, fmtBRL(v.recMensal)+'/mês')
+                , React.createElement('span', { style:{ fontSize:12, fontWeight:700, color:'var(--c-text)' } }, v.placa)
+                , React.createElement('div', { style:{ textAlign:'right' } }
+                  , React.createElement('span', { style:{ fontSize:12, fontWeight:800, color:col } }, fmtBRLint(v.recMensal))
+                  , React.createElement('span', { style:{ fontSize:10, color:'var(--c-sub)' } }, '/mês')
+                )
               )
-              , React.createElement(MiniBar, { pct:pct, color:col })
+              , Bar({ pct:pct, color:col, h:6 })
             );
           })
       )
-      , veicRec.some(function(v){ return v.recMensal === 0; })
-        ? React.createElement('div', { style:{ fontSize:11, color:'#FF3B30', background:'rgba(255,59,48,0.10)', borderRadius:8, padding:'6px 10px', marginTop:4 } }, '🚨 Veículos sem receita nos últimos 3 meses — avalie venda ou realocação.')
+      , veicRec.some(function(v){return v.recMensal===0;})
+        ? React.createElement(Alert, { color:'#FF3B30', bg:'rgba(255,59,48,0.08)' }, '🚨 Veículos sem receita — considere relocar, alugar a terceiros ou vender.')
         : null
+      , React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', marginTop:8, paddingTop:8, borderTop:'1px solid var(--c-border)' } }
+        , React.createElement('span', { style:{ fontSize:11, color:'var(--c-sub)' } }, 'Média por veículo')
+        , React.createElement('span', { style:{ fontSize:13, fontWeight:800, color:'var(--c-text)' } }, fmtBRLint(avgRecPorVeic)+'/mês')
+      )
     )
 
-    // Reservas sugeridas
-    , React.createElement(Card, { title:'Reservas sugeridas', icon:'🏦', accent:'#5AC8FA' }
-      , React.createElement(Row, { label:'Reserva fiscal (12% receita)', value:fmtBRL(reservaFiscalSug)+'/mês', color:'#5AC8FA', bold:true })
-      , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', marginBottom:4 } }, 'IPVA, licenciamento, impostos e contingências')
-      , Divider()
-      , React.createElement(Row, { label:'Reserva manutenção', value:fmtBRL(reservaManutSug)+'/mês', color:'#5AC8FA', bold:true })
-      , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', marginBottom:4 } }, 'Baseado no custo histórico · 1.5× por segurança')
-      , React.createElement(Row, { label:'Custo médio manutenção/veículo', value:fmtBRL(manutPorVeicMes)+'/mês' })
-      , Divider()
-      , React.createElement(Row, { label:'Total reservas/mês', value:fmtBRL(reservaFiscalSug+reservaManutSug), bold:true })
+    // ── Reservas ─────────────────────────────────────────────────
+    , React.createElement(DCard, { title:'Reservas operacionais', icon:'🏦', accent:'#30B0C7' }
+      , React.createElement('div', { style:{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 } }
+        , React.createElement('div', { style:{ background:'rgba(48,176,199,0.08)', borderRadius:12, padding:'10px 8px', textAlign:'center' } }
+          , React.createElement(Num, { size:18, color:'#30B0C7' }, fmtBRLint(reservaFiscalSug))
+          , React.createElement('div', { style:{ fontSize:10, color:'var(--c-sub)' } }, 'Fiscal (12%)')
+        )
+        , React.createElement('div', { style:{ background:'rgba(48,176,199,0.08)', borderRadius:12, padding:'10px 8px', textAlign:'center' } }
+          , React.createElement(Num, { size:18, color:'#30B0C7' }, fmtBRLint(reservaManutSug))
+          , React.createElement('div', { style:{ fontSize:10, color:'var(--c-sub)' } }, 'Manutenção (1.5×)')
+        )
+      )
+      , Row({ label:'Total reservas/mês', value:fmtBRL(reservaFiscalSug+reservaManutSug), bold:true, color:'#30B0C7' })
+      , Row({ label:'Custo médio manut./veículo', value:fmtBRL(manutPorVeicMes)+'/mês' })
     )
 
-    // Situação pessoal
-    , React.createElement(Card, { title:'Orçamento pessoal — situação', icon:'👤', accent: pesSaldoPrev<0?'#FF3B30':'#34C759' }
-      , React.createElement(Row, { label:'A receber (pendentes)', value:fmtBRL(pesReceber), color:'#34C759' })
-      , React.createElement(Row, { label:'A pagar (pendentes)', value:fmtBRL(pesPagar), color:'#FF3B30' })
-      , Divider()
-      , React.createElement(Row, { label:'Saldo previsto pessoal', value:fmtBRL(pesSaldoPrev), color:pesSaldoPrev>=0?'#34C759':'#FF3B30', bold:true })
-      , pesSaldoPrev < 0
-        ? React.createElement('div', { style:{ fontSize:11, color:'#FF3B30', background:'rgba(255,59,48,0.10)', borderRadius:8, padding:'6px 10px' } }, '🚨 Déficit pessoal previsto. O pro-labore sugerido de '+fmtBRL(prolaboreSug)+'/mês pode cobrir a lacuna.')
-        : React.createElement('div', { style:{ fontSize:11, color:'#34C759', background:'rgba(52,199,89,0.10)', borderRadius:8, padding:'6px 10px' } }, '✓ Saldo pessoal positivo.')
-    )
-
-    // Plano de ação
-    , React.createElement(Card, { title:'Plano de ação recomendado', icon:'✅', accent:'#AF52DE' }
+    // ── Plano de ação ─────────────────────────────────────────────
+    , React.createElement(DCard, { title:'Plano de ação', icon:'✅', accent:'#AF52DE' }
       , React.createElement('div', { style:{ display:'flex', flexDirection:'column', gap:6 } }
         , [
-            { ok: avgLucro3 > 0,                 ok_txt: 'Lucro positivo nos últimos 3 meses',       nok_txt: 'Revise despesas — lucro médio negativo comprometeu R$'+fmtBRL(Math.abs(avgLucro3))+'/mês' },
-            { ok: inadPerc <= 10,                 ok_txt: 'Inadimplência controlada (≤10%)',           nok_txt: 'Implante cobrança automática e contrato com garantidor' },
-            { ok: avgRet3 <= prolaboreSug * 1.2,  ok_txt: 'Retiradas dentro do limite saudável',      nok_txt: 'Fixe pro-labore de '+fmtBRL(prolaboreSug)+'/mês e distribua excedente só se lucro permitir' },
-            { ok: pesSaldoPrev >= 0,              ok_txt: 'Orçamento pessoal equilibrado',             nok_txt: 'Corte despesas pessoais ou aumente pro-labore gradualmente' },
-            { ok: veicRec.every(function(v){return v.recMensal>0;}), ok_txt: 'Frota ativa e rentável', nok_txt: 'Identifique veículos parados e avalie venda ou troca' },
-          ].map(function(item, i) {
-            return React.createElement('div', { key:i, style:{ display:'flex', alignItems:'flex-start', gap:8, padding:'6px 10px', borderRadius:9, background: item.ok?'rgba(52,199,89,0.08)':'rgba(255,59,48,0.08)' } }
-              , React.createElement('span', { style:{ fontSize:14, flexShrink:0 } }, item.ok ? '✓' : '✗')
-              , React.createElement('span', { style:{ fontSize:11, color: item.ok?'#34C759':'#FF3B30', lineHeight:1.4 } }, item.ok ? item.ok_txt : item.nok_txt)
+            {ok:avgLucro3>0,        ok:'Lucro positivo nos últimos 3 meses',         nok:'Lucro médio negativo — revise todas as despesas operacionais'},
+            {ok:inadPerc<=10,       ok:'Inadimplência abaixo de 10%',                nok:'Implemente cobrança D-3 e pré-requisito de fiador nos novos contratos'},
+            {ok:avgRet3<=prolaboreSug*1.2,  ok:'Retiradas dentro do limite saudável',nok:'Fixe pro-labore em '+fmtBRL(prolaboreSug)+'/mês — distribua excedente só após reservas'},
+            {ok:gapPessoal<=0,      ok:'Contas pessoais cobertas pela retirada',     nok:'Déficit de '+fmtBRL(deficitMes)+'/mês — reduza gastos pessoais ou amplie receita da locadora'},
+            {ok:veicRec.every(function(v){return v.recMensal>0;}), ok:'Toda a frota gerando receita', nok:'Veículos ociosos — realoque ou venda os de menor ROI'},
+            {ok:(reservaFiscalSug+reservaManutSug)<=avgLucro3*0.5, ok:'Reservas operacionais viáveis no lucro atual', nok:'Lucro insuficiente para as reservas sugeridas — priorize inadimplência e custos'},
+          ].map(function(item,i){
+            return React.createElement('div', { key:i, style:{ display:'flex', alignItems:'flex-start', gap:9, padding:'7px 10px', borderRadius:11, background:item.ok?'rgba(52,199,89,0.07)':'rgba(255,59,48,0.07)' } }
+              , React.createElement('span', { style:{ fontSize:15, flexShrink:0 } }, item.ok?'✓':'✗')
+              , React.createElement('span', { style:{ fontSize:11, color:item.ok?'#34C759':'#FF3B30', lineHeight:1.5 } }, item.ok?item.ok:item.nok)
             );
           })
       )
@@ -30894,17 +31040,6 @@ function PessoalDash({
         filtroMes:_mes,setFiltroMes:setDashMes,
         onItensChange:_setPesItens
       })
-    , onDiag ? React.createElement('div', {
-        onClick: onDiag,
-        style:{ background:'linear-gradient(135deg,rgba(175,82,222,0.13),rgba(0,122,255,0.10))', border:'1.5px solid rgba(175,82,222,0.30)', borderRadius:18, padding:'14px 16px', cursor:'pointer', display:'flex', alignItems:'center', gap:12, margin:'0 0 4px' }
-      }
-      , React.createElement('div', { style:{ fontSize:20, flexShrink:0 } }, '🩺')
-      , React.createElement('div', { style:{ flex:1 } }
-        , React.createElement('div', { style:{ fontSize:13, fontWeight:800, color:'var(--c-text)' } }, 'Diagnóstico Financeiro')
-        , React.createElement('div', { style:{ fontSize:11, color:'var(--c-sub)', marginTop:1 } }, 'Score · pro-labore · inadimplência · ROI por veículo')
-      )
-      , React.createElement('div', { style:{ fontSize:16, color:'rgba(175,82,222,0.7)' } }, '›')
-    ) : null
     ,React.createElement('div',{style:{height:28}})
   );
 }

@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>10 Opções de Gráfico — Receitas, Despesas, Manutenções, Lucro</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f13; color: #e0e0e0; padding: 24px; }
+  h1 { font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 6px; }
+  p.sub { font-size: 12px; color: #888; margin-bottom: 32px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 24px; }
+  .option { background: #1a1a22; border-radius: 18px; padding: 20px; border: 1.5px solid #2a2a35; position: relative; }
+  .option-label { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+  .option-num { position: absolute; top: 16px; right: 16px; font-size: 11px; font-weight: 800; color: #444; }
+  svg { width: 100%; display: block; }
+  @media(max-width:600px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<h1>10 Opções — Gráfico de Linhas Mensais</h1>
+<p class="sub">Receitas · Despesas · Manutenções · Lucro — 12 meses</p>
+<div class="grid" id="root"></div>
+<script>
+const meses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+const rec  = [22000,25000,28000,24000,31000,29000,27000,33000,30000,26000,34000,32000];
+const desp = [11000,13000,12000,14000,15000,13500,12000,16000,14500,13000,17000,15000];
+const man  = [2500,1800,3200,2100,2800,4100,1900,2600,3400,2200,3800,2900];
+const luc  = rec.map((r,i)=>r-desp[i]-man[i]);
+const N = 12;
+const W = 480, H = 220, PL=44, PR=16, PT=18, PB=36;
+const GW = W-PL-PR, GH = H-PT-PB;
+const allVals = [...rec,...desp,...man,...luc];
+const minV = Math.min(...luc)-2000, maxV = Math.max(...rec)+2000;
+const range = maxV-minV;
+function xOf(i){ return PL + i/(N-1)*GW; }
+function yOf(v){ return PT + GH - ((v-minV)/range)*GH; }
+function pts(arr){ return arr.map((v,i)=>xOf(i)+','+yOf(v)).join(' '); }
+function polyPts(arr){ return arr.map((v,i)=>xOf(i)+','+yOf(v)).join(' '); }
+function bezierPath(arr){
+  let d='M '+xOf(0)+' '+yOf(arr[0]);
+  for(let i=1;i<arr.length;i++){
+    const x0=xOf(i-1),y0=yOf(arr[i-1]),x1=xOf(i),y1=yOf(arr[i]);
+    const cpx=(x0+x1)/2;
+    d+=` C ${cpx},${y0} ${cpx},${y1} ${x1},${y1}`;
+  }
+  return d;
+}
+function linePath(arr){
+  return 'M '+arr.map((v,i)=>xOf(i)+' '+yOf(v)).join(' L ');
+}
+function areaPath(arr){
+  const base = yOf(Math.max(0,minV));
+  return linePath(arr)+' L '+xOf(N-1)+' '+base+' L '+xOf(0)+' '+base+' Z';
+}
+function bezierAreaPath(arr){
+  const base = yOf(Math.max(0,minV));
+  return bezierPath(arr)+' L '+xOf(N-1)+' '+base+' L '+xOf(0)+' '+base+' Z';
+}
+function fmtK(v){ return v>=1000?(v/1000).toFixed(0)+'k':''+v; }
+function gridLines(ns=4){
+  let out='';
+  for(let i=0;i<=ns;i++){
+    const v = minV+(range/ns)*i;
+    const y = yOf(v);
+    out+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>`;
+    out+=`<text x="${PL-5}" y="${y+4}" text-anchor="end" font-size="9" fill="rgba(255,255,255,0.3)" font-family="-apple-system,sans-serif">${fmtK(v)}</text>`;
+  }
+  return out;
+}
+function xLabels(){
+  return meses.map((m,i)=>`<text x="${xOf(i)}" y="${H-6}" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.35)" font-family="-apple-system,sans-serif">${m}</text>`).join('');
+}
+function legend(items, x0=PL, y0=H-2){
+  return items.map((it,i)=>{
+    const cx=x0+i*110;
+    return `<circle cx="${cx}" cy="${y0-3}" r="4" fill="${it.color}"/>
+    <text x="${cx+8}" y="${y0}" font-size="9.5" fill="rgba(255,255,255,0.65)" font-family="-apple-system,sans-serif">${it.label}</text>`;
+  }).join('');
+}
+const COLORS = { rec:'#4FC88E', desp:'#E07070', man:'#7BAAD2', luc:'#F5C842' };
+const series = [
+  { arr:rec,  color:COLORS.rec,  label:'Receitas', lw:2 },
+  { arr:desp, color:COLORS.desp, label:'Despesas', lw:2 },
+  { arr:man,  color:COLORS.man,  label:'Manutenções', lw:1.5 },
+  { arr:luc,  color:COLORS.luc,  label:'Lucro', lw:2.5 },
+];
+
+const options = [
+
+/* 1 — Linhas simples + pontos */
+{label:'Linhas simples + pontos', bg:'#1a1a22', render:()=>{
+  let svg=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  svg+=`<rect width="${W}" height="${H}" fill="none"/>`;
+  svg+=gridLines(4)+xLabels();
+  series.forEach(s=>{
+    svg+=`<polyline points="${polyPts(s.arr)}" fill="none" stroke="${s.color}" stroke-width="${s.lw}" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>`;
+    s.arr.forEach((v,i)=>{ svg+=`<circle cx="${xOf(i)}" cy="${yOf(v)}" r="3" fill="${s.color}" stroke="#1a1a22" stroke-width="1.5"/>`; });
+  });
+  svg+=legend(series);
+  return svg+'</svg>';
+}},
+
+/* 2 — Linhas suaves (bezier) */
+{label:'Linhas suaves (Bezier)', bg:'#161620', render:()=>{
+  let svg=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  svg+=gridLines(4)+xLabels();
+  series.forEach(s=>{
+    svg+=`<path d="${bezierPath(s.arr)}" fill="none" stroke="${s.color}" stroke-width="${s.lw+0.5}" stroke-linecap="round" opacity="0.95"/>`;
+  });
+  svg+=legend(series);
+  return svg+'</svg>';
+}},
+
+/* 3 — Área semi-transparente */
+{label:'Área preenchida semi-transparente', bg:'#14141e', render:()=>{
+  let svg=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  svg+=gridLines(4)+xLabels();
+  series.forEach(s=>{
+    svg+=`<path d="${areaPath(s.arr)}" fill="${s.color}" opacity="0.12"/>`;
+    svg+=`<polyline points="${polyPts(s.arr)}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  });
+  svg+=legend(series);
+  return svg+'</svg>';
+}},
+
+/* 4 — Bezier + área gradiente */
+{label:'Bezier + área com gradiente', bg:'#12121c', render:()=>{
+  let svg=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  const defs = series.map((s,i)=>`
+    <linearGradient id="g${i}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${s.color}" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="${s.color}" stop-opacity="0"/>
+    </linearGradient>`).join('');
+  svg+=`<defs>${defs}</defs>`;
+  svg+=gridLines(4)+xLabels();
+  series.forEach((s,i)=>{
+    svg+=`<path d="${bezierAreaPath(s.arr)}" fill="url(#g${i})"/>`;
+    svg+=`<path d="${bezierPath(s.arr)}" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linecap="round" opacity="0.95"/>`;
+  });
+  svg+=legend(series);
+  return svg+'</svg>';
+}},
+
+/* 5 — Estilo escuro neon/glow */
+{label:'Neon / Glow (fundo escuro)', bg:'#0a0a14', render:()=>{
+  let svg=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  const defs = series.map((s,i)=>`
+    <filter id="gf${i}" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>`).join('');
+  svg+=`<defs>${defs}</defs>`;
+  svg+=gridLines(4)+xLabels();
+  series.forEach((s,i)=>{
+    svg+=`<path d="${bezierPath(s.arr)}" fill="none" stroke="${s.color}" stroke-width="4" stroke-linecap="round" opacity="0.25" filter="url(#gf${i})"/>`;
+    svg+=`<path d="${bezierPath(s.arr)}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linecap="round" opacity="0.95"/>`;
+  });
+  svg+=legend(series);
+  return svg+'</svg>';
+}},
+
+/* 6 — Linhas tracejadas p/ previsão (últimos 3 meses) */
+{label:'Sólido = realizado · tracejado = previsão', bg:'#161620', render:()=>{
+  let svg=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  svg+=gridLines(4)+xLabels();
+  const split=9;
+  series.forEach(s=>{
+    const pPast=polyPts(s.arr.slice(0,split+1));
+    const pFut='M '+xOf(split)+' '+yOf(s.arr[split])+' '+s.arr.slice(split).map((v,i)=>xOf(split+i)+','+yOf(v)).join(' L ');
+    svg+=`<polyline points="${pPast}" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+    svg+=`<path d="${pFut}" fill="none" stroke="${s.color}" stroke-width="1.8" stroke-dasharray="5,3" stroke-linecap="round" opacity="0.8"/>`;
+    s.arr.forEach((v,i)=>{ if(i===0||i===split||i===N-1) svg+=`<circle cx="${xOf(i)}" cy="${yOf(v)}" r="3.5" fill="${s.color}" stroke="#161620" stroke-width="1.5"/>`; });
+  });
+  svg+=`<line x1="${xOf(split)}" y1="${PT}" x2="${xOf(split)}" y2="${H-PB}" stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-dasharray="3,3"/>`;
+  svg+=`<text x="${xOf(split)+4}" y="${PT+10}" font-size="8.5" fill="rgba(255,255,255,0.4)" font-family="-apple-system,sans-serif">Previsão →</text>`;
+  svg+=legend(series);
+  return svg+'</svg>';
+}},
+
+/* 7 — Área empilhada (stacked) */
+{label:'Área empilhada (despesas + manutenções)', bg:'#14141e', render:()=>{
+  const stackDesp = desp.map((d,i)=>d+man[i]);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  const base = yOf(0);
+  const defs=`<defs>
+    <linearGradient id="sg0" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${COLORS.desp}" stop-opacity="0.5"/><stop offset="100%" stop-color="${COLORS.desp}" stop-opacity="0.15"/></linearGradient>
+    <linearGradient id="sg1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${COLORS.man}" stop-opacity="0.4"/><stop offset="100%" stop-color="${COLORS.man}" stop-opacity="0.1"/></linearGradient>
+    <linearGradient id="sg2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${COLORS.rec}" stop-opacity="0.3"/><stop offset="100%" stop-color="${COLORS.rec}" stop-opacity="0.05"/></linearGradient>
+  </defs>`;
+  svg+=defs+gridLines(4)+xLabels();
+  // stack: man (bottom), desp (middle), rec (top line)
+  const manPts = man.map((v,i)=>xOf(i)+','+yOf(v)).join(' ');
+  const dStackPts = stackDesp.map((v,i)=>xOf(i)+','+yOf(v)).join(' ');
+  const manAreaD = 'M '+xOf(0)+' '+yOf(man[0])+' '+man.slice(1).map((v,i)=>'L '+xOf(i+1)+' '+yOf(v)).join(' ')+' L '+xOf(N-1)+' '+base+' L '+xOf(0)+' '+base+' Z';
+  const despAreaD = 'M '+xOf(0)+' '+yOf(stackDesp[0])+' '+stackDesp.slice(1).map((v,i)=>'L '+xOf(i+1)+' '+yOf(v)).join(' ')+' L '+xOf(N-1)+' '+yOf(man[N-1])+' '+[...man].reverse().map((v,i)=>'L '+xOf(N-1-i)+' '+yOf(v)).join(' ')+' Z';
+  svg+=`<path d="${manAreaD}" fill="url(#sg1)"/>`;
+  svg+=`<path d="${despAreaD}" fill="url(#sg0)"/>`;
+  svg+=`<polyline points="${manPts}" fill="none" stroke="${COLORS.man}" stroke-width="1.5" opacity="0.8"/>`;
+  svg+=`<polyline points="${dStackPts}" fill="none" stroke="${COLORS.desp}" stroke-width="2" opacity="0.9"/>`;
+  svg+=`<polyline points="${polyPts(rec)}" fill="none" stroke="${COLORS.rec}" stroke-width="2.5" stroke-dasharray="none"/>`;
+  svg+=`<polyline points="${polyPts(luc)}" fill="none" stroke="${COLORS.luc}" stroke-width="2" stroke-dasharray="4,2"/>`;
+  svg+=legend(series);
+  return svg+'</svg>';
+}},
+
+/* 8 — Sparklines lado a lado (4 mini cards) */
+{label:'4 Sparklines separados em cards', bg:'#1a1a22', render:()=>{
+  const CW=116, CH=80, cx0=[4,126,248,370];
+  let svg=`<svg viewBox="0 0 ${W} ${H-20}" xmlns="http://www.w3.org/2000/svg">`;
+  series.forEach((s,si)=>{
+    const x0=cx0[si], cw=CW, ch=CH;
+    const vs=s.arr, mn=Math.min(...vs)-1000, mx=Math.max(...vs)+1000, rng=mx-mn;
+    const spx=(i)=>x0+4+i/(N-1)*(cw-8);
+    const spy=(v)=>16+(ch-24)-(((v-mn)/rng)*(ch-24));
+    const last=vs[N-1], prev=vs[N-2];
+    const trend=last>=prev?'↑':'↓';
+    const tcolor=s.label==='Despesas'?(last<=prev?'#4FC88E':'#E07070'):(last>=prev?'#4FC88E':'#E07070');
+    svg+=`<rect x="${x0}" y="0" width="${cw}" height="${ch+10}" rx="10" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>`;
+    svg+=`<text x="${x0+6}" y="12" font-size="9" fill="rgba(255,255,255,0.5)" font-family="-apple-system,sans-serif">${s.label}</text>`;
+    svg+=`<text x="${x0+cw-6}" y="12" text-anchor="end" font-size="9" font-weight="700" fill="${tcolor}" font-family="-apple-system,sans-serif">${trend}</text>`;
+    // area
+    const aD='M '+spx(0)+' '+spy(vs[0])+vs.slice(1).map((v,i)=>' L '+spx(i+1)+' '+spy(v)).join('')+' L '+spx(N-1)+' '+(ch-8)+' L '+spx(0)+' '+(ch-8)+' Z';
+    svg+=`<path d="${aD}" fill="${s.color}" opacity="0.12"/>`;
+    const lD='M '+spx(0)+' '+spy(vs[0])+vs.slice(1).map((v,i)=>' L '+spx(i+1)+' '+spy(v)).join('');
+    svg+=`<path d="${lD}" fill="none" stroke="${s.color}" stroke-width="1.8" stroke-linecap="round"/>`;
+    // last value
+    svg+=`<text x="${x0+cw/2}" y="${ch+6}" text-anchor="middle" font-size="8.5" font-weight="700" fill="${s.color}" font-family="-apple-system,sans-serif">${fmtK(last)}</text>`;
+  });
+  // month labels abaixo
+  const step=Math.floor((N-1)/5);
+  [0,step,step*2,step*3,step*4,N-1].forEach(i=>{
+    svg+=`<text x="${PL/2+i/(N-1)*(W-PL)}" y="${H-26}" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.3)" font-family="-apple-system,sans-serif">${meses[i]}</text>`;
+  });
+  return svg+'</svg>';
+}},
+
+/* 9 — Linhas grossas + valor no ponto final */
+{label:'Linhas bold + label no final', bg:'#13131d', render:()=>{
+  let svg=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  svg+=gridLines(3)+xLabels();
+  series.forEach(s=>{
+    svg+=`<polyline points="${polyPts(s.arr)}" fill="none" stroke="${s.color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>`;
+    const last=s.arr[N-1], x=xOf(N-1)+5, y=yOf(last);
+    svg+=`<circle cx="${xOf(N-1)}" cy="${y}" r="4.5" fill="${s.color}" stroke="#13131d" stroke-width="2"/>`;
+    svg+=`<text x="${x+2}" y="${y+4}" font-size="9.5" font-weight="700" fill="${s.color}" font-family="-apple-system,sans-serif">R$${fmtK(last)}</text>`;
+  });
+  return svg+'</svg>';
+}},
+
+/* 10 — Estilo "glassmorphism" card, bezier, pontos hover-style */
+{label:'Glass card + bezier + pontos marcados', bg:'#10101a', render:()=>{
+  let svg=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  // fundo com gradiente
+  svg+=`<defs>
+    <linearGradient id="bg10" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e1e30"/>
+      <stop offset="100%" stop-color="#10101a"/>
+    </linearGradient>
+    ${series.map((s,i)=>`<linearGradient id="ga10_${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${s.color}" stop-opacity="0.22"/><stop offset="100%" stop-color="${s.color}" stop-opacity="0"/></linearGradient>`).join('')}
+  </defs>`;
+  svg+=`<rect width="${W}" height="${H}" rx="14" fill="url(#bg10)" stroke="rgba(255,255,255,0.07)" stroke-width="1"/>`;
+  // linhas de grid suaves
+  for(let i=0;i<=4;i++){
+    const v=minV+(range/4)*i, y=yOf(v);
+    svg+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>`;
+    svg+=`<text x="${PL-5}" y="${y+4}" text-anchor="end" font-size="9" fill="rgba(255,255,255,0.25)" font-family="-apple-system,sans-serif">${fmtK(v)}</text>`;
+  }
+  svg+=xLabels();
+  series.forEach((s,i)=>{
+    svg+=`<path d="${bezierAreaPath(s.arr)}" fill="url(#ga10_${i})"/>`;
+    svg+=`<path d="${bezierPath(s.arr)}" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linecap="round" opacity="0.95"/>`;
+    // ponto no mês atual (índice 5 = meio)
+    const mid=5;
+    svg+=`<circle cx="${xOf(mid)}" cy="${yOf(s.arr[mid])}" r="5" fill="${s.color}" opacity="0.25"/>`;
+    svg+=`<circle cx="${xOf(mid)}" cy="${yOf(s.arr[mid])}" r="3" fill="${s.color}" stroke="#1e1e30" stroke-width="1.5"/>`;
+  });
+  svg+=legend(series, PL, H-2);
+  return svg+'</svg>';
+}},
+
+];
+
+const root=document.getElementById('root');
+options.forEach((opt,i)=>{
+  const div=document.createElement('div');
+  div.className='option';
+  div.style.background=opt.bg;
+  div.innerHTML=`<div class="option-label">${opt.label}</div><div class="option-num">#${i+1}</div>${opt.render()}`;
+  root.appendChild(div);
+});
+</script>
+</body>
+</html>

@@ -24393,6 +24393,113 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
 
 
 
+    /* ── Gráfico de Linhas: Evolução Mensal (desde abril/2026) ── */
+    , (() => {
+      var _lhoje  = new Date().toISOString().slice(0,7);
+      var _lstart = "2026-04";
+      var _lend   = (function(){ var d=new Date(_lhoje+"-15"); d.setMonth(d.getMonth()+1); return d.toISOString().slice(0,7); })();
+      var _lmeses = [];
+      (function(){ var c=_lstart; while(c<=_lend){ _lmeses.push(c); var d=new Date(c+"-15"); d.setMonth(d.getMonth()+1); c=d.toISOString().slice(0,7); } })();
+      var _lnomes = _lmeses.map(function(m){ return new Date(m+"-15").toLocaleString("pt-BR",{month:"short",year:"2-digit"}); });
+      function _ld(fn){ return _lmeses.map(fn); }
+      var _lrec = _ld(function(m){
+        if (recMode==="efetivadas") {
+          return contratos.filter(function(c){ var ref=(c.status_pagamento==="pago"||c.status_pagamento==="parcial")&&c.data_pagamento?c.data_pagamento:c.previsao_pagamento; return ref&&ref.slice(0,7)===m&&(c.status_pagamento==="pago"||c.status_pagamento==="parcial"); }).reduce(function(s,c){ return s+(c.status_pagamento==="parcial"?parseFloat(c.valor_pago||0):parseFloat(c.valor_total||0)); },0)
+            +(receitas||[]).filter(function(r){ return !r.ref_fatura&&receitaVisivelNoMes(r,m)&&r.status==="recebido"; }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
+        }
+        return contratos.filter(function(c){ return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m&&c.status!=="cancelado"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
+          +(receitas||[]).filter(function(r){ return !r.ref_fatura&&receitaVisivelNoMes(r,m); }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
+      });
+      var _ldesp = _ld(function(m){
+        return resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), m)
+          .filter(function(d){ if(d.manutencao_id)return false; if(recMode==="efetivadas")return d.status==="pago"||!!d.data_pagamento; return true; })
+          .reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
+      });
+      var _lman = _ld(function(m){
+        var fd=resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }),m)
+          .filter(function(d){ if(!d.manutencao_id)return false; if(recMode==="efetivadas")return d.status==="pago"||!!d.data_pagamento; return true; })
+          .reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
+        var fm=(manutencoes||[]).filter(function(mn){
+          if(!manVisivelNoMes(mn,m))return false;
+          if((despesas||[]).some(function(d){ return String(d.manutencao_id)===String(mn.id); }))return false;
+          if(recMode==="efetivadas")return mn.status_financeiro==="pago"||!!mn.data_pagamento;
+          return true;
+        }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
+        return fd+fm;
+      });
+      var _lret = _ld(function(m){
+        return resolverDespesasDoMes((despesas||[]).filter(function(d){ return isRetLucro(d); }),m)
+          .filter(function(d){ if(recMode==="efetivadas")return d.status==="pago"||!!d.data_pagamento; return true; })
+          .reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
+      });
+      var _lluc = _lmeses.map(function(_,i){ return _lrec[i]-_ldesp[i]-_lman[i]-_lret[i]; });
+      var _lseries=[
+        {key:'rec',data:_lrec, color:'#34C759',lw:1.3,label:'Receitas'},
+        {key:'dep',data:_ldesp,color:'#FF3B30',lw:1.3,label:'Despesas'},
+        {key:'man',data:_lman, color:'#5a8fc4',lw:1.1,label:'Manutenções'},
+        {key:'luc',data:_lluc, color:'#FF9500',lw:1.6,label:'Lucro'},
+        {key:'ret',data:_lret, color:'#AF52DE',lw:1.1,label:'Retirada de Lucro'},
+      ];
+      var _lhIdx=_lmeses.indexOf(_lhoje);
+      var _lPL=40,_lPT=18,_lPB=34,_lCW=76,_lCH=160;
+      var _lTW=_lPL+_lmeses.length*_lCW, _lTH=_lPT+_lCH+_lPB;
+      var _lallV=_lseries.reduce(function(a,s){return a.concat(s.data);},[]);
+      var _lminV=Math.min.apply(null,_lallV.concat([0]));
+      var _lmaxV=Math.max.apply(null,_lallV.concat([1]));
+      var _lrng=_lmaxV-_lminV||1;
+      function _lxOf(i){return _lPL+(i+0.5)*_lCW;}
+      function _lyOf(v){return _lPT+_lCH-(((v-_lminV)/_lrng)*_lCH);}
+      function _lfV(v){var a=Math.abs(v),s=v<0?"-":""; if(a>=1000000)return s+(a/1000000).toFixed(1)+"M"; if(a>=1000)return s+(a%1000===0?(a/1000).toFixed(0):(a/1000).toFixed(1))+"k"; return s+Math.round(a);}
+      var _lgStep=Math.pow(10,Math.floor(Math.log10(_lrng/3))); if(_lrng/_lgStep<3)_lgStep/=2;
+      var _lgVals=[]; for(var _gv=Math.ceil(_lminV/_lgStep)*_lgStep; _gv<=_lmaxV+_lgStep*0.1; _gv+=_lgStep)_lgVals.push(_gv);
+      var _lshowIdx=function(i,si){ if(si===0||si===3)return i%2===0; if(si===1||si===4)return i%2===1; return i%3===0; };
+      var _llblDy=[-11,11,-11,11,-11];
+      return React.createElement(React.Fragment,null
+        ,React.createElement('div',{style:{marginTop:32,marginBottom:10,fontSize:12,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:0.5}},"Evolução Mensal")
+        ,React.createElement('div',{className:'lg-card',style:{background:C.card,borderRadius:16,border:"1px solid "+C.border,padding:"14px 14px 10px",boxShadow:"0 1px 8px rgba(0,0,0,0.04)"}}
+          ,React.createElement('div',{style:{display:"flex",gap:10,marginBottom:14,flexWrap:"wrap"}}
+            ,_lseries.map(function(s){
+                return React.createElement('div',{key:s.key,style:{display:"flex",alignItems:"center",gap:5,fontSize:11,fontWeight:600,color:"var(--c-text)"}}
+                  ,React.createElement('div',{style:{width:14,height:1.5,background:s.color,borderRadius:1}})
+                  ,React.createElement('div',{style:{width:5,height:5,borderRadius:"50%",border:"1.5px solid "+s.color,background:"transparent"}})
+                  ,s.label
+                );
+              })
+          )
+          ,(function(){
+              return React.createElement('div',{style:{overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"thin"}},
+              React.createElement('svg',{width:_lTW,height:_lTH,viewBox:"0 0 "+_lTW+" "+_lTH,style:{display:"block",shapeRendering:"geometricPrecision"}}
+                ,_lgVals.map(function(gv,gi){
+                    var gy=_lyOf(gv);
+                    return React.createElement(React.Fragment,{key:gi}
+                      ,React.createElement('line',{x1:_lPL,y1:gy.toFixed(1),x2:_lTW,y2:gy.toFixed(1),stroke:"var(--c-border)",strokeWidth:0.5,strokeDasharray:gv===0?"4,3":"none",opacity:0.7})
+                      ,React.createElement('text',{x:_lPL-4,y:(gy+4).toFixed(1),textAnchor:"end",fontSize:8.5,fill:"var(--c-sub)",fontFamily:"-apple-system,sans-serif",opacity:0.75},_lfV(gv))
+                    );
+                  })
+                ,_lhIdx>=0&&React.createElement('rect',{x:(_lPL+_lhIdx*_lCW).toFixed(1),y:_lPT,width:_lCW.toFixed(1),height:_lCH,fill:"rgba(0,122,255,0.04)"})
+                ,_lseries.map(function(s,si){
+                    var pts=s.data.map(function(v,i){return{x:_lxOf(i),y:_lyOf(v),v:v};});
+                    var ld="M "+pts.map(function(p){return p.x.toFixed(1)+","+p.y.toFixed(1);}).join(" L ");
+                    return React.createElement(React.Fragment,{key:s.key}
+                      ,React.createElement('path',{d:ld,fill:"none",stroke:s.color,strokeWidth:s.lw,strokeLinejoin:"round",strokeLinecap:"round",opacity:0.88})
+                      ,pts.map(function(p,i){
+                          return React.createElement('g',{key:i}
+                            ,React.createElement('circle',{cx:p.x.toFixed(1),cy:p.y.toFixed(1),r:3,fill:"var(--c-card)",stroke:s.color,strokeWidth:1.3})
+                            ,_lshowIdx(i,si)&&React.createElement('text',{x:p.x.toFixed(1),y:(p.y+_llblDy[si]).toFixed(1),textAnchor:"middle",fontSize:8,fontWeight:600,fill:s.color,fontFamily:"-apple-system,sans-serif",opacity:0.9},_lfV(p.v))
+                          );
+                        })
+                    );
+                  })
+                ,_lmeses.map(function(m,i){
+                    var isH=i===_lhIdx;
+                    return React.createElement('text',{key:m,x:_lxOf(i).toFixed(1),y:(_lPT+_lCH+22).toFixed(1),textAnchor:"middle",fontSize:9,fill:isH?"#007AFF":"var(--c-sub)",fontWeight:isH?700:400,fontFamily:"-apple-system,sans-serif"},_lnomes[i]);
+                  })
+              ));
+            })()
+        )
+      );
+    })()
+
     /* ── GRÁFICO: Despesas por Categoria (estilo Pinterest) ── */
     , (() => {
       var CAT_ICONS = {
@@ -24736,50 +24843,6 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       });
       // Lucro líquido = Receitas − Despesas (excl. ret.lucro) − Retirada de Lucro
       var lucLiqData = meses6.map(function(_, i){ return recData[i] - despData[i] - retLucData[i]; });
-      // ── Gráfico de linhas: todos os meses desde abril/2025 até hoje+1 ──
-      var _linhaStart = "2025-04";
-      var _linhaEnd   = addMonths(_mesHoje12, 1);
-      var mesLinhas = [];
-      (function(){ var cur=_linhaStart; while(cur<=_linhaEnd){ mesLinhas.push(cur); var d=new Date(cur+"-15"); d.setMonth(d.getMonth()+1); cur=d.toISOString().slice(0,7); } })();
-      var nomesMesLinhas = mesLinhas.map(function(m){ return new Date(m+"-15").toLocaleString("pt-BR",{month:"short",year:"2-digit"}); });
-      function _linhaDados(fn){ return mesLinhas.map(fn); }
-      var lRecData = _linhaDados(function(m){
-        if (recMode === "efetivadas") {
-          return contratos.filter(function(c){ var ref=(c.status_pagamento==="pago"||c.status_pagamento==="parcial")&&c.data_pagamento?c.data_pagamento:c.previsao_pagamento; return ref&&ref.slice(0,7)===m&&(c.status_pagamento==="pago"||c.status_pagamento==="parcial"); }).reduce(function(s,c){ return s+(c.status_pagamento==="parcial"?parseFloat(c.valor_pago||0):parseFloat(c.valor_total||0)); },0)
-            +(receitas||[]).filter(function(r){ return !r.ref_fatura&&receitaVisivelNoMes(r,m)&&r.status==="recebido"; }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
-        }
-        return contratos.filter(function(c){ return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m&&c.status!=="cancelado"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
-          +(receitas||[]).filter(function(r){ return !r.ref_fatura&&receitaVisivelNoMes(r,m); }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
-      });
-      var lDespPurData = _linhaDados(function(m){
-        return resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), m)
-          .filter(function(d){
-            if (d.manutencao_id) return false;
-            if (recMode === "efetivadas") return d.status === "pago" || !!d.data_pagamento;
-            return true;
-          }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
-      });
-      var lManData = _linhaDados(function(m){
-        var fromDesp = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), m)
-          .filter(function(d){
-            if (!d.manutencao_id) return false;
-            if (recMode === "efetivadas") return d.status === "pago" || !!d.data_pagamento;
-            return true;
-          }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
-        var fromMan = (manutencoes||[]).filter(function(mn){
-          if (!manVisivelNoMes(mn,m)) return false;
-          if ((despesas||[]).some(function(d){ return String(d.manutencao_id)===String(mn.id); })) return false;
-          if (recMode === "efetivadas") return mn.status_financeiro === "pago" || !!mn.data_pagamento;
-          return true;
-        }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
-        return fromDesp + fromMan;
-      });
-      var lRetLucData = _linhaDados(function(m){
-        return resolverDespesasDoMes((despesas||[]).filter(function(d){ return isRetLucro(d); }), m)
-          .filter(function(d){ if (recMode === "efetivadas") return d.status === "pago" || !!d.data_pagamento; return true; })
-          .reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
-      });
-      var lLucLiqData = mesLinhas.map(function(_, i){ return lRecData[i] - lDespPurData[i] - lManData[i] - lRetLucData[i]; });
       // Category data for selected cat over 6 months
       // "previstas" = todas visíveis no mês (pagas ou não)
       // "pagas" = apenas efetivamente pagas naquele mês
@@ -25064,83 +25127,6 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
               )
             );
           })()
-        ),
-
-        /* ── Gráfico de linhas — 5 indicadores desde abril/2025 ── */
-        React.createElement('div', { style:{ marginTop:28, marginBottom:10, fontSize:12, fontWeight:700, color:C.sub, textTransform:"uppercase", letterSpacing:0.5 } }, "Evolução Mensal"),
-        React.createElement('div', { className:'lg-card', style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"14px 14px 10px", boxShadow:"0 1px 8px rgba(0,0,0,0.04)" } },
-          /* Legenda */
-          React.createElement('div', { style:{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" } }
-            , [['Receitas','#34C759'],['Despesas','#FF3B30'],['Manutencoes','#5a8fc4'],['Lucro','#FF9500'],['Retirada de Lucro','#AF52DE']].map(function(it){
-                return React.createElement('div', { key:it[0], style:{ display:"flex", alignItems:"center", gap:5, fontSize:11, fontWeight:600, color:"var(--c-text)" } }
-                  , React.createElement('div', { style:{ width:14, height:1.5, background:it[1], borderRadius:1 } })
-                  , React.createElement('div', { style:{ width:5, height:5, borderRadius:"50%", border:"1.5px solid "+it[1], background:"transparent" } })
-                  , it[0]
-                );
-              })
-          )
-          /* SVG */
-          , (function(){
-              var PL=40, PT=18, PB=34, CW=76, CH=160, NM=mesLinhas.length;
-              var TW=PL+NM*CW, TH=PT+CH+PB;
-              var hIdx=mesLinhas.indexOf(_mesHoje12);
-              var linSeries=[
-                {key:'rec', data:lRecData,     color:'#34C759', lw:1.3},
-                {key:'dep', data:lDespPurData, color:'#FF3B30', lw:1.3},
-                {key:'man', data:lManData,     color:'#5a8fc4', lw:1.1},
-                {key:'luc', data:lLucLiqData,  color:'#FF9500', lw:1.6},
-                {key:'ret', data:lRetLucData,  color:'#AF52DE', lw:1.1},
-              ];
-              var allV=linSeries.reduce(function(a,s){return a.concat(s.data);},[]);
-              var minV=Math.min.apply(null,allV.concat([0]));
-              var maxV=Math.max.apply(null,allV.concat([1]));
-              var rng=maxV-minV||1;
-              function xOf(i){return PL+(i+0.5)*CW;}
-              function yOf(v){return PT+CH-((v-minV)/rng)*CH;}
-              function fV(v){var a=Math.abs(v); var s=v<0?"-":""; if(a>=1000000)return s+(a/1000000).toFixed(1)+"M"; if(a>=1000)return s+(a/1000%1===0?(a/1000).toFixed(0):(a/1000).toFixed(1))+"k"; return s+Math.round(a);}
-              var gStep=Math.pow(10,Math.floor(Math.log10(rng/3)));
-              if(rng/gStep<3)gStep/=2;
-              var gVals=[]; for(var gv=Math.ceil(minV/gStep)*gStep; gv<=maxV+gStep*0.1; gv+=gStep)gVals.push(gv);
-              var showIdx=function(i,si){
-                if(si===0||si===3)return i%2===0;
-                if(si===1||si===4)return i%2===1;
-                return i%3===0;
-              };
-              var lblDy=[-11,11,-11,11,-11];
-              return React.createElement('div',{style:{overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"thin"}},
-              React.createElement('svg',{width:TW,height:TH,viewBox:"0 0 "+TW+" "+TH,style:{display:"block",shapeRendering:"geometricPrecision"}}
-                /* grid */
-                , gVals.map(function(gv,gi){
-                    var gy=yOf(gv);
-                    return React.createElement(React.Fragment,{key:gi}
-                      ,React.createElement('line',{x1:PL,y1:gy.toFixed(1),x2:TW,y2:gy.toFixed(1),stroke:"var(--c-border)",strokeWidth:0.5,strokeDasharray:gv===0?"4,3":"none",opacity:0.7})
-                      ,React.createElement('text',{x:PL-4,y:(gy+4).toFixed(1),textAnchor:"end",fontSize:8.5,fill:"var(--c-sub)",fontFamily:"-apple-system,sans-serif",opacity:0.75},fV(gv))
-                    );
-                  })
-                /* coluna hoje */
-                , hIdx>=0&&React.createElement('rect',{x:(PL+hIdx*CW).toFixed(1),y:PT,width:CW.toFixed(1),height:CH,fill:"rgba(0,122,255,0.04)"})
-                /* linhas + pontos + labels */
-                , linSeries.map(function(s,si){
-                    var pts=s.data.map(function(v,i){return{x:xOf(i),y:yOf(v),v:v};});
-                    var ld="M "+pts.map(function(p){return p.x.toFixed(1)+","+p.y.toFixed(1);}).join(" L ");
-                    return React.createElement(React.Fragment,{key:s.key}
-                      ,React.createElement('path',{d:ld,fill:"none",stroke:s.color,strokeWidth:s.lw,strokeLinejoin:"round",strokeLinecap:"round",opacity:0.88})
-                      ,pts.map(function(p,i){
-                          var show=showIdx(i,si);
-                          return React.createElement('g',{key:i}
-                            ,React.createElement('circle',{cx:p.x.toFixed(1),cy:p.y.toFixed(1),r:3,fill:"var(--c-card)",stroke:s.color,strokeWidth:1.3})
-                            ,show&&React.createElement('text',{x:p.x.toFixed(1),y:(p.y+lblDy[si]).toFixed(1),textAnchor:"middle",fontSize:8,fontWeight:600,fill:s.color,fontFamily:"-apple-system,sans-serif",opacity:0.9},fV(p.v))
-                          );
-                        })
-                    );
-                  })
-                /* labels meses */
-                , mesLinhas.map(function(m,i){
-                    var isH=i===hIdx;
-                    return React.createElement('text',{key:m,x:xOf(i).toFixed(1),y:(PT+CH+22).toFixed(1),textAnchor:"middle",fontSize:9,fill:isH?"#007AFF":"var(--c-sub)",fontWeight:isH?700:400,fontFamily:"-apple-system,sans-serif"},nomesMesLinhas[i]);
-                  })
-              ));
-            })()
         ),
 
         // Painel de análise de mês clicado

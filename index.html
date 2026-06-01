@@ -22856,37 +22856,45 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
           , React.createElement('div', { style:{ display:(recSlot===0&&dmSlot===0)?"block":"none" } }
             , (function(){
                 var allDays = [...new Set([..._ctsDays, ..._despDays])].sort(function(a,b){return a-b;});
-                if (allDays.length === 0) return React.createElement('div', { style:{ height:80, display:"flex", alignItems:"center", justifyContent:"center", color:C.sub, fontSize:12 } }, "Nenhum dado no mês");
-                var W=320, H=80, padL=0, padR=0, padT=8, padB=16;
-                var chartW=W-padL-padR, chartH=H-padT-padB;
+                if (allDays.length === 0) return React.createElement('div', { style:{ height:110, display:"flex", alignItems:"center", justifyContent:"center", color:C.sub, fontSize:12 } }, "Nenhum dado no mês");
+                var W=320, padB=18, padT=6;
                 var n=allDays.length;
-                var xFn=function(day){ return n===1 ? chartW/2 : (allDays.indexOf(day)/(n-1))*chartW; };
-                var maxVal=Math.max(
-                  ..._ctsDays.map(function(d){ return (_ctsChartMap[d].pago||0)+(_ctsChartMap[d].pendente||0); }),
-                  ..._despDays.map(function(d){ return (_despChartMap[d].pago||0)+(_despChartMap[d].previsto||0); }),
-                  1
-                ) * 1.18;
-                var yFn=function(v){ return padT+chartH-(v/maxVal)*chartH; };
+                var xFn=function(day){ return n===1 ? W/2 : (allDays.indexOf(day)/(n-1))*W; };
+
+                /* escala independente por série */
+                var maxC=Math.max.apply(null,_ctsDays.map(function(d){ return (_ctsChartMap[d].pago||0)+(_ctsChartMap[d].pendente||0); }).concat([1]))*1.18;
+                var maxD=Math.max.apply(null,_despDays.map(function(d){ return (_despChartMap[d].pago||0)+(_despChartMap[d].previsto||0); }).concat([1]))*1.18;
+
+                /* mirror: receitas crescem pra cima (y decresce), despesas crescem pra baixo */
+                var halfH=55;                        /* metade útil de cada faixa            */
+                var midY=halfH+padT;                 /* linha zero central                   */
+                var H=(halfH*2)+padT+padB;           /* altura total SVG                     */
+                var yCt=function(v){ return midY-(v/maxC)*halfH; };   /* receitas: sobe      */
+                var yDp=function(v){ return midY+(v/maxD)*halfH; };   /* despesas: desce     */
 
                 /* pontos contratos */
                 var cPts=_ctsDays.map(function(day){
                   var val=(_ctsChartMap[day].pago||0)+(_ctsChartMap[day].pendente||0);
-                  return { x:xFn(day).toFixed(1), y:yFn(val).toFixed(1), day:day, val:val,
+                  return { x:xFn(day), y:yCt(val), day:day, val:val,
                     isHoje:day===_hojeDay, isVence:(_ctsChartMap[day].pendente||0)>0 };
                 });
                 /* pontos despesas */
                 var dPts=_despDays.map(function(day){
                   var val=(_despChartMap[day].pago||0)+(_despChartMap[day].previsto||0);
-                  return { x:xFn(day).toFixed(1), y:yFn(val).toFixed(1), day:day, val:val,
+                  return { x:xFn(day), y:yDp(val), day:day, val:val,
                     isHoje:day===_hojeDay, isPrevisto:(_despChartMap[day].previsto||0)>0 };
                 });
 
-                var cLineD=cPts.map(function(p,i){ return (i===0?"M":"L")+p.x+","+p.y; }).join(" ");
-                var cAreaD=cPts.length>0 ? cLineD+" L"+cPts[cPts.length-1].x+","+(padT+chartH)+" L"+cPts[0].x+","+(padT+chartH)+" Z" : "";
-                var dLineD=dPts.map(function(p,i){ return (i===0?"M":"L")+p.x+","+p.y; }).join(" ");
-                var dAreaD=dPts.length>0 ? dLineD+" L"+dPts[dPts.length-1].x+","+(padT+chartH)+" L"+dPts[0].x+","+(padT+chartH)+" Z" : "";
+                /* bezier smooth path */
+                function _mkSmooth(pts){ if(!pts.length)return""; if(pts.length===1)return"M"+pts[0].x.toFixed(1)+","+pts[0].y.toFixed(1); var d="M"+pts[0].x.toFixed(1)+","+pts[0].y.toFixed(1); for(var i=1;i<pts.length;i++){var p0=pts[i-1],p1=pts[i],cx=((p0.x+p1.x)/2).toFixed(1);d+=" C"+cx+","+p0.y.toFixed(1)+" "+cx+","+p1.y.toFixed(1)+" "+p1.x.toFixed(1)+","+p1.y.toFixed(1);} return d; }
 
-                /* x-axis: union de todos os dias */
+                var cLineD=_mkSmooth(cPts);
+                var dLineD=_mkSmooth(dPts);
+                /* área: receitas fecham em midY (linha zero), despesas também */
+                var cAreaD=cPts.length>0 ? cLineD+" L"+cPts[cPts.length-1].x.toFixed(1)+","+midY+" L"+cPts[0].x.toFixed(1)+","+midY+" Z" : "";
+                var dAreaD=dPts.length>0 ? dLineD+" L"+dPts[dPts.length-1].x.toFixed(1)+","+midY+" L"+dPts[0].x.toFixed(1)+","+midY+" Z" : "";
+
+                /* x-axis labels */
                 var xLabels=allDays.map(function(day){
                   var isC=_ctsDays.includes(day), isD=_despDays.includes(day);
                   var col=isC&&isD?C.sub:isC?C.green:C.red;
@@ -22895,45 +22903,50 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                   var isHj=day===_hojeDay;
                   var fc=isHj?C.blue:isVenceC?C.orange:isPrevD?C.orange:col;
                   var fw=(isHj||isVenceC||isPrevD)?"700":"400";
-                  var anchor=allDays.indexOf(day)===0?"start":allDays.indexOf(day)===n-1?"end":"middle";
+                  var idx=allDays.indexOf(day);
+                  var anchor=idx===0?"start":idx===n-1?"end":"middle";
                   return React.createElement('text', { key:"xl"+day, x:xFn(day).toFixed(1), y:H-2, textAnchor:anchor, fontSize:9, fill:fc, fontWeight:fw },
-                    String(day)+(isHj?"●":"")
+                    String(day)+(isHj?"\u25cf":"")
                   );
                 });
 
                 return React.createElement('svg', { viewBox:"0 0 "+W+" "+H, style:{ width:"100%", height:H, display:"block", overflow:"visible" } }
                   , React.createElement('defs', null
-                    , React.createElement('linearGradient', { id:"ugCtGrad", x1:"0", y1:"0", x2:"0", y2:"1" }
-                      , React.createElement('stop', { offset:"0%", stopColor:C.green, stopOpacity:"0.16" })
-                      , React.createElement('stop', { offset:"100%", stopColor:C.green, stopOpacity:"0.01" })
+                    , React.createElement('linearGradient', { id:"ugCtGrad", x1:"0", y1:"1", x2:"0", y2:"0" }
+                      , React.createElement('stop', { offset:"0%", stopColor:C.green, stopOpacity:"0.01" })
+                      , React.createElement('stop', { offset:"100%", stopColor:C.green, stopOpacity:"0.2" })
                     )
                     , React.createElement('linearGradient', { id:"ugDpGrad", x1:"0", y1:"0", x2:"0", y2:"1" }
-                      , React.createElement('stop', { offset:"0%", stopColor:C.red, stopOpacity:"0.12" })
-                      , React.createElement('stop', { offset:"100%", stopColor:C.red, stopOpacity:"0.01" })
+                      , React.createElement('stop', { offset:"0%", stopColor:C.red, stopOpacity:"0.01" })
+                      , React.createElement('stop', { offset:"100%", stopColor:C.red, stopOpacity:"0.16" })
                     )
                   )
+                  /* linha zero central */
+                  , React.createElement('line', { x1:0, y1:midY, x2:W, y2:midY, stroke:C.border, strokeWidth:0.8 })
+                  /* linha vertical hoje */
+                  , _hojeDay>0 && React.createElement('line', { x1:xFn(_hojeDay).toFixed(1), y1:padT, x2:xFn(_hojeDay).toFixed(1), y2:H-padB, stroke:C.blue, strokeWidth:1, strokeDasharray:"3,2", opacity:0.5 })
                   /* áreas */
                   , cAreaD && React.createElement('path', { d:cAreaD, fill:"url(#ugCtGrad)" })
                   , dAreaD && React.createElement('path', { d:dAreaD, fill:"url(#ugDpGrad)" })
                   /* linhas */
                   , cLineD && React.createElement('path', { d:cLineD, fill:"none", stroke:C.green, strokeWidth:1.8, strokeLinejoin:"round", strokeLinecap:"round" })
                   , dLineD && React.createElement('path', { d:dLineD, fill:"none", stroke:C.red, strokeWidth:1.8, strokeLinejoin:"round", strokeLinecap:"round" })
-                  /* dots contratos */
+                  /* dots contratos — menores */
                   , cPts.map(function(p,i){
                       var dc=p.isHoje?C.blue:(p.isVence?C.orange:C.green);
                       return React.createElement('g', { key:"cg"+i }
-                        , React.createElement('circle', { cx:p.x, cy:p.y, r:"5", fill:dc, fillOpacity:"0.11" })
-                        , React.createElement('circle', { cx:p.x, cy:p.y, r:"3", fill:"var(--c-card,#fff)", stroke:dc, strokeWidth:"1.4" })
-                        , React.createElement('circle', { cx:p.x, cy:p.y, r:"1.3", fill:dc })
+                        , React.createElement('circle', { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"4", fill:dc, fillOpacity:"0.1" })
+                        , React.createElement('circle', { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"2.2", fill:"var(--c-card,#fff)", stroke:dc, strokeWidth:"1.3" })
+                        , React.createElement('circle', { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"1", fill:dc })
                       );
                     })
-                  /* dots despesas */
+                  /* dots despesas — menores */
                   , dPts.map(function(p,i){
                       var dc=p.isHoje?C.blue:(p.isPrevisto?C.orange:C.red);
                       return React.createElement('g', { key:"dg"+i }
-                        , React.createElement('circle', { cx:p.x, cy:p.y, r:"5", fill:dc, fillOpacity:"0.09" })
-                        , React.createElement('circle', { cx:p.x, cy:p.y, r:"3", fill:"var(--c-card,#fff)", stroke:dc, strokeWidth:"1.4" })
-                        , React.createElement('circle', { cx:p.x, cy:p.y, r:"1.3", fill:dc })
+                        , React.createElement('circle', { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"4", fill:dc, fillOpacity:"0.09" })
+                        , React.createElement('circle', { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"2.2", fill:"var(--c-card,#fff)", stroke:dc, strokeWidth:"1.3" })
+                        , React.createElement('circle', { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"1", fill:dc })
                       );
                     })
                   /* x labels */

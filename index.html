@@ -32426,6 +32426,43 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   // Mês financeiro da manutenção: usa função global
   function manMesRef(m) { return manMesRefGlobal(m); }
 
+  async function _syncRetLucroOrc(desp, despId) {
+    if (!isRetLucro(desp)) {
+      var oldTag = "[ret_loc:" + despId + "]";
+      var oldEntry = (_orcFresh||[]).find(function(o){ return (o.observacoes||"").indexOf(oldTag) !== -1; });
+      if (oldEntry) {
+        try { await db.del("orcamento_pessoal", oldEntry.id); _setOrcFresh(function(p){ return (p||[]).filter(function(o){ return o.id !== oldEntry.id; }); }); } catch(e){}
+      }
+      return;
+    }
+    var tag = "[ret_loc:" + despId + "]";
+    var data = desp.data || new Date().toISOString().split("T")[0];
+    var orcPayload = {
+      descricao: desp.descricao || "Retirada de Lucro",
+      categoria: "Locacao",
+      valor: parseFloat(desp.valor || 0),
+      tipo: "receita",
+      data: desp.data || null,
+      mes: data.slice(0, 7),
+      status: desp.status === "pago" ? "recebido" : "previsto",
+      data_pagamento: desp.data_pagamento || null,
+      observacoes: tag,
+      recorrente: false,
+      prazo_recorrencia: null,
+      recorrencia_origem_id: null
+    };
+    var existing = (_orcFresh||[]).find(function(o){ return (o.observacoes||"").indexOf(tag) !== -1; });
+    try {
+      if (existing) {
+        var u = await db.patch("orcamento_pessoal", existing.id, orcPayload);
+        _setOrcFresh(function(p){ return (p||[]).map(function(o){ return o.id === existing.id ? Object.assign({}, o, u) : o; }); });
+      } else {
+        var c = await db.post("orcamento_pessoal", orcPayload);
+        _setOrcFresh(function(p){ return [c].concat(p||[]); });
+      }
+    } catch(e) { console.warn("[syncRetLucro] erro:", e); }
+  }
+
   async function saveDespesa() {
     if (!form.descricao || !form.valor || !form.data) return toast("Descricao, valor e data obrigatorios", "error");
     setLoading(true);
@@ -32535,6 +32572,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       } else if (edit) {
         const u = await db.patch("despesas", edit, payload);
         setDespesas(p => p.map(d => d.id === edit ? Object.assign({}, d, u) : d));
+        await _syncRetLucroOrc(Object.assign({}, payload, u), edit);
         toast("Atualizado!");
       } else if (numParcelas > 1) {
         var valorParcela = (parseFloat(form.valor) / numParcelas).toFixed(2);
@@ -32553,6 +32591,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       } else {
         const c = await db.post("despesas", payload);
         setDespesas(p => [c].concat(p));
+        await _syncRetLucroOrc(c, c.id);
         toast("Registrado!");
       }
       setModal(false);
@@ -32573,7 +32612,18 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     } catch(e) { toast("Erro: " + e.message, "error"); }
     setLoading(false);
   }
-  async function removeDespesa(id) { if (!confirm("Excluir?")) return; await db.del("despesas", id); setDespesas(p => p.filter(d => d.id !== id)); toast("Excluido!"); }
+  async function removeDespesa(id) {
+    if (!confirm("Excluir?")) return;
+    var desp = (despesas||[]).find(function(d){ return d.id === id; });
+    await db.del("despesas", id);
+    setDespesas(p => p.filter(d => d.id !== id));
+    if (desp && isRetLucro(desp)) {
+      var tag = "[ret_loc:" + id + "]";
+      var orcEntry = (_orcFresh||[]).find(function(o){ return (o.observacoes||"").indexOf(tag) !== -1; });
+      if (orcEntry) { try { await db.del("orcamento_pessoal", orcEntry.id); _setOrcFresh(function(p){ return (p||[]).filter(function(o){ return o.id !== orcEntry.id; }); }); } catch(e){} }
+    }
+    toast("Excluido!");
+  }
   async function removeReceita(id) {
     if (!confirm("Excluir receita?")) return;
     var rec = (receitas||[]).find(function(r){ return r.id === id; });

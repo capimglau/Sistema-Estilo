@@ -23237,6 +23237,7 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
         /* ── Agenda Financeira (card independente) ── */
         , (() => {
           var _isCurMes = dashMes === mesAtual;
+          var _despMesItens = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), dashMes);
           var _agMap = {};
           function _agAdd(dt, ev) { if (!_agMap[dt]) _agMap[dt]=[]; _agMap[dt].push(ev); }
           /* todos os contratos do mês */
@@ -23248,19 +23249,22 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
             _agAdd(dt, { type:"ct", label:(cl&&cl.nome)||"CT-"+String(c.id).padStart(4,"0"), value:parseFloat(c.valor_total||0), paid:isPago, id:c.id });
           });
           /* todas as despesas do mês */
-          (despMesItens||[]).forEach(function(d) {
+          (_despMesItens||[]).forEach(function(d) {
             var isPago = d.status==="pago"||!!d.data_pagamento;
             var dt = isPago ? (d.data_pagamento||d.data) : d.data;
             if (!dt || dt.slice(0,7)!==dashMes) return;
             _agAdd(dt, { type:"desp", label:d.descricao||d.categoria||"Despesa", value:parseFloat(d.valor||0), paid:isPago, id:d.id });
           });
-          /* contas a pagar do mês (seguros, fixas, etc.) */
+          /* contas a pagar do mês — inclui vencidas pendentes de meses anteriores */
           (contas||[]).forEach(function(c) {
-            if (c.status==="cancelado") return;
+            if (c.status==="cancelado"||c.status==="pago") return;
             var dt = c.vencimento;
-            if (!dt || dt.slice(0,7)!==dashMes) return;
-            var isPago = c.status==="pago";
-            _agAdd(dt, { type:"conta", label:c.descricao||c.categoria||"Conta", value:parseFloat(c.valor||0), paid:isPago, id:c.id });
+            if (!dt) return;
+            var dtMes = dt.slice(0,7);
+            if (dtMes > dashMes) return; // futura — não pertence a este mês
+            // Vencida de mês anterior: exibe no 1º dia do mês selecionado
+            var displayDt = dtMes === dashMes ? dt : (dashMes + "-01");
+            _agAdd(displayDt, { type:"conta", label:c.descricao||c.categoria||"Conta", value:parseFloat(c.valor||0), paid:false, id:c.id, overdue: dtMes < dashMes });
           });
           /* garante que "hoje" aparece na lista quando é o mês atual */
           if (_isCurMes && !_agMap[hoje]) _agMap[hoje] = [];
@@ -23301,11 +23305,12 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                   var desps = evs.filter(function(e){return e.type==="desp"||e.type==="conta";});
                   var hasDesp=desps.length>0, hasCt=cts.length>0;
                   var allPaid=evs.every(function(e){return e.paid;});
+                  var hasOverdue=evs.some(function(e){return e.overdue;});
                   /* dot e cores por contexto */
                   var dotColor = isToday ? C.blue : allPaid ? C.green : (hasDesp&&!hasCt ? C.red : C.green);
                   var rowColor = isToday ? C.blue : allPaid ? C.green : (hasDesp&&!hasCt ? C.red : C.green);
-                  var bgColor = isToday ? C.blue+"0E" : isPast ? "transparent" : isFutureFar ? "transparent" : (allPaid ? C.green+"0D" : (hasDesp&&!hasCt ? C.red+"0D" : C.green+"0D"));
-                  var opacity = isPast && !isToday ? 0.6 : 1;
+                  var bgColor = isToday ? C.blue+"0E" : (isPast&&!hasOverdue) ? "transparent" : isFutureFar ? "transparent" : (allPaid ? C.green+"0D" : (hasDesp&&!hasCt ? C.red+"0D" : C.green+"0D"));
+                  var opacity = (isPast&&!hasOverdue) && !isToday ? 0.6 : 1;
                   /* título da linha */
                   var title;
                   if (evs.length===0) { title=""; }

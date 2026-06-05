@@ -22224,7 +22224,7 @@ function statusEfetivoVeiculo(veiculo, contratos) {
 }
 
 
-function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, despesas, receitas, contas, setTab, setFinDeepLink, orcItens, desktop, empresa, toast, setOperacionalSubTab }) {
+function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas, manutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, setTab, setFinDeepLink, orcItens, desktop, empresa, toast, setOperacionalSubTab }) {
   const hoje = new Date().toISOString().split("T")[0];
   const mesAtual = new Date().toISOString().slice(0, 7);
   const [modoDash, setModoDash] = React.useState("locadora"); // "locadora" | "pessoal"
@@ -22287,6 +22287,8 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
     window.addEventListener("ag:toggle-dash-mode", onToggleDash);
     return function() { window.removeEventListener("ag:toggle-dash-mode", onToggleDash); };
   }, []);
+  var _agSwRef = React.useRef({ on:false, sx:0, sy:0, dx:0, key:null });
+  var _agSwTxState = React.useState({}); var agSwTx = _agSwTxState[0]; var setAgSwTx = _agSwTxState[1];
   var prevBannerTouch = React.useRef(null);
   var prevBannerWheel = React.useRef(0);
   var _recScrollRef  = React.useRef(null);
@@ -22612,6 +22614,39 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
       setTab("financeiro");
     } else {
       setTab(tab || "inicio");
+    }
+  }
+
+  async function _agBaixar(ev) {
+    var dtHoje = new Date().toISOString().split("T")[0];
+    var _r;
+    if (ev.type === "ct") {
+      _r = await window.__agPrompt({ title:"Receber Pagamento", icon:"💰", label1:"Data do pagamento", type1:"date", default1:dtHoje });
+      if (!_r || !_r.ok) return;
+      var dtPag = _r.v1;
+      await db.patch("contratos", ev.id, { status_pagamento:"pago", data_pagamento:dtPag });
+      setContratos(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status_pagamento:"pago",data_pagamento:dtPag}):x; }); });
+      var mesPag = dtPag.slice(0,7);
+      var refKeyNovo = "fat_"+ev.id+"_"+mesPag;
+      var recLinked = (receitas||[]).find(function(r){ return r.ref_fatura&&r.ref_fatura.startsWith("fat_"+ev.id+"_"); });
+      if (recLinked) {
+        var patchRec = { data_pagamento:dtPag, status:"recebido" };
+        if (recLinked.ref_fatura !== refKeyNovo) patchRec.ref_fatura = refKeyNovo;
+        try { var updRec = await db.patch("receitas", recLinked.id, patchRec); setReceitas(function(p){ return p.map(function(r){ return r.id===recLinked.id?Object.assign({},r,updRec):r; }); }); } catch(e){ console.warn(e); }
+      }
+      toast("✅ Pagamento registrado!");
+    } else if (ev.type === "desp") {
+      _r = await window.__agPrompt({ title:"Baixar Despesa", icon:"💸", label1:"Data do pagamento", type1:"date", default1:dtHoje });
+      if (!_r || !_r.ok) return;
+      await db.patch("despesas", ev.id, { status:"pago", data_pagamento:_r.v1 });
+      setDespesas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status:"pago",data_pagamento:_r.v1}):x; }); });
+      toast("✅ Despesa baixada!");
+    } else if (ev.type === "conta") {
+      _r = await window.__agPrompt({ title:"Baixar Conta", icon:"💸", label1:"Data do pagamento", type1:"date", default1:dtHoje });
+      if (!_r || !_r.ok) return;
+      await db.patch("contas", ev.id, { status:"pago", data_pagamento:_r.v1 });
+      setContas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status:"pago",data_pagamento:_r.v1}):x; }); });
+      toast("✅ Conta baixada!");
     }
   }
 
@@ -23525,18 +23560,40 @@ function Inicio({ veiculos, clientes, contratos, reservas, multas, manutencoes, 
                         )
                       : (function(){ var _totEv=(cts.reduce(function(s,c){return s+c.value;},0))+(desps.reduce(function(s,d){return s+d.value;},0)); var _ds=evs.length===0?7:_totEv>3000?13:_totEv>800?10:7; var _dp=Math.round((13-_ds)/2); return React.createElement('div', { style:{ width:_ds, height:_ds, borderRadius:"50%", background:dotColor, opacity:isFutureFar?0.4:1, border:"1.5px solid var(--c-card,#1c1c1e)", flexShrink:0, marginTop:_dp } }); })();
                     var _swHint=!isToday&&!allPaid&&!isPast&&(hasCt||hasDesp)&&evs.length===1;
-                    return React.createElement('div', { key:rKey, style:{ display:"flex", alignItems:"flex-start", marginBottom:desktop?4:10, cursor:_onClick?"pointer":"default", opacity:opacity }, onClick:_onClick||undefined }
+                    var _tx=_swHint?(agSwTx[rKey]||0):0;
+                    var _swHandlers=_swHint?{
+                      onTouchStart:function(e){_agSwRef.current={on:true,sx:e.touches[0].clientX,sy:e.touches[0].clientY,dx:0,key:rKey};},
+                      onTouchMove:function(e){
+                        var sw=_agSwRef.current;if(!sw.on||sw.key!==rKey)return;
+                        var dx=e.touches[0].clientX-sw.sx;var dy=Math.abs(e.touches[0].clientY-sw.sy);
+                        if(dy>Math.abs(dx)&&dy>8){sw.on=false;return;}
+                        var cur=Math.min(0,dx);sw.dx=cur;
+                        setAgSwTx(function(p){var n=Object.assign({},p);n[rKey]=cur;return n;});
+                      },
+                      onTouchEnd:function(){
+                        var sw=_agSwRef.current;if(!sw.key)return;
+                        var dx=sw.dx||0;var key=sw.key;
+                        sw.on=false;sw.dx=0;sw.key=null;
+                        setAgSwTx(function(p){var n=Object.assign({},p);delete n[key];return n;});
+                        if(dx<-60){_agBaixar(_ev0);}
+                      }
+                    }:{};
+                    return React.createElement('div', Object.assign({ key:rKey, style:{ display:"flex", alignItems:"flex-start", marginBottom:desktop?4:10, cursor:_onClick?"pointer":"default", opacity:opacity }, onClick:_onClick||undefined }, _swHandlers)
                       , React.createElement('div', { style:{ width:20, display:"flex", justifyContent:"center", paddingTop:8, flexShrink:0 } }, dotEl)
                       , React.createElement('div', { style:{ flex:1, padding:"5px 10px", marginLeft:6, background:_swHint?"rgba(255,255,255,0.025)":"transparent", borderRadius:_swHint?10:0, border:_swHint?"1px solid rgba(255,255,255,0.05)":"none", position:"relative", overflow:"hidden" } }
-                        , React.createElement('div', { style:{ fontSize:12, fontWeight: isToday ? 600 : 500, color: isToday ? C.blue : "var(--c-text)" } }
-                          , isToday ? "Hoje \xb7 "+_fmtDt(date) : _fmtDt(date)+(title?" \xb7 "+title:"")
+                        , React.createElement('div', { style:{ transform:"translateX("+_tx+"px)", transition:_tx===0?"transform 0.2s":"none" } }
+                          , React.createElement('div', { style:{ fontSize:12, fontWeight: isToday ? 600 : 500, color: isToday ? C.blue : "var(--c-text)" } }
+                            , isToday ? "Hoje \xb7 "+_fmtDt(date) : _fmtDt(date)+(title?" \xb7 "+title:"")
+                          )
+                          , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:1, opacity: isFutureFar ? 0.65 : 1 } }
+                            , isToday && evs.length===0 ? "Sem lan\xe7amentos hoje"
+                              : isFutureFar ? sub+" previstos"
+                              : sub
+                          )
                         )
-                        , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:1, opacity: isFutureFar ? 0.65 : 1 } }
-                          , isToday && evs.length===0 ? "Sem lan\xe7amentos hoje"
-                            : isFutureFar ? sub+" previstos"
-                            : sub
-                        )
-                        , _swHint ? React.createElement('div', { style:{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",fontSize:9,color:"rgba(255,255,255,0.18)",fontWeight:600,pointerEvents:"none"} }, hasCt?"\u2190 recebido":"\u2190 pago") : null
+                        , _swHint ? React.createElement('div', { style:{position:"absolute",right:0,top:0,bottom:0,display:"flex",alignItems:"center",paddingRight:8,opacity:_tx<-15?1:0.3,transition:_tx===0?"opacity 0.2s":"none",pointerEvents:"none"} }
+                          , React.createElement('div', { style:{fontSize:9,color:hasCt?C.green:C.orange,fontWeight:600} }, hasCt?"\u2190 receber":"\u2190 baixar")
+                        ) : null
                       )
                     );
                   });

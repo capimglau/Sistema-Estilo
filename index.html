@@ -21734,21 +21734,37 @@ function SwipeRow({ children, onEdit, onDelete, onBaixar, baixarLabel, deleteLab
 
   function swStart(e) {
     var c = getClient(e);
-    _sw.current = { on:true, sx:c.x, sy:c.y, dx:0, dir:null, moved:false };
+    /* captura o offset inicial caso a row já esteja aberta num dos lados */
+    var isSwiped  = wrapRef.current && wrapRef.current.classList.contains('ag-swiped');
+    var isSwipedR = wrapRef.current && wrapRef.current.classList.contains('ag-swiped-r');
+    var off = isSwiped ? -revealR : isSwipedR ? revealL : 0;
+    _sw.current = { on:true, sx:c.x, sy:c.y, dx:off, dir:null, moved:false, off:off };
     var inner = getInner(); if(inner) inner.style.transition = 'none';
   }
   function swMove(e) {
     var sw = _sw.current; if(!sw.on) return;
     var c = getClient(e);
-    var dx = c.x - sw.sx;
+    var dRaw = c.x - sw.sx;   /* delta puro do dedo desde o toque */
     var dy = Math.abs(c.y - sw.sy);
-    if(!sw.moved && dy > Math.abs(dx) && dy > 6) { sw.on=false; return; }
+    if(!sw.moved && dy > Math.abs(dRaw) && dy > 6) { sw.on=false; return; }
     if(!sw.moved && window._agSwipeSounds) window._agSwipeSounds.drag();
     sw.moved = true;
-    if(!sw.dir) sw.dir = dx > 0 ? 'R' : 'L';
-    var cur = 0;
-    if(sw.dir === 'L' && revealR > 0) cur = Math.max(-revealR, Math.min(0, dx));
-    if(sw.dir === 'R' && revealL > 0) cur = Math.min(revealL, Math.max(0, dx));
+    if(!sw.dir) sw.dir = dRaw > 0 ? 'R' : 'L';
+    /* posição absoluta do inner = offset inicial + delta do dedo */
+    var pos = (sw.off || 0) + dRaw;
+    var cur;
+    if (sw.off < 0) {
+      /* já estava aberto para esquerda: só permite voltar ao centro, nunca abre o outro lado */
+      cur = Math.max(-revealR, Math.min(0, pos));
+    } else if (sw.off > 0) {
+      /* já estava aberto para direita: só permite voltar ao centro */
+      cur = Math.max(0, Math.min(revealL, pos));
+    } else {
+      /* partiu do neutro: comportamento normal */
+      if (sw.dir === 'L' && revealR > 0) cur = Math.max(-revealR, Math.min(0, dRaw));
+      else if (sw.dir === 'R' && revealL > 0) cur = Math.min(revealL, Math.max(0, dRaw));
+      else cur = 0;
+    }
     sw.dx = cur;
     if(wrapRef.current) wrapRef.current.classList.add('ag-dragging');
     var inner = getInner(); if(inner) inner.style.transform = 'translateX('+cur+'px)';
@@ -21757,14 +21773,27 @@ function SwipeRow({ children, onEdit, onDelete, onBaixar, baixarLabel, deleteLab
     var sw = _sw.current; if(!sw.on) return;
     sw.on = false;
     if(wrapRef.current) wrapRef.current.classList.remove('ag-dragging');
-    var dx = sw.dx;
-    var snapL = sw.dir === 'L' && dx < -(revealR * 0.4);  /* swipe ← → snap para revelar direita */
-    var snapR = sw.dir === 'R' && dx > revealL * 0.4;      /* swipe → → snap para revelar esquerda */
+    var pos = sw.dx;           /* posição absoluta final */
+    var off = sw.off || 0;
     var inner = getInner();
     if(inner) { inner.style.transition = ''; inner.style.transform = ''; }
+    var snapL, snapR;
+    if (off < 0) {
+      /* partiu de aberto-esquerda: re-snica para esquerda se ainda além do threshold, senão fecha */
+      snapL = pos < -(revealR * 0.4);
+      snapR = false;
+    } else if (off > 0) {
+      /* partiu de aberto-direita */
+      snapR = pos > revealL * 0.4;
+      snapL = false;
+    } else {
+      /* partiu do neutro: lógica original */
+      snapL = sw.dir === 'L' && pos < -(revealR * 0.4);
+      snapR = sw.dir === 'R' && pos > revealL * 0.4;
+    }
     if(wrapRef.current) {
-      wrapRef.current.classList.toggle('ag-swiped',   snapL);   /* ag-swiped = conteúdo vai para esquerda */
-      wrapRef.current.classList.toggle('ag-swiped-r', snapR);   /* ag-swiped-r = conteúdo vai para direita */
+      wrapRef.current.classList.toggle('ag-swiped',   snapL);
+      wrapRef.current.classList.toggle('ag-swiped-r', snapR);
     }
     sw.moved = false; sw.dir = null;
   }

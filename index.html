@@ -22907,9 +22907,11 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       var dmTipShow  = tipBar === "dm";
 
       /* ── CONTRATOS: segmentos pago / vencido / a receber ── */
-      var valPago    = ctsPagos.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0);
+      var ctsParciais = ctsMes.filter(function(c){ return c.status_pagamento === "parcial" && c.valor_pago; });
+      var valPago    = ctsPagos.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0)
+                     + ctsParciais.reduce(function(s,c){ return s+parseFloat(c.valor_pago||0); }, 0);
       var ctsNormais = ctsAPagar.filter(function(c){ return !(c.previsao_pagamento && c.previsao_pagamento < hoje); });
-      var valVencido = ctsAtrasados.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0);
+      var valVencido = ctsAtrasados.reduce(function(s,c){ return s+(c.status_pagamento==="parcial"&&c.valor_pago ? Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)) : parseFloat(c.valor_total||0)); }, 0);
       var valAPagar  = ctsNormais.reduce(function(s,c){
         if (c.status_pagamento==="parcial"&&c.valor_pago) return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0));
         return s+parseFloat(c.valor_total||0);
@@ -22933,6 +22935,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         if (!_ctsChartMap[day]) _ctsChartMap[day] = { pago:0, pendente:0 };
         var val = parseFloat(c.valor_total||0);
         if (c.status_pagamento==="pago"||c.status_pagamento==="isento") _ctsChartMap[day].pago+=val;
+        else if (c.status_pagamento==="parcial"&&c.valor_pago) { _ctsChartMap[day].pago+=parseFloat(c.valor_pago||0); _ctsChartMap[day].pendente+=Math.max(0,val-parseFloat(c.valor_pago||0)); }
         else _ctsChartMap[day].pendente+=val;
       });
       if (_hojeDay > 0 && !_ctsChartMap[_hojeDay]) _ctsChartMap[_hojeDay] = { pago:0, pendente:0 };
@@ -27587,6 +27590,11 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       var patchData = { status_pagamento: "parcial", valor_pago: vp, data_pagamento: parcialCtData };
       await db.patch("contratos", c.id, patchData);
       setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,patchData) : x; }); });
+      // Sincronizar receita vinculada: atualiza valor para o parcialmente pago
+      var _recParc = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
+      if (_recParc) {
+        try { var _updP = await db.patch("receitas", _recParc.id, { status: "parcial", data_pagamento: parcialCtData, valor: vp.toFixed(2) }); setReceitas(function(p){ return p.map(function(x){ return x.id===_recParc.id ? Object.assign({},x,_updP) : x; }); }); } catch(e){ console.warn(e); }
+      }
       setParcialCtModal(null);
       toast("✅ Baixa parcial registrada!");
     } catch(e) { toast("Erro: " + (e.message||String(e)), "error"); }
@@ -27834,8 +27842,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           wrapStyle: { marginBottom: 10, borderRadius: 16 },
           onBaixar: (!isPago && c.status !== 'cancelado') ? function(){ setBaixarCtData(hoje); setBaixarCtModal(c); } : null,
           baixarLabel: 'Baixar',
-          onEdit: (!isPago && c.status !== 'cancelado') ? function(){ setParcialCtData(hoje); setParcialCtValor(isParcial && c.valor_pago ? String(c.valor_pago) : ''); setParcialCtModal(c); } : null,
-          editLabel: 'Parcial',
+          onEdit: function(){ setForm(Object.assign({}, c)); setEdit(c.id); setModal(true); },
+          editLabel: 'Editar',
           onDelete: function(){ remove(c.id); },
           deleteLabel: 'Cancelar'
         },
@@ -27921,10 +27929,10 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                     var dtPag = _r.v2;
                     await db.patch("contratos", c.id, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag });
                     setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag }) : x));
-                    // Sincronizar receita vinculada
+                    // Sincronizar receita vinculada: atualiza valor para o parcial recebido
                     var recParcial = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
                     if (recParcial) {
-                      try { var updRP = await db.patch("receitas", recParcial.id, { status: "parcial", data_pagamento: dtPag }); setReceitas(p=>p.map(x=>x.id===recParcial.id?Object.assign({},x,updRP):x)); } catch(e){ console.warn(e); }
+                      try { var updRP = await db.patch("receitas", recParcial.id, { status: "parcial", data_pagamento: dtPag, valor: valParcial.toFixed(2) }); setReceitas(p=>p.map(x=>x.id===recParcial.id?Object.assign({},x,updRP):x)); } catch(e){ console.warn(e); }
                     }
                     toast("💵 Parcial de " + fmtBRL(valParcial) + " registrado!");
                   })();
@@ -27937,6 +27945,9 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                     var dtPag = _r.v1;
                     await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtPag });
                     setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dtPag }) : x));
+                    // Restaurar valor_total na receita parcial antes de sincronizar
+                    var _recCp = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_") && r.status==="parcial"; });
+                    if (_recCp) { try { var _updCp = await db.patch("receitas", _recCp.id, { valor: parseFloat(c.valor_total||0).toFixed(2) }); setReceitas(p=>p.map(x=>x.id===_recCp.id?Object.assign({},x,_updCp):x)); } catch(e){ console.warn(e); } }
                     await sincronizarRefFatura(c, dtPag);
                     toast("✅ Pagamento completo!");
                   })();
@@ -27947,11 +27958,11 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                     if (!_rRev.ok) return;
                     await db.patch("contratos", c.id, { status_pagamento: "pendente", valor_pago: null });
                     setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pendente", valor_pago: null }) : x));
-                    // Reverter receita vinculada (parcial → emitida ou prevista)
+                    // Reverter receita vinculada (parcial → emitida ou prevista) e restaurar valor_total
                     var recParcRev = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_") && r.status==="parcial"; });
                     if (recParcRev) {
                       var novoSt = recParcRev.numero_fatura ? "emitida" : "prevista";
-                      try { var updRev = await db.patch("receitas", recParcRev.id, { status: novoSt, data_pagamento: null }); setReceitas(p=>p.map(x=>x.id===recParcRev.id?Object.assign({},x,updRev):x)); } catch(e){ console.warn(e); }
+                      try { var updRev = await db.patch("receitas", recParcRev.id, { status: novoSt, data_pagamento: null, valor: parseFloat(c.valor_total||0).toFixed(2) }); setReceitas(p=>p.map(x=>x.id===recParcRev.id?Object.assign({},x,updRev):x)); } catch(e){ console.warn(e); }
                     }
                     toast("↩ Pagamento parcial revertido");
                   })();

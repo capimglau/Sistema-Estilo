@@ -42248,7 +42248,47 @@ if (!__viewerMode) {
 // ─── HAPTIC FEEDBACK ────────────────────────────────────────────────────────
 (function(){
   var _vib = navigator.vibrate ? navigator.vibrate.bind(navigator) : null;
-  function vibe(ms) { if (_vib) try { _vib(ms); } catch(e){} }
+
+  // iOS não suporta Vibration API — usa AudioContext como fallback sonoro-tátil
+  var _ACtx = window.AudioContext || window.webkitAudioContext || null;
+  var _acUnlocked = false;
+  function _unlockAudio() {
+    if (_acUnlocked || !_ACtx) return;
+    _acUnlocked = true;
+    try {
+      var ctx = new _ACtx();
+      var buf = ctx.createBuffer(1, 1, 22050);
+      var src = ctx.createBufferSource();
+      src.buffer = buf; src.connect(ctx.destination); src.start(0);
+      setTimeout(function(){ try{ctx.close();}catch(e){} }, 100);
+    } catch(e) {}
+  }
+  document.addEventListener('touchstart', _unlockAudio, { once: true, passive: true });
+
+  function _playTick(strength) {
+    if (!_ACtx) return;
+    try {
+      var ctx = new _ACtx();
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = 900;
+      gain.gain.setValueAtTime(strength, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.035);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.035);
+      osc.onended = function(){ try{ctx.close();}catch(e){}; };
+    } catch(e) {}
+  }
+
+  function vibe(ms) {
+    if (_vib) {
+      try { _vib(ms); } catch(e){}
+    } else {
+      // fallback sonoro para iOS: intensidade proporcional à duração
+      _playTick(ms >= 9 ? 0.07 : ms >= 6 ? 0.05 : 0.03);
+    }
+  }
   window._agVibe = vibe;
 
   // Intensidades por tipo de elemento

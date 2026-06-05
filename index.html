@@ -22907,11 +22907,9 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       var dmTipShow  = tipBar === "dm";
 
       /* ── CONTRATOS: segmentos pago / vencido / a receber ── */
-      var ctsParciais = ctsMes.filter(function(c){ return c.status_pagamento === "parcial" && c.valor_pago; });
-      var valPago    = ctsPagos.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0)
-                     + ctsParciais.reduce(function(s,c){ return s+parseFloat(c.valor_pago||0); }, 0);
+      var valPago    = ctsPagos.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0);
       var ctsNormais = ctsAPagar.filter(function(c){ return !(c.previsao_pagamento && c.previsao_pagamento < hoje); });
-      var valVencido = ctsAtrasados.reduce(function(s,c){ return s+(c.status_pagamento==="parcial"&&c.valor_pago ? Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)) : parseFloat(c.valor_total||0)); }, 0);
+      var valVencido = ctsAtrasados.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0);
       var valAPagar  = ctsNormais.reduce(function(s,c){
         if (c.status_pagamento==="parcial"&&c.valor_pago) return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0));
         return s+parseFloat(c.valor_total||0);
@@ -22935,7 +22933,6 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         if (!_ctsChartMap[day]) _ctsChartMap[day] = { pago:0, pendente:0 };
         var val = parseFloat(c.valor_total||0);
         if (c.status_pagamento==="pago"||c.status_pagamento==="isento") _ctsChartMap[day].pago+=val;
-        else if (c.status_pagamento==="parcial"&&c.valor_pago) { _ctsChartMap[day].pago+=parseFloat(c.valor_pago||0); _ctsChartMap[day].pendente+=Math.max(0,val-parseFloat(c.valor_pago||0)); }
         else _ctsChartMap[day].pendente+=val;
       });
       if (_hojeDay > 0 && !_ctsChartMap[_hojeDay]) _ctsChartMap[_hojeDay] = { pago:0, pendente:0 };
@@ -27590,11 +27587,6 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       var patchData = { status_pagamento: "parcial", valor_pago: vp, data_pagamento: parcialCtData };
       await db.patch("contratos", c.id, patchData);
       setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,patchData) : x; }); });
-      // Sincronizar receita vinculada: atualiza valor para o parcialmente pago
-      var _recParc = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
-      if (_recParc) {
-        try { var _updP = await db.patch("receitas", _recParc.id, { status: "parcial", data_pagamento: parcialCtData, valor: vp.toFixed(2) }); setReceitas(function(p){ return p.map(function(x){ return x.id===_recParc.id ? Object.assign({},x,_updP) : x; }); }); } catch(e){ console.warn(e); }
-      }
       setParcialCtModal(null);
       toast("✅ Baixa parcial registrada!");
     } catch(e) { toast("Erro: " + (e.message||String(e)), "error"); }
@@ -27842,8 +27834,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           wrapStyle: { marginBottom: 10, borderRadius: 16 },
           onBaixar: (!isPago && c.status !== 'cancelado') ? function(){ setBaixarCtData(hoje); setBaixarCtModal(c); } : null,
           baixarLabel: 'Baixar',
-          onEdit: function(){ setForm(Object.assign({}, c)); setEdit(c.id); setModal(true); },
-          editLabel: 'Editar',
+          onEdit: (!isPago && c.status !== 'cancelado') ? function(){ setParcialCtData(hoje); setParcialCtValor(isParcial && c.valor_pago ? String(c.valor_pago) : ''); setParcialCtModal(c); } : null,
+          editLabel: 'Parcial',
           onDelete: function(){ remove(c.id); },
           deleteLabel: 'Cancelar'
         },
@@ -27929,10 +27921,10 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                     var dtPag = _r.v2;
                     await db.patch("contratos", c.id, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag });
                     setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag }) : x));
-                    // Sincronizar receita vinculada: atualiza valor para o parcial recebido
+                    // Sincronizar receita vinculada
                     var recParcial = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
                     if (recParcial) {
-                      try { var updRP = await db.patch("receitas", recParcial.id, { status: "parcial", data_pagamento: dtPag, valor: valParcial.toFixed(2) }); setReceitas(p=>p.map(x=>x.id===recParcial.id?Object.assign({},x,updRP):x)); } catch(e){ console.warn(e); }
+                      try { var updRP = await db.patch("receitas", recParcial.id, { status: "parcial", data_pagamento: dtPag }); setReceitas(p=>p.map(x=>x.id===recParcial.id?Object.assign({},x,updRP):x)); } catch(e){ console.warn(e); }
                     }
                     toast("💵 Parcial de " + fmtBRL(valParcial) + " registrado!");
                   })();
@@ -27945,9 +27937,6 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                     var dtPag = _r.v1;
                     await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtPag });
                     setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dtPag }) : x));
-                    // Restaurar valor_total na receita parcial antes de sincronizar
-                    var _recCp = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_") && r.status==="parcial"; });
-                    if (_recCp) { try { var _updCp = await db.patch("receitas", _recCp.id, { valor: parseFloat(c.valor_total||0).toFixed(2) }); setReceitas(p=>p.map(x=>x.id===_recCp.id?Object.assign({},x,_updCp):x)); } catch(e){ console.warn(e); } }
                     await sincronizarRefFatura(c, dtPag);
                     toast("✅ Pagamento completo!");
                   })();
@@ -27958,11 +27947,11 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                     if (!_rRev.ok) return;
                     await db.patch("contratos", c.id, { status_pagamento: "pendente", valor_pago: null });
                     setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pendente", valor_pago: null }) : x));
-                    // Reverter receita vinculada (parcial → emitida ou prevista) e restaurar valor_total
+                    // Reverter receita vinculada (parcial → emitida ou prevista)
                     var recParcRev = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_") && r.status==="parcial"; });
                     if (recParcRev) {
                       var novoSt = recParcRev.numero_fatura ? "emitida" : "prevista";
-                      try { var updRev = await db.patch("receitas", recParcRev.id, { status: novoSt, data_pagamento: null, valor: parseFloat(c.valor_total||0).toFixed(2) }); setReceitas(p=>p.map(x=>x.id===recParcRev.id?Object.assign({},x,updRev):x)); } catch(e){ console.warn(e); }
+                      try { var updRev = await db.patch("receitas", recParcRev.id, { status: novoSt, data_pagamento: null }); setReceitas(p=>p.map(x=>x.id===recParcRev.id?Object.assign({},x,updRev):x)); } catch(e){ console.warn(e); }
                     }
                     toast("↩ Pagamento parcial revertido");
                   })();
@@ -30872,6 +30861,238 @@ function PessoalDash({
       )
     )
 
+
+    /* ══ Gráfico de Linhas + Barras Pessoal ══ */
+    ,(function(){
+      /* ── dados dos 3 meses: anterior · atual · próximo ── */
+      var _mesAntChart = _addM(_mes,-1);
+      var _mesProxChart = _addM(_mes,1);
+      function _lastDayOfP(m){var d=new Date(m+'-01');d.setMonth(d.getMonth()+1);d.setDate(0);return d.getDate();}
+      var _prevLD=_lastDayOfP(_mesAntChart),_curLD=_lastDayOfP(_mes),_nextLD=_lastDayOfP(_mesProxChart);
+      var _pxPerDay=15, padB=18, padT=20;
+      var W=(_prevLD+_curLD+_nextLD)*_pxPerDay;
+      var _xCal=function(off,d){return(off+d-0.5)*_pxPerDay;};
+
+      /* Monta mapa dia→{rec,desp} para um mês pessoal */
+      function _mkPesMap(m){
+        var map={};
+        /* receitas: retirada locadora do mês anterior + receitas pessoais */
+        var _recLocMes = m===_mes ? (_recLoc>0?_recLoc:0) : Math.max(0, retiradaLucroDoMes(despesas, _addM(m,-1)));
+        if(_recLocMes>0){
+          /* distribui a retirada no dia 1 do mês */
+          if(!map[1])map[1]={rec:0,recPg:0,desp:0,despPg:0};
+          map[1].rec+=_recLocMes;
+          map[1].recPg+=_recLocMes; /* retirada é sempre "recebida" */
+        }
+        _itSrc.filter(function(it){return _vis(it,m);}).map(function(it){return _projetar(it,m);}).forEach(function(it){
+          var dt=it.data||(it.mes?it.mes+'-01':'');
+          var day=parseInt((dt||'').slice(8,10),10)||15;
+          if(!map[day])map[day]={rec:0,recPg:0,desp:0,despPg:0};
+          var val=parseFloat(it.valor||0);
+          var pago=it.status==='pago'||it.status==='recebido';
+          if(it.tipo==='receita'){map[day].rec+=val;if(pago)map[day].recPg+=val;}
+          else{map[day].desp+=val;if(pago)map[day].despPg+=val;}
+        });
+        return map;
+      }
+
+      var _mapPrev=_mkPesMap(_mesAntChart);
+      var _mapCur=_mkPesMap(_mes);
+      var _mapNext=_mkPesMap(_mesProxChart);
+
+      /* escala Y */
+      var _allRec=[],_allDesp=[];
+      [_mapPrev,_mapCur,_mapNext].forEach(function(mp){
+        Object.values(mp).forEach(function(v){if(v.rec>0)_allRec.push(v.rec);if(v.desp>0)_allDesp.push(v.desp);});
+      });
+      var maxR=Math.max.apply(null,_allRec.concat([1]))*1.18;
+      var maxD=Math.max.apply(null,_allDesp.concat([1]))*1.18;
+      var halfH=Math.max(48,Math.floor(window.innerHeight*0.065));
+      var midY=halfH+padT;
+      var H=(halfH*2)+padT+padB;
+      var yCt=function(v){return midY-(v/maxR)*halfH;};
+      var yDp=function(v){return midY+(v/maxD)*halfH;};
+
+      /* Pontos para linhas */
+      function _mkPesPts(map,off,mes){
+        var _td=parseInt(_hoje.slice(8,10),10);
+        var rp=Object.keys(map).map(Number).sort(function(a,b){return a-b;}).filter(function(d){return (map[d].rec||0)>0;}).map(function(d){
+          return{x:_xCal(off,d),y:yCt(map[d].rec||0),val:map[d].rec||0,pg:map[d].recPg||0,isHoje:mes===mesAtual&&d===_td,day:d,mes:mes};
+        });
+        var dp=Object.keys(map).map(Number).sort(function(a,b){return a-b;}).filter(function(d){return (map[d].desp||0)>0;}).map(function(d){
+          return{x:_xCal(off,d),y:yDp(map[d].desp||0),val:map[d].desp||0,pg:map[d].despPg||0,isHoje:mes===mesAtual&&d===_td,day:d,mes:mes};
+        });
+        return{rp:rp,dp:dp};
+      }
+      var _pp=_mkPesPts(_mapPrev,0,_mesAntChart);
+      var _pc=_mkPesPts(_mapCur,_prevLD,_mes);
+      var _pn=_mkPesPts(_mapNext,_prevLD+_curLD,_mesProxChart);
+      var rPts=_pp.rp.concat(_pc.rp).concat(_pn.rp);
+      var dPts=_pp.dp.concat(_pc.dp).concat(_pn.dp);
+
+      function _mkSmP(pts){if(!pts.length)return'';if(pts.length===1)return'M'+pts[0].x.toFixed(1)+','+pts[0].y.toFixed(1);var d='M'+pts[0].x.toFixed(1)+','+pts[0].y.toFixed(1);for(var i=1;i<pts.length;i++){var p0=pts[i-1],p1=pts[i],cx=((p0.x+p1.x)/2).toFixed(1);d+=' C'+cx+','+p0.y.toFixed(1)+' '+cx+','+p1.y.toFixed(1)+' '+p1.x.toFixed(1)+','+p1.y.toFixed(1);}return d;}
+      var rLineD=_mkSmP(rPts);
+      var dLineD=_mkSmP(dPts);
+      var rPaidD=_mkSmP(rPts.filter(function(p){return p.pg>=p.val*0.99;}));
+      var dPaidD=_mkSmP(dPts.filter(function(p){return p.pg>=p.val*0.99;}));
+      var rAreaD=rPts.length>0?rLineD+' L'+rPts[rPts.length-1].x.toFixed(1)+','+midY+' L'+rPts[0].x.toFixed(1)+','+midY+' Z':'';
+      var dAreaD=dPts.length>0?dLineD+' L'+dPts[dPts.length-1].x.toFixed(1)+','+midY+' L'+dPts[0].x.toFixed(1)+','+midY+' Z':'';
+
+      var _xSep1=_prevLD*_pxPerDay,_xSep2=(_prevLD+_curLD)*_pxPerDay;
+      var _todayDay=parseInt(_hoje.slice(8,10),10);
+      var _todayOff=mesAtual===_mesAntChart?0:mesAtual===_mes?_prevLD:mesAtual===_mesProxChart?_prevLD+_curLD:-1;
+      var _todayX=_todayOff>=0?_xCal(_todayOff,_todayDay):-1;
+      function _fML2(ms){return new Date(ms+'-15').toLocaleDateString('pt-BR',{month:'short'}).replace('.','');}
+      function _fvP(v){return v>=1000?Math.round(v/1000)+'k':Math.round(v);}
+
+      /* x labels */
+      var xLabels=[];
+      [{mes:_mesAntChart,off:0,map:_mapPrev},{mes:_mes,off:_prevLD,map:_mapCur},{mes:_mesProxChart,off:_prevLD+_curLD,map:_mapNext}].forEach(function(seg){
+        var _ld={};
+        [1,8,15,22].forEach(function(d){if(d<=(seg.mes===_mesAntChart?_prevLD:seg.mes===_mes?_curLD:_nextLD))_ld[d]=true;});
+        Object.keys(seg.map).forEach(function(d){_ld[parseInt(d,10)]=true;});
+        Object.keys(_ld).map(Number).sort(function(a,b){return a-b;}).forEach(function(day){
+          var isHj=seg.mes===mesAtual&&day===_todayDay;
+          var isR=!!(seg.map[day]&&seg.map[day].rec>0),isD=!!(seg.map[day]&&seg.map[day].desp>0);
+          var fc=isHj?C.blue:(isR&&isD?'#888':isR?'#34C759':isD?'#FF3B30':C.sub);
+          xLabels.push(React.createElement('text',{key:'pl'+seg.mes+day,x:_xCal(seg.off,day).toFixed(1),y:H-2,textAnchor:'middle',fontSize:10,fill:fc,fontWeight:isHj?'800':'600'},String(day)));
+        });
+      });
+
+      var _hasData=rPts.length>0||dPts.length>0;
+
+      /* ── Barras horizontais pessoal ── */
+      var _recPgBarra = (_recLoc>0?_recLoc:0)
+        + _itens.filter(function(it){return it.tipo==='receita'&&(it.status==='pago'||it.status==='recebido');}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _recTotal = _totRec;
+      var _despPgBarra = _desPg;
+      var _despTotal = _totDes;
+      var _diasMesP = _curLD;
+      var _hojeDP = _mes === mesAtual ? parseInt(_hoje.slice(8,10),10) : -1;
+      var _hojeXP = _hojeDP>0 ? Math.min(Math.max((_hojeDP-1)/(_diasMesP-1),0),1)*100 : 7;
+      var _recGradP = 'linear-gradient(90deg,#15803d 0%,#22c55e '+_hojeXP.toFixed(1)+'%, #4ade80 '+Math.min(_hojeXP+12,60).toFixed(1)+'%, #bbf7d0 '+Math.min(_hojeXP+30,80).toFixed(1)+'%, rgba(240,253,244,0.12) 100%)';
+      var _despGradP = 'linear-gradient(90deg,#15803d 0%,#22c55e '+_hojeXP.toFixed(1)+'%, #fbbf24 '+Math.min(_hojeXP+10,40).toFixed(1)+'%, #f87171 '+Math.min(_hojeXP+24,58).toFixed(1)+'%, rgba(254,226,226,0.18) 100%)';
+      var _pctRecPg = _recTotal>0?Math.min(_recPgBarra/_recTotal*100,100):0;
+      var _pctDespPg = _despTotal>0?Math.min(_despPgBarra/_despTotal*100,100):0;
+      var BARRA_H_P=3.9;
+      var _todoPagoD=_despTotal>0&&_despPgBarra>=_despTotal;
+
+      function _fmtBI(v){var a=Math.abs(parseFloat(v)||0);if(a>=1000)return'R$'+(Math.round(a/100)/10).toFixed(1).replace('.',',')+'k';return'R$'+Math.round(a);}
+
+      return React.createElement('div',{style:{background:C.card,borderRadius:22,border:'1px solid '+C.border,padding:'14px 16px 14px',overflow:'hidden',marginTop:10,boxShadow:'0 2px 16px rgba(0,0,0,0.06)'}},
+        /* ── gráfico de linhas ── */
+        _hasData && React.createElement('div',{style:{overflowX:'auto',overflowY:'hidden',WebkitOverflowScrolling:'touch',width:'100%',scrollbarWidth:'none',msOverflowStyle:'none',marginBottom:16}},
+          React.createElement('svg',{viewBox:'0 0 '+W+' '+H,style:{width:W,minWidth:W,height:H,display:'block',overflow:'visible'}},
+            React.createElement('defs',null,
+              React.createElement('linearGradient',{id:'pesRecGrad',x1:'0',y1:'1',x2:'0',y2:'0'},
+                React.createElement('stop',{offset:'0%',stopColor:'#34C759',stopOpacity:'0.02'}),
+                React.createElement('stop',{offset:'100%',stopColor:'#34C759',stopOpacity:'0.28'})
+              ),
+              React.createElement('linearGradient',{id:'pesDespGrad',x1:'0',y1:'0',x2:'0',y2:'1'},
+                React.createElement('stop',{offset:'0%',stopColor:'#FF3B30',stopOpacity:'0.02'}),
+                React.createElement('stop',{offset:'100%',stopColor:'#FF3B30',stopOpacity:'0.22'})
+              )
+            ),
+            /* fundo mês atual */
+            React.createElement('rect',{x:_xSep1,y:0,width:(_curLD*_pxPerDay),height:H,fill:C.blue,opacity:0.025}),
+            /* linha zero */
+            React.createElement('line',{x1:0,y1:midY,x2:W,y2:midY,stroke:C.border,strokeWidth:0.8}),
+            /* separadores mês */
+            React.createElement('line',{x1:_xSep1,y1:padT-10,x2:_xSep1,y2:H-padB,stroke:C.border,strokeWidth:1,strokeDasharray:'3,2',opacity:0.5}),
+            React.createElement('line',{x1:_xSep2,y1:padT-10,x2:_xSep2,y2:H-padB,stroke:C.border,strokeWidth:1,strokeDasharray:'3,2',opacity:0.5}),
+            /* labels mês */
+            React.createElement('text',{x:(_xSep1/2).toFixed(1),y:padT-6,textAnchor:'middle',fontSize:9,fill:C.sub,fontWeight:600,opacity:0.7},_fML2(_mesAntChart)),
+            (function(){var _cx=(_xSep1+_xSep2)/2,_tw=_fML2(_mes).length*6+16;return React.createElement('g',null,React.createElement('rect',{x:(_cx-_tw/2).toFixed(1),y:(padT-18).toFixed(1),width:_tw,height:14,rx:7,fill:C.blue,opacity:0.18}),React.createElement('text',{x:_cx.toFixed(1),y:padT-8,textAnchor:'middle',fontSize:9,fill:C.blue,fontWeight:700},_fML2(_mes)));}()),
+            React.createElement('text',{x:((_xSep2+W)/2).toFixed(1),y:padT-6,textAnchor:'middle',fontSize:9,fill:C.sub,fontWeight:600,opacity:0.7},_fML2(_mesProxChart)),
+            /* linha hoje */
+            _todayX>=0 && React.createElement('line',{x1:_todayX.toFixed(1),y1:padT,x2:_todayX.toFixed(1),y2:H-padB,stroke:C.blue,strokeWidth:1,strokeDasharray:'3,2',opacity:0.5}),
+            /* áreas */
+            rAreaD && React.createElement('path',{d:rAreaD,fill:'url(#pesRecGrad)'}),
+            dAreaD && React.createElement('path',{d:dAreaD,fill:'url(#pesDespGrad)'}),
+            /* linhas tracejadas (pendente) */
+            rLineD && React.createElement('path',{d:rLineD,fill:'none',stroke:'#34C759',strokeWidth:1.1,strokeDasharray:'6,3',opacity:0.62,strokeLinejoin:'round',strokeLinecap:'round'}),
+            dLineD && React.createElement('path',{d:dLineD,fill:'none',stroke:'#FF3B30',strokeWidth:1.1,strokeDasharray:'6,3',opacity:0.62,strokeLinejoin:'round',strokeLinecap:'round'}),
+            /* linhas sólidas (pago) */
+            rPaidD && React.createElement('path',{d:rPaidD,fill:'none',stroke:'#34C759',strokeWidth:1.6,strokeLinejoin:'round',strokeLinecap:'round'}),
+            dPaidD && React.createElement('path',{d:dPaidD,fill:'none',stroke:'#FF3B30',strokeWidth:1.6,strokeLinejoin:'round',strokeLinecap:'round'}),
+            /* dots receita */
+            rPts.map(function(p,i){
+              var dc=p.isHoje?C.blue:(p.pg<p.val*0.99?C.orange:'#34C759');
+              return React.createElement('g',{key:'prg'+i},
+                React.createElement('circle',{cx:p.x.toFixed(1),cy:p.y.toFixed(1),r:'2.5',fill:dc,stroke:'var(--c-card,#1c1c1e)',strokeWidth:'1'}),
+                React.createElement('text',{x:p.x.toFixed(1),y:(p.y-8).toFixed(1),textAnchor:'middle',fontSize:11,fontWeight:700,fill:dc,fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif',opacity:0.9},_fvP(p.val))
+              );
+            }),
+            /* dots despesa */
+            dPts.map(function(p,i){
+              var dc=p.isHoje?C.blue:(p.pg<p.val*0.99?C.orange:'#FF3B30');
+              return React.createElement('g',{key:'pdg'+i},
+                React.createElement('circle',{cx:p.x.toFixed(1),cy:p.y.toFixed(1),r:'2.5',fill:dc,stroke:'var(--c-card,#1c1c1e)',strokeWidth:'1'}),
+                React.createElement('text',{x:p.x.toFixed(1),y:(p.y+14).toFixed(1),textAnchor:'middle',fontSize:11,fontWeight:700,fill:dc,fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif',opacity:0.9},_fvP(p.val))
+              );
+            }),
+            /* x labels */
+            xLabels
+          )
+        ),
+
+        /* ── Barras horizontais — Receitas pessoais ── */
+        React.createElement('div',{style:{marginTop:_hasData?0:4}},
+          /* label receitas */
+          React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}},
+            React.createElement('div',{style:{display:'flex',alignItems:'center',gap:5}},
+              React.createElement('span',{style:{width:5,height:5,borderRadius:'50%',background:C.green,display:'inline-block',flexShrink:0}}),
+              React.createElement('span',{style:{fontSize:9,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:0.9}},'Receitas')
+            )
+          ),
+          /* barra receita */
+          React.createElement('div',{style:{position:'relative',height:BARRA_H_P,borderRadius:5,overflow:'hidden',background:'rgba(120,120,128,0.08)',marginBottom:4}},
+            React.createElement('div',{style:{position:'absolute',inset:0,borderRadius:5,background:_recGradP}}),
+            React.createElement('div',{style:{position:'absolute',top:0,left:0,right:0,height:3,borderRadius:'5px 5px 0 0',background:'linear-gradient(180deg,rgba(255,255,255,0.35) 0%,transparent 100%)'}}),
+            _hojeDP>0 && React.createElement('div',{style:{position:'absolute',left:_hojeXP+'%',top:0,bottom:0,width:2.5,background:C.blue,opacity:0.85,transform:'translateX(-50%)'}})
+          ),
+          /* sub-info receita */
+          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}},
+            React.createElement('div',{style:{display:'flex',alignItems:'center',gap:4}},
+              _recPgBarra>0 && React.createElement('span',{style:{fontSize:12,fontWeight:700,color:C.green}},'✓'),
+              React.createElement('span',{style:{fontSize:12,fontWeight:700,color:C.green,letterSpacing:-0.3}},_recPgBarra>0?_fmtBI(_recPgBarra):'—'),
+              React.createElement('span',{style:{fontSize:11,fontWeight:600,letterSpacing:0.3,textTransform:'lowercase',color:C.green}},'recebido')
+            ),
+            React.createElement('div',{style:{display:'flex',alignItems:'center',gap:4}},
+              React.createElement('span',{style:{fontSize:12,fontWeight:700,color:C.orange,letterSpacing:-0.3}},(_recTotal-_recPgBarra)>0?_fmtBI(_recTotal-_recPgBarra):'—'),
+              React.createElement('span',{style:{fontSize:11,fontWeight:600,letterSpacing:0.3,textTransform:'lowercase',color:C.orange}},'a receber')
+            )
+          ),
+
+          /* label despesas */
+          React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}},
+            React.createElement('div',{style:{display:'flex',alignItems:'center',gap:5}},
+              React.createElement('span',{style:{width:5,height:5,borderRadius:'50%',background:_todoPagoD?C.green:C.red,display:'inline-block',flexShrink:0}}),
+              React.createElement('span',{style:{fontSize:9,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:0.9}},'Despesas')
+            )
+          ),
+          /* barra despesa */
+          React.createElement('div',{style:{position:'relative',height:BARRA_H_P,borderRadius:5,overflow:'hidden',background:'rgba(120,120,128,0.08)',marginBottom:4}},
+            React.createElement('div',{style:{position:'absolute',inset:0,borderRadius:5,background:_despGradP}}),
+            React.createElement('div',{style:{position:'absolute',top:0,left:0,right:0,height:3,borderRadius:'5px 5px 0 0',background:'linear-gradient(180deg,rgba(255,255,255,0.35) 0%,transparent 100%)'}}),
+            _hojeDP>0 && React.createElement('div',{style:{position:'absolute',left:_hojeXP+'%',top:0,bottom:0,width:2.5,background:C.blue,opacity:0.85,transform:'translateX(-50%)'}})
+          ),
+          /* sub-info despesa */
+          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+            React.createElement('div',{style:{display:'flex',alignItems:'center',gap:4}},
+              _despPgBarra>0 && React.createElement('span',{style:{fontSize:12,fontWeight:700,color:_todoPagoD?C.green:C.red}},'✓'),
+              React.createElement('span',{style:{fontSize:12,fontWeight:700,color:_todoPagoD?C.green:C.red,letterSpacing:-0.3}},_despPgBarra>0?_fmtBI(_despPgBarra):'—'),
+              React.createElement('span',{style:{fontSize:11,fontWeight:600,letterSpacing:0.3,textTransform:'lowercase',color:_todoPagoD?C.green:C.red}},'pago')
+            ),
+            React.createElement('div',{style:{display:'flex',alignItems:'center',gap:4}},
+              React.createElement('span',{style:{fontSize:12,fontWeight:700,color:C.red,letterSpacing:-0.3}},(_despTotal-_despPgBarra)>0?_fmtBI(_despTotal-_despPgBarra):'—'),
+              React.createElement('span',{style:{fontSize:11,fontWeight:600,letterSpacing:0.3,textTransform:'lowercase',color:C.red}},'a pagar')
+            )
+          ),
+          _despTotal>0 && React.createElement('div',{style:{fontSize:10,color:C.sub,marginTop:3,textAlign:'right'}},'Previsto: '+_fmtBI(_despTotal))
+        )
+      );
+    })()
 
     /* ══ Orçamento Pessoal ══ */
     ,React.createElement(OrcamentoPessoalInline,{

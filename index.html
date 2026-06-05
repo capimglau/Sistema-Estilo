@@ -42261,129 +42261,65 @@ if (!__viewerMode) {
 (function(){
   var _vib = navigator.vibrate ? navigator.vibrate.bind(navigator) : null;
 
-  // iOS não suporta Vibration API — usa AudioContext como fallback sonoro-tátil
+  // Contexto compartilhado — criado uma vez e reutilizado (mais confiável)
   var _ACtx = window.AudioContext || window.webkitAudioContext || null;
-  var _acUnlocked = false;
-  function _unlockAudio() {
-    if (_acUnlocked || !_ACtx) return;
-    _acUnlocked = true;
+  var _ctx = null;
+  function _getCtx() {
+    if (!_ACtx) return null;
     try {
-      var ctx = new _ACtx();
-      var buf = ctx.createBuffer(1, 1, 22050);
-      var src = ctx.createBufferSource();
-      src.buffer = buf; src.connect(ctx.destination); src.start(0);
-      setTimeout(function(){ try{ctx.close();}catch(e){} }, 100);
+      if (!_ctx || _ctx.state === 'closed') _ctx = new _ACtx();
+      if (_ctx.state === 'suspended') _ctx.resume();
+      return _ctx;
+    } catch(e) { return null; }
+  }
+  // Desbloqueia o contexto no primeiro toque (requisito iOS)
+  document.addEventListener('touchstart', function() { _getCtx(); }, { once: true, passive: true });
+
+  // Oscilador com fade rápido — som de UI muito sutil
+  function _osc(freq, gain, dur) {
+    var ctx = _getCtx(); if (!ctx) return;
+    try {
+      var o = ctx.createOscillator(), g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(gain, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+      o.start(ctx.currentTime); o.stop(ctx.currentTime + dur);
     } catch(e) {}
   }
-  document.addEventListener('touchstart', _unlockAudio, { once: true, passive: true });
 
-  function _playTick(strength) {
-    if (!_ACtx) return;
+  // Ruído filtrado brevíssimo
+  function _noise(freq, gain, dur) {
+    var ctx = _getCtx(); if (!ctx) return;
     try {
-      var ctx = new _ACtx();
-      var osc = ctx.createOscillator();
-      var gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.frequency.value = 900;
-      gain.gain.setValueAtTime(strength, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.035);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.035);
-      osc.onended = function(){ try{ctx.close();}catch(e){}; };
+      var len = Math.ceil(ctx.sampleRate * dur);
+      var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+      var d = buf.getChannelData(0);
+      for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1);
+      var src = ctx.createBufferSource(); src.buffer = buf;
+      var flt = ctx.createBiquadFilter(); flt.type = 'bandpass'; flt.frequency.value = freq; flt.Q.value = 1.5;
+      var g = ctx.createGain();
+      g.gain.setValueAtTime(gain, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+      src.connect(flt); flt.connect(g); g.connect(ctx.destination);
+      src.start();
     } catch(e) {}
   }
 
   function vibe(ms) {
-    if (_vib) {
-      try { _vib(ms); } catch(e){}
-    } else {
-      // fallback sonoro para iOS: intensidade proporcional à duração
-      _playTick(ms >= 9 ? 0.07 : ms >= 6 ? 0.05 : 0.03);
-    }
+    if (_vib) { try { _vib(ms); } catch(e){} }
+    else { _osc(900, ms >= 9 ? 0.04 : ms >= 6 ? 0.03 : 0.02, 0.025); }
   }
   window._agVibe = vibe;
 
-  // ── Sons de arrasto (SwipeRow) ──────────────────────────────────────────
-  function _sndCtx() { return _ACtx ? new _ACtx() : null; }
-
-  // Ruído filtrado curto — início de arrasto
-  function _sndDrag() {
-    var ctx = _sndCtx(); if(!ctx) return;
-    try {
-      var len = Math.ceil(ctx.sampleRate * 0.055);
-      var buf = ctx.createBuffer(1, len, ctx.sampleRate);
-      var d = buf.getChannelData(0);
-      for(var i=0;i<len;i++) d[i]=(Math.random()*2-1);
-      var src = ctx.createBufferSource(); src.buffer = buf;
-      var flt = ctx.createBiquadFilter(); flt.type='bandpass'; flt.frequency.value=1600; flt.Q.value=1.2;
-      var g = ctx.createGain();
-      g.gain.setValueAtTime(0.11, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.055);
-      src.connect(flt); flt.connect(g); g.connect(ctx.destination);
-      src.start(); src.onended=function(){try{ctx.close();}catch(e){}};
-    } catch(e){try{ctx.close();}catch(ex){}}
-  }
-
-  // Tick seco — threshold cruzado (encaixe)
-  function _sndSnap() {
-    var ctx = _sndCtx(); if(!ctx) return;
-    try {
-      var osc=ctx.createOscillator(), g=ctx.createGain();
-      osc.connect(g); g.connect(ctx.destination);
-      osc.frequency.value=750;
-      g.gain.setValueAtTime(0.13, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.02);
-      osc.start(); osc.stop(ctx.currentTime+0.02);
-      osc.onended=function(){try{ctx.close();}catch(e){}};
-    } catch(e){try{ctx.close();}catch(ex){}}
-  }
-
-  // Dois tons ascendentes — confirmação (baixar / receber)
-  function _sndConfirm() {
-    var ctx = _sndCtx(); if(!ctx) return;
-    try {
-      [0, 0.075].forEach(function(delay, i){
-        var osc=ctx.createOscillator(), g=ctx.createGain();
-        osc.connect(g); g.connect(ctx.destination);
-        osc.frequency.value = i===0 ? 660 : 990;
-        g.gain.setValueAtTime(0.07, ctx.currentTime+delay);
-        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+delay+0.1);
-        osc.start(ctx.currentTime+delay); osc.stop(ctx.currentTime+delay+0.1);
-        osc.onended=function(){try{ctx.close();}catch(e){}};
-      });
-    } catch(e){try{ctx.close();}catch(ex){}}
-  }
-
-  // Clique neutro — editar
-  function _sndEdit() {
-    var ctx = _sndCtx(); if(!ctx) return;
-    try {
-      var osc=ctx.createOscillator(), g=ctx.createGain();
-      osc.connect(g); g.connect(ctx.destination);
-      osc.frequency.value=500;
-      g.gain.setValueAtTime(0.07, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.04);
-      osc.start(); osc.stop(ctx.currentTime+0.04);
-      osc.onended=function(){try{ctx.close();}catch(e){}};
-    } catch(e){try{ctx.close();}catch(ex){}}
-  }
-
-  // Tom descendente — excluir
-  function _sndDel() {
-    var ctx = _sndCtx(); if(!ctx) return;
-    try {
-      var osc=ctx.createOscillator(), g=ctx.createGain();
-      osc.connect(g); g.connect(ctx.destination);
-      osc.frequency.setValueAtTime(500, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(240, ctx.currentTime+0.07);
-      g.gain.setValueAtTime(0.09, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.08);
-      osc.start(); osc.stop(ctx.currentTime+0.08);
-      osc.onended=function(){try{ctx.close();}catch(e){}};
-    } catch(e){try{ctx.close();}catch(ex){}}
-  }
-
-  window._agSwipeSounds = { drag:_sndDrag, snap:_sndSnap, confirm:_sndConfirm, edit:_sndEdit, del:_sndDel };
+  // ── Sons de arrasto (SwipeRow) — ganhos sutis ───────────────────────────
+  window._agSwipeSounds = {
+    drag:    function(){ _noise(1800, 0.04, 0.04); },
+    snap:    function(){ _osc(720, 0.04, 0.018); },
+    confirm: function(){ _osc(660, 0.03, 0.07); setTimeout(function(){ _osc(990, 0.03, 0.07); }, 65); },
+    edit:    function(){ _osc(480, 0.03, 0.03); },
+    del:     function(){ _osc(420, 0.03, 0.055); }
+  };
 
   // Intensidades por tipo de elemento
   var NAV_MS   = 9;   // tab da nav / botão de navegação

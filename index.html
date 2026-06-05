@@ -21734,7 +21734,7 @@ function SwipeRow({ children, onEdit, onDelete, onBaixar, baixarLabel, deleteLab
 
   function swStart(e) {
     var c = getClient(e);
-    _sw.current = { on:true, sx:c.x, sy:c.y, dx:0, dir:null, moved:false };
+    _sw.current = { on:true, sx:c.x, sy:c.y, dx:0, dir:null, moved:false, snapped:false };
     var inner = getInner(); if(inner) inner.style.transition = 'none';
   }
   function swMove(e) {
@@ -21743,12 +21743,22 @@ function SwipeRow({ children, onEdit, onDelete, onBaixar, baixarLabel, deleteLab
     var dx = c.x - sw.sx;
     var dy = Math.abs(c.y - sw.sy);
     if(!sw.moved && dy > Math.abs(dx) && dy > 6) { sw.on=false; return; }
+    if(!sw.moved && window._agSwipeSounds) window._agSwipeSounds.drag();
     sw.moved = true;
     if(!sw.dir) sw.dir = dx > 0 ? 'R' : 'L';
     var cur = 0;
     if(sw.dir === 'L' && revealR > 0) cur = Math.max(-revealR, Math.min(0, dx));
     if(sw.dir === 'R' && revealL > 0) cur = Math.min(revealL, Math.max(0, dx));
     sw.dx = cur;
+    var _nowSnapped = (sw.dir==='L'&&cur<-(revealR*0.4)) || (sw.dir==='R'&&cur>revealL*0.4);
+    if(_nowSnapped && !sw.snapped) {
+      sw.snapped = true;
+      if(window._agSwipeSounds) window._agSwipeSounds.snap();
+      if(window._agVibe) window._agVibe(5);
+    } else if(!_nowSnapped && sw.snapped) {
+      sw.snapped = false;
+      if(window._agSwipeSounds) window._agSwipeSounds.drag();
+    }
     if(wrapRef.current) wrapRef.current.classList.add('ag-dragging');
     var inner = getInner(); if(inner) inner.style.transform = 'translateX('+cur+'px)';
   }
@@ -21787,7 +21797,7 @@ function SwipeRow({ children, onEdit, onDelete, onBaixar, baixarLabel, deleteLab
     leftActionFn && React.createElement('div', { className:'ag-swipe-actions-r', style:{ width: revealL } },
       React.createElement('button', { className:'ag-sw-btn',
           style:{ background:leftActionColor, flex:1 },
-          onClick:function(e){ closeSwipe(e); leftActionFn(); } },
+          onClick:function(e){ closeSwipe(e); if(window._agSwipeSounds){var _lc=(leftActionLabel||'').toLowerCase();if(_lc.indexOf('excluir')>=0||_lc.indexOf('delete')>=0)window._agSwipeSounds.del();else window._agSwipeSounds.confirm();} leftActionFn(); } },
         React.createElement('span', { style:{fontSize:18} }, leftActionIcon), leftActionLabel
       )
     ),
@@ -21797,7 +21807,7 @@ function SwipeRow({ children, onEdit, onDelete, onBaixar, baixarLabel, deleteLab
       rightActions.map(function(a, i){
         return React.createElement('button', { key:i, className:'ag-sw-btn',
             style:{ background:a.color, flex:1 },
-            onClick:function(e){ closeSwipe(e); a.fn(); } },
+            onClick:function(e){ closeSwipe(e); if(window._agSwipeSounds){var _l=(a.label||'').toLowerCase();if(_l==='editar')window._agSwipeSounds.edit();else window._agSwipeSounds.confirm();} a.fn(); } },
           React.createElement('span', { style:{fontSize:18} }, a.icon), a.label
         );
       })
@@ -23614,11 +23624,13 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                     var _swHint=!isToday&&!allPaid&&!isPast&&(hasCt||hasDesp)&&evs.length===1;
                     var _tx=_swHint?(agSwTx[rKey]||0):0;
                     var _swHandlers=_swHint?{
-                      onTouchStart:function(e){_agSwRef.current={on:true,sx:e.touches[0].clientX,sy:e.touches[0].clientY,dx:0,key:rKey,_didBaixar:false};},
+                      onTouchStart:function(e){_agSwRef.current={on:true,sx:e.touches[0].clientX,sy:e.touches[0].clientY,dx:0,key:rKey,_didBaixar:false,_sndDrag:false,_sndSnap:false};},
                       onTouchMove:function(e){
                         var sw=_agSwRef.current;if(!sw.on||sw.key!==rKey)return;
                         var dx=e.touches[0].clientX-sw.sx;var dy=Math.abs(e.touches[0].clientY-sw.sy);
                         if(dy>Math.abs(dx)&&dy>8){sw.on=false;return;}
+                        if(!sw._sndDrag&&dx<-8){sw._sndDrag=true;if(window._agSwipeSounds)window._agSwipeSounds.drag();}
+                        if(!sw._sndSnap&&dx<-60){sw._sndSnap=true;if(window._agSwipeSounds)window._agSwipeSounds.snap();if(window._agVibe)window._agVibe(5);}
                         var cur=Math.min(0,dx);sw.dx=cur;
                         setAgSwTx(function(p){var n=Object.assign({},p);n[rKey]=cur;return n;});
                       },
@@ -23627,7 +23639,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                         var dx=sw.dx||0;var key=sw.key;
                         sw.on=false;sw.dx=0;sw.key=null;
                         setAgSwTx(function(p){var n=Object.assign({},p);delete n[key];return n;});
-                        if(dx<-60){sw._didBaixar=true;_agBaixar(_ev0);}
+                        if(dx<-60){sw._didBaixar=true;if(window._agSwipeSounds)window._agSwipeSounds.confirm();_agBaixar(_ev0);}
                       }
                     }:{};
                     _result.push(React.createElement('div', Object.assign({ key:rKey, style:{ display:"flex", alignItems:"flex-start", marginBottom:desktop?4:10, cursor:_onClick?"pointer":"default", opacity:opacity }, onClick:_onClick||undefined }, _swHandlers)
@@ -42290,6 +42302,88 @@ if (!__viewerMode) {
     }
   }
   window._agVibe = vibe;
+
+  // ── Sons de arrasto (SwipeRow) ──────────────────────────────────────────
+  function _sndCtx() { return _ACtx ? new _ACtx() : null; }
+
+  // Ruído filtrado curto — início de arrasto
+  function _sndDrag() {
+    var ctx = _sndCtx(); if(!ctx) return;
+    try {
+      var len = Math.ceil(ctx.sampleRate * 0.055);
+      var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+      var d = buf.getChannelData(0);
+      for(var i=0;i<len;i++) d[i]=(Math.random()*2-1);
+      var src = ctx.createBufferSource(); src.buffer = buf;
+      var flt = ctx.createBiquadFilter(); flt.type='bandpass'; flt.frequency.value=1600; flt.Q.value=1.2;
+      var g = ctx.createGain();
+      g.gain.setValueAtTime(0.11, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.055);
+      src.connect(flt); flt.connect(g); g.connect(ctx.destination);
+      src.start(); src.onended=function(){try{ctx.close();}catch(e){}};
+    } catch(e){try{ctx.close();}catch(ex){}}
+  }
+
+  // Tick seco — threshold cruzado (encaixe)
+  function _sndSnap() {
+    var ctx = _sndCtx(); if(!ctx) return;
+    try {
+      var osc=ctx.createOscillator(), g=ctx.createGain();
+      osc.connect(g); g.connect(ctx.destination);
+      osc.frequency.value=750;
+      g.gain.setValueAtTime(0.13, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.02);
+      osc.start(); osc.stop(ctx.currentTime+0.02);
+      osc.onended=function(){try{ctx.close();}catch(e){}};
+    } catch(e){try{ctx.close();}catch(ex){}}
+  }
+
+  // Dois tons ascendentes — confirmação (baixar / receber)
+  function _sndConfirm() {
+    var ctx = _sndCtx(); if(!ctx) return;
+    try {
+      [0, 0.075].forEach(function(delay, i){
+        var osc=ctx.createOscillator(), g=ctx.createGain();
+        osc.connect(g); g.connect(ctx.destination);
+        osc.frequency.value = i===0 ? 660 : 990;
+        g.gain.setValueAtTime(0.07, ctx.currentTime+delay);
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+delay+0.1);
+        osc.start(ctx.currentTime+delay); osc.stop(ctx.currentTime+delay+0.1);
+        osc.onended=function(){try{ctx.close();}catch(e){}};
+      });
+    } catch(e){try{ctx.close();}catch(ex){}}
+  }
+
+  // Clique neutro — editar
+  function _sndEdit() {
+    var ctx = _sndCtx(); if(!ctx) return;
+    try {
+      var osc=ctx.createOscillator(), g=ctx.createGain();
+      osc.connect(g); g.connect(ctx.destination);
+      osc.frequency.value=500;
+      g.gain.setValueAtTime(0.07, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.04);
+      osc.start(); osc.stop(ctx.currentTime+0.04);
+      osc.onended=function(){try{ctx.close();}catch(e){}};
+    } catch(e){try{ctx.close();}catch(ex){}}
+  }
+
+  // Tom descendente — excluir
+  function _sndDel() {
+    var ctx = _sndCtx(); if(!ctx) return;
+    try {
+      var osc=ctx.createOscillator(), g=ctx.createGain();
+      osc.connect(g); g.connect(ctx.destination);
+      osc.frequency.setValueAtTime(500, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(240, ctx.currentTime+0.07);
+      g.gain.setValueAtTime(0.09, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.08);
+      osc.start(); osc.stop(ctx.currentTime+0.08);
+      osc.onended=function(){try{ctx.close();}catch(e){}};
+    } catch(e){try{ctx.close();}catch(ex){}}
+  }
+
+  window._agSwipeSounds = { drag:_sndDrag, snap:_sndSnap, confirm:_sndConfirm, edit:_sndEdit, del:_sndDel };
 
   // Intensidades por tipo de elemento
   var NAV_MS   = 9;   // tab da nav / botão de navegação

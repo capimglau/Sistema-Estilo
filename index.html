@@ -27119,6 +27119,11 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   const [docsModal, setDocsModal] = useState(false);
   const [docsContrato, setDocsContrato] = useState(null);
   const [filtroMesCt, setFiltroMesCt] = useState(new Date().toISOString().slice(0, 7));
+  const [baixarCtModal, setBaixarCtModal] = useState(null);
+  const [baixarCtData, setBaixarCtData] = useState("");
+  const [parcialCtModal, setParcialCtModal] = useState(null);
+  const [parcialCtData, setParcialCtData] = useState("");
+  const [parcialCtValor, setParcialCtValor] = useState("");
   function limparFiltros() { setFilDe(""); setFilAte(""); setFilVeiculo(""); setFilCliente(""); }
   var _abrirNovoContratoRef = React.useRef(null);
   _abrirNovoContratoRef.current = function() {
@@ -27563,6 +27568,29 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     setContratos(p => p.map(c => c.id === ct.id ? Object.assign({}, c, patchData) : c));
     toast(outroAtivoEncerrar ? "Encerrado! Veículo ainda possui contrato ativo." : "Encerrado! Veículo liberado.");
   }
+  async function confirmarBaixarCt() {
+    var c = baixarCtModal;
+    if (!c || !baixarCtData) return toast("Informe a data de pagamento", "error");
+    try {
+      await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: baixarCtData });
+      setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:baixarCtData}) : x; }); });
+      await sincronizarRefFatura(c, baixarCtData);
+      setBaixarCtModal(null);
+      toast("✅ Contrato baixado!");
+    } catch(e) { toast("Erro: " + (e.message||String(e)), "error"); }
+  }
+  async function confirmarParcialCt() {
+    var c = parcialCtModal;
+    var vp = parseFloat(String(parcialCtValor).replace(",","."));
+    if (!c || !parcialCtData || isNaN(vp) || vp <= 0) return toast("Informe o valor e a data", "error");
+    try {
+      var patchData = { status_pagamento: "parcial", valor_pago: vp, data_pagamento: parcialCtData };
+      await db.patch("contratos", c.id, patchData);
+      setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,patchData) : x; }); });
+      setParcialCtModal(null);
+      toast("✅ Baixa parcial registrada!");
+    } catch(e) { toast("Erro: " + (e.message||String(e)), "error"); }
+  }
   const SC = { ativo: C.blue, concluido: C.green, cancelado: C.red };
   var veicsDisp = veicsDisponiveis();
   var mesAtual = new Date().toISOString().slice(0, 7);
@@ -27804,10 +27832,12 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
 
         return React.createElement(SwipeRow, { key: c.id,
           wrapStyle: { marginBottom: 10, borderRadius: 16 },
-          onEdit: function(){ setForm(Object.assign({}, c)); setEdit(c.id); setModal(true); },
-          action2: (c.status === 'ativo' && !foiRenovado) ? function(){ renovar(c); } : null,
-          action2Label: 'Renovar', action2Icon: '↻',
-          action2Color: 'rgba(52,199,89,0.92)'
+          onBaixar: (!isPago && c.status !== 'cancelado') ? function(){ setBaixarCtData(hoje); setBaixarCtModal(c); } : null,
+          baixarLabel: 'Baixar',
+          onEdit: (!isPago && c.status !== 'cancelado') ? function(){ setParcialCtData(hoje); setParcialCtValor(isParcial && c.valor_pago ? String(c.valor_pago) : ''); setParcialCtModal(c); } : null,
+          editLabel: 'Parcial',
+          onDelete: function(){ remove(c.id); },
+          deleteLabel: 'Cancelar'
         },
         React.createElement('div', { className: _cardClass, style: Object.assign({}, cardStyle, periodoExpirado ? { cursor: "pointer" } : {}), onClick: periodoExpirado ? function(e){ if(!e.target.closest('select,button,input,a')) renovar(c); } : undefined }
           /* Linha 1: Cliente em destaque + valor */
@@ -28330,6 +28360,52 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           setContratos(function(p){ return p.map(function(x){ return x.id===checkContrato.id ? Object.assign({},x,{[campo]:valor}) : x; }); });
           setCheckContrato(function(x){ return Object.assign({},x,{[campo]:valor}); });
         }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1214}}
+      )
+    )
+
+
+    /* -- MODAL BAIXAR CONTRATO -- */
+    , baixarCtModal && React.createElement('div', { style: { position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',zIndex:1200,display:'flex',alignItems:'flex-end',backdropFilter:'blur(6px)' } }
+      , React.createElement('div', { style: { background:'var(--c-card)',borderRadius:'22px 22px 0 0',width:'100%',padding:'24px 20px 44px',boxSizing:'border-box' } }
+        , React.createElement('div', { style: { width:36,height:4,background:'var(--c-border)',borderRadius:2,margin:'0 auto 20px',cursor:'pointer' }, onClick: function(){ setBaixarCtModal(null); } })
+        , React.createElement('div', { style: { fontSize:18,fontWeight:800,color:'var(--c-text)',marginBottom:6,letterSpacing:-.3 } }, '\ud83d\udcb8 Baixar Contrato')
+        , React.createElement('div', { style: { fontSize:13,color:'var(--c-sub)',marginBottom:20 } }
+          , (clientes.find(function(x){ return x.id==baixarCtModal.cliente_id; })||{}).nome||'\u2014'
+          , ' \u00b7 '
+          , (function(){ var ve=veiculos.find(function(x){ return x.id==baixarCtModal.veiculo_id; }); return ve ? ve.placa+(ve.modelo?' '+ve.modelo:'') : '\u2014'; })()
+          , ' \u00b7 '
+          , React.createElement('b', { style: { color:'#34C759' } }, fmtBRL(baixarCtModal.valor_total))
+        )
+        , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Data do pagamento')
+        , React.createElement('input', { type:'date', value:baixarCtData, onChange:function(e){ setBaixarCtData(e.target.value); },
+            style: { display:'block',width:'100%',marginTop:7,marginBottom:22,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } })
+        , React.createElement('div', { style: { display:'grid',gridTemplateColumns:'1fr 1fr',gap:12 } }
+          , React.createElement('button', { onClick:function(){ setBaixarCtModal(null); }, style: { border:'1.5px solid var(--c-border)',background:'transparent',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer',color:'var(--c-text)' } }, 'Cancelar')
+          , React.createElement('button', { onClick:confirmarBaixarCt, style: { border:'none',background:'linear-gradient(135deg,#15803d,#34C759)',color:'#fff',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer' } }, '\u2705 Confirmar Baixa')
+        )
+      )
+    )
+
+    /* -- MODAL BAIXA PARCIAL -- */
+    , parcialCtModal && React.createElement('div', { style: { position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',zIndex:1200,display:'flex',alignItems:'flex-end',backdropFilter:'blur(6px)' } }
+      , React.createElement('div', { style: { background:'var(--c-card)',borderRadius:'22px 22px 0 0',width:'100%',padding:'24px 20px 44px',boxSizing:'border-box' } }
+        , React.createElement('div', { style: { width:36,height:4,background:'var(--c-border)',borderRadius:2,margin:'0 auto 20px',cursor:'pointer' }, onClick: function(){ setParcialCtModal(null); } })
+        , React.createElement('div', { style: { fontSize:18,fontWeight:800,color:'var(--c-text)',marginBottom:6,letterSpacing:-.3 } }, '\u2b21 Baixa Parcial')
+        , React.createElement('div', { style: { fontSize:13,color:'var(--c-sub)',marginBottom:20 } }
+          , (clientes.find(function(x){ return x.id==parcialCtModal.cliente_id; })||{}).nome||'\u2014'
+          , ' \u00b7 Valor total: '
+          , React.createElement('b', null, fmtBRL(parcialCtModal.valor_total))
+        )
+        , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Valor recebido (R$)')
+        , React.createElement('input', { type:'number', inputMode:'decimal', value:parcialCtValor, onChange:function(e){ setParcialCtValor(e.target.value); }, placeholder:'0,00',
+            style: { display:'block',width:'100%',marginTop:7,marginBottom:16,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } })
+        , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Data do recebimento')
+        , React.createElement('input', { type:'date', value:parcialCtData, onChange:function(e){ setParcialCtData(e.target.value); },
+            style: { display:'block',width:'100%',marginTop:7,marginBottom:22,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } })
+        , React.createElement('div', { style: { display:'grid',gridTemplateColumns:'1fr 1fr',gap:12 } }
+          , React.createElement('button', { onClick:function(){ setParcialCtModal(null); }, style: { border:'1.5px solid var(--c-border)',background:'transparent',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer',color:'var(--c-text)' } }, 'Cancelar')
+          , React.createElement('button', { onClick:confirmarParcialCt, style: { border:'none',background:'linear-gradient(135deg,#0e6db5,#007AFF)',color:'#fff',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer' } }, '\u2b21 Registrar Parcial')
+        )
       )
     )
 

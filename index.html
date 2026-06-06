@@ -22907,9 +22907,14 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       var dmTipShow  = tipBar === "dm";
 
       /* ── CONTRATOS: segmentos pago / vencido / a receber ── */
-      var valPago    = ctsPagos.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0);
+      var ctsParciais = ctsMes.filter(function(c){ return c.status_pagamento === "parcial" && c.valor_pago; });
+      var valPago    = ctsPagos.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0)
+                     + ctsParciais.reduce(function(s,c){ return s+parseFloat(c.valor_pago||0); }, 0);
       var ctsNormais = ctsAPagar.filter(function(c){ return !(c.previsao_pagamento && c.previsao_pagamento < hoje); });
-      var valVencido = ctsAtrasados.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0);
+      var valVencido = ctsAtrasados.reduce(function(s,c){
+        if (c.status_pagamento==="parcial"&&c.valor_pago) return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0));
+        return s+parseFloat(c.valor_total||0);
+      }, 0);
       var valAPagar  = ctsNormais.reduce(function(s,c){
         if (c.status_pagamento==="parcial"&&c.valor_pago) return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0));
         return s+parseFloat(c.valor_total||0);
@@ -24461,6 +24466,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
     /* ── Gráfico de Linhas: Evolução Mensal (desde abril/2026) ── */
     , (() => {
       var [_lSelMes, _lSetSelMes] = React.useState(null);
+      var [_lHid, _lSetHid] = React.useState({});
       var _lhoje  = new Date().toISOString().slice(0,7);
       var _lstart = "2026-04";
       var _lend   = "2027-03";
@@ -24500,16 +24506,17 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       });
       var _lluc = _lmeses.map(function(_,i){ return _lrec[i]-_ldesp[i]-_lman[i]; });
       var _lseries=[
-        {key:'rec',data:_lrec, color:'#34C759',lw:1.3,label:'Receitas'},
-        {key:'dep',data:_ldesp,color:'#FF3B30',lw:1.3,label:'Despesas'},
-        {key:'man',data:_lman, color:'#5a8fc4',lw:1.1,label:'Manutenções'},
-        {key:'luc',data:_lluc, color:'#FF9500',lw:1.6,label:'Lucro'},
-        {key:'ret',data:_lret, color:'#AF52DE',lw:1.1,label:'Retirada de Lucro'},
+        {key:'rec',data:_lrec, color:'#34C759',lw:2.0,label:'Receitas'},
+        {key:'dep',data:_ldesp,color:'#FF3B30',lw:2.5,label:'Despesas'},
+        {key:'man',data:_lman, color:'#5a8fc4',lw:1.8,label:'Manutenções'},
+        {key:'luc',data:_lluc, color:'#FF9500',lw:2.0,label:'Lucro'},
+        {key:'ret',data:_lret, color:'#AF52DE',lw:1.8,label:'Retirada de Lucro'},
       ];
+      var _lVisSeries = _lseries.filter(function(s){ return !_lHid[s.key]; });
       var _lhIdx=_lmeses.indexOf(_lhoje);
       var _lPL=0,_lPT=24,_lPB=42,_lCW=76,_lCH=210;
       var _lTW=_lPL+_lmeses.length*_lCW, _lTH=_lPT+_lCH+_lPB;
-      var _lallV=_lseries.reduce(function(a,s){return a.concat(s.data);},[]);
+      var _lallV=_lVisSeries.reduce(function(a,s){return a.concat(s.data);},[]);
       var _lminV=Math.min.apply(null,_lallV.concat([0]));
       var _lmaxV=Math.max.apply(null,_lallV.concat([1]));
       var _lrng=_lmaxV-_lminV||1;
@@ -24526,14 +24533,29 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       return React.createElement(React.Fragment,null
         ,React.createElement('div',{style:{marginTop:32,marginBottom:10,fontSize:12,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:0.5}},"Evolução Mensal")
         ,React.createElement('div',{className:'lg-card',style:{background:C.card,borderRadius:16,border:"1px solid "+C.border,padding:"14px 14px 10px",boxShadow:"0 1px 8px rgba(0,0,0,0.04)"}}
-          ,React.createElement('div',{style:{display:"flex",gap:10,marginBottom:14,flexWrap:"wrap"}}
+          ,React.createElement('div',{style:{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}
             ,_lseries.map(function(s){
-                return React.createElement('div',{key:s.key,style:{display:"flex",alignItems:"center",gap:6,fontSize:13,fontWeight:600,color:"var(--c-text)"}}
-                  ,React.createElement('div',{style:{width:18,height:2,background:s.color,borderRadius:1}})
-                  ,React.createElement('div',{style:{width:7,height:7,borderRadius:"50%",border:"1.8px solid "+s.color,background:"transparent"}})
+                var isHid = !!_lHid[s.key];
+                return React.createElement('div',{key:s.key,onClick:function(){
+                    _lSetHid(function(prev){
+                      var next=Object.assign({},prev);
+                      if(next[s.key]) delete next[s.key]; else next[s.key]=true;
+                      var visCount=_lseries.filter(function(x){return !next[x.key];}).length;
+                      if(visCount===0){ delete next[s.key]; }
+                      return next;
+                    });
+                  },style:{display:"flex",alignItems:"center",gap:5,fontSize:12,fontWeight:600,cursor:"pointer",
+                    color:isHid?"var(--c-sub)":"var(--c-text)",opacity:isHid?0.4:1,
+                    background:isHid?"transparent":s.color+"15",
+                    border:"1px solid "+(isHid?s.color+"30":s.color+"50"),
+                    borderRadius:20,padding:"3px 10px 3px 7px",
+                    transition:"opacity 0.15s,background 0.15s"}}
+                  ,React.createElement('div',{style:{width:16,height:isHid?1:2,background:s.color,borderRadius:1}})
+                  ,React.createElement('div',{style:{width:6,height:6,borderRadius:"50%",border:"1.5px solid "+s.color,background:isHid?"transparent":s.color,flexShrink:0}})
                   ,s.label
                 );
               })
+            ,Object.keys(_lHid).length>0&&React.createElement('div',{onClick:function(){_lSetHid({});},style:{fontSize:11,color:C.sub,cursor:"pointer",padding:"3px 8px",border:"1px solid "+C.border,borderRadius:20,marginLeft:2}},"Mostrar tudo")
           )
           ,(function(){
               var _lbaseY=_lPT+_lCH;
@@ -24570,16 +24592,17 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                     return React.createElement('line',{key:gi,x1:0,y1:gy.toFixed(1),x2:_lTW,y2:gy.toFixed(1),stroke:"var(--c-border)",strokeWidth:0.6,strokeDasharray:gv===0?"4,3":"none",opacity:0.7});
                   })
                 ,_lhIdx>=0&&React.createElement('rect',{x:(_lPL+_lhIdx*_lCW).toFixed(1),y:_lPT,width:_lCW.toFixed(1),height:_lCH,fill:"rgba(0,122,255,0.04)"})
-                ,_lseries.map(function(s,si){
+                ,_lVisSeries.map(function(s){
+                    var si=_lseries.findIndex(function(x){return x.key===s.key;});
                     var pts=s.data.map(function(v,i){return[_lxOf(i),_lyOf(v)];});
                     return React.createElement('path',{key:"area"+s.key,d:_larea(pts),fill:"url(#"+_lgradDefs[si].id+")"});
                   })
-                ,_lseries.map(function(s,si){
+                ,_lVisSeries.map(function(s){
                     var pts=s.data.map(function(v,i){return[_lxOf(i),_lyOf(v)];});
                     return React.createElement(React.Fragment,{key:s.key}
-                      ,React.createElement('path',{d:_lbez(pts),fill:"none",stroke:s.color,strokeWidth:s.lw,strokeLinejoin:"round",strokeLinecap:"round",opacity:0.88})
+                      ,React.createElement('path',{d:_lbez(pts),fill:"none",stroke:s.color,strokeWidth:s.lw,strokeLinejoin:"round",strokeLinecap:"round",opacity:0.92})
                       ,pts.map(function(p,i){
-                          return React.createElement('circle',{key:i,cx:p[0].toFixed(1),cy:p[1].toFixed(1),r:2,fill:s.color});
+                          return React.createElement('circle',{key:i,cx:p[0].toFixed(1),cy:p[1].toFixed(1),r:2.5,fill:s.color});
                         })
                     );
                   })
@@ -27866,16 +27889,21 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           , (contratoVenceHoje || pagAtrasado) && React.createElement('div', { onClick: periodoExpirado ? function(e){ e.stopPropagation(); renovar(c); } : undefined, style: { background: "rgba(255,59,48,0.08)", border: "1px solid rgba(255,59,48,0.25)", borderRadius: 10, padding: "8px 12px", marginBottom: 8, fontSize: 12, fontWeight: 700, color: C.red, display: "flex", alignItems: "center", gap: 8, cursor: periodoExpirado ? "pointer" : "default" } }
             , periodoExpirado ? "🚨 Período expirado em " + fmtDate(c.data_fim) + " — 🔄 Toque aqui para renovar" : contratoVenceHoje ? "🚨 Contrato vence hoje — faça a baixa ou renove" : "⚠️ Pagamento em atraso desde " + fmtDate(c.previsao_pagamento)
           )
+          , isParcial && c.valor_pago && React.createElement('div', { style: { background: C.teal+"15", border: "1px solid "+C.teal+"44", borderRadius: 10, padding: "8px 12px", marginBottom: 8, fontSize: 12, fontWeight: 700, color: C.teal, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 } }
+            , React.createElement('span', null, "💵 Baixa parcial registrada")
+            , React.createElement('span', { style: { display: "flex", gap: 10 } }
+              , React.createElement('span', null, "Recebido: ", React.createElement('b', null, fmtBRL(c.valor_pago)))
+              , React.createElement('span', { style: { color: C.orange } }, "Restante: ", React.createElement('b', null, fmtBRL(Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0)))))
+            )
+          )
           /* Linha 3: Pagamento */
           , React.createElement('div', { style: { marginBottom: 8 } }
             , c.previsao_pagamento && React.createElement('div', { style: { fontSize: 12, color: pagAtrasado ? C.red : C.sub, fontWeight: pagAtrasado ? 700 : 400, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" } }
               , React.createElement('span', null, pagAtrasado ? "⚠ " : "", "Prev. pagto: ", React.createElement('span', { style: { color: pagAtrasado ? C.red : "var(--c-text)", fontWeight: 600 } }, fmtDate(c.previsao_pagamento)))
               , isPago && c.data_pagamento && React.createElement('span', { style: { color: C.green, fontWeight: 700 } }, "✅ Pago: ", fmtDate(c.data_pagamento))
+              , isParcial && c.data_pagamento && React.createElement('span', { style: { color: C.teal, fontWeight: 700 } }, "💵 Parcial: ", fmtDate(c.data_pagamento))
             )
             , isPago && c.data_pagamento && !c.previsao_pagamento && React.createElement('div', { style: { fontSize: 12, color: C.green, fontWeight: 700 } }, "✅ Pago: ", fmtDate(c.data_pagamento))
-            , isParcial && c.valor_pago && React.createElement('div', { style: { fontSize: 12, color: C.teal, marginTop: 4, fontWeight: 600 } }, "Pago: "
-               , fmtBRL(c.valor_pago), " · Restante: ", fmtBRL(Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0)))
-            )
             , c.km_final && c.km_inicial && c.km_franquia && parseFloat(c.km_final) - parseFloat(c.km_inicial) > parseFloat(c.km_franquia) && (
               React.createElement('div', { style: { fontSize: 12, color: C.orange, marginTop: 4, fontWeight: 600 } }, "KM excedente: "
                   , (parseFloat(c.km_final) - parseFloat(c.km_inicial) - parseFloat(c.km_franquia)).toFixed(0), " km · ", fmtBRL((parseFloat(c.km_final) - parseFloat(c.km_inicial) - parseFloat(c.km_franquia)) * parseFloat(c.valor_km_excedente || 0))

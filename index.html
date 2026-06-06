@@ -23140,15 +23140,52 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                 var dLineD=_mkSmooth(dPts);
                 var cPaidD=_mkSmooth(cPts.filter(function(p){return !p.isVence;}));
                 var dPaidD=_mkSmooth(dPts.filter(function(p){return !p.isPrevisto;}));
-                var _runBal=0,bPts=[];
-                [{map:_ctsMapPrev,dmap:_despMapPrev,off:0,ld:_prevLD,mes:_prevMes},
-                 {map:_ctsChartMap,dmap:_despChartMap,off:_prevLD,ld:_curLD,mes:dashMes},
-                 {map:_ctsMapNext,dmap:_despMapNext,off:_prevLD+_curLD,ld:_nextLD,mes:_nextMes}
+                var _saldo0=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_prevMes+"-01");
+                function _mkFlowMap(mes){
+                  var fm={};
+                  function _fa(day,v){if(day>=1&&day<=31)fm[day]=(fm[day]||0)+v;}
+                  (contratos||[]).forEach(function(c){
+                    if(c.status==='cancelado')return;
+                    var dt=(c.status_pagamento==='pago')?(c.data_pagamento||c.previsao_pagamento):(c.previsao_pagamento||c.data_fim);
+                    if(!dt||dt.slice(0,7)!==mes)return;
+                    var day=parseInt(dt.slice(8,10),10);
+                    if(c.status_pagamento==='pago')_fa(day,parseFloat(c.valor_total||0));
+                    else if(c.status_pagamento==='parcial'){_fa(day,parseFloat(c.valor_pago||0));_fa(day,Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)));}
+                    else _fa(day,parseFloat(c.valor_total||0));
+                  });
+                  (receitas||[]).forEach(function(r){
+                    if(r.ref_fatura)return;
+                    var dt=r.data_pagamento||r.data;
+                    if(!dt||dt.slice(0,7)!==mes)return;
+                    _fa(parseInt(dt.slice(8,10),10),parseFloat(r.valor||0));
+                  });
+                  (despesas||[]).forEach(function(d){
+                    if(d.manutencao_id||isRetLucro(d))return;
+                    var dt=(d.status==='pago'||!!d.data_pagamento)?(d.data_pagamento||d.data):d.data;
+                    if(!dt||dt.slice(0,7)!==mes)return;
+                    _fa(parseInt(dt.slice(8,10),10),-parseFloat(d.valor||0));
+                  });
+                  (manutencoes||[]).forEach(function(mn){
+                    var dt=mn.data_pagamento;
+                    if(!dt||dt.slice(0,7)!==mes)return;
+                    _fa(parseInt(dt.slice(8,10),10),-parseFloat(mn.custo||0));
+                  });
+                  (multas||[]).forEach(function(mu){
+                    if(mu.status==='cancelada'||mu.status==='cancelado')return;
+                    if(mu.status==='pago'&&mu.data_pagamento&&mu.data_pagamento.slice(0,7)===mes)
+                      _fa(parseInt(mu.data_pagamento.slice(8,10),10),-parseFloat(mu.valor||0));
+                    if(mu.cobrado_cliente==='pago'){var _dtCob=mu.data_cobranca_cliente||mu.data_pagamento;if(_dtCob&&_dtCob.slice(0,7)===mes)_fa(parseInt(_dtCob.slice(8,10),10),parseFloat(mu.valor_cobrado||mu.valor||0));}
+                  });
+                  return fm;
+                }
+                var _flowPrev=_mkFlowMap(_prevMes),_flowCur=_mkFlowMap(dashMes),_flowNext=_mkFlowMap(_nextMes);
+                var _runBal=_saldo0,bPts=[];
+                [{flow:_flowPrev,off:0,ld:_prevLD,mes:_prevMes},
+                 {flow:_flowCur,off:_prevLD,ld:_curLD,mes:dashMes},
+                 {flow:_flowNext,off:_prevLD+_curLD,ld:_nextLD,mes:_nextMes}
                 ].forEach(function(m){
                   for(var d=1;d<=m.ld;d++){
-                    if(m.map[d])_runBal+=((m.map[d].pago||0)+(m.map[d].pendente||0));
-                    if(m.dmap[d])_runBal-=((m.dmap[d].pago||0)+(m.dmap[d].previsto||0));
-                    if(m.map[d]||m.dmap[d])bPts.push({x:_xCal(m.off,d),bal:_runBal,day:d,mes:m.mes});
+                    if(m.flow[d]!==undefined){_runBal+=m.flow[d];bPts.push({x:_xCal(m.off,d),bal:_runBal,day:d,mes:m.mes});}
                   }
                 });
                 var _maxAbsBal=Math.max.apply(null,bPts.map(function(p){return Math.abs(p.bal);})) || 1;

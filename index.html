@@ -23141,51 +23141,44 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                 var cPaidD=_mkSmooth(cPts.filter(function(p){return !p.isVence;}));
                 var dPaidD=_mkSmooth(dPts.filter(function(p){return !p.isPrevisto;}));
                 var _saldo0=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_prevMes+"-01");
-                function _mkFlowMap(mes){
-                  var fm={};
-                  function _fa(day,v){if(day>=1&&day<=31)fm[day]=(fm[day]||0)+v;}
-                  (contratos||[]).forEach(function(c){
-                    if(c.status==='cancelado')return;
-                    var dt=(c.status_pagamento==='pago')?(c.data_pagamento||c.previsao_pagamento):(c.previsao_pagamento||c.data_fim);
-                    if(!dt||dt.slice(0,7)!==mes)return;
-                    var day=parseInt(dt.slice(8,10),10);
-                    if(c.status_pagamento==='pago')_fa(day,parseFloat(c.valor_total||0));
-                    else if(c.status_pagamento==='parcial'){_fa(day,parseFloat(c.valor_pago||0));_fa(day,Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)));}
-                    else _fa(day,parseFloat(c.valor_total||0));
-                  });
+                /* extras por mês: receitas avulsas + retiradas de lucro + multas (não estão nos mapas do gráfico) */
+                function _mkXtraMap(mes){
+                  var xm={};
+                  function _fx(day,v){if(day>=1&&day<=31)xm[day]=(xm[day]||0)+v;}
                   (receitas||[]).forEach(function(r){
                     if(r.ref_fatura)return;
                     var dt=r.data_pagamento||r.data;
                     if(!dt||dt.slice(0,7)!==mes)return;
-                    _fa(parseInt(dt.slice(8,10),10),parseFloat(r.valor||0));
+                    _fx(parseInt(dt.slice(8,10),10),parseFloat(r.valor||0));
                   });
-                  (despesas||[]).forEach(function(d){
-                    if(d.manutencao_id)return;
-                    var dt=(d.status==='pago'||!!d.data_pagamento)?(d.data_pagamento||d.data):d.data;
+                  resolverDespesasDoMes((despesas||[]).filter(isRetLucro),mes).forEach(function(d){
+                    var pago=d.status==='pago'||!!d.data_pagamento;
+                    var dt=pago?(d.data_pagamento||d.data):d.data;
                     if(!dt||dt.slice(0,7)!==mes)return;
-                    _fa(parseInt(dt.slice(8,10),10),-parseFloat(d.valor||0));
-                  });
-                  (manutencoes||[]).forEach(function(mn){
-                    var dt=mn.data_pagamento;
-                    if(!dt||dt.slice(0,7)!==mes)return;
-                    _fa(parseInt(dt.slice(8,10),10),-parseFloat(mn.custo||0));
+                    _fx(parseInt(dt.slice(8,10),10),-parseFloat(d.valor||0));
                   });
                   (multas||[]).forEach(function(mu){
                     if(mu.status==='cancelada'||mu.status==='cancelado')return;
                     if(mu.status==='pago'&&mu.data_pagamento&&mu.data_pagamento.slice(0,7)===mes)
-                      _fa(parseInt(mu.data_pagamento.slice(8,10),10),-parseFloat(mu.valor||0));
-                    if(mu.cobrado_cliente==='pago'){var _dtCob=mu.data_cobranca_cliente||mu.data_pagamento;if(_dtCob&&_dtCob.slice(0,7)===mes)_fa(parseInt(_dtCob.slice(8,10),10),parseFloat(mu.valor_cobrado||mu.valor||0));}
+                      _fx(parseInt(mu.data_pagamento.slice(8,10),10),-parseFloat(mu.valor||0));
+                    if(mu.cobrado_cliente==='pago'){var _dtCob=mu.data_cobranca_cliente||mu.data_pagamento;if(_dtCob&&_dtCob.slice(0,7)===mes)_fx(parseInt(_dtCob.slice(8,10),10),parseFloat(mu.valor_cobrado||mu.valor||0));}
                   });
-                  return fm;
+                  return xm;
                 }
-                var _flowPrev=_mkFlowMap(_prevMes),_flowCur=_mkFlowMap(dashMes),_flowNext=_mkFlowMap(_nextMes);
+                var _xmPrev=_mkXtraMap(_prevMes),_xmCur=_mkXtraMap(dashMes),_xmNext=_mkXtraMap(_nextMes);
                 var _runBal=_saldo0,bPts=[];
-                [{flow:_flowPrev,off:0,ld:_prevLD,mes:_prevMes},
-                 {flow:_flowCur,off:_prevLD,ld:_curLD,mes:dashMes},
-                 {flow:_flowNext,off:_prevLD+_curLD,ld:_nextLD,mes:_nextMes}
+                [{cmap:_ctsMapPrev,dmap:_despMapPrev,xm:_xmPrev,off:0,ld:_prevLD,mes:_prevMes},
+                 {cmap:_ctsChartMap,dmap:_despChartMap,xm:_xmCur,off:_prevLD,ld:_curLD,mes:dashMes},
+                 {cmap:_ctsMapNext,dmap:_despMapNext,xm:_xmNext,off:_prevLD+_curLD,ld:_nextLD,mes:_nextMes}
                 ].forEach(function(m){
                   for(var d=1;d<=m.ld;d++){
-                    if(m.flow[d]!==undefined){_runBal+=m.flow[d];bPts.push({x:_xCal(m.off,d),bal:_runBal,day:d,mes:m.mes});}
+                    var _c=m.cmap[d],_dd=m.dmap[d],_xv=m.xm[d];
+                    if(_c||_dd||_xv!==undefined){
+                      if(_c)_runBal+=((_c.pago||0)+(_c.pendente||0));
+                      if(_dd)_runBal-=((_dd.pago||0)+(_dd.previsto||0));
+                      if(_xv!==undefined)_runBal+=_xv;
+                      bPts.push({x:_xCal(m.off,d),bal:_runBal,day:d,mes:m.mes});
+                    }
                   }
                 });
                 var _maxAbsBal=Math.max.apply(null,bPts.map(function(p){return Math.abs(p.bal);})) || 1;
@@ -23303,8 +23296,8 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                           !_lpSaldo && React.createElement('text', { x:p.x.toFixed(1), y:(p.y+16).toFixed(1), textAnchor:"middle", fontSize:12, fontWeight:800, fill:dc, fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif", opacity:0.95 }, _fvHome(p.pago>0?p.pago:p.val))
                         );
                       })
-                    /* dots saldo azul — sempre visíveis nos dias com movimentação */
-                    , bPts.map(function(p,i){
+                    /* dots saldo azul — só no long press */
+                    , _lpSaldo && bPts.map(function(p,i){
                         var isFut=p.mes>_bTodayMes||(p.mes===_bTodayMes&&p.day>_bTodayDay);
                         var isAbove=p.y<midY;
                         var balCol=p.bal<0?"#FF3B30":"#007AFF";

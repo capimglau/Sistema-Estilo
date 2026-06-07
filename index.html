@@ -31180,8 +31180,6 @@ function PessoalDash({
       function _lastDayOfP(m){var d=new Date(m+'-01');d.setMonth(d.getMonth()+1);d.setDate(0);return d.getDate();}
       var _prevLD=_lastDayOfP(_mesAntChart),_curLD=_lastDayOfP(_mes),_nextLD=_lastDayOfP(_mesProxChart);
       var _pxPerDay=38, padB=18, padT=20;
-      var W=(_prevLD+_curLD+_nextLD)*_pxPerDay;
-      var _xCal=function(off,d){return(off+d-0.5)*_pxPerDay;};
 
       /* Monta mapa dia→{rec,desp} para um mês pessoal */
       function _mkPesMap(m){
@@ -31212,6 +31210,37 @@ function PessoalDash({
       var _mapCur=_mkPesMap(_mes);
       var _mapNext=_mkPesMap(_mesProxChart);
 
+      /* ── escala X comprimida: só dias com lançamento + âncoras (1, último, hoje); vazios somem ── */
+      function _slotDaysP(map,ld,mes){
+        var s={};
+        Object.keys(map).forEach(function(d){var n=parseInt(d,10);if(n>=1&&n<=ld)s[n]=1;});
+        s[1]=1;s[ld]=1;
+        if(mes===mesAtual){var _t=parseInt(_hoje.slice(8,10),10);if(_t>=1&&_t<=ld)s[_t]=1;}
+        return Object.keys(s).map(Number).sort(function(a,b){return a-b;});
+      }
+      var _slotsPrevP=_slotDaysP(_mapPrev,_prevLD,_mesAntChart);
+      var _slotsCurP=_slotDaysP(_mapCur,_curLD,_mes);
+      var _slotsNextP=_slotDaysP(_mapNext,_nextLD,_mesProxChart);
+      var _slotXP={},_siP=0;
+      function _regSlotsP(mes,days){days.forEach(function(d){_slotXP[mes+"-"+d]=(_siP+0.5)*_pxPerDay;_siP++;});}
+      _regSlotsP(_mesAntChart,_slotsPrevP);var _sepIdx1P=_siP;
+      _regSlotsP(_mes,_slotsCurP);var _sepIdx2P=_siP;
+      _regSlotsP(_mesProxChart,_slotsNextP);
+      var W=Math.max(_siP,1)*_pxPerDay;
+      var _xSep1=_sepIdx1P*_pxPerDay,_xSep2=_sepIdx2P*_pxPerDay;
+      var _xCal=function(mes,day){
+        var k=mes+"-"+day; if(_slotXP[k]!=null)return _slotXP[k];
+        var arr=mes===_mesAntChart?_slotsPrevP:(mes===_mes?_slotsCurP:_slotsNextP);
+        if(!arr.length)return 0;
+        var lo=null,hi=null;
+        for(var i=0;i<arr.length;i++){if(arr[i]<=day)lo=arr[i];if(arr[i]>=day&&hi==null)hi=arr[i];}
+        if(lo==null)return _slotXP[mes+"-"+arr[0]];
+        if(hi==null)return _slotXP[mes+"-"+arr[arr.length-1]];
+        if(lo===hi)return _slotXP[mes+"-"+lo];
+        var x0=_slotXP[mes+"-"+lo],x1=_slotXP[mes+"-"+hi];
+        return x0+(x1-x0)*((day-lo)/(hi-lo));
+      };
+
       /* escala Y — baseada no acumulado máximo mensal */
       var _maxRacc=0,_maxDacc=0;
       [_mapPrev,_mapCur,_mapNext].forEach(function(mp){
@@ -31233,12 +31262,12 @@ function PessoalDash({
         var _racc=0;
         var rp=Object.keys(map).map(Number).sort(function(a,b){return a-b;}).filter(function(d){return (map[d].rec||0)>0;}).map(function(d){
           var _dayv=map[d].rec||0;_racc+=_dayv;var _pg=map[d].recPg||0;
-          return{x:_xCal(off,d),y:yCt(_racc),val:_racc,dayVal:_dayv,pg:_pg,isPaid:_pg>=_dayv*0.99,isHoje:mes===mesAtual&&d===_td,day:d,mes:mes};
+          return{x:_xCal(mes,d),y:yCt(_racc),val:_racc,dayVal:_dayv,pg:_pg,isPaid:_pg>=_dayv*0.99,isHoje:mes===mesAtual&&d===_td,day:d,mes:mes};
         });
         var _dacc=0;
         var dp=Object.keys(map).map(Number).sort(function(a,b){return a-b;}).filter(function(d){return (map[d].desp||0)>0;}).map(function(d){
           var _dayv=map[d].desp||0;_dacc+=_dayv;var _pg=map[d].despPg||0;
-          return{x:_xCal(off,d),y:yDp(_dacc),val:_dacc,dayVal:_dayv,pg:_pg,isPaid:_pg>=_dayv*0.99,isHoje:mes===mesAtual&&d===_td,day:d,mes:mes};
+          return{x:_xCal(mes,d),y:yDp(_dacc),val:_dacc,dayVal:_dayv,pg:_pg,isPaid:_pg>=_dayv*0.99,isHoje:mes===mesAtual&&d===_td,day:d,mes:mes};
         });
         return{rp:rp,dp:dp};
       }
@@ -31266,7 +31295,7 @@ function PessoalDash({
           var _slot=m.cmap[d];
           if(_slot){
             _bPesRunBal+=(_slot.rec||0)-(_slot.desp||0);
-            bPesPts.push({x:_xCal(m.off,d),bal:_bPesRunBal,day:d,mes:m.mes});
+            bPesPts.push({x:_xCal(m.mes,d),bal:_bPesRunBal,day:d,mes:m.mes});
           }
         }
       });
@@ -31281,26 +31310,20 @@ function PessoalDash({
       var bPesFutD=_mkSmP(bPesFutConn);
       function _fvBalP(v){var a=Math.abs(v);var s=v<0?'-':'';if(a>=1000){var k=a/1000;var r=Math.round(k*10)/10;return s+(r===Math.floor(r)?r+'k':r.toFixed(1).replace('.',',')+' k');}return s+Math.round(a);}
 
-      var _xSep1=_prevLD*_pxPerDay,_xSep2=(_prevLD+_curLD)*_pxPerDay;
       _pesScrollTarget.current=Math.max(0,_xSep1-4);
       var _todayDay=parseInt(_hoje.slice(8,10),10);
-      var _todayOff=mesAtual===_mesAntChart?0:mesAtual===_mes?_prevLD:mesAtual===_mesProxChart?_prevLD+_curLD:-1;
-      var _todayX=_todayOff>=0?_xCal(_todayOff,_todayDay):-1;
+      var _todayX=(mesAtual===_mesAntChart||mesAtual===_mes||mesAtual===_mesProxChart)?_xCal(mesAtual,_todayDay):-1;
       function _fML2(ms){return new Date(ms+'-15').toLocaleDateString('pt-BR',{month:'short'}).replace('.','');}
       function _fvP(v){if(v>=1000){var k=v/1000;var r=Math.round(k*10)/10;return r===Math.floor(r)?r+'k':r.toFixed(1).replace('.',',')+' k';}return Math.round(v);}
 
       /* x labels */
       var xLabels=[];
-      [{mes:_mesAntChart,off:0,map:_mapPrev},{mes:_mes,off:_prevLD,map:_mapCur},{mes:_mesProxChart,off:_prevLD+_curLD,map:_mapNext}].forEach(function(seg){
-        var _ld={};
-        [1,15].forEach(function(d){if(d<=(seg.mes===_mesAntChart?_prevLD:seg.mes===_mes?_curLD:_nextLD))_ld[d]=true;});
-        Object.keys(seg.map).forEach(function(d){_ld[parseInt(d,10)]=true;});
-        if(seg.mes===mesAtual)_ld[_todayDay]=true;
-        Object.keys(_ld).map(Number).sort(function(a,b){return a-b;}).forEach(function(day){
+      [{mes:_mesAntChart,map:_mapPrev,slots:_slotsPrevP},{mes:_mes,map:_mapCur,slots:_slotsCurP},{mes:_mesProxChart,map:_mapNext,slots:_slotsNextP}].forEach(function(seg){
+        seg.slots.forEach(function(day){
           var isHj=seg.mes===mesAtual&&day===_todayDay;
           var isR=!!(seg.map[day]&&seg.map[day].rec>0),isD=!!(seg.map[day]&&seg.map[day].desp>0);
           var fc=isHj?C.blue:(isR&&isD?'#888':isR?'#34C759':isD?'#FF3B30':C.sub);
-          xLabels.push(React.createElement('text',{key:'pl'+seg.mes+day,x:_xCal(seg.off,day).toFixed(1),y:H-2,textAnchor:'middle',fontSize:11,fill:fc,fontWeight:isHj?'800':'600'},String(day)));
+          xLabels.push(React.createElement('text',{key:'pl'+seg.mes+day,x:_xCal(seg.mes,day).toFixed(1),y:H-2,textAnchor:'middle',fontSize:11,fill:fc,fontWeight:isHj?'800':'600'},String(day)));
         });
       });
 
@@ -31339,7 +31362,7 @@ function PessoalDash({
               )
             ),
             /* fundo mês atual */
-            React.createElement('rect',{x:_xSep1,y:0,width:(_curLD*_pxPerDay),height:H,fill:C.blue,opacity:0.025}),
+            React.createElement('rect',{x:_xSep1,y:0,width:(_xSep2-_xSep1),height:H,fill:C.blue,opacity:0.025}),
             /* linha zero */
             React.createElement('line',{x1:0,y1:midY,x2:W,y2:midY,stroke:C.border,strokeWidth:0.8}),
             /* separadores mês */
@@ -31366,41 +31389,41 @@ function PessoalDash({
             bPesFutD && React.createElement('path',{d:bPesFutD,fill:'none',stroke:'#007AFF',strokeWidth:_lpSaldoP?2.0:1.6,strokeDasharray:'5,4',strokeLinejoin:'round',strokeLinecap:'round',opacity:_lpSaldoP?1:0.55}),
             /* dots saldo azul pessoal */
             (function(){
-              var _lbxP=-999;
+              var _lbxP=-999,_lbLvlP=0;
               return bPesPts.map(function(p,i){
                 var isFutP3=p.mes>_bTodayMesP||(p.mes===_bTodayMesP&&p.day>_bTodayDayP);
                 var balColP=p.bal<0?'#FF3B30':'#007AFF';
-                var showLblP=p.x-_lbxP>=32;if(showLblP)_lbxP=p.x;
+                var _lvl=(p.x-_lbxP<32)?(_lbLvlP?0:1):0;_lbxP=p.x;_lbLvlP=_lvl;
                 var isAboveP=p.y<midY;
-                var _lblUpP=p.y-7,_lblDnP=p.y+12;
+                var _ly=(isAboveP?(p.y-7):(p.y+12))+(isAboveP?-1:1)*_lvl*12;
                 return React.createElement('g',{key:'bpg'+i,opacity:isFutP3?(_lpSaldoP?1:0.55):1},
                   React.createElement('circle',{cx:p.x.toFixed(1),cy:p.y.toFixed(1),r:isFutP3&&_lpSaldoP?'2.5':'1.5',fill:balColP,opacity:isFutP3&&_lpSaldoP?1:0.7}),
-                  showLblP && React.createElement('text',{x:p.x.toFixed(1),y:(isAboveP?_lblUpP:_lblDnP).toFixed(1),textAnchor:'middle',fontSize:11,fontWeight:700,fill:balColP,fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif',opacity:isFutP3?(_lpSaldoP?1:0.75):0.85},_fvBalP(p.bal))
+                  React.createElement('text',{x:p.x.toFixed(1),y:_ly.toFixed(1),textAnchor:'middle',fontSize:10,fontWeight:500,fill:balColP,fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif',opacity:isFutP3?(_lpSaldoP?1:0.7):0.8},_fvBalP(p.bal))
                 );
               });
             })(),
             /* dots receita — com filtro de distância mínima */
-            (function(){var _lrx=-999;var _todMs=_hoje.slice(0,7);var _todD=parseInt(_hoje.slice(8,10),10);return rPts.map(function(p,i){
+            (function(){var _lrx=-999,_lrLvl=0;var _todMs=_hoje.slice(0,7);var _todD=parseInt(_hoje.slice(8,10),10);return rPts.map(function(p,i){
               var isFutP=p.mes>_todMs||(p.mes===_todMs&&p.day>_todD);
               var dc=p.isHoje?C.blue:(!p.isPaid?'#FF9500':'#34C759');
               var _pd=p.day;var _pm=p.mes;
-              var showLbl=p.x-_lrx>=30;if(showLbl)_lrx=p.x;
+              var _lvl=(p.x-_lrx<30)?(_lrLvl?0:1):0;_lrx=p.x;_lrLvl=_lvl;
               return React.createElement('g',{key:'prg'+i,opacity:isFutP?(_lpSaldoP?1:0.45):1,onClick:function(){_setPesDaySheet({day:_pd,mes:_pm});},style:{cursor:'pointer'}},
-                React.createElement('rect',{x:(p.x-16).toFixed(1),y:(p.y-22).toFixed(1),width:32,height:32,fill:'transparent'}),
+                React.createElement('rect',{x:(p.x-16).toFixed(1),y:(p.y-34).toFixed(1),width:32,height:44,fill:'transparent'}),
                 React.createElement('circle',{cx:p.x.toFixed(1),cy:p.y.toFixed(1),r:'3.5',fill:dc,stroke:'var(--c-card,#fff)',strokeWidth:'1.5'}),
-                showLbl && React.createElement('text',{x:p.x.toFixed(1),y:(p.y-8).toFixed(1),textAnchor:'middle',fontSize:11,fontWeight:700,fill:dc,fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif',opacity:isFutP?(_lpSaldoP?1:0.70):0.92},_fvP(p.dayVal))
+                React.createElement('text',{x:p.x.toFixed(1),y:(p.y-8-_lvl*12).toFixed(1),textAnchor:'middle',fontSize:10,fontWeight:500,fill:dc,fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif',opacity:isFutP?(_lpSaldoP?1:0.70):0.9},_fvP(p.dayVal))
               );
             });})(),
             /* dots despesa — com filtro de distância mínima */
-            (function(){var _ldx=-999;var _todMs2=_hoje.slice(0,7);var _todD2=parseInt(_hoje.slice(8,10),10);return dPts.map(function(p,i){
+            (function(){var _ldx=-999,_ldLvl=0;var _todMs2=_hoje.slice(0,7);var _todD2=parseInt(_hoje.slice(8,10),10);return dPts.map(function(p,i){
               var isFutP2=p.mes>_todMs2||(p.mes===_todMs2&&p.day>_todD2);
               var dc=p.isHoje?C.blue:(!p.isPaid?'#FF9500':'#FF3B30');
               var _pd2=p.day;var _pm2=p.mes;
-              var showLbl=p.x-_ldx>=30;if(showLbl)_ldx=p.x;
+              var _lvl=(p.x-_ldx<30)?(_ldLvl?0:1):0;_ldx=p.x;_ldLvl=_lvl;
               return React.createElement('g',{key:'pdg'+i,opacity:isFutP2?(_lpSaldoP?1:0.45):1,onClick:function(){_setPesDaySheet({day:_pd2,mes:_pm2});},style:{cursor:'pointer'}},
-                React.createElement('rect',{x:(p.x-16).toFixed(1),y:(p.y-10).toFixed(1),width:32,height:32,fill:'transparent'}),
+                React.createElement('rect',{x:(p.x-16).toFixed(1),y:(p.y-10).toFixed(1),width:32,height:44,fill:'transparent'}),
                 React.createElement('circle',{cx:p.x.toFixed(1),cy:p.y.toFixed(1),r:'3.5',fill:dc,stroke:'var(--c-card,#fff)',strokeWidth:'1.5'}),
-                showLbl && React.createElement('text',{x:p.x.toFixed(1),y:(p.y+14).toFixed(1),textAnchor:'middle',fontSize:11,fontWeight:700,fill:dc,fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif',opacity:isFutP2?(_lpSaldoP?1:0.70):0.92},_fvP(p.dayVal))
+                React.createElement('text',{x:p.x.toFixed(1),y:(p.y+14+_lvl*12).toFixed(1),textAnchor:'middle',fontSize:10,fontWeight:500,fill:dc,fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif',opacity:isFutP2?(_lpSaldoP?1:0.70):0.9},_fvP(p.dayVal))
               );
             });})(),
             /* x labels */

@@ -22314,6 +22314,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
   React.useEffect(function(){db.get("orcamento_pessoal").then(function(d){_setOrcFresh(d||[]);}).catch(function(){});}, []);
   React.useEffect(function(){if(modoDash!=='pessoal')return;db.get("orcamento_pessoal").then(function(d){_setOrcFresh(d||[]);}).catch(function(){});}, [modoDash]);
   const [chartDaySheet, setChartDaySheet] = React.useState(null);
+  const [chartDaySheetMes, setChartDaySheetMes] = React.useState(null);
   const [chartDaySheetMode, setChartDaySheetMode] = React.useState(null);
   const [showSimulacao, setShowSimulacao] = React.useState(false);
   const [_homeVH, _setHomeVH] = React.useState(window.innerHeight);
@@ -23228,6 +23229,26 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                 var dAreaD=dPts.length>0?dLineD+" L"+dPts[dPts.length-1].x.toFixed(1)+","+midY+" L"+dPts[0].x.toFixed(1)+","+midY+" Z":"";
                 var _xSep1=_prevLD*_pxPerDay,_xSep2=(_prevLD+_curLD)*_pxPerDay;
                 function _fML(ms){var d=new Date(ms+"-15");return d.toLocaleDateString('pt-BR',{month:'short'}).replace('.','');}
+                /* movimento de caixa de um dia — MESMA definição do saldo:
+                   passado = só efetivado; futuro = projeção (inclui pendente/previsto). Inclui retiradas. */
+                function _dayMov(mes,day){
+                  var ds=mes+"-"+(day<10?"0":"")+day, fut=ds>hoje, ent=0, sai=0;
+                  (contratos||[]).forEach(function(c){
+                    if(c.status_pagamento==="cancelado")return;
+                    var isPg=c.status_pagamento==="pago"||c.status_pagamento==="isento"||c.status_pagamento==="parcial";
+                    var dt=isPg?(c.data_pagamento||c.previsao_pagamento):c.previsao_pagamento;
+                    if(dt&&dt.slice(0,10)===ds&&(isPg||fut))ent+=parseFloat(c.status_pagamento==="parcial"?(c.valor_pago||0):(c.valor_total||0));
+                  });
+                  (receitas||[]).forEach(function(r){if(r.ref_fatura)return;var rec=r.status==='recebido'||r.status==='pago';var dt=r.data_pagamento||r.data;if(dt&&dt.slice(0,10)===ds&&(rec||fut))ent+=parseFloat(r.valor||0);});
+                  (multas||[]).forEach(function(mu){
+                    if(mu.status==='cancelada'||mu.status==='cancelado')return;
+                    if(mu.cobrado_cliente==='pago'){var dc=mu.data_cobranca_cliente||mu.data_pagamento;if(dc&&dc.slice(0,10)===ds)ent+=parseFloat(mu.valor_cobrado||mu.valor||0);}
+                    if(mu.status==='pago'&&mu.data_pagamento&&mu.data_pagamento.slice(0,10)===ds)sai+=parseFloat(mu.valor||0);
+                  });
+                  resolverDespesasDoMes(despesas||[],mes).forEach(function(d){var pago=d.status==="pago"||!!d.data_pagamento;var dt=pago?(d.data_pagamento||d.data):d.data;if(dt&&dt.slice(0,10)===ds&&(pago||fut))sai+=parseFloat(d.valor||0);});
+                  (manutencoes||[]).forEach(function(mm){if(mm.data_pagamento&&mm.data_pagamento.slice(0,10)===ds)sai+=parseFloat(mm.custo||0);});
+                  return {ent:ent,sai:sai};
+                }
                 var _todayDay=parseInt(hoje.slice(8,10),10);
                 var _todayOff=mesAtual===_prevMes?0:mesAtual===dashMes?_prevLD:mesAtual===_nextMes?_prevLD+_curLD:-1;
                 var _todayX=_todayOff>=0?_xCal(_todayOff,_todayDay):-1;
@@ -23246,24 +23267,22 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                     var isHj=m.mes===mesAtual&&day===_todayDay;
                     var fc=isHj?C.blue:(isC&&isD?"#888":isC?"#34C759":isD?"#FF3B30":C.sub);
                     var x=_xCal(m.off,day); var _xd=day; var _xdMes=m.mes;
-                    var _xdCt=(m.cm[day]||{pago:0,pendente:0}); var _xdDp=(m.dm[day]||{pago:0,previsto:0});
                     var _xdBal=null;(function(){for(var _bi=0;_bi<bPts.length;_bi++){if(bPts[_bi].mes===m.mes&&bPts[_bi].day<=day)_xdBal=bPts[_bi].bal;if(bPts[_bi].mes===m.mes&&bPts[_bi].day>day)break;}})();
                     xLabels.push(React.createElement('g',{key:"xl"+m.mes+day,
                       onClick:function(){
                         if(_cdTipFired.current){_cdTipFired.current=false;return;}
-                        setChartDaySheetMode(null);setChartDaySheet(_xd);
+                        setChartDaySheetMode(null);setChartDaySheetMes(_xdMes);setChartDaySheet(_xd);
                       },
                       onTouchStart:function(e){
                         _cdTipFired.current=false;
                         var _tx=e.touches[0].clientX; var _ty=e.touches[0].clientY;
-                        var _d=_xd; var _dm=_xdMes; var _ct=_xdCt; var _dp=_xdDp; var _bal=_xdBal;
+                        var _d=_xd; var _dm=_xdMes; var _bal=_xdBal;
                         _cdTipTimer.current=setTimeout(function(){
                           _cdTipFired.current=true;
                           _cdTipShownAt.current=Date.now();
                           if(window._agVibe)window._agVibe(8);
-                          var _rec=(_ct.pago||0)+(_ct.pendente||0);
-                          var _dep=(_dp.pago||0)+(_dp.previsto||0);
-                          _setcdTip({day:_d,mes:_dm,rec:_rec,dep:_dep,bal:_bal,tx:_tx,ty:_ty});
+                          var _mv=_dayMov(_dm,_d);
+                          _setcdTip({day:_d,mes:_dm,rec:_mv.ent,dep:_mv.sai,bal:_bal,tx:_tx,ty:_ty});
                         },480);
                       },
                       onTouchEnd:function(){clearTimeout(_cdTipTimer.current);},
@@ -23314,9 +23333,9 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                     /* dots contratos */
                     , (function(){var _lcx=-999;return cPts.map(function(p,i){
                         var dc=p.isVence?"#FF9500":"#34C759";
-                        var _pd=p.day;
+                        var _pd=p.day; var _pm=p.mes;
                         var showLbl=p.x-_lcx>=30;if(showLbl)_lcx=p.x;
-                        return React.createElement('g', { key:"cg"+i, onClick:function(){setChartDaySheetMode("ct");setChartDaySheet(_pd);}, style:{cursor:"pointer"} },
+                        return React.createElement('g', { key:"cg"+i, onClick:function(){setChartDaySheetMode("ct");setChartDaySheetMes(_pm);setChartDaySheet(_pd);}, style:{cursor:"pointer"} },
                           React.createElement('rect', { x:(p.x-16).toFixed(1), y:(p.y-22).toFixed(1), width:32, height:32, fill:"transparent" }),
                           React.createElement('circle', { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"3.5", fill:dc, stroke:"var(--c-card,#fff)", strokeWidth:"1.5" }),
                           showLbl && React.createElement('text', { x:p.x.toFixed(1), y:(p.y-8).toFixed(1), textAnchor:"middle", fontSize:11, fontWeight:700, fill:dc, fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif", opacity:0.92 }, _fvHome(p.dayVal))
@@ -23325,9 +23344,9 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                     /* dots despesas */
                     , (function(){var _ldx=-999;return dPts.map(function(p,i){
                         var dc=p.isPrevisto?"#FF9500":"#FF3B30";
-                        var _pd2=p.day;
+                        var _pd2=p.day; var _pm2=p.mes;
                         var showLbl=p.x-_ldx>=30;if(showLbl)_ldx=p.x;
-                        return React.createElement('g', { key:"dg"+i, onClick:function(){setChartDaySheetMode("dp");setChartDaySheet(_pd2);}, style:{cursor:"pointer"} },
+                        return React.createElement('g', { key:"dg"+i, onClick:function(){setChartDaySheetMode("dp");setChartDaySheetMes(_pm2);setChartDaySheet(_pd2);}, style:{cursor:"pointer"} },
                           React.createElement('rect', { x:(p.x-16).toFixed(1), y:(p.y-10).toFixed(1), width:32, height:32, fill:"transparent" }),
                           React.createElement('circle', { cx:p.x.toFixed(1), cy:p.y.toFixed(1), r:"3.5", fill:dc, stroke:"var(--c-card,#fff)", strokeWidth:"1.5" }),
                           showLbl && React.createElement('text', { x:p.x.toFixed(1), y:(p.y+14).toFixed(1), textAnchor:"middle", fontSize:11, fontWeight:700, fill:dc, fontFamily:"-apple-system,BlinkMacSystemFont,sans-serif", opacity:0.92 }, _fvHome(p.dayVal))
@@ -23763,7 +23782,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                       : function(){
                           if(_agSwRef.current._didBaixar){_agSwRef.current._didBaixar=false;return;}
                           setChartDaySheetMode(_isSplitCt?"ct":_isSplitDp?"dp":null);
-                          setChartDaySheet(_dayNum);
+                          setChartDaySheetMes(date.slice(0,7));setChartDaySheet(_dayNum);
                         };
                     var dotEl = isToday
                       ? React.createElement('div', { style:{ width:14, height:14, borderRadius:"50%", border:"2px solid "+C.blue, display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 0 3px "+C.blue+"22" } }
@@ -23815,35 +23834,95 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           );
         })()
         )
-        , chartDaySheet !== null && React.createElement(BottomSheet, { open:true, onClose:function(){setChartDaySheet(null);setChartDaySheetMode(null);}, title:"Dia "+chartDaySheet+" \xb7 "+nomeMes }
+        , chartDaySheet !== null && React.createElement(BottomSheet, { open:true, onClose:function(){setChartDaySheet(null);setChartDaySheetMode(null);}, title:"Dia "+chartDaySheet+" \xb7 "+new Date((chartDaySheetMes||dashMes)+"-15").toLocaleString("pt-BR",{month:"long",year:"numeric"}) }
             , (() => {
                 var _day = chartDaySheet;
-                var _ctsDay = ctsMes.filter(function(c){
+                var _mesSheet = chartDaySheetMes || dashMes;
+                var _inDay = function(dt){ return dt && dt.slice(0,7)===_mesSheet && parseInt(dt.slice(8,10),10)===_day; };
+                /* ── ENTRADAS do caixa ── (fonte: arrays brutos, p/ funcionar em qualquer mês do gráfico) */
+                var _ctsSheet = (contratos||[]).filter(function(c){
+                  if (c.status_pagamento==="pago" && c.data_pagamento) return c.data_pagamento.slice(0,7)===_mesSheet;
+                  return c.previsao_pagamento && c.previsao_pagamento.slice(0,7)===_mesSheet;
+                });
+                var _ctsDay = _ctsSheet.filter(function(c){
                   var isPgoParcial=c.status_pagamento==="pago"||c.status_pagamento==="isento"||c.status_pagamento==="parcial";
                   var dt = isPgoParcial ? (c.data_pagamento||c.previsao_pagamento) : c.previsao_pagamento;
-                  return dt && dt.slice(0,7)===dashMes && parseInt(dt.slice(8,10),10)===_day;
+                  return _inDay(dt);
                 });
-                var _despDay = despMesItens.filter(function(d){
+                var _recDay = (receitas||[]).filter(function(r){
+                  if(r.ref_fatura) return false;
+                  return _inDay(r.data_pagamento||r.data);
+                });
+                var _multaRecDay = (multas||[]).filter(function(mu){
+                  if(mu.status==='cancelada'||mu.status==='cancelado') return false;
+                  if(mu.cobrado_cliente!=='pago') return false;
+                  return _inDay(mu.data_cobranca_cliente||mu.data_pagamento);
+                });
+                /* ── SAÍDAS do caixa ── */
+                var _despDay = resolverDespesasDoMes((despesas||[]).filter(function(d){return !isRetLucro(d);}), _mesSheet).filter(function(d){
                   var pago = d.status==="pago"||!!d.data_pagamento;
                   var dt = pago ? (d.data_pagamento||d.data) : d.data;
-                  return dt && dt.slice(0,7)===dashMes && parseInt(dt.slice(8,10),10)===_day;
+                  return _inDay(dt);
+                });
+                var _retDay = resolverDespesasDoMes((despesas||[]).filter(isRetLucro), _mesSheet).filter(function(d){
+                  var pago = d.status==="pago"||!!d.data_pagamento;
+                  var dt = pago ? (d.data_pagamento||d.data) : d.data;
+                  return _inDay(dt);
+                });
+                var _manDay = (manutencoes||[]).filter(function(m){ return _inDay(m.data_pagamento); });
+                var _multaPagaDay = (multas||[]).filter(function(mu){
+                  if(mu.status==='cancelada'||mu.status==='cancelado') return false;
+                  return mu.status==='pago' && _inDay(mu.data_pagamento);
                 });
                 function _cVal(c){return parseFloat(c.status_pagamento==="parcial"?(c.valor_pago||0):(c.valor_total||0));}
-                var _totC = _ctsDay.reduce(function(s,c){return s+_cVal(c);},0);
-                var _totD = _despDay.reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
+                function _ctRecebido(c){return c.status_pagamento==="pago"||c.status_pagamento==="isento"||c.status_pagamento==="parcial";}
+                function _recRecebido(r){return r.status==='recebido'||r.status==='pago';}
+                function _despPago(d){return d.status==="pago"||!!d.data_pagamento;}
+                /* totais que entram no SALDO: passado = só efetivado; futuro = projeção (pendente/previsto) */
+                var _futDia = (_mesSheet+"-"+(_day<10?"0":"")+_day) > hoje;
+                var _totEnt = _ctsDay.filter(function(c){return _ctRecebido(c)||_futDia;}).reduce(function(s,c){return s+_cVal(c);},0)
+                  + _recDay.filter(function(r){return _recRecebido(r)||_futDia;}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0)
+                  + _multaRecDay.reduce(function(s,m){return s+parseFloat(m.valor_cobrado||m.valor||0);},0);
+                var _totSai = _despDay.filter(function(d){return _despPago(d)||_futDia;}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0)
+                  + _retDay.filter(function(d){return _despPago(d)||_futDia;}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0)
+                  + _manDay.reduce(function(s,m){return s+parseFloat(m.custo||0);},0)
+                  + _multaPagaDay.reduce(function(s,m){return s+parseFloat(m.valor||0);},0);
+                var _saldoDia = _totEnt - _totSai;
+                var _vazio = !_ctsDay.length && !_recDay.length && !_multaRecDay.length && !_despDay.length && !_retDay.length && !_manDay.length && !_multaPagaDay.length;
+                /* renderizador genérico de linha */
+                function _row(key,emoji,titulo,sub,valor,cor,onClick,swipe){
+                  var _inner=React.createElement('div', {
+                    onClick:onClick, style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 16px",cursor:onClick?"pointer":"default"} }
+                    , React.createElement('div', { style:{minWidth:0,flex:1,paddingRight:8} }
+                      , React.createElement('div', { style:{fontSize:13,fontWeight:600,color:"var(--c-text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"} }, emoji+" "+titulo)
+                      , sub && React.createElement('div', { style:{fontSize:11,color:C.sub,marginTop:1} }, sub)
+                    )
+                    , React.createElement('div', { style:{fontWeight:700,fontSize:13,color:cor,flexShrink:0} }, (valor<0?"-":"")+fmtBRL(Math.abs(valor)).split(",")[0])
+                  );
+                  return swipe
+                    ? React.createElement(SwipeRow, { key:key, onBaixar:swipe.onBaixar, baixarLabel:swipe.label, wrapStyle:{borderTop:"1px solid "+C.border} }, _inner)
+                    : React.createElement('div', { key:key, style:{borderTop:"1px solid "+C.border} }, _inner);
+                }
+                function _secHdr(cor,texto){ return React.createElement('div', { style:{padding:"8px 16px 4px",fontSize:10,fontWeight:700,color:cor,textTransform:"uppercase",letterSpacing:0.8} }, texto); }
                 return React.createElement('div', { style:{paddingBottom:8} }
-                  , React.createElement('div', { style:{display:"flex",justifyContent:"space-between",padding:"8px 16px 12px",borderBottom:"1px solid "+C.border} }
+                  /* cabeçalho: entradas / saídas / saldo do dia */
+                  , React.createElement('div', { style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",padding:"8px 16px 12px",borderBottom:"1px solid "+C.border} }
                     , React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:2} }
-                      , React.createElement('span', { style:{fontSize:9,fontWeight:700,color:C.green,textTransform:"uppercase",letterSpacing:0.8} }, "Receitas")
-                      , React.createElement('span', { style:{fontSize:16,fontWeight:800,color:C.green,letterSpacing:-0.5} }, _totC>0?fmtBRL(_totC).split(",")[0]:"—")
+                      , React.createElement('span', { style:{fontSize:9,fontWeight:700,color:C.green,textTransform:"uppercase",letterSpacing:0.8} }, "Entradas")
+                      , React.createElement('span', { style:{fontSize:16,fontWeight:800,color:C.green,letterSpacing:-0.5} }, _totEnt>0?fmtBRL(_totEnt).split(",")[0]:"—")
+                    )
+                    , React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:2,alignItems:"center"} }
+                      , React.createElement('span', { style:{fontSize:9,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:0.8} }, "Saldo do dia")
+                      , React.createElement('span', { style:{fontSize:16,fontWeight:800,color:_saldoDia>=0?C.green:C.red,letterSpacing:-0.5} }, (_saldoDia>=0?"+":"-")+fmtBRL(Math.abs(_saldoDia)).split(",")[0])
                     )
                     , React.createElement('div', { style:{display:"flex",flexDirection:"column",gap:2,alignItems:"flex-end"} }
-                      , React.createElement('span', { style:{fontSize:9,fontWeight:700,color:C.red,textTransform:"uppercase",letterSpacing:0.8} }, "Despesas")
-                      , React.createElement('span', { style:{fontSize:16,fontWeight:800,color:C.red,letterSpacing:-0.5} }, _totD>0?fmtBRL(_totD).split(",")[0]:"—")
+                      , React.createElement('span', { style:{fontSize:9,fontWeight:700,color:C.red,textTransform:"uppercase",letterSpacing:0.8} }, "Saídas")
+                      , React.createElement('span', { style:{fontSize:16,fontWeight:800,color:C.red,letterSpacing:-0.5} }, _totSai>0?fmtBRL(_totSai).split(",")[0]:"—")
                     )
                   )
+                  /* ── Contratos ── */
                   , _ctsDay.length > 0 && chartDaySheetMode !== "dp" && React.createElement('div', null
-                    , React.createElement('div', { style:{padding:"8px 16px 4px",fontSize:10,fontWeight:700,color:C.green,textTransform:"uppercase",letterSpacing:0.8} }, "Contratos ("+_ctsDay.length+")")
+                    , _secHdr(C.green, "Contratos ("+_ctsDay.length+")")
                     , _ctsDay.map(function(c,i){
                         var cl=(clientes||[]).find(function(x){return x.id==c.cliente_id;});
                         var ve=(veiculos||[]).find(function(x){return x.id==c.veiculo_id;});
@@ -23851,47 +23930,83 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                         var isParcial=c.status_pagamento==="parcial";
                         var cor=(isPago||isParcial)?C.green:C.orange;
                         var _cId=c.id;
-                        var _inner=React.createElement('div', {
-                          onClick:function(){onItemNav({type:"contrato",id:_cId},"contratos");setChartDaySheet(null);},
-                          style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 16px",cursor:"pointer"} }
-                          , React.createElement('div', null
-                            , React.createElement('div', { style:{fontSize:13,fontWeight:600,color:"var(--c-text)"} }
-                              , (isPago?"✅ ":isParcial?"🔶 ":"⏳ ")+((cl&&cl.nome)||"Contrato #"+_cId))
-                            , React.createElement('div', { style:{fontSize:11,color:C.sub,marginTop:1} }
-                              , (ve&&ve.placa||"--")+" \xb7 "+(isPago?"recebido":isParcial?"parcial":"a receber"))
-                          )
-                          , React.createElement('div', { style:{fontWeight:700,fontSize:13,color:cor} }
-                            , fmtBRL(_cVal(c)).split(",")[0])
-                        );
-                        return !isPago
-                          ? React.createElement(SwipeRow, { key:_cId, onBaixar:function(){ _agBaixar({type:"ct",id:_cId}); }, baixarLabel:"Receber", wrapStyle:{borderTop:"1px solid "+C.border} }, _inner)
-                          : React.createElement('div', { key:_cId, style:{borderTop:"1px solid "+C.border} }, _inner);
+                        return _row("ct"+_cId, isPago?"✅":isParcial?"🔶":"⏳", (cl&&cl.nome)||"Contrato #"+_cId,
+                          (ve&&ve.placa||"--")+" \xb7 "+(isPago?"recebido":isParcial?"parcial":"a receber"),
+                          _cVal(c), cor,
+                          function(){onItemNav({type:"contrato",id:_cId},"contratos");setChartDaySheet(null);},
+                          !isPago?{onBaixar:function(){_agBaixar({type:"ct",id:_cId});},label:"Receber"}:null);
                       })
                   )
+                  /* ── Receitas avulsas ── */
+                  , _recDay.length > 0 && chartDaySheetMode !== "dp" && React.createElement('div', null
+                    , _secHdr(C.green, "Receitas avulsas ("+_recDay.length+")")
+                    , _recDay.map(function(r,i){
+                        var rec=_recRecebido(r);
+                        var _rId=r.id;
+                        return _row("rec"+(_rId||i), rec?"💰":"⏳", r.descricao||r.categoria||"Receita",
+                          (r.categoria||"")+(rec?" \xb7 recebida":" \xb7 a receber"),
+                          parseFloat(r.valor||0), rec?C.green:C.orange,
+                          function(){onItemNav({type:"receita",id:_rId,mes:_mesSheet});setChartDaySheet(null);},
+                          !rec&&_rId?{onBaixar:function(){_agBaixar({type:"rec",id:_rId});},label:"Receber"}:null);
+                      })
+                  )
+                  /* ── Multas recebidas do cliente ── */
+                  , _multaRecDay.length > 0 && chartDaySheetMode !== "dp" && React.createElement('div', null
+                    , _secHdr(C.green, "Multas recebidas ("+_multaRecDay.length+")")
+                    , _multaRecDay.map(function(mu,i){
+                        var _mId=mu.id;
+                        return _row("mr"+(_mId||i), "💰", (mu.tipo||"Multa")+(mu.ait?" \xb7 AIT "+mu.ait:""), "cobrada do cliente",
+                          parseFloat(mu.valor_cobrado||mu.valor||0), C.green,
+                          function(){onItemNav({type:"multa",id:_mId});setChartDaySheet(null);}, null);
+                      })
+                  )
+                  /* ── Despesas (reais) ── */
                   , _despDay.length > 0 && chartDaySheetMode !== "ct" && React.createElement('div', null
-                    , React.createElement('div', { style:{padding:"8px 16px 4px",fontSize:10,fontWeight:700,color:C.red,textTransform:"uppercase",letterSpacing:0.8} }, "Despesas ("+_despDay.length+")")
+                    , _secHdr(C.red, "Despesas ("+_despDay.length+")")
                     , _despDay.map(function(d,i){
                         var pago=d.status==="pago"||!!d.data_pagamento;
-                        var cor=pago?C.green:C.red;
                         var _dId=d.id;
-                        var _inner=React.createElement('div', {
-                          onClick:function(){setFinDeepLink({subTab:"despesas",itemId:_dId});setTab("financeiro");setChartDaySheet(null);},
-                          style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 16px",cursor:"pointer"} }
-                          , React.createElement('div', null
-                            , React.createElement('div', { style:{fontSize:13,fontWeight:600,color:"var(--c-text)"} }
-                              , (pago?"✅ ":"💸 ")+(d.descricao||d.categoria||"Despesa"))
-                            , React.createElement('div', { style:{fontSize:11,color:C.sub,marginTop:1} }
-                              , (d.categoria||"")+(pago?" \xb7 paga":" \xb7 pendente"))
-                          )
-                          , React.createElement('div', { style:{fontWeight:700,fontSize:13,color:cor} }
-                            , fmtBRL(d.valor||0).split(",")[0])
-                        );
-                        return !pago
-                          ? React.createElement(SwipeRow, { key:_dId||i, onBaixar:function(){ _agBaixar({type:"desp",id:_dId}); }, baixarLabel:"Baixar", wrapStyle:{borderTop:"1px solid "+C.border} }, _inner)
-                          : React.createElement('div', { key:_dId||i, style:{borderTop:"1px solid "+C.border} }, _inner);
+                        return _row("dp"+(_dId||i), pago?"✅":"💸", d.descricao||d.categoria||"Despesa",
+                          (d.categoria||"")+(pago?" \xb7 paga":" \xb7 pendente"),
+                          -parseFloat(d.valor||0), pago?C.red:C.orange,
+                          function(){setFinDeepLink({subTab:"despesas",itemId:_dId});setTab("financeiro");setChartDaySheet(null);},
+                          !pago?{onBaixar:function(){_agBaixar({type:"desp",id:_dId});},label:"Baixar"}:null);
                       })
                   )
-                  , _ctsDay.length===0 && _despDay.length===0 && React.createElement('div', { style:{padding:"24px 16px",textAlign:"center",color:C.sub,fontSize:13} }
+                  /* ── Retiradas de Lucro (saída de caixa, não é despesa real) ── */
+                  , _retDay.length > 0 && chartDaySheetMode !== "ct" && React.createElement('div', null
+                    , _secHdr("#AF52DE", "Retiradas de Lucro ("+_retDay.length+")")
+                    , _retDay.map(function(d,i){
+                        var _dId=d.id;
+                        return _row("ret"+(_dId||i), "📤", d.descricao||d.categoria||"Retirada de Lucro",
+                          "sai do caixa \xb7 não é despesa",
+                          -parseFloat(d.valor||0), "#AF52DE",
+                          function(){setFinDeepLink({subTab:"despesas",itemId:_dId});setTab("financeiro");setChartDaySheet(null);}, null);
+                      })
+                  )
+                  /* ── Manutenções pagas ── */
+                  , _manDay.length > 0 && chartDaySheetMode !== "ct" && React.createElement('div', null
+                    , _secHdr(C.red, "Manutenções ("+_manDay.length+")")
+                    , _manDay.map(function(m,i){
+                        var ve=(veiculos||[]).find(function(x){return x.id==m.veiculo_id;});
+                        var _mId=m.id;
+                        return _row("mn"+(_mId||i), "🔧", (ve&&ve.placa)||m.tipo||"Manutenção",
+                          (m.tipo||"")+" \xb7 paga",
+                          -parseFloat(m.custo||0), C.red,
+                          function(){onItemNav({type:"manutencao",id:_mId});setChartDaySheet(null);}, null);
+                      })
+                  )
+                  /* ── Multas pagas (à autuação) ── */
+                  , _multaPagaDay.length > 0 && chartDaySheetMode !== "ct" && React.createElement('div', null
+                    , _secHdr(C.red, "Multas pagas ("+_multaPagaDay.length+")")
+                    , _multaPagaDay.map(function(mu,i){
+                        var _mId=mu.id;
+                        return _row("mp"+(_mId||i), "⚠️", (mu.tipo||"Multa")+(mu.ait?" \xb7 AIT "+mu.ait:""), "paga",
+                          -parseFloat(mu.valor||0), C.red,
+                          function(){onItemNav({type:"multa",id:_mId});setChartDaySheet(null);}, null);
+                      })
+                  )
+                  , _vazio && React.createElement('div', { style:{padding:"24px 16px",textAlign:"center",color:C.sub,fontSize:13} }
                     , "Nenhum lan\xe7amento neste dia")
                 );
               })()

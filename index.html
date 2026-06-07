@@ -31463,9 +31463,24 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     var _r = await window.__agPrompt({ title:titulo, icon:icone, label1:'Data', type1:'date', default1:dtHoje });
     if(!_r||!_r.ok) return;
     var st = ev.type==='receita'?'recebido':'pago';
+    var it = ev._raw;
+    var _isRec = efetivoMes(it) !== filtroMes;
     try {
-      var upd = await db.patch('orcamento_pessoal', ev.id, {status:st, data_pagamento:_r.v1});
-      setItens(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,upd):x; }); });
+      if(_isRec) {
+        var _filhoExist = itens.find(function(x){ return String(x.recorrencia_origem_id)===String(it.id)&&efetivoMes(x)===filtroMes; });
+        if(_filhoExist) {
+          var upd = await db.patch('orcamento_pessoal', _filhoExist.id, {status:st, data_pagamento:_r.v1});
+          setItens(function(p){ return p.map(function(x){ return x.id===_filhoExist.id?Object.assign({},x,upd):x; }); });
+        } else {
+          var dataProj = projetarDataOP(it.data, filtroMes);
+          var payload = { descricao:it.descricao, valor:parseFloat(it.valor||0), tipo:it.tipo, categoria:it.categoria||'Outros', data:dataProj||it.data, mes:filtroMes, status:st, data_pagamento:_r.v1, recorrente:false, recorrencia_origem_id:it.id };
+          var nc = await db.post('orcamento_pessoal', payload);
+          setItens(function(p){ return [nc||Object.assign({id:Date.now()},payload)].concat(p); });
+        }
+      } else {
+        var upd2 = await db.patch('orcamento_pessoal', ev.id, {status:st, data_pagamento:_r.v1});
+        setItens(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,upd2):x; }); });
+      }
       if(toast) toast('✅ '+(ev.type==='receita'?'Recebido!':'Baixado!'));
     } catch(e){ if(toast) toast('Erro ao salvar','error'); }
   }
@@ -31987,7 +32002,8 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
               : (it.data || (it.mes ? it.mes+'-01' : null));
             var dt = _dtBase;
             if(!dt||dt.slice(0,7)!==filtroMes) return;
-            var isPaid2=(it.status==='pago'||it.status==='recebido');
+            var _isRecorrente2=efetivoMes(it)!==filtroMes;
+            var isPaid2=!_isRecorrente2&&(it.status==='pago'||it.status==='recebido');
             if(!_agMap2[dt]) _agMap2[dt]=[];
             _agMap2[dt].push({type:it.tipo,label:it.descricao||it.categoria||'Item',value:parseFloat(it.valor||0),paid:isPaid2,id:it.id,_raw:it});
           });

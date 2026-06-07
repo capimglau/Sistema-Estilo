@@ -23161,7 +23161,6 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                 var dLineD=_mkSmooth(dPts);
                 var cPaidD=_mkSmooth(cPts.filter(function(p){return !p.isVence;}));
                 var dPaidD=_mkSmooth(dPts.filter(function(p){return !p.isPrevisto;}));
-                var _saldo0=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_prevMes+"-01");
                 /* extras por mês: receitas avulsas + retiradas de lucro + multas (não estão nos mapas do gráfico) */
                 function _mkXtraMap(mes){
                   var xm={};
@@ -23182,7 +23181,15 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                   return xm;
                 }
                 var _xmPrev=_mkXtraMap(_prevMes),_xmCur=_mkXtraMap(dashMes),_xmNext=_mkXtraMap(_nextMes);
-                var _runBal=_saldo0,bPts=[];
+                /* ── Saldo de caixa diário ──
+                   Passado/hoje: saldo REALIZADO (somente liquidados — pago/recebido/parcial),
+                   via saldoCaixaAte. Nunca somar contratos pendentes nem despesas previstas
+                   no passado, senão um contrato vencido e NÃO pago infla o saldo como se o
+                   dinheiro tivesse entrado (ex.: salto 209 → 9,6k em 28/5).
+                   Futuro: projeção a partir do realizado de hoje, somando pago+pendente. */
+                var _pad2B=function(n){return n<10?'0'+n:''+n;};
+                var _nextDayB=function(ds){var x=new Date(ds+'T12:00:00');x.setDate(x.getDate()+1);return x.toISOString().slice(0,10);};
+                var _runBal=null,_futSeeded=false,bPts=[];
                 [{cmap:_ctsMapPrev,dmap:_despMapPrev,xm:_xmPrev,off:0,ld:_prevLD,mes:_prevMes},
                  {cmap:_ctsChartMap,dmap:_despChartMap,xm:_xmCur,off:_prevLD,ld:_curLD,mes:dashMes},
                  {cmap:_ctsMapNext,dmap:_despMapNext,xm:_xmNext,off:_prevLD+_curLD,ld:_nextLD,mes:_nextMes}
@@ -23190,10 +23197,20 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                   for(var d=1;d<=m.ld;d++){
                     var _c=m.cmap[d],_dd=m.dmap[d],_xv=m.xm[d];
                     if(_c||_dd||_xv!==undefined){
-                      if(_c)_runBal+=((_c.pago||0)+(_c.pendente||0));
-                      if(_dd)_runBal-=((_dd.pago||0)+(_dd.previsto||0));
-                      if(_xv!==undefined)_runBal+=_xv;
-                      bPts.push({x:_xCal(m.off,d),bal:_runBal,day:d,mes:m.mes});
+                      var _ds=m.mes+"-"+_pad2B(d);
+                      var _bal;
+                      if(_ds<=hoje){
+                        /* realizado: caixa efetivo até o fim deste dia */
+                        _bal=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_nextDayB(_ds));
+                      }else{
+                        /* futuro: projeção a partir do realizado de hoje */
+                        if(!_futSeeded){_runBal=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_nextDayB(hoje));_futSeeded=true;}
+                        if(_c)_runBal+=((_c.pago||0)+(_c.pendente||0));
+                        if(_dd)_runBal-=((_dd.pago||0)+(_dd.previsto||0));
+                        if(_xv!==undefined)_runBal+=_xv;
+                        _bal=_runBal;
+                      }
+                      bPts.push({x:_xCal(m.off,d),bal:_bal,day:d,mes:m.mes});
                     }
                   }
                 });

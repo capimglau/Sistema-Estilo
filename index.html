@@ -23082,8 +23082,6 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                 var _nextMes=(function(){var d=new Date(dashMes+"-15");d.setMonth(d.getMonth()+1);return d.toISOString().slice(0,7);})();
                 var _prevLD=_lastDayOf(_prevMes),_curLD=_lastDayOf(dashMes),_nextLD=_lastDayOf(_nextMes);
                 var _pxPerDay=desktop?44:38, padB=18, padT=20;
-                var W=(_prevLD+_curLD+_nextLD)*_pxPerDay;
-                var _xCal=function(off,d){return(off+d-0.5)*_pxPerDay;};
                 function _mkCtsMap(mes){
                   var map={};
                   (contratos||[]).forEach(function(c){
@@ -23125,6 +23123,56 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                   _ctsMapNext[day].pendente+=parseFloat(c.valor_total||0);
                 });
                 var _despMapPrev=_mkDespMap(_prevMes),_despMapNext=_mkDespMap(_nextMes);
+                /* extras por mês: receitas avulsas + multas (p/ saldo e p/ marcar dias com movimento) */
+                function _mkXtraMap(mes){
+                  var xm={};
+                  function _fx(day,v){if(day>=1&&day<=31)xm[day]=(xm[day]||0)+v;}
+                  (receitas||[]).forEach(function(r){
+                    if(r.ref_fatura)return;
+                    var dt=r.data_pagamento||r.data;
+                    if(!dt||dt.slice(0,7)!==mes)return;
+                    _fx(parseInt(dt.slice(8,10),10),parseFloat(r.valor||0));
+                  });
+                  /* retirada de lucro já entra em _despChartMap/_mkDespMap — não descontar aqui para evitar dupla contagem no saldo */
+                  (multas||[]).forEach(function(mu){
+                    if(mu.status==='cancelada'||mu.status==='cancelado')return;
+                    if(mu.status==='pago'&&mu.data_pagamento&&mu.data_pagamento.slice(0,7)===mes)
+                      _fx(parseInt(mu.data_pagamento.slice(8,10),10),-parseFloat(mu.valor||0));
+                    if(mu.cobrado_cliente==='pago'){var _dtCob=mu.data_cobranca_cliente||mu.data_pagamento;if(_dtCob&&_dtCob.slice(0,7)===mes)_fx(parseInt(_dtCob.slice(8,10),10),parseFloat(mu.valor_cobrado||mu.valor||0));}
+                  });
+                  return xm;
+                }
+                var _xmPrev=_mkXtraMap(_prevMes),_xmCur=_mkXtraMap(dashMes),_xmNext=_mkXtraMap(_nextMes);
+                /* ── escala X comprimida: só dias com lançamento + âncoras (1, último dia, hoje); vazios somem ── */
+                function _slotDays(cmap,dmap,xm,ld,mes){
+                  var s={};
+                  [cmap,dmap,xm].forEach(function(mm){Object.keys(mm).forEach(function(d){var n=parseInt(d,10);if(n>=1&&n<=ld)s[n]=1;});});
+                  s[1]=1;s[ld]=1;
+                  if(mes===mesAtual){var _t=parseInt(hoje.slice(8,10),10);if(_t>=1&&_t<=ld)s[_t]=1;}
+                  return Object.keys(s).map(Number).sort(function(a,b){return a-b;});
+                }
+                var _slotsPrev=_slotDays(_ctsMapPrev,_despMapPrev,_xmPrev,_prevLD,_prevMes);
+                var _slotsCur=_slotDays(_ctsChartMap,_despChartMap,_xmCur,_curLD,dashMes);
+                var _slotsNext=_slotDays(_ctsMapNext,_despMapNext,_xmNext,_nextLD,_nextMes);
+                var _slotX={},_si=0;
+                function _regSlots(mes,days){days.forEach(function(d){_slotX[mes+"-"+d]=(_si+0.5)*_pxPerDay;_si++;});}
+                _regSlots(_prevMes,_slotsPrev);var _sepIdx1=_si;
+                _regSlots(dashMes,_slotsCur);var _sepIdx2=_si;
+                _regSlots(_nextMes,_slotsNext);
+                var W=Math.max(_si,1)*_pxPerDay;
+                var _xSep1=_sepIdx1*_pxPerDay,_xSep2=_sepIdx2*_pxPerDay;
+                function _xCal(mes,day){
+                  var k=mes+"-"+day; if(_slotX[k]!=null)return _slotX[k];
+                  var arr=mes===_prevMes?_slotsPrev:(mes===dashMes?_slotsCur:_slotsNext);
+                  if(!arr.length)return 0;
+                  var lo=null,hi=null;
+                  for(var i=0;i<arr.length;i++){if(arr[i]<=day)lo=arr[i];if(arr[i]>=day&&hi==null)hi=arr[i];}
+                  if(lo==null)return _slotX[mes+"-"+arr[0]];
+                  if(hi==null)return _slotX[mes+"-"+arr[arr.length-1]];
+                  if(lo===hi)return _slotX[mes+"-"+lo];
+                  var x0=_slotX[mes+"-"+lo],x1=_slotX[mes+"-"+hi];
+                  return x0+(x1-x0)*((day-lo)/(hi-lo));
+                }
                 var _hasData=_ctsDays.length>0||_despDays.length>0||
                   Object.keys(_ctsMapPrev).length>0||Object.keys(_ctsMapNext).length>0||
                   Object.keys(_despMapPrev).length>0||Object.keys(_despMapNext).length>0;
@@ -23146,12 +23194,12 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                   var _cacc=0;
                   var cp=Object.keys(cmap).map(Number).sort(function(a,b){return a-b;}).map(function(day){
                     var _cpago=cmap[day].pago||0;var _dayv=_cpago+(cmap[day].pendente||0);_cacc+=_dayv;
-                    return{x:_xCal(off,day),y:yCt(_cacc),day:day,mes:mes,val:_cacc,dayVal:_dayv,pago:_cpago,isHoje:mes===mesAtual&&day===_td,isVence:(cmap[day].pendente||0)>0&&_cpago===0};
+                    return{x:_xCal(mes,day),y:yCt(_cacc),day:day,mes:mes,val:_cacc,dayVal:_dayv,pago:_cpago,isHoje:mes===mesAtual&&day===_td,isVence:(cmap[day].pendente||0)>0&&_cpago===0};
                   });
                   var _dacc=0;
                   var dp=Object.keys(dmap).map(Number).sort(function(a,b){return a-b;}).map(function(day){
                     var _dpago=dmap[day].pago||0;var _dayv=_dpago+(dmap[day].previsto||0);_dacc+=_dayv;
-                    return{x:_xCal(off,day),y:yDp(_dacc),day:day,mes:mes,val:_dacc,dayVal:_dayv,pago:_dpago,isHoje:mes===mesAtual&&day===_td,isPrevisto:(dmap[day].previsto||0)>0&&_dpago===0};
+                    return{x:_xCal(mes,day),y:yDp(_dacc),day:day,mes:mes,val:_dacc,dayVal:_dayv,pago:_dpago,isHoje:mes===mesAtual&&day===_td,isPrevisto:(dmap[day].previsto||0)>0&&_dpago===0};
                   });
                   return{cp:cp,dp:dp};
                 }
@@ -23165,26 +23213,6 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                 var dLineD=_mkSmooth(dPts);
                 var cPaidD=_mkSmooth(cPts.filter(function(p){return !p.isVence;}));
                 var dPaidD=_mkSmooth(dPts.filter(function(p){return !p.isPrevisto;}));
-                /* extras por mês: receitas avulsas + retiradas de lucro + multas (não estão nos mapas do gráfico) */
-                function _mkXtraMap(mes){
-                  var xm={};
-                  function _fx(day,v){if(day>=1&&day<=31)xm[day]=(xm[day]||0)+v;}
-                  (receitas||[]).forEach(function(r){
-                    if(r.ref_fatura)return;
-                    var dt=r.data_pagamento||r.data;
-                    if(!dt||dt.slice(0,7)!==mes)return;
-                    _fx(parseInt(dt.slice(8,10),10),parseFloat(r.valor||0));
-                  });
-                  /* retirada de lucro já entra em _despChartMap/_mkDespMap — não descontar aqui para evitar dupla contagem no saldo */
-                  (multas||[]).forEach(function(mu){
-                    if(mu.status==='cancelada'||mu.status==='cancelado')return;
-                    if(mu.status==='pago'&&mu.data_pagamento&&mu.data_pagamento.slice(0,7)===mes)
-                      _fx(parseInt(mu.data_pagamento.slice(8,10),10),-parseFloat(mu.valor||0));
-                    if(mu.cobrado_cliente==='pago'){var _dtCob=mu.data_cobranca_cliente||mu.data_pagamento;if(_dtCob&&_dtCob.slice(0,7)===mes)_fx(parseInt(_dtCob.slice(8,10),10),parseFloat(mu.valor_cobrado||mu.valor||0));}
-                  });
-                  return xm;
-                }
-                var _xmPrev=_mkXtraMap(_prevMes),_xmCur=_mkXtraMap(dashMes),_xmNext=_mkXtraMap(_nextMes);
                 /* ── Saldo de caixa diário ──
                    Passado/hoje: saldo REALIZADO (somente liquidados — pago/recebido/parcial),
                    via saldoCaixaAte. Nunca somar contratos pendentes nem despesas previstas
@@ -23214,7 +23242,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                         if(_xv!==undefined)_runBal+=_xv;
                         _bal=_runBal;
                       }
-                      bPts.push({x:_xCal(m.off,d),bal:_bal,day:d,mes:m.mes});
+                      bPts.push({x:_xCal(m.mes,d),bal:_bal,day:d,mes:m.mes});
                     }
                   }
                 });
@@ -23230,7 +23258,6 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                 var bLineFutD=_mkSmooth(bPtsFutConn);
                 var cAreaD=cPts.length>0?cLineD+" L"+cPts[cPts.length-1].x.toFixed(1)+","+midY+" L"+cPts[0].x.toFixed(1)+","+midY+" Z":"";
                 var dAreaD=dPts.length>0?dLineD+" L"+dPts[dPts.length-1].x.toFixed(1)+","+midY+" L"+dPts[0].x.toFixed(1)+","+midY+" Z":"";
-                var _xSep1=_prevLD*_pxPerDay,_xSep2=(_prevLD+_curLD)*_pxPerDay;
                 function _fML(ms){var d=new Date(ms+"-15");return d.toLocaleDateString('pt-BR',{month:'short'}).replace('.','');}
                 /* movimento de caixa de um dia — MESMA definição do saldo:
                    passado = só efetivado; futuro = projeção (inclui pendente/previsto). Inclui retiradas. */
@@ -23253,23 +23280,18 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                   return {ent:ent,sai:sai};
                 }
                 var _todayDay=parseInt(hoje.slice(8,10),10);
-                var _todayOff=mesAtual===_prevMes?0:mesAtual===dashMes?_prevLD:mesAtual===_nextMes?_prevLD+_curLD:-1;
-                var _todayX=_todayOff>=0?_xCal(_todayOff,_todayDay):-1;
+                var _todayX=(mesAtual===_prevMes||mesAtual===dashMes||mesAtual===_nextMes)?_xCal(mesAtual,_todayDay):-1;
                 var xLabels=[];
-                [{mes:_prevMes,off:0,ld:_prevLD,cm:_ctsMapPrev,dm:_despMapPrev},
-                 {mes:dashMes,off:_prevLD,ld:_curLD,cm:_ctsChartMap,dm:_despChartMap},
-                 {mes:_nextMes,off:_prevLD+_curLD,ld:_nextLD,cm:_ctsMapNext,dm:_despMapNext}
+                [{mes:_prevMes,ld:_prevLD,cm:_ctsMapPrev,dm:_despMapPrev,slots:_slotsPrev},
+                 {mes:dashMes,ld:_curLD,cm:_ctsChartMap,dm:_despChartMap,slots:_slotsCur},
+                 {mes:_nextMes,ld:_nextLD,cm:_ctsMapNext,dm:_despMapNext,slots:_slotsNext}
                 ].forEach(function(m){
-                  var _labelDays={};
-                  [1,15].forEach(function(d){if(d<=m.ld)_labelDays[d]=true;});
-                  Object.keys(m.cm).forEach(function(d){_labelDays[parseInt(d,10)]=true;});
-                  Object.keys(m.dm).forEach(function(d){_labelDays[parseInt(d,10)]=true;});
-                  if(m.mes===mesAtual)_labelDays[_todayDay]=true;
-                  Object.keys(_labelDays).map(Number).sort(function(a,b){return a-b;}).forEach(function(day){
+                  /* rótulos do eixo = dias com slot (lançamentos + âncoras), na escala comprimida */
+                  m.slots.forEach(function(day){
                     var isC=!!m.cm[day],isD=!!m.dm[day];
                     var isHj=m.mes===mesAtual&&day===_todayDay;
                     var fc=isHj?C.blue:(isC&&isD?"#888":isC?"#34C759":isD?"#FF3B30":C.sub);
-                    var x=_xCal(m.off,day); var _xd=day; var _xdMes=m.mes;
+                    var x=_xCal(m.mes,day); var _xd=day; var _xdMes=m.mes;
                     var _xdBal=null;(function(){for(var _bi=0;_bi<bPts.length;_bi++){if(bPts[_bi].mes===m.mes&&bPts[_bi].day<=day)_xdBal=bPts[_bi].bal;if(bPts[_bi].mes===m.mes&&bPts[_bi].day>day)break;}})();
                     xLabels.push(React.createElement('g',{key:"xl"+m.mes+day,
                       onClick:function(){
@@ -23310,7 +23332,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                       )
                     )
                     /* fundo leve no mês atual */
-                    , React.createElement('rect',{x:_xSep1,y:0,width:(_curLD*_pxPerDay),height:H,fill:C.blue,opacity:0.025})
+                    , React.createElement('rect',{x:_xSep1,y:0,width:(_xSep2-_xSep1),height:H,fill:C.blue,opacity:0.025})
                     /* linha zero central */
                     , React.createElement('line', { x1:0, y1:midY, x2:W, y2:midY, stroke:C.border, strokeWidth:0.8 })
                     /* separadores de mês */

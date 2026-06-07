@@ -30888,8 +30888,9 @@ function PessoalDash({
   }
 
   var _mesAnt = _addM(_mes,-1);
-  var _recLoc = retiradaLucroDoMes(despesas, _mesAnt);
-  var _recLocItems = resolverDespesasDoMes(despesas||[], _mesAnt).filter(isRetLucro);
+  /* Retirada de lucro: usa o mês atual (o lançamento é registrado com a data real — ex: 5/6) */
+  var _recLoc = retiradaLucroDoMes(despesas, _mes);
+  var _recLocItems = resolverDespesasDoMes(despesas||[], _mes).filter(isRetLucro);
   var _nomAnt = new Date(_mesAnt+'-15').toLocaleString('pt-BR',{month:'long'});
   var _nomMes = _nomMesOf(_mes);
 
@@ -30904,7 +30905,7 @@ function PessoalDash({
   var _saldo  = _totRec-_totDes;
 
   // Tendência vs mês anterior (para badges de % no painel superior)
-  var _recLocPrev=retiradaLucroDoMes(despesas,_addM(_mesAnt,-1));
+  var _recLocPrev=retiradaLucroDoMes(despesas,_mesAnt);
   var _itensPrev=_itSrc.filter(function(it){return _vis(it,_mesAnt);}).map(function(it){return _projetar(it,_mesAnt);});
   var _totRecPrev=_recLocPrev+_itensPrev.filter(function(it){return it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
   var _totDesPrev=_itensPrev.filter(function(it){return it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
@@ -30916,7 +30917,7 @@ function PessoalDash({
   var _m6=[]; for(var _bi=-2;_bi<=3;_bi++) _m6.push(_addM(_mes,_bi));
   var _d6=_m6.map(function(m){
     var extraRec=_itSrc.filter(function(it){return _vis(it,m)&&it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-    var rec=Math.max(0,retiradaLucroDoMes(despesas,_addM(m,-1)))+extraRec;
+    var rec=Math.max(0,retiradaLucroDoMes(despesas,m))+extraRec;
     var dep=_itSrc.filter(function(it){return _vis(it,m)&&it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
     var nm=new Date(m+'-15').toLocaleString('pt-BR',{month:'short'}).replace('.','').toUpperCase().slice(0,3);
     return {m:m,rec:rec,dep:dep,luc:rec-dep,nm:nm};
@@ -31027,14 +31028,16 @@ function PessoalDash({
       /* Monta mapa dia→{rec,desp} para um mês pessoal */
       function _mkPesMap(m){
         var map={};
-        /* receitas: retirada locadora do mês anterior + receitas pessoais */
-        var _recLocMes = m===_mes ? (_recLoc>0?_recLoc:0) : Math.max(0, retiradaLucroDoMes(despesas, _addM(m,-1)));
-        if(_recLocMes>0){
-          /* distribui a retirada no dia 1 do mês */
-          if(!map[1])map[1]={rec:0,recPg:0,desp:0,despPg:0};
-          map[1].rec+=_recLocMes;
-          map[1].recPg+=_recLocMes; /* retirada é sempre "recebida" */
-        }
+        /* retirada de lucro: usa o mesmo mês m (lançamento registrado com data real) */
+        var _retItems=resolverDespesasDoMes(despesas||[],m).filter(isRetLucro);
+        _retItems.forEach(function(d){
+          var _dd=d.data_pagamento||d.data||'';
+          var day=parseInt(_dd.slice(8,10),10)||1;
+          if(!map[day])map[day]={rec:0,recPg:0,desp:0,despPg:0};
+          var val=parseFloat(d.valor||0);
+          map[day].rec+=val;
+          map[day].recPg+=val;
+        });
         _itSrc.filter(function(it){return _vis(it,m);}).map(function(it){return _projetar(it,m);}).forEach(function(it){
           var dt=it.data||(it.mes?it.mes+'-01':'');
           var day=parseInt((dt||'').slice(8,10),10)||15;
@@ -31295,7 +31298,8 @@ function PessoalDash({
             if(!_pesDaySheet) return null;
             var _ds=_pesDaySheet;
             var _dsItens=_itSrc.filter(function(it){return _vis(it,_ds.mes);}).map(function(it){return _projetar(it,_ds.mes);}).filter(function(it){var dt=it.data||(it.mes?it.mes+'-01':'');return dt&&parseInt(dt.slice(8,10),10)===_ds.day;});
-            var _recLocDay=_ds.day===1?(_ds.mes===_mes?_recLoc:retiradaLucroDoMes(despesas,_addM(_ds.mes,-1))):0;
+            /* retirada de lucro registrada neste dia específico (mesma premissa: usa mês real do lançamento) */
+            var _recLocDay=resolverDespesasDoMes(despesas||[],_ds.mes).filter(isRetLucro).filter(function(d){var _dd=d.data_pagamento||d.data||'';return parseInt(_dd.slice(8,10),10)===_ds.day;}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
             var _recDay=_dsItens.filter(function(it){return it.tipo==='receita';});
             var _despDay=_dsItens.filter(function(it){return it.tipo==='despesa';});
             var _totR=_recLocDay+_recDay.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
@@ -31851,9 +31855,8 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   }
 
   var entradasBar6 = mesesBar6.map(function(m){
-    var mAnt=(function(s){var d=new Date(s+'-15');d.setMonth(d.getMonth()-1);return d.toISOString().slice(0,7);})(m);
     var extraRec=itens.filter(function(it){return _visOrc(it,m)&&it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-    return Math.max(0, retiradaLucroDoMes(despesas, mAnt)) + extraRec;
+    return Math.max(0, retiradaLucroDoMes(despesas, m)) + extraRec;
   });
 
   var saidasBar6 = mesesBar6.map(function(m){
@@ -32043,9 +32046,8 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
         (function(){var _s=new Date();_s.setDate(1);_s.setMonth(_s.getMonth()-6);for(var _i2=0;_i2<12;_i2++){_lmeses2.push(_s.toISOString().slice(0,7));_s.setMonth(_s.getMonth()+1);}})();
         var _lnomes2 = _lmeses2.map(function(m){return new Date(m+'-15').toLocaleString('pt-BR',{month:'short',year:'2-digit'});});
         var _lrec2 = _lmeses2.map(function(m){
-          var mAnt2=(function(s){var d=new Date(s+'-15');d.setMonth(d.getMonth()-1);return d.toISOString().slice(0,7);})(m);
           var extras2=itens.filter(function(it){return _visOrc(it,m)&&it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-          return Math.max(0,retiradaLucroDoMes(despesas,mAnt2))+extras2;
+          return Math.max(0,retiradaLucroDoMes(despesas,m))+extras2;
         });
         var _ldep2 = _lmeses2.map(function(m){
           return itens.filter(function(it){return _visOrc(it,m)&&it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);

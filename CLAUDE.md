@@ -60,6 +60,14 @@ A **Retirada de Lucro** (categoria `"Retirada de Lucro"` ou `"Ajuste de Saldo"` 
 - Função de referência correta: `OrcamentoPessoal` → `retiradaLucroDoMes(despesas, _mesRef)`.
 - **Nunca usar `_addM(m, -1)` para buscar a retirada de lucro** — isso causa ausência silenciosa da receita quando o lançamento é datado no mês vigente.
 
+## Regra dos rótulos no gráfico — OBRIGATÓRIO (NUNCA suprimir valores)
+
+**Todo ponto das linhas do gráfico (contratos/verde, despesas/vermelho, saldo/azul) DEVE exibir o seu valor.** É proibido esconder/suprimir rótulos por proximidade (ex.: `showLbl = p.x - lastX >= 30`).
+
+- Quando dois pontos ficam próximos, **alternar a altura do rótulo** (níveis verticais) para não sobrepor — nunca omitir.
+- Dia **sem movimento** (inclusive hoje) **não** desenha bolinha nem valor 0 — mas todo dia **com** movimento mostra o valor.
+- Vale para entradas (contratos) e saídas (despesas) e também para o saldo.
+
 ## Regra de cobertura de dados — OBRIGATÓRIO
 
 **Toda receita ou despesa avulsa (standalone) DEVE alimentar TODOS os painéis do sistema.**

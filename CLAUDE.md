@@ -50,6 +50,16 @@ Branch ativo: `claude/placeholder-task-nsnXx`
 
 Sempre que uma mudança afetar um cálculo ou resultado (ex: fórmula de receita, saldo, lucro), implementar em **todos os locais afetados** do app — painéis, gráficos, fluxo de caixa, previsão, navegação mensal, sub-tabs, etc. Nunca atualizar só um ponto isolado.
 
+## Retirada de Lucro da Locadora — PREMISSA PERMANENTE
+
+A **Retirada de Lucro** (categoria `"Retirada de Lucro"` ou `"Ajuste de Saldo"` na tabela `despesas`) **é registrada com a data real do lançamento** — que pode ser qualquer dia do mês atual (ex: 5/6, 12/6). Por isso:
+
+- Sempre usar `retiradaLucroDoMes(despesas, m)` com o **mês atual** (`m`), nunca `_addM(m, -1)`.
+- Em `_mkPesMap`, distribuir a retirada no **dia exato do lançamento** (`d.data_pagamento || d.data`), não forçar dia 1.
+- Em todos os gráficos e painéis do orçamento pessoal (barras 6 meses, linha 12 meses, scorecard, previsão), usar o mês corrente para buscar a retirada.
+- Função de referência correta: `OrcamentoPessoal` → `retiradaLucroDoMes(despesas, _mesRef)`.
+- **Nunca usar `_addM(m, -1)` para buscar a retirada de lucro** — isso causa ausência silenciosa da receita quando o lançamento é datado no mês vigente.
+
 ## Regra de cobertura de dados — OBRIGATÓRIO
 
 **Toda receita ou despesa avulsa (standalone) DEVE alimentar TODOS os painéis do sistema.**

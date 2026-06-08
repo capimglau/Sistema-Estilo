@@ -32038,7 +32038,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     { label:'Reserva de emergência', check: function(){ return saldo >= despPessoais * 0.5; }, peso:20 },
     { label:'Comprometimento < 70%', check: function(){ return percentGasto < 70; }, peso:25 },
     { label:'Sem deficit previsto',  check: function(){ return saldo >= 0; }, peso:30 },
-    { label:'Lançamentos em dia',    check: function(){ return todosVisiveis.filter(function(it){return it.tipo==='despesa'&&it.status!=='pago'&&it.data&&it.data<new Date().toISOString().split('T')[0];}).length === 0; }, peso:15 },
+    { label:'Lançamentos em dia',    check: function(){ var _h=new Date().toISOString().split('T')[0]; return todosVisiveis.filter(function(it){if(it.tipo!=='despesa')return false; var _pago=efetivoMes(it)===filtroMes&&it.status==='pago'; var _dp=(efetivoMes(it)!==filtroMes&&it.data)?projetarDataOP(it.data,filtroMes):it.data; return !_pago&&_dp&&_dp<_h;}).length === 0; }, peso:15 },
     { label:'Receitas > despesas',   check: function(){ return totalReceita > despPessoais; }, peso:10 }];
   var score = SCORE_RULES.reduce(function(s,r){ return s + (r.check() ? r.peso : 0); }, 0);
   var scoreColor = score >= 80 ? C.green : score >= 50 ? C.orange : C.red;
@@ -32139,9 +32139,13 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
   // ── Próximas 5 contas a vencer ──
   var hoje2 = new Date().toISOString().split('T')[0];
-  var proxVencer = todosVisiveis.filter(function(it){
-    return it.tipo==='despesa' && it.status!=='pago' && it.data && it.data >= hoje2;
-  }).sort(function(a,b){return (a.data||'').localeCompare(b.data||'');}).slice(0,5);
+  var proxVencer = todosVisiveis.map(function(it){
+    var _dp=(efetivoMes(it)!==filtroMes&&it.data)?projetarDataOP(it.data,filtroMes):it.data;
+    var _pago=efetivoMes(it)===filtroMes&&it.status==='pago';
+    return {it:it,_dp:_dp,_pago:_pago};
+  }).filter(function(o){
+    return o.it.tipo==='despesa' && !o._pago && o._dp && o._dp >= hoje2;
+  }).sort(function(a,b){return (a._dp||'').localeCompare(b._dp||'');}).slice(0,5).map(function(o){return o.it;});
 
   // ── Tetos por categoria (BUD) ──
   return React.createElement('div', { "data-no-cm": "1", style: { display: 'flex', flexDirection: 'column', gap: 40 } }
@@ -32477,11 +32481,16 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     /* ══════════ DESPESAS ══════════ */
     , subTab === 'despesas' && (function(){
       var _desps2 = todosVisiveis.filter(function(it){return it.tipo==='despesa';});
-      var _dTot   = _desps2.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-      var _dPg    = _desps2.filter(function(it){return it.status==='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-      var _dPend  = _desps2.filter(function(it){return it.status!=='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
       var _hoje3  = new Date().toISOString().slice(0,10);
-      var _dVenc  = _desps2.filter(function(it){return it.status!=='pago'&&it.data&&it.data<_hoje3;}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      // Item recorrente projetado de mês anterior NÃO está pago neste mês — mesmo que
+      // o status de origem seja "pago". Só conta como pago quando o lançamento é do mês.
+      var _opPagoD   = function(it){ return efetivoMes(it)===filtroMes && it.status==='pago'; };
+      var _opDtProjD = function(it){ return (efetivoMes(it)!==filtroMes && it.data) ? projetarDataOP(it.data, filtroMes) : it.data; };
+      var _dTot   = _desps2.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _dPg    = _desps2.filter(_opPagoD).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _dPend  = _desps2.filter(function(it){return !_opPagoD(it);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _dVencItems = _desps2.filter(function(it){var _dp=_opDtProjD(it);return !_opPagoD(it)&&_dp&&_dp<_hoje3;});
+      var _dVenc  = _dVencItems.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
       var _pct    = _dTot>0?Math.min(100,Math.round(_dPg/_dTot*100)):0;
       var _corPct = _pct>=90?C.green:_pct>=50?C.orange:C.red;
       // Por categoria
@@ -32520,7 +32529,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
               React.createElement('span',{style:{fontSize:15}},'⚠️'),
               React.createElement('div',null,
                 React.createElement('div',{style:{fontSize:11,fontWeight:700,color:C.red}},'Vencidas: '+fmtBRL(_dVenc)),
-                React.createElement('div',{style:{fontSize:10,color:C.sub}},_desps2.filter(function(it){return it.status!=='pago'&&it.data&&it.data<_hoje3;}).length+' item(s) em atraso')
+                React.createElement('div',{style:{fontSize:10,color:C.sub}},_dVencItems.length+' item(s) em atraso')
               )
             ),
             React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:6}},
@@ -32561,9 +32570,11 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     /* ══════════ RECEITAS ══════════ */
     , subTab === 'receitas' && (function(){
       var _recs2   = todosVisiveis.filter(function(it){return it.tipo==='receita';});
+      // Recorrente projetado de mês anterior não conta como recebido neste mês.
+      var _opRecebR = function(it){ return efetivoMes(it)===filtroMes && (it.status==='recebido'||it.status==='pago'); };
       var _rTot    = _recs2.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-      var _rReceb  = _recs2.filter(function(it){return it.status==='recebido'||it.status==='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-      var _rPend   = _recs2.filter(function(it){return it.status!=='recebido'&&it.status!=='pago';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _rReceb  = _recs2.filter(_opRecebR).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+      var _rPend   = _recs2.filter(function(it){return !_opRecebR(it);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
       var _totalEntradas = lucroLocadora + _rTot;
       var _saldoFinal = _totalEntradas - despPessoais;
       var _pctRec  = _rTot>0?Math.min(100,Math.round(_rReceb/_rTot*100)):100;

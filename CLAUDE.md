@@ -50,9 +50,23 @@ Branch ativo: `claude/placeholder-task-nsnXx`
 
 Sempre que uma mudança afetar um cálculo ou resultado (ex: fórmula de receita, saldo, lucro), implementar em **todos os locais afetados** do app — painéis, gráficos, fluxo de caixa, previsão, navegação mensal, sub-tabs, etc. Nunca atualizar só um ponto isolado.
 
-## Retirada de Lucro da Locadora — PREMISSA PERMANENTE
+## Retirada de Lucro × Ajuste de Saldo — PREMISSA PERMANENTE
 
-A **Retirada de Lucro** (categoria `"Retirada de Lucro"` ou `"Ajuste de Saldo"` na tabela `despesas`) **é registrada com a data real do lançamento** — que pode ser qualquer dia do mês atual (ex: 5/6, 12/6). Por isso:
+**São conceitos DIFERENTES e NÃO podem ser misturados:**
+
+- **`Retirada de Lucro`** = lucro que o dono efetivamente retirou. É **receita do orçamento pessoal** e entra na métrica "quanto retirei de lucro no mês". Predicado: **`isRetLucroPura(d)`** (só a categoria `"Retirada de Lucro"`).
+- **`Ajuste de Saldo`** = **apenas um ajuste no saldo do caixa/conta corrente**. **NÃO é receita nem despesa**, e **NÃO é retirada de lucro**. Só movimenta o saldo do caixa da locadora.
+
+Os **dois movimentam o saldo da conta** (caixa), mas só a **Retirada de Lucro** conta como retirada/receita pessoal.
+
+### Predicados (não confundir os usos)
+
+- **`isRetLucroPura(d)`** → SOMENTE `Retirada de Lucro`. Usar para **MEDIR a retirada** e a **receita do orçamento pessoal**: `retiradaLucroDoMes`, linha "Retirada de Lucro" dos gráficos (`_lret`, `retLucData`), `_recLocItems`, `_retItems`, `_recLocDay`, `_syncRetLucroOrc`.
+- **`isRetLucro(d)`** → `Retirada de Lucro` **OU** `Ajuste de Saldo`. Usar para **EXCLUIR das despesas operacionais** (`!isRetLucro`) e para o **fluxo de caixa da locadora** (ambos movem o saldo). Nunca usar `isRetLucro` para medir a retirada de lucro.
+
+### Datas e meses
+
+A retirada **é registrada com a data real do lançamento** — qualquer dia do mês atual (ex: 5/6, 12/6). Por isso:
 
 - Sempre usar `retiradaLucroDoMes(despesas, m)` com o **mês atual** (`m`), nunca `_addM(m, -1)`.
 - Em `_mkPesMap`, distribuir a retirada no **dia exato do lançamento** (`d.data_pagamento || d.data`), não forçar dia 1.

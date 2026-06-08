@@ -21158,7 +21158,14 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab, searchBarEl, onItemNav }
   );
 }
 function fmtDate(d) { if (!d) return "--"; var p = d.split("-"); if (p.length !== 3) return d; return p[2] + "/" + p[1] + "/" + p[0]; }
+// isRetLucro: movimenta o caixa SEM ser despesa operacional (Retirada de Lucro OU Ajuste de Saldo).
+//   Usar para EXCLUIR das despesas operacionais e para o fluxo de caixa da locadora (ambos movem o saldo).
+// isRetLucroPura: SOMENTE a retirada de lucro real (não inclui Ajuste de Saldo, que só ajusta o caixa).
+//   Usar para MEDIR "quanto retirei de lucro" e para a receita do orçamento pessoal.
 function isRetLucro(d) { var c = d.categoria || ""; return c === "Retirada de Lucro" || c === "Ajuste de Saldo"; }
+function isRetLucroPura(d) { return (d.categoria || "") === "Retirada de Lucro"; }
+// Espelho [ret_loc:despId] no orçamento pessoal → id da despesa de origem (ou null se não for espelho).
+function _retLocDespId(it){ var m=((it&&it.observacoes)||"").match(/\[ret_loc:([^\]]+)\]/); return m?String(m[1]):null; }
 
 /* Saldo real do caixa desde o início dos lançamentos até (exclusive) ateDt */
 function saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, ateDt) {
@@ -21201,7 +21208,7 @@ function saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, ateDt
 }
 
 function retiradaLucroDoMes(despesas, m) {
-  return resolverDespesasDoMes(despesas||[], m).filter(isRetLucro).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
+  return resolverDespesasDoMes(despesas||[], m).filter(isRetLucroPura).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
 }
 function PrevisaoCaixaL2(movDia, hojeStr, C, fmtBRL) {
   var _mAt=hojeStr.slice(0,7),_aN=parseInt(_mAt.slice(0,4)),_mN=parseInt(_mAt.slice(5,7));
@@ -24762,7 +24769,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         return fd+fm;
       });
       var _lret = _ld(function(m){
-        return resolverDespesasDoMes((despesas||[]).filter(function(d){ return isRetLucro(d); }),m)
+        return resolverDespesasDoMes((despesas||[]).filter(function(d){ return isRetLucroPura(d); }),m)
           .filter(function(d){ if(recMode==="efetivadas")return d.status==="pago"||!!d.data_pagamento; return true; })
           .reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
       });
@@ -25252,7 +25259,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       var despPurData = meses6.map(function(_, i){ return Math.max(0, despData[i] - manData[i]); });
       // Retirada de Lucro por mês
       var retLucData = meses6.map(function(m){
-        return resolverDespesasDoMes((despesas||[]).filter(function(d){ return isRetLucro(d); }), m)
+        return resolverDespesasDoMes((despesas||[]).filter(function(d){ return isRetLucroPura(d); }), m)
           .filter(function(d){
             if (recMode === "efetivadas") return d.status === "pago" || !!d.data_pagamento;
             return true;
@@ -30999,8 +31006,11 @@ function PessoalDash({
   var _hoje = new Date().toISOString().split('T')[0];
   var _mes  = dashMes;
   var [_pesItens, _setPesItens] = React.useState(null);
-  // Fonte única de itens pessoais — usa _pesItens (sincronizado via OrcamentoPessoal) quando disponível
-  var _itSrc = _pesItens || _oi;
+  // Fonte única de itens pessoais — usa _pesItens (sincronizado via OrcamentoPessoal) quando disponível.
+  // Remove espelhos [ret_loc:] legados cuja despesa de origem NÃO é retirada de lucro pura (ex: "Ajuste de
+  // Saldo", que só move o caixa e não é receita pessoal). Espelhos de Retirada de Lucro real são mantidos.
+  var _puraRetIds = new Set((despesas||[]).filter(isRetLucroPura).map(function(d){return String(d.id);}));
+  var _itSrc = (_pesItens || _oi).filter(function(it){ var _rid=_retLocDespId(it); return !_rid || _puraRetIds.has(_rid); });
   var _load = orcItens === null;
 
   var CATS   = ['Moradia','Alimentacao','Transporte','Saude','Cartao de Credito','Lazer','Educacao','Investimento','Vestuario','Assinatura','Seguros','Pet','Beleza','Academia','Emprestimo','Servicos','Outros'];
@@ -31044,7 +31054,7 @@ function PessoalDash({
   var _mesAnt = _addM(_mes,-1);
   /* Retirada de lucro: usa o mês atual (o lançamento é registrado com a data real — ex: 5/6) */
   var _recLoc = retiradaLucroDoMes(despesas, _mes);
-  var _recLocItems = resolverDespesasDoMes(despesas||[], _mes).filter(isRetLucro);
+  var _recLocItems = resolverDespesasDoMes(despesas||[], _mes).filter(isRetLucroPura);
   var _nomAnt = new Date(_mesAnt+'-15').toLocaleString('pt-BR',{month:'long'});
   var _nomMes = _nomMesOf(_mes);
 
@@ -31185,7 +31195,7 @@ function PessoalDash({
       function _mkPesMap(m){
         var map={};
         /* retirada de lucro: usa o mesmo mês m (lançamento registrado com data real) */
-        var _retItems=resolverDespesasDoMes(despesas||[],m).filter(isRetLucro);
+        var _retItems=resolverDespesasDoMes(despesas||[],m).filter(isRetLucroPura);
         _retItems.forEach(function(d){
           var _dd=d.data_pagamento||d.data||'';
           var day=parseInt(_dd.slice(8,10),10)||1;
@@ -31540,7 +31550,7 @@ function PessoalDash({
             var _ds=_pesDaySheet;
             var _dsItens=_itSrc.filter(function(it){return _vis(it,_ds.mes);}).map(function(it){return _projetar(it,_ds.mes);}).filter(function(it){var dt=it.data||(it.mes?it.mes+'-01':'');return dt&&parseInt(dt.slice(8,10),10)===_ds.day;});
             /* retirada de lucro registrada neste dia específico (mesma premissa: usa mês real do lançamento) */
-            var _recLocDay=resolverDespesasDoMes(despesas||[],_ds.mes).filter(isRetLucro).filter(function(d){var _dd=d.data_pagamento||d.data||'';return parseInt(_dd.slice(8,10),10)===_ds.day;}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
+            var _recLocDay=resolverDespesasDoMes(despesas||[],_ds.mes).filter(isRetLucroPura).filter(function(d){var _dd=d.data_pagamento||d.data||'';return parseInt(_dd.slice(8,10),10)===_ds.day;}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
             var _recDay=_dsItens.filter(function(it){return it.tipo==='receita';});
             var _despDay=_dsItens.filter(function(it){return it.tipo==='despesa';});
             var _totR=_recLocDay+_recDay.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
@@ -31729,6 +31739,10 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   // Deduplicação de segurança por id
   var _vistosIds = new Set();
   todosVisiveis = todosVisiveis.filter(function(it){ var k=String(it.id)+'-'+(it.recorrente?'r':''); if(_vistosIds.has(k)) return false; _vistosIds.add(k); return true; });
+  // Remove espelhos [ret_loc:] legados cuja despesa de origem não é retirada de lucro pura (ex: "Ajuste de
+  // Saldo" — só move o caixa, não é receita pessoal). Espelhos de Retirada de Lucro real são mantidos.
+  var _puraRetIdsOP = new Set((despesas||[]).filter(isRetLucroPura).map(function(d){return String(d.id);}));
+  todosVisiveis = todosVisiveis.filter(function(it){ var _rid=_retLocDespId(it); return !_rid || _puraRetIdsOP.has(_rid); });
 
   // ── Lucro da Locadora — SEMPRE PREVISTO (mês anterior ao filtroMes) ──────────
   // Fórmula: Receitas Previstas − Despesas Previstas − Manutenções Previstas
@@ -33520,7 +33534,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   function manMesRef(m) { return manMesRefGlobal(m); }
 
   async function _syncRetLucroOrc(desp, despId) {
-    if (!isRetLucro(desp)) {
+    if (!isRetLucroPura(desp)) {
       var oldTag = "[ret_loc:" + despId + "]";
       var oldEntry = (_orcFresh||[]).find(function(o){ return (o.observacoes||"").indexOf(oldTag) !== -1; });
       if (oldEntry) {

@@ -42205,19 +42205,21 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
     return h;
   }
 
-  function descricaoLote(list) {
-    return list.map(function(it, i) {
-      var cl = (clientes||[]).find(function(x){return x.id===it.cliente_id;});
-      if (!cl && it.contrato_id) { var ct0=(contratos||[]).find(function(x){return x.id===it.contrato_id;}); if(ct0) cl=(clientes||[]).find(function(x){return x.id===ct0.cliente_id;}); }
-      cl = cl || {};
-      var ve = (veiculos||[]).find(function(x){return x.id===it.veiculo_id;}) || {};
-      var partes = ["#"+numCt(it.id), (cl.nome||"—")];
-      if (ve.placa) partes.push(ve.placa);
-      if (it.previsao_pagamento) partes.push("venc. "+fmtDate(it.previsao_pagamento));
-      if (it.valor_total) partes.push(fmtBRL(it.valor_total));
-      else if (it.valor_cobrado || it.valor) partes.push(fmtBRL(it.valor_cobrado||it.valor));
-      return (i+1)+". "+partes.join(" · ");
-    }).join("\n");
+  function descLinha(it) {
+    var cl = (clientes||[]).find(function(x){return x.id===it.cliente_id;});
+    if (!cl && it.contrato_id) { var ct0=(contratos||[]).find(function(x){return x.id===it.contrato_id;}); if(ct0) cl=(clientes||[]).find(function(x){return x.id===ct0.cliente_id;}); }
+    cl = cl || {};
+    var ve = (veiculos||[]).find(function(x){return x.id===it.veiculo_id;}) || {};
+    var partes = ["#"+numCt(it.id), (cl.nome||"—")];
+    if (ve.placa) partes.push(ve.placa);
+    if (it.previsao_pagamento) partes.push("venc. "+fmtDate(it.previsao_pagamento));
+    if (it.valor_total) partes.push(fmtBRL(it.valor_total));
+    else if (it.valor_cobrado || it.valor) partes.push(fmtBRL(it.valor_cobrado||it.valor));
+    return partes.join(" · ");
+  }
+
+  function faturaViewerLink(it) {
+    return window.location.href.split("?")[0] + "?viewer=fatura&id=" + it.id + (mesRef ? "&mes=" + mesRef : "");
   }
 
   async function enviarLoteEmail() {
@@ -42225,24 +42227,28 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
     var list = selecionadosLote();
     if (!list.length) { alert("Selecione ao menos um documento."); return; }
     setEnviandoEmail(true);
-    var linkUrl = null;
+    var nmEmp = ((empresa||{}).nome||"AutoGest Pro");
+    var mlSubj = mesRef ? " · " + new Date(mesRef+"-02").toLocaleDateString("pt-BR",{month:"long",year:"numeric"}) : "";
+    var subj = getDocPrefix() + "s — " + list.length + " documento(s)" + mlSubj;
+    var corpo;
     if (tipo === "fatura") {
-      // Faturas usam o visualizador interno do app (renderiza no próprio
-      // index.html) — link confiável, igual ao envio de fatura individual.
-      var idsParam = list.map(function(it){ return it.id; }).join(",");
-      linkUrl = window.location.href.split("?")[0] + "?viewer=faturas&ids=" + idsParam + (mesRef ? "&mes=" + mesRef : "");
+      // Um link por fatura — cada uma abre no visualizador interno do app.
+      corpo = list.map(function(it, i) {
+        return (i+1) + ". " + descLinha(it) + "\n   📎 " + faturaViewerLink(it);
+      }).join("\n\n");
     } else {
+      // Contrato/multa: documento único combinado hospedado no Storage.
+      var linkUrl = null;
       try {
         var html = buildLoteHtml(list);
         var blob = new Blob([html], {type:"text/html;charset=utf-8"});
         var filename = getDocPrefix() + "_lote_" + Date.now() + ".html";
         linkUrl = await db.upload("pdfs/"+filename, new File([blob], filename, {type:"text/html;charset=utf-8"}));
       } catch(e) {}
+      var desc = list.map(function(it, i){ return (i+1)+". "+descLinha(it); }).join("\n");
+      corpo = desc + (linkUrl ? ("\n\n📎 " + linkUrl) : "");
     }
-    var nmEmp = ((empresa||{}).nome||"AutoGest Pro");
-    var desc = descricaoLote(list);
-    var subj = getDocPrefix() + "s — " + list.length + " documento(s)" + (mesRef ? " · " + new Date(mesRef+"-02").toLocaleDateString("pt-BR",{month:"long",year:"numeric"}) : "");
-    var body = "Boa tarde Prezado,\n\nSeguem os documentos relacionados abaixo:\n\n" + desc + "\n\n" + (linkUrl ? ("📎 " + linkUrl + "\n\n") : "") + "Atenciosamente,\n" + nmEmp;
+    var body = "Boa tarde Prezado,\n\nSeguem os documentos relacionados abaixo:\n\n" + corpo + "\n\nAtenciosamente,\n" + nmEmp;
     window.open("mailto:"+email+"?subject="+encodeURIComponent(subj)+"&body="+encodeURIComponent(body), "_blank");
     setEnviandoEmail(false);
   }

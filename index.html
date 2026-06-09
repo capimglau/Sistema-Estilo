@@ -15029,25 +15029,48 @@ const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 var __viewerMode = false;
 (function() {
   var p = new URLSearchParams(window.location.search);
-  if (p.get("viewer") !== "fatura") return;
-  var id = p.get("id"); var mes = p.get("mes") || "";
-  if (!id) return;
+  var v = p.get("viewer");
+  if (v !== "fatura" && v !== "faturas") return;
+  var mes = p.get("mes") || "";
+  var ids;
+  if (v === "faturas") {
+    ids = (p.get("ids") || "").split(",").map(function(s){ return s.trim(); }).filter(Boolean);
+  } else {
+    var id = p.get("id"); if (!id) return; ids = [id];
+  }
+  if (!ids.length) return;
   __viewerMode = true;
-  document.body.innerHTML = '<div style="font-family:Arial,sans-serif;text-align:center;padding:60px;color:#888">Carregando fatura...</div>';
+  document.body.innerHTML = '<div style="font-family:Arial,sans-serif;text-align:center;padding:60px;color:#888">Carregando fatura' + (ids.length > 1 ? 's' : '') + '...</div>';
   var hdrs = { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY };
   var base = SB_URL + "/rest/v1/";
   Promise.all([
-    fetch(base + "contratos?id=eq." + id + "&select=*", {headers: hdrs}).then(function(r){ return r.json(); }),
+    fetch(base + "contratos?id=in.(" + ids.join(",") + ")&select=*", {headers: hdrs}).then(function(r){ return r.json(); }),
     fetch(base + "config?select=*&limit=1", {headers: hdrs}).then(function(r){ return r.json(); })
   ]).then(function(res) {
-    var ct = res[0][0]; var emp = res[1][0] || {};
-    if (!ct) { document.body.innerHTML = '<div style="text-align:center;padding:60px;color:red">Fatura não encontrada.</div>'; return; }
+    var cts = res[0] || []; var emp = res[1][0] || {};
+    if (!cts.length) { document.body.innerHTML = '<div style="text-align:center;padding:60px;color:red">Fatura não encontrada.</div>'; return; }
+    // Mantém a ordem solicitada nos ids
+    var ord = {}; ids.forEach(function(x, i){ ord[String(x)] = i; });
+    cts.sort(function(a, b){ return (ord[String(a.id)] || 0) - (ord[String(b.id)] || 0); });
+    var clIds = cts.map(function(c){ return c.cliente_id; }).filter(Boolean);
+    var veIds = cts.map(function(c){ return c.veiculo_id; }).filter(Boolean);
     return Promise.all([
-      fetch(base + "clientes?id=eq." + ct.cliente_id + "&select=*", {headers: hdrs}).then(function(r){ return r.json(); }),
-      fetch(base + "veiculos?id=eq." + ct.veiculo_id + "&select=*", {headers: hdrs}).then(function(r){ return r.json(); })
+      clIds.length ? fetch(base + "clientes?id=in.(" + clIds.join(",") + ")&select=*", {headers: hdrs}).then(function(r){ return r.json(); }) : Promise.resolve([]),
+      veIds.length ? fetch(base + "veiculos?id=in.(" + veIds.join(",") + ")&select=*", {headers: hdrs}).then(function(r){ return r.json(); }) : Promise.resolve([])
     ]).then(function(res2) {
-      var cl = res2[0][0] || {}; var ve = res2[1][0] || {};
-      var html = buildFaturaHtmlViewer(ct, cl, ve, emp, mes);
+      var cls = res2[0] || []; var ves = res2[1] || [];
+      var html;
+      if (cts.length === 1) {
+        var ct = cts[0];
+        var cl = cls.find(function(x){ return x.id == ct.cliente_id; }) || {};
+        var ve = ves.find(function(x){ return x.id == ct.veiculo_id; }) || {};
+        html = buildFaturaHtmlViewer(ct, cl, ve, emp, mes);
+      } else {
+        var lista = cts.map(function(ct){
+          return { c: ct, cl: cls.find(function(x){ return x.id == ct.cliente_id; }) || {}, ve: ves.find(function(x){ return x.id == ct.veiculo_id; }) || {} };
+        });
+        html = buildFaturasLoteHtml(lista, emp, { closeBtn: false, autoPrint: false });
+      }
       document.open("text/html", "replace");
       document.write(html);
       document.close();
@@ -22198,21 +22221,28 @@ function printFatura(ct, cl, ve, emp) {
 
 // Gera um único PDF com várias faturas (uma por página). `list` aceita
 // objetos { c, cl, ve } (tela de faturas) ou contratos diretos.
-function printFaturasLote(list, emp) {
+function buildFaturasLoteHtml(list, emp, opts) {
+  opts = opts || {};
   emp = emp || {};
   list = (list || []).filter(Boolean);
-  if (!list.length) { alert("Selecione ao menos uma fatura."); return; }
   var css = _FATURA_CSS + '.fatura-pg{page-break-after:always}.fatura-pg:last-child{page-break-after:auto}';
   var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Faturas (' + list.length + ')</title><style>' + css + '</style></head><body>';
-  h += '<div class="np"><button onclick="window.print()" style="flex:1;background:#007AFF;color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:700;cursor:pointer">🖨️ Imprimir / Salvar PDF — ' + list.length + ' fatura(s)</button><button ' + _PDF_CLOSE_BTN + ' style="background:#F2F2F7;border:none;border-radius:10px;padding:12px 20px;font-size:15px;cursor:pointer">✕ Fechar</button></div>';
+  h += '<div class="np"><button onclick="window.print()" style="flex:1;background:#007AFF;color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:700;cursor:pointer">🖨️ Imprimir / Salvar PDF — ' + list.length + ' fatura(s)</button>' + (opts.closeBtn ? '<button ' + _PDF_CLOSE_BTN + ' style="background:#F2F2F7;border:none;border-radius:10px;padding:12px 20px;font-size:15px;cursor:pointer">✕ Fechar</button>' : '') + '</div>';
   list.forEach(function(item) {
     var ct = (item && item.c) ? item.c : item;
     var cl = (item && item.cl) ? item.cl : {};
     var ve = (item && item.ve) ? item.ve : {};
     h += '<div class="fatura-pg">' + _buildFaturaBody(ct, cl, ve, emp) + '</div>';
   });
-  h += "<scr"+"ipt>window.print();</scr"+"ipt></body></html>";
-  openPdfPage(h);
+  if (opts.autoPrint) h += "<scr"+"ipt>window.print();</scr"+"ipt>";
+  h += "</body></html>";
+  return h;
+}
+
+function printFaturasLote(list, emp) {
+  list = (list || []).filter(Boolean);
+  if (!list.length) { alert("Selecione ao menos uma fatura."); return; }
+  openPdfPage(buildFaturasLoteHtml(list, emp, { closeBtn: true, autoPrint: true }));
 }
 
 function printChecklist(ct, cl, ve, emp, tipo) {
@@ -42196,12 +42226,19 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
     if (!list.length) { alert("Selecione ao menos um documento."); return; }
     setEnviandoEmail(true);
     var linkUrl = null;
-    try {
-      var html = buildLoteHtml(list);
-      var blob = new Blob([html], {type:"text/html;charset=utf-8"});
-      var filename = getDocPrefix() + "_lote_" + Date.now() + ".html";
-      linkUrl = await db.upload("pdfs/"+filename, new File([blob], filename, {type:"text/html;charset=utf-8"}));
-    } catch(e) {}
+    if (tipo === "fatura") {
+      // Faturas usam o visualizador interno do app (renderiza no próprio
+      // index.html) — link confiável, igual ao envio de fatura individual.
+      var idsParam = list.map(function(it){ return it.id; }).join(",");
+      linkUrl = window.location.href.split("?")[0] + "?viewer=faturas&ids=" + idsParam + (mesRef ? "&mes=" + mesRef : "");
+    } else {
+      try {
+        var html = buildLoteHtml(list);
+        var blob = new Blob([html], {type:"text/html;charset=utf-8"});
+        var filename = getDocPrefix() + "_lote_" + Date.now() + ".html";
+        linkUrl = await db.upload("pdfs/"+filename, new File([blob], filename, {type:"text/html;charset=utf-8"}));
+      } catch(e) {}
+    }
     var nmEmp = ((empresa||{}).nome||"AutoGest Pro");
     var desc = descricaoLote(list);
     var subj = getDocPrefix() + "s — " + list.length + " documento(s)" + (mesRef ? " · " + new Date(mesRef+"-02").toLocaleDateString("pt-BR",{month:"long",year:"numeric"}) : "");

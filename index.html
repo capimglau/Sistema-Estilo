@@ -15442,6 +15442,7 @@ function _alertIsDismissed(key, currentSig) {
   var d = _alertGetDismissed()[key];
   if (!d) return false;
   if (typeof d === "number") return false; // formato antigo → invalida, mostra de novo
+  if (d.perm) return true; // descarte permanente: nunca reaparece (mesmo se o conteúdo mudar)
   if (currentSig !== undefined && d.sig !== currentSig) return false; // conteúdo mudou
   return true;
 }
@@ -15459,6 +15460,31 @@ function _alertItemDismiss(groupKey, ref) {
   var obj = _alertGetDismissed();
   obj[k] = Date.now();
   _alertSetDismissed(obj);
+}
+// Descarte PERMANENTE de um alerta inteiro — não reaparece para os itens atuais.
+// Se o grupo tem itemRefs, marca cada item como dismissed (permanente por item): assim,
+// se surgir um item NOVO no futuro (ex.: nova fatura a emitir), o alerta volta só para ele.
+// Se o grupo não tem refs, marca o grupo com flag perm (nunca reaparece, ignora mudança de conteúdo).
+function _alertDismissPermanent(g) {
+  if (!g) return;
+  var key = _alertStableKey(g);
+  var refs = (g.itemRefs || []).filter(function(r){ return r && r.id && r.type; });
+  var obj = _alertGetDismissed();
+  if (refs.length > 0) {
+    refs.forEach(function(r){ var k = _alertItemKey(key, r); if (k) obj[k] = Date.now(); });
+  } else {
+    obj[key] = { ts: Date.now(), sig: "", perm: true };
+  }
+  _alertSetDismissed(obj);
+}
+// Visibilidade de um grupo respeitando o store persistido (dismiss permanente, por item e por sig).
+function _alertGroupVisible(g) {
+  if (!g || !g.items || !g.items.length) return false;
+  var key = _alertStableKey(g);
+  if (_alertIsDismissed(key, _alertGroupSig(g))) return false;
+  var refs = (g.itemRefs || []).filter(function(r){ return r && r.id && r.type; });
+  if (refs.length > 0 && refs.every(function(r){ return _alertItemIsDismissed(key, r); })) return false;
+  return true;
 }
 // Migração única: converte ag_dismissed (array antigo) para ag_dismissed_v2 (objeto)
 (function migrateOldDismissed() {
@@ -15483,6 +15509,13 @@ function AlertSwipeCards({ alertaGroups, C, setTab, onItemNav }) {
   var hidden = _hidden[0]; var setHidden = _hidden[1];
   var _timerRef = React.useRef(null);
   var _swRef = React.useRef({});
+  // tick força re-render quando o store de dismissed muda (dispensar em qualquer painel)
+  var _tick = React.useState(0); var setTick = _tick[1];
+  React.useEffect(function(){
+    function onChanged(){ setTick(function(n){ return n + 1; }); }
+    window.addEventListener("ag-dismissed-changed", onChanged);
+    return function(){ window.removeEventListener("ag-dismissed-changed", onChanged); };
+  }, []);
 
   // Escuta o badge — toggle: navega para início se necessário, abre alertas e rola ao topo
   React.useEffect(function(){
@@ -15529,7 +15562,7 @@ function AlertSwipeCards({ alertaGroups, C, setTab, onItemNav }) {
     window.dispatchEvent(new CustomEvent('ag:toggle-alerts'));
   }
 
-  var groups = (alertaGroups||[]).filter(function(g){ return g.items&&g.items.length>0&&!localDismissed[_alertStableKey(g)]; });
+  var groups = (alertaGroups||[]).filter(function(g){ return g.items&&g.items.length>0&&!localDismissed[_alertStableKey(g)]&&_alertGroupVisible(g); });
 
   // Expõe nível de urgência para o tab lateral pintar a cor certa
   React.useEffect(function(){
@@ -15562,12 +15595,20 @@ function AlertSwipeCards({ alertaGroups, C, setTab, onItemNav }) {
     var tx=swipeTx[key]||0;
     if(Math.abs(tx)>130){
       var g=groups.find(function(x){return _alertStableKey(x)===key;});
-      if(g) _alertDismiss(key,_alertGroupSig(g));
+      if(g) _alertDismissPermanent(g);
       setLocalDismissed(function(p){var n=Object.assign({},p);n[key]=true;return n;});
       setSwipeTx(function(p){var n=Object.assign({},p);n[key]=tx>0?700:-700;return n;});
     } else {
       setSwipeTx(function(p){var n=Object.assign({},p);n[key]=0;return n;});
     }
+  }
+
+  // Dispensa permanente via botão (não reaparece para os itens atuais)
+  function dismissPerm(g){
+    var key=_alertStableKey(g);
+    _alertDismissPermanent(g);
+    setSwipeTx(function(p){var n=Object.assign({},p);n[key]=-700;return n;});
+    setLocalDismissed(function(p){var n=Object.assign({},p);n[key]=true;return n;});
   }
 
   function navToAlert(g) {
@@ -15582,7 +15623,7 @@ function AlertSwipeCards({ alertaGroups, C, setTab, onItemNav }) {
         React.createElement('span', { style:{fontSize:10,fontWeight:700,color:C.sub,letterSpacing:0.3} }, groups.length+" alerta"+(groups.length!==1?"s":""))
       ),
       React.createElement('div', { style:{display:"flex",alignItems:"center",gap:10} },
-        React.createElement('span', { style:{fontSize:10,color:C.sub+"88"} }, "← deslize para dispensar"),
+        React.createElement('span', { style:{fontSize:10,color:C.sub+"88"} }, "toque ✓ Resolvi p/ não ver mais"),
         React.createElement('button', {
           onClick: hideFor15,
           style:{border:"none",background:"transparent",fontSize:10,fontWeight:600,color:C.sub,cursor:"pointer",padding:0,whiteSpace:"nowrap"}
@@ -15607,11 +15648,19 @@ function AlertSwipeCards({ alertaGroups, C, setTab, onItemNav }) {
             React.createElement('div',{style:{fontSize:13,fontWeight:700,color:"var(--c-text)",lineHeight:1.25}},g.titulo),
             g.items&&g.items[0]&&React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:2,lineHeight:1.35,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},g.items[0])
           ),
-          React.createElement('button',{
-            onTouchEnd:function(e){ e.preventDefault(); e.stopPropagation(); navToAlert(g); },
-            onClick:function(e){ e.stopPropagation(); navToAlert(g); },
-            style:{background:g.cor+"0d",border:"none",borderLeft:"1px solid "+g.cor+"20",borderRadius:"0 14px 14px 0",padding:"0 13px",fontSize:11,fontWeight:700,color:g.cor,cursor:"pointer",flexShrink:0}
-          },"Ver →")
+          React.createElement('div',{style:{display:"flex",flexDirection:"column",flexShrink:0,borderLeft:"1px solid "+g.cor+"20",borderRadius:"0 14px 14px 0",overflow:"hidden"}},
+            React.createElement('button',{
+              onTouchEnd:function(e){ e.preventDefault(); e.stopPropagation(); navToAlert(g); },
+              onClick:function(e){ e.stopPropagation(); navToAlert(g); },
+              style:{flex:1,background:g.cor+"0d",border:"none",borderBottom:"1px solid "+g.cor+"18",padding:"0 13px",fontSize:11,fontWeight:700,color:g.cor,cursor:"pointer",whiteSpace:"nowrap"}
+            },"Ver →"),
+            React.createElement('button',{
+              title:"Já resolvi — não mostrar de novo",
+              onTouchEnd:function(e){ e.preventDefault(); e.stopPropagation(); dismissPerm(g); },
+              onClick:function(e){ e.stopPropagation(); dismissPerm(g); },
+              style:{flex:1,background:C.sub+"10",border:"none",padding:"0 13px",fontSize:11,fontWeight:700,color:C.sub,cursor:"pointer",whiteSpace:"nowrap"}
+            },"✓ Resolvi")
+          )
         )
       );
     }),
@@ -21078,16 +21127,22 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab, searchBarEl, onItemNav }
     var tx = swipeTx[key] || 0;
     if (Math.abs(tx) > 130) {
       var g = groups.find(function(x){ return _alertStableKey(x) === key; });
-      if (g) _alertDismiss(key, _alertGroupSig(g));
+      if (g) _alertDismissPermanent(g);
       setLocalDismissed(function(p){ var n=Object.assign({},p); n[key]=true; return n; });
       setSwipeTx(function(p){ var n=Object.assign({},p); n[key]=tx>0?700:-700; return n; });
     } else {
       setSwipeTx(function(p){ var n=Object.assign({},p); n[key]=0; return n; });
     }
   }
+  function _dismissPerm(g){
+    var key=_alertStableKey(g);
+    _alertDismissPermanent(g);
+    setSwipeTx(function(p){ var n=Object.assign({},p); n[key]=-700; return n; });
+    setLocalDismissed(function(p){ var n=Object.assign({},p); n[key]=true; return n; });
+  }
 
   var TAB_LABEL = { contratos:"Contrato", financeiro:"Financeiro", multas:"Multa", manutencao:"Manutenção", frota:"Frota", clientes:"Cliente", reservas:"Reserva" };
-  var groups = (alertaGroups || []).filter(function(g){ return g.items && g.items.length > 0 && !localDismissed[_alertStableKey(g)]; });
+  var groups = (alertaGroups || []).filter(function(g){ return g.items && g.items.length > 0 && !localDismissed[_alertStableKey(g)] && _alertGroupVisible(g); });
   var nAlertas = groups.length;
   var alertColor = nAlertas > 5 ? C.red : nAlertas > 2 ? C.orange : nAlertas > 0 ? C.orange : C.green;
   var visCards = showAll ? groups : groups.slice(0, 2);
@@ -21151,21 +21206,29 @@ function BomDiaCard({ alertas, alertaGroups, C, setTab, searchBarEl, onItemNav }
               React.createElement('div', { style:{ fontSize:13, fontWeight:700, color:"var(--c-text)", lineHeight:1.25 } }, g.titulo),
               g.items && g.items[0] && React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:2, lineHeight:1.35, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, g.items[0])
             ),
-            React.createElement('button', {
-              onTouchEnd: function(e){
-                e.preventDefault(); e.stopPropagation();
-                var ref = g.itemRefs && g.itemRefs[0];
-                if (ref && onItemNav) { onItemNav(ref, g.tab); }
-                else if (g.tab) { setTab(g.tab); }
-              },
-              onClick: function(e){
-                e.stopPropagation();
-                var ref = g.itemRefs && g.itemRefs[0];
-                if (ref && onItemNav) { onItemNav(ref, g.tab); }
-                else if (g.tab) { setTab(g.tab); }
-              },
-              style:{ background:g.cor+"0d", border:"none", borderLeft:"1px solid "+g.cor+"20", borderRadius:"0 14px 14px 0", padding:"0 13px", fontSize:11, fontWeight:700, color:g.cor, cursor:"pointer", flexShrink:0 }
-            }, "Ver →")
+            React.createElement('div', { style:{ display:"flex", flexDirection:"column", flexShrink:0, borderLeft:"1px solid "+g.cor+"20", borderRadius:"0 14px 14px 0", overflow:"hidden" } },
+              React.createElement('button', {
+                onTouchEnd: function(e){
+                  e.preventDefault(); e.stopPropagation();
+                  var ref = g.itemRefs && g.itemRefs[0];
+                  if (ref && onItemNav) { onItemNav(ref, g.tab); }
+                  else if (g.tab) { setTab(g.tab); }
+                },
+                onClick: function(e){
+                  e.stopPropagation();
+                  var ref = g.itemRefs && g.itemRefs[0];
+                  if (ref && onItemNav) { onItemNav(ref, g.tab); }
+                  else if (g.tab) { setTab(g.tab); }
+                },
+                style:{ flex:1, background:g.cor+"0d", border:"none", borderBottom:"1px solid "+g.cor+"18", padding:"0 13px", fontSize:11, fontWeight:700, color:g.cor, cursor:"pointer", whiteSpace:"nowrap" }
+              }, "Ver →"),
+              React.createElement('button', {
+                title:"Já resolvi — não mostrar de novo",
+                onTouchEnd: function(e){ e.preventDefault(); e.stopPropagation(); _dismissPerm(g); },
+                onClick: function(e){ e.stopPropagation(); _dismissPerm(g); },
+                style:{ flex:1, background:C.sub+"10", border:"none", padding:"0 13px", fontSize:11, fontWeight:700, color:C.sub, cursor:"pointer", whiteSpace:"nowrap" }
+              }, "✓ Resolvi")
+            )
           )
         );
       }),

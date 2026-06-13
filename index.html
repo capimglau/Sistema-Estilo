@@ -24129,15 +24129,37 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         /* ── Fluxo de caixa diário — barras + linhas (entradas/despesas/saldo) ── */
         , (function(){
             function _ek(mes,day){ return mes+"-"+(day<10?"0"+day:""+day); }
+            function _ldOf(mes){ var p=mes.split("-"); return new Date(parseInt(p[0],10),parseInt(p[1],10),0).getDate(); }
+            function _addMes(mes,delta){ var d=new Date(mes+"-15T12:00:00"); d.setMonth(d.getMonth()+delta); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
+            function _nextDay(ds){ var x=new Date(ds+"T12:00:00"); x.setDate(x.getDate()+1); return x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")+"-"+String(x.getDate()).padStart(2,"0"); }
+            var _pMes=_addMes(dashMes,-1), _xMes=_addMes(dashMes,1);
+            /* mapas de contratos e despesas por mês (mesma lógica do gráfico de linhas) */
+            function _mkC(mes){ var map={}; (contratos||[]).forEach(function(c){ var dt=(c.status_pagamento==="pago")?(c.data_pagamento||c.previsao_pagamento):(c.previsao_pagamento||c.data_fim); if(!dt||dt.slice(0,7)!==mes)return; var day=parseInt(dt.slice(8,10),10); if(!map[day])map[day]={pago:0,pendente:0}; var val=parseFloat(c.valor_total||0); if(c.status_pagamento==="pago"||c.status_pagamento==="isento")map[day].pago+=val; else map[day].pendente+=val; }); return map; }
+            function _mkD(mes){ var map={}; resolverDespesasDoMes(despesas||[],mes).forEach(function(d){ var pago=d.status==="pago"||!!d.data_pagamento; var dt=pago?(d.data_pagamento||d.data):d.data; if(!dt||dt.slice(0,7)!==mes)return; var day=parseInt(dt.slice(8,10),10); if(!map[day])map[day]={pago:0,previsto:0}; var val=parseFloat(d.valor||0); if(pago)map[day].pago+=val; else map[day].previsto+=val; }); return map; }
+            var _cmP=_mkC(_pMes),_cmC=_mkC(dashMes),_cmX=_mkC(_xMes);
+            /* projetar contratos ativos no próximo mês sem data explícita */
+            (contratos||[]).forEach(function(c){ if(c.status_pagamento==="cancelado")return; var fim=c.data_fim||""; var pdt=(c.status_pagamento==="pago")?(c.data_pagamento||c.previsao_pagamento):(c.previsao_pagamento||c.data_fim); if(pdt&&pdt.slice(0,7)===_xMes)return; if(!fim||fim.slice(0,7)<_xMes)return; var refD=fim.slice(0,7)===_xMes?fim:(c.previsao_pagamento||c.data_fim||""); var day=parseInt((refD||"").slice(8,10),10); if(!day||isNaN(day)||day<1||day>31)day=15; if(!_cmX[day])_cmX[day]={pago:0,pendente:0}; _cmX[day].pendente+=parseFloat(c.valor_total||0); });
+            var _dmP=_mkD(_pMes),_dmC=_mkD(dashMes),_dmX=_mkD(_xMes);
             var _U={}, _ord=[];
-            function _slot(mes,day){ var k=_ek(mes,day); if(!_U[k]){_U[k]={mes:mes,day:day,ent:0,des:0,bal:null,entV:false,desP:false};_ord.push(k);} return _U[k]; }
-            cPts.forEach(function(p){ var s=_slot(p.mes,p.day); s.ent=p.dayVal||0; s.entV=!!p.isVence; });
-            dPts.forEach(function(p){ var s=_slot(p.mes,p.day); s.des=p.dayVal||0; s.desP=!!p.isPrevisto; });
-            bPts.forEach(function(p){ var s=_slot(p.mes,p.day); s.bal=p.bal; });
+            function _slot(mes,day){ var k=_ek(mes,day); if(!_U[k]){_U[k]={mes:mes,day:day,ent:0,des:0,bal:0,entV:false,desP:false};_ord.push(k);} return _U[k]; }
+            [[_pMes,_cmP,_dmP],[dashMes,_cmC,_dmC],[_xMes,_cmX,_dmX]].forEach(function(grp){
+              var mes=grp[0],cm=grp[1],dm=grp[2],ld=_ldOf(mes);
+              for(var day=1;day<=ld;day++){ var c=cm[day],d=dm[day]; if(!c&&!d)continue; var s=_slot(mes,day);
+                if(c){ s.ent=(c.pago||0)+(c.pendente||0); s.entV=(c.pendente||0)>0&&(c.pago||0)===0; }
+                if(d){ s.des=(d.pago||0)+(d.previsto||0); s.desP=(d.previsto||0)>0&&(d.pago||0)===0; }
+              }
+            });
+            /* receitas avulsas (entram no caixa) */
+            [_pMes,dashMes,_xMes].forEach(function(mes){ (receitas||[]).forEach(function(r){ if(r.ref_fatura)return; var dt=r.data_pagamento||r.data; if(!dt||dt.slice(0,7)!==mes)return; var s=_slot(mes,parseInt(dt.slice(8,10),10)); s.ent=(s.ent||0)+parseFloat(r.valor||0); }); });
             _ord.sort();
             var _items=_ord.map(function(k){return _U[k];});
             if(_items.length===0) return null;
-            var _lb=0; _items.forEach(function(it){ if(it.bal==null) it.bal=_lb; else _lb=it.bal; });
+            /* saldo bancário ao fim de cada dia (realizado até hoje, projetado depois) */
+            var _run=null,_seeded=false;
+            _items.forEach(function(it){ var ds=_ek(it.mes,it.day);
+              if(ds<=hoje){ it.bal=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_nextDay(ds)); }
+              else { if(!_seeded){_run=saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_nextDay(hoje));_seeded=true;} _run+=(it.ent||0)-(it.des||0); it.bal=_run; }
+            });
             var _n=_items.length;
             var _maxV=0; _items.forEach(function(it){ var t=(it.ent||0)+(it.des||0); if(t>_maxV)_maxV=t; });
             function _niceMax(v){ if(v<=0)return 1; var p=Math.pow(10,Math.floor(Math.log10(v))); var n=v/p; var m=n<=1?1:n<=2?2:n<=2.5?2.5:n<=5?5:10; return m*p; }

@@ -24126,104 +24126,137 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
             )
           );
         })()
-        /* ── Fluxo de caixa diário — barras empilhadas + linha de saldo (estilo AGI) ── */
+        /* ── Fluxo de caixa diário — barras + linhas (entradas/despesas/saldo) ── */
         , (function(){
-            var _entMap={}, _desMap={};
-            _ctsDays.forEach(function(d){ _entMap[d]=(_entMap[d]||0)+(_ctsChartMap[d].pago||0)+(_ctsChartMap[d].pendente||0); });
-            (receitas||[]).forEach(function(r){ if(r.ref_fatura)return; var dt=r.data_pagamento||r.data; if(!dt||dt.slice(0,7)!==dashMes)return; var dd=parseInt(dt.slice(8,10),10); _entMap[dd]=(_entMap[dd]||0)+parseFloat(r.valor||0); });
-            _despDays.forEach(function(d){ _desMap[d]=(_desMap[d]||0)+(_despChartMap[d].pago||0)+(_despChartMap[d].previsto||0); });
-            var _days=[], _seen={};
-            Object.keys(_entMap).concat(Object.keys(_desMap)).forEach(function(k){ var n=parseInt(k,10); if(_seen[n])return; if((_entMap[n]||0)<=0&&(_desMap[n]||0)<=0)return; _seen[n]=1; _days.push(n); });
-            _days.sort(function(a,b){return a-b;});
-            if(_days.length===0) return null;
-            var _maxV=0; _days.forEach(function(d){ var t=(_entMap[d]||0)+(_desMap[d]||0); if(t>_maxV)_maxV=t; });
+            function _ek(mes,day){ return mes+"-"+(day<10?"0"+day:""+day); }
+            var _U={}, _ord=[];
+            function _slot(mes,day){ var k=_ek(mes,day); if(!_U[k]){_U[k]={mes:mes,day:day,ent:0,des:0,bal:null,entV:false,desP:false};_ord.push(k);} return _U[k]; }
+            cPts.forEach(function(p){ var s=_slot(p.mes,p.day); s.ent=p.dayVal||0; s.entV=!!p.isVence; });
+            dPts.forEach(function(p){ var s=_slot(p.mes,p.day); s.des=p.dayVal||0; s.desP=!!p.isPrevisto; });
+            bPts.forEach(function(p){ var s=_slot(p.mes,p.day); s.bal=p.bal; });
+            _ord.sort();
+            var _items=_ord.map(function(k){return _U[k];});
+            if(_items.length===0) return null;
+            var _lb=0; _items.forEach(function(it){ if(it.bal==null) it.bal=_lb; else _lb=it.bal; });
+            var _n=_items.length;
+            var _maxV=0; _items.forEach(function(it){ var t=(it.ent||0)+(it.des||0); if(t>_maxV)_maxV=t; });
             function _niceMax(v){ if(v<=0)return 1; var p=Math.pow(10,Math.floor(Math.log10(v))); var n=v/p; var m=n<=1?1:n<=2?2:n<=2.5?2.5:n<=5?5:10; return m*p; }
             var _nm=_niceMax(_maxV);
             function _fk(v){ v=Math.round(v); var a=Math.abs(v); if(a>=1000){ var s=v/1000; return "R$"+(a%1000===0?s.toFixed(0):s.toFixed(1).replace(".",","))+"k"; } return "R$"+v; }
-            /* saldo bancário acumulado ao fim de cada dia */
-            function _nextDay(ds){ var dt=new Date(ds+"T12:00:00"); dt.setDate(dt.getDate()+1); return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0"); }
-            var _saldos=_days.map(function(d){ var ds=dashMes+"-"+String(d).padStart(2,"0"); return saldoCaixaAte(contratos,receitas,despesas,manutencoes,multas,_nextDay(ds)); });
-            var _sMin=Math.min.apply(null,_saldos), _sMax=Math.max.apply(null,_saldos);
+            var _sMin=Infinity,_sMax=-Infinity; _items.forEach(function(it){ if(it.bal<_sMin)_sMin=it.bal; if(it.bal>_sMax)_sMax=it.bal; });
             if(_sMin===_sMax){ _sMin-=1; _sMax+=1; }
-            var _sPad=(_sMax-_sMin)*0.14, _sLo=_sMin-_sPad, _sHi=_sMax+_sPad;
-            function _syPct(v){ return (1-(v-_sLo)/(_sHi-_sLo))*100; } /* 0..100 do topo */
+            var _sPad=(_sMax-_sMin)*0.16, _sLo=_sMin-_sPad, _sHi=_sMax+_sPad;
+            function _syPct(v){ return (1-(v-_sLo)/(_sHi-_sLo))*100; }
             var _isDk=document.body.classList.contains("dark")||document.body.classList.contains("dim")||document.body.classList.contains("indigo")||document.body.classList.contains("midnight");
             var _gridc=_isDk?"rgba(255,255,255,.10)":"rgba(0,0,0,.08)";
             var _steps=4;
-            var _chartH=desktop?200:180;  /* altura da área de barras */
-            var _labelH=20;               /* altura dos labels de dia */
-            var _yAxisW=34;               /* largura do eixo Y */
-            var _minSlot=desktop?58:50;   /* largura mínima por dia → rolagem quando passa */
-            var _contentW=_days.length*_minSlot;
+            var _chartH=desktop?300:240;  /* altura da área de barras */
+            var _topPad=30;               /* espaço p/ rótulos acima das barras */
+            var _yAxisW=42;
+            var _minSlot=desktop?66:56;
+            var _contentW=_n*_minSlot;
+            var _mAbr=["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
+            var _hojeIdx=-1; _items.forEach(function(it,i){ if(_ek(it.mes,it.day)===hoje)_hojeIdx=i; });
+            /* posição inicial de rolagem: hoje ou próximo evento */
+            var _targetIdx=_hojeIdx;
+            if(_targetIdx<0){ for(var _ti=0;_ti<_items.length;_ti++){ if(_ek(_items[_ti].mes,_items[_ti].day)>=hoje){_targetIdx=_ti;break;} } }
+            if(_targetIdx<0)_targetIdx=_items.length-1;
             /* grid lines */
             var _gridLines=[];
             for(var _g=0;_g<=_steps;_g++){
               _gridLines.push(React.createElement('div',{key:"gl"+_g,style:{position:"absolute",left:0,right:0,top:(100-(_g/_steps)*100)+"%",borderTop:"1px dashed "+_gridc,pointerEvents:"none"}}));
             }
-            /* eixo Y labels (fixo à esquerda) */
             var _yLabels=[];
             for(var _yl=0;_yl<=_steps;_yl++){
-              _yLabels.push(React.createElement('div',{key:"yl"+_yl,style:{position:"absolute",bottom:(_yl/_steps*100)+"%",right:0,transform:"translateY(50%)",fontSize:8,color:C.sub,lineHeight:1,whiteSpace:"nowrap"}},_fk(_nm*_yl/_steps)));
+              _yLabels.push(React.createElement('div',{key:"yl"+_yl,style:{position:"absolute",bottom:(_yl/_steps*100)+"%",right:0,transform:"translateY(50%)",fontSize:10,color:C.sub,lineHeight:1,whiteSpace:"nowrap"}},_fk(_nm*_yl/_steps)));
             }
-            /* colunas de barras */
-            var _barCols=_days.map(function(d,i){
-              var _ent=_entMap[d]||0, _des=_desMap[d]||0, _tot=_ent+_des;
-              var _entPx=_nm>0?(_ent/_nm)*_chartH:0;
-              var _desPx=_nm>0?(_des/_nm)*_chartH:0;
-              var _totalPx=_entPx+_desPx;
-              var _onClick=(function(_dd){return function(){setChartDaySheetMode(null);setChartDaySheetMes(dashMes);setChartDaySheet(_dd);};})(d);
-              return React.createElement('div',{key:"bc"+d,onClick:_onClick,style:{flex:1,minWidth:_minSlot,display:"flex",flexDirection:"column",justifyContent:"flex-end",alignItems:"center",height:"100%",cursor:"pointer",position:"relative",paddingBottom:0}}
-                , _tot>0 && React.createElement('div',{style:{position:"absolute",bottom:_totalPx+5,left:"50%",transform:"translateX(-50%)",fontSize:8,fontWeight:700,color:C.sub,whiteSpace:"nowrap",textAlign:"center",lineHeight:1}},_fk(_tot))
-                , React.createElement('div',{style:{width:desktop?"60%":"66%",maxWidth:38,display:"flex",flexDirection:"column",borderRadius:4,overflow:"hidden"}}
-                  , _des>0 && React.createElement('div',{style:{height:Math.max(2,_desPx).toFixed(1)+"px",background:"#FF3B30",borderRadius:_ent>0?"3px 3px 0 0":"3px",flexShrink:0}})
-                  , _ent>0 && React.createElement('div',{style:{height:Math.max(2,_entPx).toFixed(1)+"px",background:"#34C759",borderRadius:_des>0?"0 0 3px 3px":"3px",flexShrink:0}})
+            /* separadores de mês + marcador hoje */
+            var _marks=[];
+            _items.forEach(function(it,i){ if(i>0 && it.mes!==_items[i-1].mes){ _marks.push(React.createElement('div',{key:"sep"+i,style:{position:"absolute",left:(i/_n*100)+"%",top:0,bottom:0,width:1,background:_gridc,pointerEvents:"none"}})); } });
+            if(_hojeIdx>=0) _marks.push(React.createElement('div',{key:"hoje",style:{position:"absolute",left:((_hojeIdx+0.5)/_n*100)+"%",top:0,bottom:0,borderLeft:"1.5px dashed "+C.blue,opacity:0.5,pointerEvents:"none"}}));
+            /* barras empilhadas */
+            var _barCols=_items.map(function(it,i){
+              var _ent=it.ent||0,_des=it.des||0;
+              var _entPx=_nm>0?(_ent/_nm)*_chartH:0, _desPx=_nm>0?(_des/_nm)*_chartH:0;
+              var _onClick=(function(_mm,_dd){return function(){setChartDaySheetMode(null);setChartDaySheetMes(_mm);setChartDaySheet(_dd);};})(it.mes,it.day);
+              return React.createElement('div',{key:"bc"+i,onClick:_onClick,style:{flex:1,minWidth:_minSlot,display:"flex",flexDirection:"column",justifyContent:"flex-end",alignItems:"center",height:"100%",cursor:"pointer"}}
+                , React.createElement('div',{style:{width:desktop?"50%":"60%",maxWidth:42,display:"flex",flexDirection:"column",borderRadius:5,overflow:"hidden",opacity:0.92}}
+                  , _des>0 && React.createElement('div',{style:{height:Math.max(2,_desPx).toFixed(1)+"px",background:it.desP?"rgba(255,149,0,0.9)":"#FF3B30",borderRadius:_ent>0?"4px 4px 0 0":"4px",flexShrink:0}})
+                  , _ent>0 && React.createElement('div',{style:{height:Math.max(2,_entPx).toFixed(1)+"px",background:it.entV?"rgba(255,149,0,0.9)":"#34C759",borderRadius:_des>0?"0 0 4px 4px":"4px",flexShrink:0}})
                 )
               );
             });
-            /* labels de dia */
-            var _dayCols=_days.map(function(d){ return React.createElement('div',{key:"dl"+d,style:{flex:1,minWidth:_minSlot,textAlign:"center",fontSize:9,color:C.sub,lineHeight:_labelH+"px",height:_labelH}},String(d)); });
-            /* linha de saldo bancário (azul) — polyline + dots */
-            var _linePts=_saldos.map(function(v,i){ var x=((i+0.5)/_days.length)*1000; var y=_syPct(v)*10; return x.toFixed(1)+","+y.toFixed(1); }).join(" ");
-            var _saldoDots=_saldos.map(function(v,i){ return React.createElement('div',{key:"sd"+i,style:{position:"absolute",left:((i+0.5)/_days.length*100)+"%",top:_syPct(v)+"%",width:6,height:6,borderRadius:"50%",background:"#007AFF",border:"1.5px solid "+C.card,transform:"translate(-50%,-50%)",pointerEvents:"none"}}); });
-            /* label do saldo final */
-            var _lastSaldo=_saldos[_saldos.length-1];
-            var _saldoLineSvg=React.createElement('svg',{viewBox:"0 0 1000 1000",preserveAspectRatio:"none",style:{position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",overflow:"visible"}}
-              , React.createElement('polyline',{points:_linePts,fill:"none",stroke:"#007AFF",strokeWidth:2,strokeLinejoin:"round",strokeLinecap:"round",vectorEffect:"non-scaling-stroke",opacity:0.95})
+            /* polylines (entrada=topo do verde, despesa=topo da pilha, saldo=escala própria) */
+            var _entPts=[],_stkPts=[];
+            _items.forEach(function(it,i){ var x=((i+0.5)/_n)*1000;
+              if(it.ent>0) _entPts.push(x.toFixed(1)+","+(((1-it.ent/_nm)*100)*10).toFixed(1));
+              if(it.des>0) _stkPts.push(x.toFixed(1)+","+(((1-(it.ent+it.des)/_nm)*100)*10).toFixed(1));
+            });
+            var _salPts=_items.map(function(it,i){ var x=((i+0.5)/_n)*1000; return x.toFixed(1)+","+(_syPct(it.bal)*10).toFixed(1); }).join(" ");
+            var _linesSvg=React.createElement('svg',{viewBox:"0 0 1000 1000",preserveAspectRatio:"none",style:{position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",overflow:"visible"}}
+              , _stkPts.length>1 && React.createElement('polyline',{points:_stkPts.join(" "),fill:"none",stroke:"#FF3B30",strokeWidth:2,strokeLinejoin:"round",strokeLinecap:"round",vectorEffect:"non-scaling-stroke",opacity:0.9})
+              , _entPts.length>1 && React.createElement('polyline',{points:_entPts.join(" "),fill:"none",stroke:"#34C759",strokeWidth:2,strokeLinejoin:"round",strokeLinecap:"round",vectorEffect:"non-scaling-stroke",opacity:0.9})
+              , React.createElement('polyline',{points:_salPts,fill:"none",stroke:"#007AFF",strokeWidth:2.4,strokeLinejoin:"round",strokeLinecap:"round",vectorEffect:"non-scaling-stroke",opacity:0.95})
             );
-            return React.createElement('div',{style:{background:C.card,borderRadius:22,border:"1px solid "+C.border,padding:"14px 16px 14px",boxShadow:"0 2px 16px rgba(0,0,0,0.06)",marginTop:2}}
-              /* cabeçalho */
-              , React.createElement('div',{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:6}}
-                , React.createElement('span',{style:{fontSize:9,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:0.8}},"Fluxo de caixa di\xe1rio")
-                , React.createElement('div',{style:{display:"flex",alignItems:"center",gap:11}}
-                  , React.createElement('span',{style:{display:"flex",alignItems:"center",gap:4,fontSize:10,color:C.sub}},React.createElement('span',{style:{width:8,height:8,borderRadius:"50%",background:"#34C759",display:"inline-block"}}),"Entradas")
-                  , React.createElement('span',{style:{display:"flex",alignItems:"center",gap:4,fontSize:10,color:C.sub}},React.createElement('span',{style:{width:8,height:8,borderRadius:"50%",background:"#FF3B30",display:"inline-block"}}),"Despesas")
-                  , React.createElement('span',{style:{display:"flex",alignItems:"center",gap:4,fontSize:10,color:C.sub}},React.createElement('span',{style:{width:14,height:2,borderRadius:2,background:"#007AFF",display:"inline-block"}}),"Saldo banco")
+            /* dots + rótulos de valor */
+            var _dots=[];
+            _items.forEach(function(it,i){
+              var lx=((i+0.5)/_n*100)+"%";
+              var _stkTop=(1-((it.ent||0)+(it.des||0))/_nm)*100;
+              if(it.ent>0){ var ey=(1-it.ent/_nm)*100, ec=it.entV?"#FF9500":"#34C759";
+                _dots.push(React.createElement('div',{key:"de"+i,style:{position:"absolute",left:lx,top:ey+"%",width:8,height:8,borderRadius:"50%",background:ec,border:"2px solid "+C.card,transform:"translate(-50%,-50%)",pointerEvents:"none"}})); }
+              if(it.des>0){ var sy=_stkTop, dc=it.desP?"#FF9500":"#FF3B30";
+                _dots.push(React.createElement('div',{key:"dd"+i,style:{position:"absolute",left:lx,top:sy+"%",width:8,height:8,borderRadius:"50%",background:dc,border:"2px solid "+C.card,transform:"translate(-50%,-50%)",pointerEvents:"none"}})); }
+              _dots.push(React.createElement('div',{key:"db"+i,style:{position:"absolute",left:lx,top:_syPct(it.bal)+"%",width:7,height:7,borderRadius:"50%",background:"#007AFF",border:"2px solid "+C.card,transform:"translate(-50%,-50%)",pointerEvents:"none"}}));
+              if(it.ent>0||it.des>0){
+                _dots.push(React.createElement('div',{key:"lab"+i,style:{position:"absolute",left:lx,top:_stkTop+"%",transform:"translate(-50%,-100%)",display:"flex",flexDirection:"column",alignItems:"center",gap:1,paddingBottom:6,pointerEvents:"none",lineHeight:1.05}}
+                  , it.des>0 && React.createElement('div',{style:{fontSize:desktop?11:10,fontWeight:800,color:it.desP?"#FF9500":"#FF3B30",whiteSpace:"nowrap"}},_fk(it.des))
+                  , it.ent>0 && React.createElement('div',{style:{fontSize:desktop?11:10,fontWeight:800,color:it.entV?"#FF9500":"#34C759",whiteSpace:"nowrap"}},_fk(it.ent))
+                ));
+              }
+            });
+            /* labels de dia (com mês) */
+            var _dayCols=_items.map(function(it,i){
+              var showM = i===0 || it.mes!==_items[i-1].mes;
+              var isHoje = i===_hojeIdx;
+              return React.createElement('div',{key:"dl"+i,style:{flex:1,minWidth:_minSlot,textAlign:"center",lineHeight:1.2,paddingTop:4}}
+                , React.createElement('div',{style:{fontSize:desktop?11:10,fontWeight:isHoje?800:500,color:isHoje?C.blue:C.sub}},String(it.day))
+                , showM && React.createElement('div',{style:{fontSize:9,fontWeight:700,color:C.blue,marginTop:1,textTransform:"capitalize"}},_mAbr[parseInt(it.mes.slice(5,7),10)-1])
+              );
+            });
+            var _lastSaldo=_items[_items.length-1].bal;
+            return React.createElement('div',{style:{background:C.card,borderRadius:22,border:"1px solid "+C.border,padding:"16px 16px 16px",boxShadow:"0 2px 16px rgba(0,0,0,0.06)",marginTop:2}}
+              , React.createElement('div',{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}
+                , React.createElement('span',{style:{fontSize:11,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:0.8}},"Fluxo de caixa di\xe1rio")
+                , React.createElement('div',{style:{display:"flex",alignItems:"center",gap:13}}
+                  , React.createElement('span',{style:{display:"flex",alignItems:"center",gap:5,fontSize:11,color:C.sub}},React.createElement('span',{style:{width:9,height:9,borderRadius:"50%",background:"#34C759",display:"inline-block"}}),"Entradas")
+                  , React.createElement('span',{style:{display:"flex",alignItems:"center",gap:5,fontSize:11,color:C.sub}},React.createElement('span',{style:{width:9,height:9,borderRadius:"50%",background:"#FF3B30",display:"inline-block"}}),"Despesas")
+                  , React.createElement('span',{style:{display:"flex",alignItems:"center",gap:5,fontSize:11,color:C.sub}},React.createElement('span',{style:{width:16,height:2.5,borderRadius:2,background:"#007AFF",display:"inline-block"}}),"Saldo banco")
                 )
               )
-              /* área do gráfico: eixo Y fixo + barras roláveis */
-              , React.createElement('div',{style:{display:"flex",alignItems:"stretch",gap:6,width:"100%"}}
-                , React.createElement('div',{style:{position:"relative",width:_yAxisW,flexShrink:0,height:_chartH}},_yLabels)
-                /* container rolável */
-                , React.createElement('div',{style:{flex:1,minWidth:0,overflowX:"auto",overflowY:"hidden",WebkitOverflowScrolling:"touch",scrollbarWidth:"thin"}}
-                  , React.createElement('div',{style:{minWidth:_contentW+"px"}}
-                    /* zona de barras com gridlines + linha de saldo */
+              , React.createElement('div',{style:{display:"flex",alignItems:"stretch",gap:8,width:"100%"}}
+                /* eixo Y fixo */
+                , React.createElement('div',{style:{flexShrink:0,width:_yAxisW,paddingTop:_topPad}}
+                  , React.createElement('div',{style:{position:"relative",height:_chartH}},_yLabels)
+                )
+                /* área rolável — abre posicionada em hoje/próximo evento */
+                , React.createElement('div',{ref:function(el){ if(!el)return; var _sig=dashMes+"|"+_n+"|"+_targetIdx; if(el.__fxSig===_sig)return; el.__fxSig=_sig; requestAnimationFrame(function(){ var _off=_targetIdx*_minSlot - el.clientWidth/2 + _minSlot/2; el.scrollLeft=Math.max(0,_off); }); },style:{flex:1,minWidth:0,overflowX:"auto",overflowY:"hidden",WebkitOverflowScrolling:"touch",scrollbarWidth:"thin"}}
+                  , React.createElement('div',{style:{minWidth:_contentW+"px",paddingTop:_topPad}}
                     , React.createElement('div',{style:{height:_chartH,position:"relative",width:"100%"}}
                       , _gridLines
+                      , _marks
                       , React.createElement('div',{style:{position:"absolute",inset:0,display:"flex",alignItems:"flex-end"}},_barCols)
-                      , _saldoLineSvg
-                      , _saldoDots
+                      , _linesSvg
+                      , _dots
                     )
-                    /* linha base */
                     , React.createElement('div',{style:{height:1,background:_gridc,width:"100%"}})
-                    /* labels de dia */
                     , React.createElement('div',{style:{display:"flex",width:"100%"}},_dayCols)
                   )
                 )
               )
-              /* saldo final */
-              , React.createElement('div',{style:{display:"flex",justifyContent:"flex-end",alignItems:"baseline",gap:5,marginTop:6}}
-                , React.createElement('span',{style:{fontSize:9,color:C.sub}},"Saldo no fim do per\xedodo:")
-                , React.createElement('span',{style:{fontSize:12,fontWeight:700,color:_lastSaldo<0?"#FF3B30":"#007AFF"}},fmtBRL(_lastSaldo))
+              , React.createElement('div',{style:{display:"flex",justifyContent:"flex-end",alignItems:"baseline",gap:6,marginTop:8}}
+                , React.createElement('span',{style:{fontSize:10,color:C.sub}},"Saldo banc\xe1rio no fim do per\xedodo:")
+                , React.createElement('span',{style:{fontSize:14,fontWeight:800,color:_lastSaldo<0?"#FF3B30":"#007AFF"}},fmtBRL(_lastSaldo))
               )
             );
           })()

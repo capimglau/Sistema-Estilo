@@ -22598,6 +22598,8 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
   const [lucroMode, setLucroMode] = React.useState("previstas");
   const [lancTabExp, setLancTabExp] = React.useState(false);
   const [dashMultaSel, setDashMultaSel] = React.useState(null);
+  const [renDashExp, setRenDashExp] = React.useState(false);
+  const [despDashExp, setDespDashExp] = React.useState(false);
   var _statusMultaBannerRef = React.useRef(null);
   React.useEffect(function() {
     if (!dashMultaSel || !_statusMultaBannerRef.current) return;
@@ -24507,6 +24509,150 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       );
     })()
 
+
+    /* ── PAINÉIS: Renovações Próximas + Baixas de Despesas ── */
+    , (() => {
+      /* ── dados: contratos vencendo nos próximos 30 dias (ativos, não renovados) ── */
+      var _str30pan = new Date(Date.now()+30*864e5).toISOString().split('T')[0];
+      var _renList = (contratos||[]).filter(function(c){
+        return c.status==='ativo' && c.data_fim && c.data_fim>=hoje && c.data_fim<=_str30pan && !renovadosIds.has(c.id);
+      }).slice().sort(function(a,b){ return (a.data_fim||'').localeCompare(b.data_fim||''); });
+
+      /* ── dados: despesas pendentes do mês (não pagas) ── */
+      var _despPendList = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), dashMes)
+        .filter(function(d){ return d.status!=='pago' && !d.data_pagamento; })
+        .slice().sort(function(a,b){ return (a.data||'').localeCompare(b.data||''); });
+
+      var _renShow  = renDashExp  ? _renList       : _renList.slice(0,4);
+      var _despShow = despDashExp ? _despPendList  : _despPendList.slice(0,4);
+      var _renMore  = _renList.length  - 4;
+      var _despMore = _despPendList.length - 4;
+
+      var _panStyle = { background:C.card, borderRadius:22, border:'1px solid '+C.border, padding:'14px 0 8px', boxShadow:'0 2px 16px rgba(0,0,0,0.06)' };
+      var _panHdr = function(icon, label, count, cor) {
+        return React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'0 16px 10px', borderBottom:'1px solid '+C.border } }
+          , React.createElement('div', { style:{ display:'flex', alignItems:'center', gap:7 } }
+            , React.createElement('span', { style:{ fontSize:16, lineHeight:1 } }, icon)
+            , React.createElement('span', { style:{ fontSize:13, fontWeight:700, color:'var(--c-text)' } }, label)
+          )
+          , count > 0 && React.createElement('span', { style:{ fontSize:11, fontWeight:700, background:cor+'18', color:cor, borderRadius:20, padding:'2px 9px' } }, count)
+        );
+      };
+
+      /* ── ROW: Renovação ── */
+      var _renRow = function(c) {
+        var cl  = (clientes||[]).find(function(x){ return x.id==c.cliente_id; });
+        var ve  = (veiculos||[]).find(function(x){ return x.id==c.veiculo_id; });
+        var nome = (cl&&cl.nome) || ('CT-'+String(c.id).padStart(4,'0'));
+        var placa = (ve&&ve.placa) || '--';
+        var diasRest = Math.round((new Date(c.data_fim+'T00:00:00')-new Date(hoje+'T00:00:00'))/(864e5));
+        var venceHoje = diasRest===0;
+        var cor = diasRest<=1 ? C.red : diasRest<=7 ? C.orange : C.blue;
+        var _isPago = c.status_pagamento==='pago';
+        var _rowInner = React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'9px 16px', cursor:'pointer' }, onClick:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); } }
+          , React.createElement('div', { style:{ minWidth:0, flex:1, paddingRight:8 } }
+            , React.createElement('div', { style:{ fontSize:13, fontWeight:600, color:'var(--c-text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }
+              , (venceHoje?'🚨 ':diasRest<=3?'⏰ ':'🔄 ')+nome
+            )
+            , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:1 } }
+              , placa+' · até '+fmtDate(c.data_fim)+(c.valor_total?' · '+fmtBRL(c.valor_total):'')
+            )
+          )
+          , React.createElement('div', { style:{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:3, flexShrink:0 } }
+            , React.createElement('span', { style:{ fontSize:11, fontWeight:700, color:cor, whiteSpace:'nowrap' } }
+              , venceHoje ? 'Hoje' : diasRest===1 ? 'Amanhã' : diasRest+' dias'
+            )
+            , !_isPago && React.createElement('span', { style:{ fontSize:10, fontWeight:600, color:C.orange, background:C.orange+'16', borderRadius:8, padding:'1px 6px' } }, 'Pendente')
+          )
+        );
+        var _cid = c.id;
+        return React.createElement(SwipeRow, {
+          key:'ren-'+_cid,
+          action2:function(){ onItemNav({type:'contrato',id:_cid},'contratos'); },
+          action2Label:'Ver',
+          action2Icon:'\u{1F441}',
+          action2Color:'rgba(0,122,255,0.92)',
+          onBaixar:function(){ window.__pendingRenovarId = _cid; setTab('contratos'); },
+          baixarLabel:'Renovar',
+          onDelete:null,
+          wrapStyle:{ borderBottom:'1px solid '+C.border+'66' }
+        }, _rowInner);
+      };
+
+      /* ── ROW: Despesa pendente ── */
+      var _despRow = function(d) {
+        var venceu = d.data && d.data < hoje;
+        var venceHj = d.data === hoje;
+        var diasAt = venceu ? Math.round((new Date(hoje+'T00:00:00')-new Date(d.data+'T00:00:00'))/(864e5)) : 0;
+        var cor = venceu ? C.red : venceHj ? C.orange : C.sub;
+        var _did = d.id;
+        var _dmesD = (d.data||dashMes).slice(0,7);
+        var _rowInner = React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'9px 16px', cursor:'pointer' }, onClick:function(){ setFinDeepLink({subTab:'despesas',itemId:_did,mes:_dmesD}); setTab('financeiro'); } }
+          , React.createElement('div', { style:{ minWidth:0, flex:1, paddingRight:8 } }
+            , React.createElement('div', { style:{ fontSize:13, fontWeight:600, color:'var(--c-text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }
+              , (d.manutencao_id?'🔧 ':venceu?'⚠️ ':venceHj?'💸 ':'📤 ')+(d.descricao||d.categoria||'Despesa')
+            )
+            , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:1 } }
+              , (d.categoria||'')+(d.data?' · vence '+fmtDate(d.data):'')
+            )
+          )
+          , React.createElement('div', { style:{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:3, flexShrink:0 } }
+            , React.createElement('span', { style:{ fontSize:13, fontWeight:700, color:venceu?C.red:C.orange } }, fmtBRL(d.valor))
+            , venceu
+              ? React.createElement('span', { style:{ fontSize:10, fontWeight:700, color:C.red, background:C.red+'14', borderRadius:8, padding:'1px 6px' } }, diasAt+'d atraso')
+              : venceHj
+                ? React.createElement('span', { style:{ fontSize:10, fontWeight:700, color:C.orange, background:C.orange+'16', borderRadius:8, padding:'1px 6px' } }, 'Hoje')
+                : null
+          )
+        );
+        return React.createElement(SwipeRow, {
+          key:'desp-'+_did,
+          onBaixar:function(){ _agBaixar({type:'desp',id:_did}); },
+          baixarLabel:'Baixar',
+          onEdit:function(){ setFinDeepLink({subTab:'despesas',itemId:_did,mes:_dmesD}); setTab('financeiro'); },
+          editLabel:'Editar',
+          onDelete:null,
+          wrapStyle:{ borderBottom:'1px solid '+C.border+'66' }
+        }, _rowInner);
+      };
+
+      /* ── botão "ver mais" / "ver menos" ── */
+      var _moreBtn = function(extra, expanded, setExpanded, cor) {
+        if (extra <= 0 && expanded) {
+          return React.createElement('button', { onClick:function(){ setExpanded(false); }, style:{ border:'none', background:'transparent', width:'100%', padding:'9px 16px 4px', fontSize:11, fontWeight:600, color:C.sub, cursor:'pointer', textAlign:'center', fontFamily:'inherit' } }, '↑ ver menos');
+        }
+        if (extra <= 0) return null;
+        return React.createElement('button', { onClick:function(){ setExpanded(true); }, style:{ border:'none', background:'transparent', width:'100%', padding:'9px 16px 4px', fontSize:11, fontWeight:600, color:cor, cursor:'pointer', textAlign:'center', fontFamily:'inherit' } }, '+'+ extra +' mais — ver todos');
+      };
+
+      /* ── estado vazio ── */
+      var _empty = function(msg) {
+        return React.createElement('div', { style:{ padding:'20px 16px', textAlign:'center', color:C.sub, fontSize:12 } }, msg);
+      };
+
+      return React.createElement('div', { style:Object.assign({ display:'grid', gap:10, marginTop:10 }, desktop ? { gridTemplateColumns:'1fr 1fr' } : { gridTemplateColumns:'1fr' }) }
+        /* ── PAINEL RENOVAÇÕES ── */
+        , React.createElement('div', { style:_panStyle }
+          , _panHdr('🔄', 'Renovações próximas', _renList.length, C.orange)
+          , _renList.length===0
+            ? _empty('Nenhum contrato vencendo nos próximos 30 dias')
+            : React.createElement('div', null
+                , _renShow.map(_renRow)
+                , _moreBtn(_renMore, renDashExp, setRenDashExp, C.orange)
+              )
+        )
+        /* ── PAINEL BAIXAS DE DESPESAS ── */
+        , React.createElement('div', { style:_panStyle }
+          , _panHdr('💸', 'Despesas pendentes', _despPendList.length, C.red)
+          , _despPendList.length===0
+            ? _empty('Nenhuma despesa pendente em '+nomeMes)
+            : React.createElement('div', null
+                , _despShow.map(_despRow)
+                , _moreBtn(_despMore, despDashExp, setDespDashExp, C.red)
+              )
+        )
+      );
+    })()
 
     /* ── GRÁFICO: Despesas por Categoria (estilo Pinterest) ── */
     , (() => {

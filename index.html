@@ -22380,7 +22380,7 @@ function openPdfPage(html) {
   if (old) old.remove();
   window._closePdfOverlay = function() {
     var el = document.getElementById('_pdf_overlay');
-    if (el) { URL.revokeObjectURL(el._blobUrl); el.remove(); }
+    if (el) { if (el._blobUrl) { try { URL.revokeObjectURL(el._blobUrl); } catch(e) {} } el.remove(); }
     delete window._closePdfOverlay;
     delete window._printPdfOverlay;
   };
@@ -22389,11 +22389,31 @@ function openPdfPage(html) {
   // faz nada — o print precisa partir do contexto do documento principal.
   window._printPdfOverlay = function() {
     var el = document.getElementById('_pdf_overlay');
-    if (!el) { try { window.print(); } catch(e) {} return; }
-    var f = el.querySelector('iframe');
-    if (!f || !f.contentWindow) { try { window.print(); } catch(e) {} return; }
-    try { f.contentWindow.focus(); f.contentWindow.print(); }
-    catch(e) { try { window.print(); } catch(e2) {} }
+    var f = el && el.querySelector('iframe');
+    // Recuperação: ao voltar da folha de impressão/compartilhamento do iOS, o
+    // webview do PWA standalone às vezes fica travado (sem responder a toques).
+    // Quando o app volta a ficar visível, forçamos um reflow para destravar.
+    var done = false;
+    var recover = function() {
+      if (done) return; done = true;
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', recover);
+      window.removeEventListener('pageshow', recover);
+      setTimeout(function() {
+        var root = document.getElementById('root');
+        if (root) { root.style.display = 'none'; void root.offsetHeight; root.style.display = ''; }
+        try { window.scrollTo(0, 0); } catch(e) {}
+      }, 80);
+    };
+    var onVis = function() { if (document.visibilityState === 'visible') recover(); };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', recover);
+    window.addEventListener('pageshow', recover);
+    // Não chamar .focus() no iframe — no iOS isso pode jogar o PWA para o Safari.
+    try {
+      if (f && f.contentWindow) { f.contentWindow.print(); }
+      else { window.print(); }
+    } catch(e) { try { window.print(); } catch(e2) {} }
   };
   var div = document.createElement('div');
   div.id = '_pdf_overlay';
@@ -22417,10 +22437,10 @@ function openPdfPage(html) {
   bar.appendChild(btn);
   div.appendChild(bar);
   ifr.style.cssText = 'flex:1;border:none;width:100%;';
-  var blob = new Blob([html], {type: 'text/html;charset=utf-8'});
-  var blobUrl = URL.createObjectURL(blob);
-  div._blobUrl = blobUrl;
-  ifr.src = blobUrl;
+  // Usar srcdoc (conteúdo inline) em vez de blob URL: no iOS, imprimir um
+  // iframe com src de blob: faz o webview abrir o conteúdo no Safari (e o PWA
+  // trava ao voltar). srcdoc mantém tudo dentro do contexto do PWA.
+  ifr.srcdoc = html;
   div.appendChild(ifr);
   document.body.appendChild(div);
 }

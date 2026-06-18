@@ -22360,6 +22360,91 @@ function buildFaturaHtmlViewer(ct, cl, ve, emp, mesRef) {
 
 var _PDF_CLOSE_BTN = 'onclick="if(window.parent&&window.parent._closePdfOverlay){window.parent._closePdfOverlay();}else{window.close();}"';
 
+// ── Geração de PDF no cliente (compartilhamento nativo no iOS PWA) ──
+// Carrega o html2pdf sob demanda (só quando o usuário vai gerar um PDF).
+function _ensurePdfLib() {
+  return new Promise(function(resolve, reject) {
+    if (window.html2pdf) { resolve(window.html2pdf); return; }
+    var ex = document.getElementById('_html2pdf_lib');
+    if (ex) {
+      ex.addEventListener('load', function(){ resolve(window.html2pdf); });
+      ex.addEventListener('error', function(){ reject(new Error('Falha ao carregar gerador de PDF.')); });
+      return;
+    }
+    var s = document.createElement('script');
+    s.id = '_html2pdf_lib';
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.2/html2pdf.bundle.min.js';
+    s.onload = function(){ resolve(window.html2pdf); };
+    s.onerror = function(){ reject(new Error('Falha ao carregar gerador de PDF (verifique a conexão).')); };
+    document.head.appendChild(s);
+  });
+}
+
+// Deriva um nome de arquivo a partir do <title> do documento.
+function _pdfFilename(html) {
+  var m = (html || '').match(/<title>([^<]*)<\/title>/i);
+  var base = (m && m[1] ? m[1] : 'documento').trim();
+  base = base.replace(/[\\\/:*?"<>|#]+/g, '').replace(/\s+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+  if (!base) base = 'documento';
+  return base.slice(0, 60) + '.pdf';
+}
+
+// Renderiza o HTML num iframe oculto e gera um Blob de PDF.
+function _gerarPdfBlob(html) {
+  return _ensurePdfLib().then(function() {
+    return new Promise(function(resolve, reject) {
+      var holder = document.createElement('iframe');
+      holder.setAttribute('aria-hidden', 'true');
+      holder.style.cssText = 'position:fixed;left:-10000px;top:0;width:800px;height:10px;border:0;background:#fff;';
+      var clean = (html || '').replace(/<script[\s\S]*?<\/script>/gi, '');
+      holder.onload = function() {
+        try {
+          var doc = holder.contentDocument;
+          var st = doc.createElement('style');
+          st.textContent = '.np,.no-print{display:none!important}';
+          (doc.head || doc.body).appendChild(st);
+          var imgs = Array.prototype.slice.call(doc.images || []);
+          Promise.all(imgs.map(function(img) {
+            return img.complete ? Promise.resolve() : new Promise(function(r){ img.onload = img.onerror = r; });
+          })).then(function() {
+            var hpx = Math.max(doc.body.scrollHeight, doc.documentElement.scrollHeight, 200);
+            holder.style.height = hpx + 'px';
+            setTimeout(function() {
+              var opt = {
+                margin: [8, 8, 8, 8],
+                image: { type: 'jpeg', quality: 0.95 },
+                html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', windowWidth: 800 },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+                pagebreak: { mode: ['css', 'legacy'] }
+              };
+              window.html2pdf().set(opt).from(doc.body).outputPdf('blob').then(function(blob) {
+                holder.remove(); resolve(blob);
+              }).catch(function(e) { holder.remove(); reject(e); });
+            }, 80);
+          });
+        } catch(e) { holder.remove(); reject(e); }
+      };
+      document.body.appendChild(holder);
+      holder.srcdoc = clean;
+    });
+  });
+}
+
+// Abre o compartilhamento nativo com o PDF; se indisponível, faz download.
+function _sharePdfBlob(blob, filename) {
+  var file = null;
+  try { file = new File([blob], filename, { type: 'application/pdf' }); } catch(e) {}
+  if (file && navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    return navigator.share({ files: [file], title: filename.replace(/\.pdf$/i, '') });
+  }
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ a.remove(); URL.revokeObjectURL(url); }, 1500);
+  return Promise.resolve();
+}
+
 function openPdfPage(html) {
   var isPWA = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
   // Inject viewport meta so the content scales correctly on mobile
@@ -22382,42 +22467,16 @@ function openPdfPage(html) {
     var el = document.getElementById('_pdf_overlay');
     if (el) { if (el._blobUrl) { try { URL.revokeObjectURL(el._blobUrl); } catch(e) {} } el.remove(); }
     delete window._closePdfOverlay;
-    delete window._printPdfOverlay;
-  };
-  // Dispara a impressão do iframe a partir da janela de cima. Necessário no
-  // iOS standalone (PWA), onde window.print() chamado de DENTRO do iframe não
-  // faz nada — o print precisa partir do contexto do documento principal.
-  window._printPdfOverlay = function() {
-    var el = document.getElementById('_pdf_overlay');
-    var f = el && el.querySelector('iframe');
-    // Recuperação: ao voltar da folha de impressão/compartilhamento do iOS, o
-    // webview do PWA standalone às vezes fica travado (sem responder a toques).
-    // Quando o app volta a ficar visível, forçamos um reflow para destravar.
-    var done = false;
-    var recover = function() {
-      if (done) return; done = true;
-      document.removeEventListener('visibilitychange', onVis);
-      window.removeEventListener('focus', recover);
-      window.removeEventListener('pageshow', recover);
-      setTimeout(function() {
-        var root = document.getElementById('root');
-        if (root) { root.style.display = 'none'; void root.offsetHeight; root.style.display = ''; }
-        try { window.scrollTo(0, 0); } catch(e) {}
-      }, 80);
-    };
-    var onVis = function() { if (document.visibilityState === 'visible') recover(); };
-    document.addEventListener('visibilitychange', onVis);
-    window.addEventListener('focus', recover);
-    window.addEventListener('pageshow', recover);
-    // Não chamar .focus() no iframe — no iOS isso pode jogar o PWA para o Safari.
-    try {
-      if (f && f.contentWindow) { f.contentWindow.print(); }
-      else { window.print(); }
-    } catch(e) { try { window.print(); } catch(e2) {} }
   };
   var div = document.createElement('div');
   div.id = '_pdf_overlay';
   div.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#fff;display:flex;flex-direction:column;';
+  // Gera o PDF já ao abrir o preview, para que ao tocar em "Compartilhar" o
+  // arquivo esteja pronto e o navigator.share dispare dentro do gesto do
+  // usuário (exigência do iOS). window.print() não funciona em PWA standalone.
+  div._pdfReady = null; div._pdfErr = null;
+  _gerarPdfBlob(html).then(function(blob){ div._pdfReady = blob; }).catch(function(e){ div._pdfErr = e; });
+  var fname = _pdfFilename(html);
   var bar = document.createElement('div');
   bar.style.cssText = 'flex-shrink:0;background:#f5f5f7;padding-top:calc(10px + env(safe-area-inset-top,0px));padding-bottom:10px;padding-left:16px;padding-right:16px;display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid #ddd;';
   var lbl = document.createElement('span');
@@ -22425,9 +22484,19 @@ function openPdfPage(html) {
   lbl.style.cssText = 'font-size:13px;font-weight:600;color:#333;flex-shrink:0;';
   var ifr = document.createElement('iframe');
   var pbtn = document.createElement('button');
-  pbtn.textContent = '🖨️ Imprimir / Salvar PDF';
+  pbtn.textContent = '📤 Compartilhar PDF';
   pbtn.style.cssText = 'flex:1;background:#007AFF;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent;';
-  pbtn.onclick = window._printPdfOverlay;
+  var _pbtnLabel = pbtn.textContent;
+  pbtn.onclick = function() {
+    if (div._pdfErr) { alert('Não foi possível gerar o PDF: ' + (div._pdfErr.message || div._pdfErr)); return; }
+    if (div._pdfReady) { _sharePdfBlob(div._pdfReady, fname).catch(function(){}); return; }
+    // Ainda gerando — espera concluir e então compartilha/baixa.
+    pbtn.disabled = true; pbtn.textContent = 'Gerando PDF…';
+    var iv = setInterval(function() {
+      if (div._pdfReady) { clearInterval(iv); pbtn.disabled = false; pbtn.textContent = _pbtnLabel; _sharePdfBlob(div._pdfReady, fname).catch(function(){}); }
+      else if (div._pdfErr) { clearInterval(iv); pbtn.disabled = false; pbtn.textContent = _pbtnLabel; alert('Não foi possível gerar o PDF: ' + (div._pdfErr.message || div._pdfErr)); }
+    }, 200);
+  };
   var btn = document.createElement('button');
   btn.textContent = '✕ Fechar';
   btn.style.cssText = 'background:#FF3B30;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent;flex-shrink:0;';
@@ -22437,9 +22506,17 @@ function openPdfPage(html) {
   bar.appendChild(btn);
   div.appendChild(bar);
   ifr.style.cssText = 'flex:1;border:none;width:100%;';
-  // Usar srcdoc (conteúdo inline) em vez de blob URL: no iOS, imprimir um
-  // iframe com src de blob: faz o webview abrir o conteúdo no Safari (e o PWA
-  // trava ao voltar). srcdoc mantém tudo dentro do contexto do PWA.
+  // Esconde os botões de ação embutidos no documento durante a pré-visualização
+  // (eles chamariam window.print(), que trava o PWA no iOS).
+  ifr.onload = function() {
+    try {
+      var d = ifr.contentDocument;
+      var s = d.createElement('style');
+      s.textContent = '.np,.no-print{display:none!important}';
+      (d.head || d.body).appendChild(s);
+    } catch(e) {}
+  };
+  // srcdoc (conteúdo inline) mantém tudo dentro do contexto do PWA.
   ifr.srcdoc = html;
   div.appendChild(ifr);
   document.body.appendChild(div);

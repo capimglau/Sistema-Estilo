@@ -46,9 +46,11 @@ Quando o usuário enviar uma imagem como anexo para usar como ícone PWA:
 
 Branch ativo: `claude/placeholder-task-nsnXx`
 
-## Consistência de implementação
+## Consistência de implementação — OBRIGATÓRIO
 
-Sempre que uma mudança afetar um cálculo ou resultado (ex: fórmula de receita, saldo, lucro), implementar em **todos os locais afetados** do app — painéis, gráficos, fluxo de caixa, previsão, navegação mensal, sub-tabs, etc. Nunca atualizar só um ponto isolado.
+Sempre que uma mudança afetar um cálculo ou resultado (ex: fórmula de receita, saldo, lucro), implementar em **todos os locais afetados** do app — painéis, gráficos, fluxo de caixa, previsão, navegação mensal, sub-tabs, etc. **Nunca atualizar só um ponto isolado.**
+
+Esta regra é permanente e se aplica a todos os painéis, gráficos e cálculos do sistema — qualquer nova funcionalidade ou correção deve considerar impacto em KPIs, scorecards, fluxo de caixa, previsão, orçamento pessoal, e todos os painéis do dashboard. Sempre verificar explicitamente antes de declarar a tarefa concluída.
 
 ## Retirada de Lucro × Ajuste de Saldo — PREMISSA PERMANENTE
 

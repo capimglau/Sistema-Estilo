@@ -28102,6 +28102,14 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       var patchData = { status_pagamento: "parcial", valor_pago: vp, data_pagamento: parcialCtData };
       await db.patch("contratos", c.id, patchData);
       setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,patchData) : x; }); });
+      // Sincroniza a fatura/receita vinculada: mantém o valor total, marca como parcial.
+      var recLink = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
+      if (recLink) {
+        try {
+          var updL = await db.patch("receitas", recLink.id, { status: "parcial", valor: parseFloat(c.valor_total||recLink.valor||0).toFixed(2), data_pagamento: parcialCtData });
+          setReceitas(function(p){ return p.map(function(x){ return x.id===recLink.id ? Object.assign({},x,updL) : x; }); });
+        } catch(e){ console.warn(e); }
+      }
       setParcialCtModal(null);
       toast("✅ Baixa parcial registrada!");
     } catch(e) { toast("Erro: " + (e.message||String(e)), "error"); }
@@ -34658,15 +34666,18 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   // IDs dos contratos existentes — usado para filtrar receitas órfãs
   var _ctIdsExistentes = new Set((contratos||[]).map(function(c){ return String(c.id); }));
   var recFiltradas = receitas.filter(r => receitaDoMes(r, filtroMes)).map(r => {
-    if (r.ref_fatura && r.status !== "recebido" && r.status !== "parcial") {
+    if (r.ref_fatura) {
       var m = r.ref_fatura.match(/^fat_(\d+)_/);
       if (m) {
         var ct = contratos.find(c => String(c.id) === m[1]);
-        if (ct && ct.status_pagamento === "pago") {
-          return Object.assign({}, r, { status: "recebido", data_pagamento: ct.data_pagamento || r.data_pagamento });
-        }
+        // Contrato parcial: a receita reflete o VALOR TOTAL do contrato (previsto);
+        // _valorPago guarda a parcela já recebida. Mantém sincronia com a tela de Contratos.
         if (ct && ct.status_pagamento === "parcial" && ct.valor_pago) {
-          return Object.assign({}, r, { status: "parcial", valor: parseFloat(ct.valor_pago).toFixed(2), data_pagamento: ct.data_pagamento || r.data_pagamento });
+          return Object.assign({}, r, { status: "parcial", valor: parseFloat(ct.valor_total||r.valor||0).toFixed(2), _valorPago: parseFloat(ct.valor_pago), data_pagamento: ct.data_pagamento || r.data_pagamento });
+        }
+        // Contrato pago integralmente
+        if (ct && ct.status_pagamento === "pago" && r.status !== "recebido") {
+          return Object.assign({}, r, { status: "recebido", valor: parseFloat(ct.valor_total||r.valor||0).toFixed(2), data_pagamento: ct.data_pagamento || r.data_pagamento });
         }
       }
     }
@@ -34712,13 +34723,15 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     var isPago = c.status_pagamento === "pago";
     var isParcial = c.status_pagamento === "parcial";
     var isIsento = c.status_pagamento === "isento";
-    var valor = isParcial && c.valor_pago ? parseFloat(c.valor_pago) : parseFloat(c.valor_total || 0);
+    // Sempre usa o valor TOTAL do contrato como previsto; parcela recebida vai em _valorPago.
+    var valor = parseFloat(c.valor_total || 0);
     return {
       _fromContrato: true,
       id: "ct_" + c.id,
       descricao: (() => { var cl = (clientes||[]).find(x => x.id == c.cliente_id); var ve = (veiculos||[]).find(x => x.id == c.veiculo_id); return (cl ? cl.nome : c.cliente_nome || "Cliente") + " — " + (ve ? ve.placa : c.veiculo_placa || "#" + c.id); })(),
       categoria: "Locação",
       valor: valor,
+      _valorPago: isParcial && c.valor_pago ? parseFloat(c.valor_pago) : null,
       status: isPago ? "recebido" : isParcial ? "parcial" : isIsento ? "isento" : "pendente",
       data: c.previsao_pagamento,
       data_pagamento: c.data_pagamento || "",
@@ -34958,6 +34971,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           , React.createElement('div', { style: { fontSize: 14, fontWeight: 800, color: C.green, marginTop: 2, whiteSpace: "nowrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2210}}, fmtBRL(recExibidas.reduce(function(s,r){
               if (r.status === "recebido") return s + parseFloat(r.valor||0);
               if (r.status === "parcial") {
+                // Parcial: soma apenas a parcela recebida (_valorPago)
+                if (r._valorPago != null) return s + parseFloat(r._valorPago);
                 if (r._fromContrato) return s + parseFloat(r.valor||0);
                 if (r.ref_fatura) { var _mfT = r.ref_fatura.match(/^fat_(\d+)_/); if (_mfT) { var _ctT = (contratos||[]).find(function(c){ return String(c.id)===_mfT[1]; }); if (_ctT && _ctT.valor_pago) return s + parseFloat(_ctT.valor_pago); } }
               }
@@ -34970,7 +34985,11 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               var _dr = r.data || "";
               var _hj = _brNow().toISOString().slice(0,10);
               var _recv = r.status === "recebido" || r.status === "isento";
-              if (!_recv && _dr && _dr < _hj) return s + parseFloat(r.valor||0);
+              if (!_recv && _dr && _dr < _hj) {
+                // Parcial vencida: só o restante (total − recebido) está vencido
+                var _venc = (r.status === "parcial" && r._valorPago != null) ? Math.max(0, parseFloat(r.valor||0) - parseFloat(r._valorPago)) : parseFloat(r.valor||0);
+                return s + _venc;
+              }
               return s;
             }, 0)))
         )
@@ -35043,14 +35062,18 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               , React.createElement('div', { style: { textAlign: "right" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2229}}
                 , (function(){
                     if (r.status === "parcial") {
-                      var _vPago = null, _vTotal = parseFloat(r.valor||0);
-                      if (r._fromContrato) {
-                        _vPago = parseFloat(r.valor||0);
-                        var _ctFull = (contratos||[]).find(function(c){ return c.id == r.contrato_id; });
-                        if (_ctFull) _vTotal = parseFloat(_ctFull.valor_total||0);
-                      } else if (r.ref_fatura) {
-                        var _mfP = r.ref_fatura.match(/^fat_(\d+)_/);
-                        if (_mfP) { var _ctP = (contratos||[]).find(function(c){ return String(c.id)===_mfP[1]; }); if (_ctP && _ctP.valor_pago) _vPago = parseFloat(_ctP.valor_pago); }
+                      // valor = total do contrato; _valorPago = parcela recebida
+                      var _vTotal = parseFloat(r.valor||0);
+                      var _vPago = r._valorPago != null ? parseFloat(r._valorPago) : null;
+                      if (_vPago === null) {
+                        // Compat: deriva do contrato se _valorPago ausente
+                        if (r._fromContrato) {
+                          var _ctFull = (contratos||[]).find(function(c){ return c.id == r.contrato_id; });
+                          if (_ctFull) { _vPago = parseFloat(_ctFull.valor_pago||0); _vTotal = parseFloat(_ctFull.valor_total||0); }
+                        } else if (r.ref_fatura) {
+                          var _mfP = r.ref_fatura.match(/^fat_(\d+)_/);
+                          if (_mfP) { var _ctP = (contratos||[]).find(function(c){ return String(c.id)===_mfP[1]; }); if (_ctP) { if (_ctP.valor_pago) _vPago = parseFloat(_ctP.valor_pago); _vTotal = parseFloat(_ctP.valor_total||_vTotal); } }
+                        }
                       }
                       if (_vPago !== null) {
                         return React.createElement(React.Fragment, null,

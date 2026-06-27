@@ -98,6 +98,25 @@ Isso inclui, mas não se limita a:
 
 Ao implementar ou corrigir qualquer painel financeiro, **verificar explicitamente** se `receitas` avulsas (`!r.ref_fatura`), `despesas` avulsas e contratos parciais estão incluídos em TODAS as fontes de dados daquele painel. Nunca assumir que "está coberto" — checar o código.
 
+## Sincronização de baixas — PREMISSA PERMANENTE
+
+**Toda baixa (pagamento/recebimento) de despesa, receita ou contrato DEVE sincronizar automaticamente com TUDO que estiver relacionado.** Uma baixa nunca pode atualizar só o registro tocado — precisa refletir em:
+
+- Contratos ↔ Receitas (faturas `ref_fatura`): a baixa de um contrato atualiza a receita vinculada e vice-versa. **As duas telas têm que bater** (Total/Previsto, Recebido, A Receber, Vencidas).
+- Despesas ↔ Contas fixas / manutenções vinculadas.
+- Gráficos (barras, linhas, sparkline), fluxo de caixa, previsão, KPIs/scorecards, agenda, navegação mensal e sub-tabs.
+
+### Contrato parcial — regra de valor
+
+Para contrato com `status_pagamento === "parcial"`:
+- **Previsto / Total** = `valor_total` (valor cheio do contrato) — nunca `valor_pago`.
+- **Recebido** = `valor_pago` (a parcela efetivamente recebida).
+- **A receber / restante** = `valor_total − valor_pago`.
+
+A receita vinculada (`ref_fatura`) reflete o `valor_total` como `valor` (previsto) e guarda a parcela recebida em `_valorPago` (campo derivado do contrato em tempo de render). Nunca sobrescrever `valor` da receita com `valor_pago` — isso quebra a sincronia com a tela de Contratos.
+
+Sempre que registrar uma baixa parcial/total de contrato (`confirmarParcialCt`, `confirmarBaixarCt`, fluxos inline), **patchar também a receita vinculada** para manter status e valor consistentes.
+
 ## Fluxo de trabalho Git
 
 Após cada push:

@@ -22363,11 +22363,12 @@ function Stat({ icon, label, val, color }) {
     , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 3 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 118}}, label)
   );
 }
-function UploadField({ label, value, onChange, accept, pasta, nome }) {
+function UploadField({ label, value, onChange, accept, pasta, nome, onSelect }) {
   const ref = useRef();
   const [uploading, setUploading] = useState(false);
   async function handle(e) {
     const file = e.target.files[0]; if (!file) return;
+    if (onSelect) onSelect(file);
     setUploading(true);
     try { const ext = file.name.split(".").pop(); const url = await db.upload(pasta + "/" + nome + "_" + Date.now() + "." + ext, file); onChange(url); }
     catch(err) { alert("Erro: " + err.message); }
@@ -29680,7 +29681,7 @@ function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSel
   );
 }
 
-function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toast }) {
+function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toast, claudeKey }) {
   var isMobile = typeof window !== "undefined" && window.innerWidth < 768;
   var hoje = _brNow().toISOString().split("T")[0];
   var dashMes = _brNow().toISOString().slice(0,7);
@@ -29766,6 +29767,58 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   function abrirNotifModal(m, status) {
     setNotifModal({ multa: m, status: status });
     setNotifData(_brNow().toISOString().split("T")[0]);
+  }
+
+  async function extrairDadosAIT(file) {
+    var key = claudeKey || (function(){ try{ return localStorage.getItem("claude_api_key")||""; }catch(e){ return ""; } })() || (empresa && empresa.claude_api_key) || "";
+    if (!key) { toast("Configure a chave da API Claude nas Configurações para ativar extração automática.", "error"); return; }
+    toast("🤖 Analisando o Auto de Infração...");
+    try {
+      var base64 = await new Promise(function(resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function(ev){ resolve(ev.target.result.split(",")[1]); };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      var mimeType = file.type || "image/jpeg";
+      var isPDF = mimeType === "application/pdf" || (file.name||"").toLowerCase().endsWith(".pdf");
+      var contentBlock = isPDF
+        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+        : { type: "image", source: { type: "base64", media_type: mimeType, data: base64 } };
+      var resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true" },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 512,
+          system: "Você é um sistema de extração de dados de autos de infração de trânsito brasileiros. Retorne APENAS JSON válido, sem markdown, sem texto adicional.",
+          messages: [{ role: "user", content: [
+            contentBlock,
+            { type: "text", text: 'Extraia os dados deste Auto de Infração de Trânsito (AIT) e retorne APENAS este JSON (sem markdown, sem ```json):\n{"ait":"número do AIT","data":"YYYY-MM-DD","vencimento":"YYYY-MM-DD ou null","tipo":"Excesso de Velocidade|Estacionamento Irregular|Avanço de Sinal|Uso de Celular|Rodízio|Faixa de Pedestre|Documentação|Outro","local":"local da infração","valor":0.00,"pontos":0,"descricao":"descrição da infração"}' }
+          ]}]
+        })
+      });
+      if (!resp.ok) { var errJ = await resp.json().catch(function(){return {};}); throw new Error((errJ.error&&errJ.error.message)||"Erro HTTP "+resp.status); }
+      var resData = await resp.json();
+      var text = (resData.content && resData.content[0] && resData.content[0].text) || "";
+      var jsonStr = text.trim().replace(/^```json\s*/,"").replace(/^```\s*/,"").replace(/\s*```$/,"");
+      var extracted = JSON.parse(jsonStr);
+      setForm(function(p) {
+        var u = {};
+        if (extracted.ait)       u.ait       = extracted.ait;
+        if (extracted.data)      u.data      = extracted.data;
+        if (extracted.vencimento) u.vencimento = extracted.vencimento;
+        if (extracted.tipo)      u.tipo      = extracted.tipo;
+        if (extracted.local)     u.local     = extracted.local;
+        if (extracted.valor)     u.valor     = String(extracted.valor);
+        if (extracted.pontos)    u.pontos    = String(extracted.pontos);
+        if (extracted.descricao) u.descricao = extracted.descricao;
+        return Object.assign({}, p, u);
+      });
+      toast("✅ Dados extraídos automaticamente do documento!");
+    } catch(e) {
+      toast("⚠️ Não foi possível extrair dados: " + e.message, "error");
+    }
   }
 
   function getCt(id) { return contratos.find(c => c.id == id); }
@@ -30647,7 +30700,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
           })()
         /* ── Seção: Anexos ── */
         , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid " + C.border, paddingBottom: 4, marginTop: 4 } }, "Anexos")
-        , React.createElement(UploadField, { label: "Auto de Infração (PDF/Imagem)", value: form.auto_infracao_url || "", onChange: function(v){F("auto_infracao_url", v);}, pasta: "multas", nome: "auto_" + (form.contrato_id || "0") })
+        , React.createElement(UploadField, { label: "Auto de Infração (PDF/Imagem)", value: form.auto_infracao_url || "", onChange: function(v){F("auto_infracao_url", v);}, onSelect: extrairDadosAIT, pasta: "multas", nome: "auto_" + (form.contrato_id || "0") })
         , React.createElement(UploadField, { label: "CNH do Condutor", value: form.cnh_condutor_url || "", onChange: function(v){F("cnh_condutor_url", v);}, pasta: "cnh_infratores", nome: "cnh_" + (form.contrato_id || "0") })
         , React.createElement('button', { className: bCls(Btn(C.red)), style: bStyle(Btn(C.red)), onClick: save, disabled: loading }, loading ? "Salvando..." : "Salvar Multa")
       )

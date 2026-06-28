@@ -29710,6 +29710,8 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   const [modalExcluir, setModalExcluir] = useState(null);
   const [expandedMulId, setExpandedMulId] = useState(null);
   const [viewMode, setViewMode] = useState("lista");
+  const [notifModal, setNotifModal] = useState(null);
+  const [notifData, setNotifData] = useState("");
 
   React.useEffect(function() {
     function handleOpen(e) {
@@ -29734,8 +29736,8 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     return function() { document.removeEventListener("autoguest:nova-multa", abrirNovaMulta); };
   }, []);
 
-  async function notificar(m, novoStatus) {
-    var dt = _brNow().toISOString().split("T")[0];
+  async function notificar(m, novoStatus, dtParam) {
+    var dt = dtParam || _brNow().toISOString().split("T")[0];
     // Histórico JSON: acumula cada status com data, sem sobrescrever
     var logAtual = [];
     try { logAtual = JSON.parse(m.historico_notificacao || "[]"); } catch(e) {}
@@ -29759,6 +29761,11 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, patch) : x));
     var ns = NOTIF_STATUS.find(function(n){return n.id===statusNorm;});
     toast((ns ? ns.emoji + " " : "") + "Notificação: " + (ns ? ns.label : novoStatus));
+  }
+
+  function abrirNotifModal(m, status) {
+    setNotifModal({ multa: m, status: status });
+    setNotifData(_brNow().toISOString().split("T")[0]);
   }
 
   function getCt(id) { return contratos.find(c => c.id == id); }
@@ -30797,7 +30804,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
                   var jaTemEste = (function(){ try { var l=JSON.parse(m.historico_notificacao||"[]"); return l.some(function(e){return e.status===op.id;}); } catch(e){ return false; } })();
                   return React.createElement('button', {
                     key: op.id,
-                    onClick: function(e){ e.stopPropagation(); notificar(m, op.id); },
+                    onClick: function(e){ e.stopPropagation(); abrirNotifModal(m, op.id); },
                     style: { fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 8, border: "1.5px solid " + (jaTemEste ? "#34C75960" : C.border), background: jaTemEste ? "#34C75912" : C.card, color: jaTemEste ? "#34C759" : C.sub, cursor: "pointer" }
                   }, op.emoji + " " + op.label + (jaTemEste ? " ✓" : ""))
                 })
@@ -30896,7 +30903,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
               /* 2a. Envio do DSV */
               , React.createElement('div', { style:{display:"flex",gap:10} }
                 , React.createElement(Lbl, { label:"Status da Notificação", flex:2 }
-                  , React.createElement('select', { style:FI, value:form.status_notificacao||"", onChange:function(e){ var v=e.target.value; F("status_notificacao",v); if(v!=="nao_notificado"&&form.status_notificacao==="nao_notificado"){ F("dsv_assinado_em",null); } } }
+                  , React.createElement('select', { style:FI, value:form.status_notificacao||"", onChange:function(e){ var v=e.target.value; F("status_notificacao",v); if(v!=="nao_notificado"&&form.status_notificacao==="nao_notificado"){ F("dsv_assinado_em",null); } if(v && !form.data_notificacao){ F("data_notificacao", _brNow().toISOString().split("T")[0]); } } }
                     , React.createElement('option', {value:""}, "— Não iniciada")
                     , React.createElement('option', {value:"enviada"}, "📤 Notificação Enviada / Aguardando Assinatura")
                     , React.createElement('option', {value:"nao_notificado"},"🚫 Cliente Recusou Assinar")
@@ -31145,6 +31152,53 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
                   onClick: function(){ printNotificacao(mDSV, clDSV, veDSV); } }
                 , "🖨️  Imprimir / Salvar PDF"
               )
+            )
+          )
+        );
+      })()
+    /* ── Mini-modal: confirmar registro de notificação ── */
+    , notifModal && (function() {
+        var mN = notifModal.multa;
+        var ctN = getCt(mN.contrato_id);
+        var clN = ctN ? getCl(ctN.cliente_id) : getCl(mN.cliente_id);
+        var veN = ctN ? getVeByContrato(mN.contrato_id) : (mN.veiculo_id ? veiculos.find(function(v){return v.id==mN.veiculo_id;}) : null);
+        var CONF_N = {
+          "enviada":        { emoji: "📤", label: "Notificação Enviada ao Condutor", cor: "#7AAFC4" },
+          "nao_notificado": { emoji: "🚫", label: "Cliente Recusou Assinar",         cor: "#B87D5A" },
+          "notificado":     { emoji: "🏛️", label: "Órgão Notificado",               cor: "#6B9E7A" },
+          "nao_localizou":  { emoji: "❌", label: "Órgão: Condutor Não Identificado", cor: "#B07070" }
+        };
+        var conf = CONF_N[notifModal.status] || { emoji: "📋", label: notifModal.status, cor: C.sub };
+        return React.createElement(Modal, { open: true, onClose: function(){ setNotifModal(null); }, title: "Registrar Notificação" }
+          , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } }
+            /* Card com dados lidos da multa */
+            , React.createElement('div', { style: { background: "var(--c-bg)", border: "1px solid var(--c-border)", borderRadius: 10, padding: "11px 14px", display: "flex", flexDirection: "column", gap: 4 } }
+              , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: "var(--c-sub)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "Dados da multa")
+              , React.createElement('div', { style: { fontSize: 13, fontWeight: 700 } }, (clN && clN.nome) || "— sem cliente —")
+              , React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)" } }
+                , (veN && veN.placa ? veN.placa + " · " : "")
+                , (mN.tipo || "—")
+                , (mN.ait ? " · AIT " + mN.ait : "")
+              )
+              , React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)" } }, "Data da infração: " + fmtDate(mN.data))
+              , mN.vencimento && React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)" } }, "Vencimento: " + fmtDate(mN.vencimento) + " · " + fmtBRL(mN.valor))
+            )
+            /* Status que será registrado */
+            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 10, background: conf.cor + "18", border: "1.5px solid " + conf.cor + "55", borderRadius: 10, padding: "10px 14px" } }
+              , React.createElement('span', { style: { fontSize: 22 } }, conf.emoji)
+              , React.createElement('div', null
+                , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: "var(--c-sub)", textTransform: "uppercase", letterSpacing: 0.5 } }, "Status a registrar")
+                , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: conf.cor } }, conf.label)
+              )
+            )
+            /* Data auto-preenchida (editável) */
+            , React.createElement(Lbl, { label: "📅 Data da ocorrência" }
+              , React.createElement('input', { style: FI, type: "date", value: notifData, onChange: function(e){ setNotifData(e.target.value); } })
+            )
+            /* Botões */
+            , React.createElement('div', { style: { display: "flex", gap: 10, justifyContent: "flex-end" } }
+              , React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: function(){ setNotifModal(null); } }, "Cancelar")
+              , React.createElement('button', { className: bCls(Btn(C.green)), style: bStyle(Btn(C.green)), onClick: async function(){ await notificar(mN, notifModal.status, notifData); setNotifModal(null); } }, conf.emoji + " Confirmar")
             )
           )
         );

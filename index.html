@@ -29812,6 +29812,22 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       var text = (resData.content && resData.content[0] && resData.content[0].text) || "";
       var jsonStr = text.trim().replace(/^```json\s*/,"").replace(/^```\s*/,"").replace(/\s*```$/,"");
       var extracted = JSON.parse(jsonStr);
+      // Sanear valores vindos do modelo: "null"/"-" viram vazio; datas só em YYYY-MM-DD; números limpos
+      ["ait","placa","marca_modelo","data","vencimento","tipo","local","descricao"].forEach(function(k){
+        if (extracted[k] == null) { extracted[k] = ""; return; }
+        var s = String(extracted[k]).trim();
+        if (/^(null|none|n\/a|-|—)$/i.test(s)) s = "";
+        extracted[k] = s;
+      });
+      ["data","vencimento"].forEach(function(k){ if (extracted[k] && !/^\d{4}-\d{2}-\d{2}$/.test(extracted[k])) extracted[k] = ""; });
+      if (extracted.valor != null && typeof extracted.valor !== "number") {
+        var vNum = parseFloat(String(extracted.valor).replace(/[^\d,\.]/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", "."));
+        extracted.valor = isNaN(vNum) ? 0 : vNum;
+      }
+      if (extracted.pontos != null && typeof extracted.pontos !== "number") {
+        var pNum = parseInt(String(extracted.pontos).replace(/\D/g, ""), 10);
+        extracted.pontos = isNaN(pNum) ? null : pNum;
+      }
       // Buscar veículo pela placa extraída
       var veFound = null;
       var placaExtraida = extracted.placa ? String(extracted.placa).replace(/[\s\-\.\s]/g, "").toUpperCase() : "";
@@ -29903,8 +29919,8 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   function limparFiltros() { setFilDe(""); setFilAte(""); setFilVeiculo(""); setFilCliente(""); }
   function F(k, v) { setForm(p => Object.assign({}, p, { [k]: v })); }
   async function save() {
-    if (!form.tipo || !form.valor) return toast("Campos obrigatorios", "error");
-    if (!form.contrato_id && !form.veiculo_id && !form.cliente_id) return toast("Informe contrato ou veículo+cliente avulso", "error");
+    if (!form.tipo || !form.valor) { setAitDiag({ ok: false, msg: "Não salvou: preencha Tipo de Infração e Valor." }); return toast("Campos obrigatorios", "error"); }
+    if (!form.contrato_id && !form.veiculo_id && !form.cliente_id) { setAitDiag({ ok: false, msg: "Não salvou: informe o contrato, ou selecione veículo e/ou condutor." }); return toast("Informe contrato ou veículo+cliente avulso", "error"); }
     setLoading(true);
     try {
       var payload = Object.assign({}, form);
@@ -29918,8 +29934,9 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       ["boleto_orgao_solicitado","boleto_orgao_recebido"].forEach(function(k){ if (payload[k] === undefined || payload[k] === "") payload[k] = false; payload[k] = !!payload[k]; });
       if (edit) { const u = await db.patch("multas", edit, payload); setMultas(p => p.map(m => m.id === edit ? Object.assign({}, m, u) : m)); toast("Atualizado!"); }
       else { const c = await db.post("multas", payload); setMultas(p => [c].concat(p)); toast("Registrada!"); }
+      setAitDiag(null);
       setModal(false);
-    } catch(e) { toast("Erro: " + e.message, "error"); }
+    } catch(e) { setAitDiag({ ok: false, msg: "Erro ao salvar: " + e.message }); toast("Erro: " + e.message, "error"); }
     setLoading(false);
   }
   async function remove(id) { setModalExcluir(id); }

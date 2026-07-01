@@ -29713,6 +29713,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   const [viewMode, setViewMode] = useState("lista");
   const [notifModal, setNotifModal] = useState(null);
   const [notifData, setNotifData] = useState("");
+  const [aitDiag, setAitDiag] = useState(null); // diagnóstico da última extração de AIT (banner no modal)
 
   React.useEffect(function() {
     function handleOpen(e) {
@@ -29730,7 +29731,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     return function() { window.removeEventListener('openMulta', handleOpen); };
   }, [multas]);
   var _abrirNovaMultaRef = React.useRef(null);
-  _abrirNovaMultaRef.current = function() { setForm({ status: "pendente", data: _brNow().toISOString().split("T")[0] }); setEdit(null); setModal(true); };
+  _abrirNovaMultaRef.current = function() { setForm({ status: "pendente", data: _brNow().toISOString().split("T")[0] }); setEdit(null); setAitDiag(null); setModal(true); };
   React.useEffect(function() {
     function abrirNovaMulta() { if(_abrirNovaMultaRef.current) _abrirNovaMultaRef.current(); }
     document.addEventListener("autoguest:nova-multa", abrirNovaMulta);
@@ -29778,7 +29779,8 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
 
   async function extrairDadosAIT(file) {
     var key = claudeKey || (function(){ try{ return localStorage.getItem("claude_api_key")||""; }catch(e){ return ""; } })() || (empresa && empresa.claude_api_key) || "";
-    if (!key) { toast("Configure a chave da API Claude nas Configurações para ativar extração automática.", "error"); return; }
+    if (!key) { setAitDiag({ ok: false, msg: "Configure a chave da API Claude nas Configurações para ativar a extração automática." }); toast("Configure a chave da API Claude nas Configurações para ativar extração automática.", "error"); return; }
+    setAitDiag({ ok: true, msg: "Analisando o Auto de Infração..." });
     toast("🤖 Analisando o Auto de Infração...");
     try {
       var base64 = await new Promise(function(resolve, reject) {
@@ -29801,7 +29803,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
           system: "Você é um sistema especializado em OCR e extração de dados de autos de infração de trânsito brasileiros. Leia o documento com atenção, identificando todos os campos. Retorne APENAS JSON válido, sem markdown, sem texto adicional.",
           messages: [{ role: "user", content: [
             contentBlock,
-            { type: "text", text: 'Extraia os dados deste Auto de Infração de Trânsito (AIT) brasileiro e retorne APENAS este JSON (sem markdown, sem ```json):\n{"ait":"número do AIT (campo NÚMERO DO AUTO ou AIT)","placa":"placa do veículo autuado — procure nos campos PLACA, VEÍCULO, IDENTIFICAÇÃO DO VEÍCULO, ex: ABC1234 ou ABC1D23 — sem hífens ou espaços","data":"YYYY-MM-DD da data da infração","vencimento":"YYYY-MM-DD do vencimento ou null","tipo":"um dos valores EXATOS: Excesso de Velocidade | Estacionamento Irregular | Avanço de Sinal | Uso de Celular ao Volante | Transitar em Local/Horário Não Permitido - Rodízio | Faixa de Pedestre | Documentação | Outro","local":"local da infração","valor":0.00,"pontos":0,"descricao":"descrição da infração"}\nIMPORTANTE: o campo tipo DEVE ser um dos valores EXATOS listados. O campo placa é OBRIGATÓRIO — procure cuidadosamente no documento.' }
+            { type: "text", text: 'Extraia os dados deste Auto de Infração de Trânsito (AIT) brasileiro e retorne APENAS este JSON (sem markdown, sem ```json):\n{"ait":"número do AIT (campo NÚMERO DO AUTO ou AIT)","placa":"placa do veículo autuado — procure nos campos PLACA, VEÍCULO, IDENTIFICAÇÃO DO VEÍCULO, ex: ABC1234 ou ABC1D23 — sem hífens ou espaços","marca_modelo":"marca e/ou modelo do veículo se constar no documento, ex: VW POLO, GM SPIN — ou null","data":"YYYY-MM-DD da data da infração","vencimento":"YYYY-MM-DD do vencimento ou null","tipo":"um dos valores EXATOS: Excesso de Velocidade | Estacionamento Irregular | Avanço de Sinal | Uso de Celular ao Volante | Transitar em Local/Horário Não Permitido - Rodízio | Faixa de Pedestre | Documentação | Outro","local":"local da infração","valor":0.00,"pontos":0,"descricao":"descrição da infração"}\nIMPORTANTE: o campo tipo DEVE ser um dos valores EXATOS listados. O campo placa é OBRIGATÓRIO — procure cuidadosamente no documento.' }
           ]}]
         })
       });
@@ -29827,6 +29829,15 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
           });
         }
       }
+      // 3) fallback por marca/modelo: só aceita se casar com UM único veículo do cadastro
+      if (!veFound && extracted.marca_modelo) {
+        var mmNorm = String(extracted.marca_modelo).toUpperCase();
+        var candidatos = veiculos.filter(function(v) {
+          var vm = ((v.marca || "") + " " + (v.modelo || "")).toUpperCase();
+          return vm.trim() && (mmNorm.includes((v.modelo || "").toUpperCase()) || vm.includes(mmNorm));
+        });
+        if (candidatos.length === 1) veFound = candidatos[0];
+      }
       // Buscar contrato ativo na data da infração para o veículo encontrado
       var ctFound = null;
       if (veFound && extracted.data) {
@@ -29849,16 +29860,21 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         if (ctFound)                                { u.contrato_id = ctFound.id; u.cliente_id = ctFound.cliente_id; }
         return Object.assign({}, p, u);
       });
+      var diagMsg, diagOk = false;
       if (!placaExtraida) {
-        toast("✅ Dados extraídos. Placa: não identificada no documento — preencha manualmente.", "warn");
+        diagMsg = "Placa não identificada no documento — selecione o veículo manualmente." + (extracted.marca_modelo ? " (Veículo lido: " + extracted.marca_modelo + ")" : "");
       } else if (!veFound) {
-        toast("✅ Dados extraídos. Placa lida: " + placaExtraida + " — não encontrada no cadastro. Selecione o veículo manualmente.", "warn");
+        diagMsg = "Placa lida: " + placaExtraida + " — não encontrada no cadastro de veículos. Selecione manualmente.";
       } else if (!ctFound) {
-        toast("✅ Veículo " + veFound.placa + " preenchido. Sem contrato ativo em " + fmtDate(extracted.data) + " — selecione o condutor manualmente.", "warn");
+        diagMsg = "Veículo " + veFound.placa + " preenchido, mas sem contrato ativo em " + fmtDate(extracted.data) + ". Selecione o condutor manualmente.";
       } else {
-        toast("✅ Dados extraídos — veículo " + veFound.placa + " e condutor identificados automaticamente!");
+        diagOk = true;
+        diagMsg = "Veículo " + veFound.placa + " e condutor identificados pelo contrato ativo na data da infração.";
       }
+      setAitDiag({ ok: diagOk, msg: diagMsg });
+      toast(diagOk ? "✅ " + diagMsg : "⚠️ Dados extraídos. " + diagMsg, diagOk ? "ok" : "warn");
     } catch(e) {
+      setAitDiag({ ok: false, msg: "Falha na extração: " + e.message });
       toast("⚠️ Não foi possível extrair dados: " + e.message, "error");
     }
   }
@@ -30356,7 +30372,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         var _str7ml=new Date(_brNowMs()+7*864e5).toISOString().split("T")[0]; var _venceSemana=!vencida&&!cobCliAtrasado&&m.status!=="pago"&&m.vencimento&&m.vencimento>=hoje&&m.vencimento<=_str7ml;
         return React.createElement(SwipeRow, { key: m.id,
           wrapStyle: { marginBottom: i < fil.length - 1 ? 18 : 0, borderRadius: 16 },
-          onEdit: function(){ setForm(Object.assign({}, m)); setEdit(m.id); setModal(true); },
+          onEdit: function(){ setForm(Object.assign({}, m)); setEdit(m.id); setAitDiag(null); setModal(true); },
           onDelete: function(){ remove(m.id); },
           onRight: nextAct ? function(){ nextAct.action(); } : null,
           rightLabel: nextAct ? nextAct.label : '',
@@ -30516,6 +30532,8 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 } }
         /* ── Seção: Dados da Infração ── */
         , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: "1px solid " + C.border, paddingBottom: 4 } }, "Dados da Infração")
+        /* Banner persistente com o resultado da leitura do AIT */
+        , aitDiag && React.createElement('div', { onClick: function(){ setAitDiag(null); }, style: { background: aitDiag.ok ? "rgba(52,199,89,0.12)" : "rgba(255,184,0,0.14)", border: "1px solid " + (aitDiag.ok ? "rgba(52,199,89,0.45)" : "rgba(255,184,0,0.55)"), color: aitDiag.ok ? "#1f9d4d" : "#8a6d00", borderRadius: 10, padding: "10px 12px", fontSize: 12.5, fontWeight: 600, lineHeight: 1.45, cursor: "pointer" } }, (aitDiag.ok ? "🤖 " : "🤖⚠️ ") + aitDiag.msg + "  (toque para fechar)")
         , React.createElement(Lbl, { label: "Contrato (opcional)" }, React.createElement('select', { style: FI, value: form.contrato_id || "", onChange: function(e) { var ctId = e.target.value; if (ctId) { var ctSel = contratos.find(function(x){return String(x.id)===ctId;}); setForm(function(p){ return Object.assign({}, p, { contrato_id: ctId, cliente_id: ctSel ? String(ctSel.cliente_id||"") : p.cliente_id, veiculo_id: ctSel ? String(ctSel.veiculo_id||"") : p.veiculo_id }); }); } else { F("contrato_id", ""); } } }, React.createElement('option', { value: "" }, "— Sem contrato vinculado"), contratos.map(function(c) { var cl = clientes.find(function(x){return x.id==c.cliente_id;}); var ve = veiculos.find(function(x){return x.id==c.veiculo_id;}); return React.createElement('option', { key: c.id, value: c.id }, "#", numCt(c.id), " - ", cl&&cl.nome||"?", " · ", ve&&ve.placa||""); })))
         , React.createElement('div', { style: { display: "flex", gap: 10 } }
           , React.createElement(Lbl, { label: "Condutor (Cliente)", flex: 1 }, React.createElement('select', { style: FI, value: form.cliente_id || "", onChange: function(e){F("cliente_id", e.target.value);} }, React.createElement('option', { value: "" }, "— Selecione..."), clientes.map(function(c){ return React.createElement('option', { key: c.id, value: c.id }, c.nome); })))

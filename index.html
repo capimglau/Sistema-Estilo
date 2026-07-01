@@ -29943,10 +29943,26 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       ["valor","valor_cobrado","pontos"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
       // Normaliza booleanos de boleto/cobrança: garante boolean ou null
       ["boleto_orgao_solicitado","boleto_orgao_recebido"].forEach(function(k){ if (payload[k] === undefined || payload[k] === "") payload[k] = false; payload[k] = !!payload[k]; });
-      if (edit) { const u = await db.patch("multas", edit, payload); setMultas(p => p.map(m => m.id === edit ? Object.assign({}, m, u) : m)); toast("Atualizado!"); }
-      else { const c = await db.post("multas", payload); setMultas(p => [c].concat(p)); toast("Registrada!"); }
+      // Tolerância a colunas ausentes no banco: remove o campo apontado pelo erro e tenta de novo
+      var camposIgnorados = [];
+      var rec = null;
+      for (var _tent = 0; _tent < 5; _tent++) {
+        try {
+          rec = edit ? await db.patch("multas", edit, payload) : await db.post("multas", payload);
+          break;
+        } catch(eCol) {
+          var mCol = /Could not find the '([^']+)' column/.exec(eCol.message || "");
+          if (mCol && Object.prototype.hasOwnProperty.call(payload, mCol[1])) { delete payload[mCol[1]]; camposIgnorados.push(mCol[1]); continue; }
+          throw eCol;
+        }
+      }
+      if (edit) { const u = rec; setMultas(p => p.map(m => m.id === edit ? Object.assign({}, m, u) : m)); toast("Atualizado!"); }
+      else { setMultas(p => [rec].concat(p)); toast("Registrada!"); }
       setAitDiag(null);
       setModal(false);
+      if (camposIgnorados.length) {
+        setTimeout(function(){ alert("✅ Multa salva!\n\n⚠️ Porém o campo '" + camposIgnorados.join("', '") + "' não existe na tabela multas do Supabase e foi ignorado.\n\nPara passar a gravar esse dado, rode no SQL Editor do Supabase:\n\n" + camposIgnorados.map(function(c){ return "alter table multas add column " + c + " " + (c === "pontos" ? "integer" : "text") + ";"; }).join("\n")); }, 300);
+      }
     } catch(e) { setAitDiag({ ok: false, msg: "Erro ao salvar: " + e.message }); toast("Erro: " + e.message, "error"); }
     setLoading(false);
   }

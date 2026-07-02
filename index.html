@@ -29809,19 +29809,38 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true" },
         body: JSON.stringify({
           model: "claude-sonnet-5",
-          max_tokens: 1024,
+          max_tokens: 2048,
           system: "Você é um sistema especializado em OCR e extração de dados de autos de infração de trânsito brasileiros. Leia o documento com atenção, identificando todos os campos. Retorne APENAS JSON válido, sem markdown, sem texto adicional.",
           messages: [{ role: "user", content: [
             contentBlock,
-            { type: "text", text: 'Extraia os dados deste Auto de Infração de Trânsito (AIT) brasileiro e retorne APENAS este JSON (sem markdown, sem ```json):\n{"ait":"número do AIT (campo NÚMERO DO AUTO ou AIT)","placa":"placa do veículo autuado — procure nos campos PLACA, VEÍCULO, IDENTIFICAÇÃO DO VEÍCULO, ex: ABC1234 ou ABC1D23 — sem hífens ou espaços","marca_modelo":"marca e/ou modelo do veículo se constar no documento, ex: VW POLO, GM SPIN — ou null","data":"YYYY-MM-DD da data da infração","vencimento":"YYYY-MM-DD do vencimento ou null","prazo_recurso":"YYYY-MM-DD do prazo para apresentação de defesa, interposição de recurso ou indicação de condutor (campos PRAZO, DEFESA, DATA LIMITE) ou null","tipo":"um dos valores EXATOS: Excesso de Velocidade | Estacionamento Irregular | Avanço de Sinal | Uso de Celular ao Volante | Transitar em Local/Horário Não Permitido - Rodízio | Faixa de Pedestre | Documentação | Outro","local":"local da infração","valor":0.00,"pontos":0,"descricao":"descrição da infração"}\nIMPORTANTE: o campo tipo DEVE ser um dos valores EXATOS listados. O campo placa é OBRIGATÓRIO — procure cuidadosamente no documento.' }
+            { type: "text", text: 'Extraia os dados deste Auto de Infração de Trânsito (AIT) brasileiro e retorne APENAS este JSON (sem markdown, sem ```json):\n{"ait":"número do AIT (campo NÚMERO DO AUTO ou AIT)","placa":"placa do veículo autuado — procure nos campos PLACA, VEÍCULO, IDENTIFICAÇÃO DO VEÍCULO, ex: ABC1234 ou ABC1D23 — sem hífens ou espaços","marca_modelo":"marca e/ou modelo do veículo se constar no documento, ex: VW POLO, GM SPIN — ou null","data":"YYYY-MM-DD da data da infração","vencimento":"YYYY-MM-DD do vencimento ou null","prazo_recurso":"YYYY-MM-DD do prazo para apresentação de defesa, interposição de recurso ou indicação de condutor (campos PRAZO, DEFESA, DATA LIMITE) ou null","tipo":"um dos valores EXATOS: Excesso de Velocidade | Estacionamento Irregular | Avanço de Sinal | Uso de Celular ao Volante | Transitar em Local/Horário Não Permitido - Rodízio | Faixa de Pedestre | Documentação | Outro","local":"local da infração","valor":0.00,"pontos":0,"descricao":"descrição da infração (máx 150 caracteres)"}\nIMPORTANTE: o campo tipo DEVE ser um dos valores EXATOS listados. O campo placa é OBRIGATÓRIO — procure cuidadosamente no documento. Responda direto com o JSON, sem raciocínio nem explicação.' }
           ]}]
         })
       });
       if (!resp.ok) { var errJ = await resp.json().catch(function(){return {};}); throw new Error((errJ.error&&errJ.error.message)||"Erro HTTP "+resp.status); }
       var resData = await resp.json();
-      var text = (resData.content && resData.content[0] && resData.content[0].text) || "";
+      /* Pega o bloco de texto (a resposta pode conter outros tipos de bloco antes) */
+      var text = "";
+      (resData.content || []).forEach(function(b){ if (b && b.type === "text" && b.text) text += b.text; });
+      if (!text.trim()) throw new Error("o modelo não retornou texto (stop: " + (resData.stop_reason || "?") + ")");
       var jsonStr = text.trim().replace(/^```json\s*/,"").replace(/^```\s*/,"").replace(/\s*```$/,"");
-      var extracted = JSON.parse(jsonStr);
+      /* Isola o objeto JSON e recupera resposta truncada se necessário */
+      var extracted = null;
+      var ini = jsonStr.indexOf("{");
+      if (ini < 0) throw new Error("resposta sem JSON");
+      jsonStr = jsonStr.slice(ini);
+      var fim = jsonStr.lastIndexOf("}");
+      if (fim >= 0) { try { extracted = JSON.parse(jsonStr.slice(0, fim + 1)); } catch(e0) {} }
+      if (!extracted) { try { extracted = JSON.parse(jsonStr); } catch(e1) {} }
+      if (!extracted) {
+        /* Truncado no meio: corta progressivamente e fecha o objeto */
+        for (var kTr = jsonStr.length; kTr > 10 && !extracted; kTr--) {
+          var base = jsonStr.slice(0, kTr).replace(/[,\s]*$/, "");
+          try { extracted = JSON.parse(base + "}"); } catch(e2) {}
+          if (!extracted) { try { extracted = JSON.parse(base + '"}'); } catch(e3) {} }
+        }
+      }
+      if (!extracted) throw new Error("resposta do modelo incompleta — tente novamente");
       // Sanear valores vindos do modelo: "null"/"-" viram vazio; datas só em YYYY-MM-DD; números limpos
       ["ait","placa","marca_modelo","data","vencimento","prazo_recurso","tipo","local","descricao"].forEach(function(k){
         if (extracted[k] == null) { extracted[k] = ""; return; }

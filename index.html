@@ -22893,7 +22893,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
   function prevDashMes() { var d = new Date(dashMes + "-15"); d.setMonth(d.getMonth() - 1); setDashMes(d.toISOString().slice(0,7)); }
   function nextDashMes() { var d = new Date(dashMes + "-15"); d.setMonth(d.getMonth() + 1); setDashMes(d.toISOString().slice(0,7)); }
   const nomeMes = new Date(dashMes + "-15").toLocaleString("pt-BR", { month: "long", year: "numeric" });
-  /* pontinho piscante — sinaliza itens referentes a hoje na agenda (alertas, renovações, despesas pendentes, recebimentos) */
+  /* pontinho piscante — sinaliza itens de hoje OU vencidos na agenda (alertas, renovações, despesas pendentes, recebimentos) */
   function _hojeBlinkDot() {
     return React.createElement('span', { style:{ display:'inline-block', width:7, height:7, borderRadius:"50%", background:C.red, marginRight:5, verticalAlign:"middle", boxShadow:"0 0 5px "+C.red+"99", animation:"ag-tw-blink 1s ease-in-out infinite", flexShrink:0 } });
   }
@@ -24903,20 +24903,27 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
     , (() => {
       /* ── dados ── */
       var _str30pan = new Date(_brNowMs()+30*864e5).toISOString().split('T')[0];
+      /* inclui também renovações já vencidas (data_fim no passado) e não renovadas — precisam aparecer piscando */
       var _renList = (contratos||[]).filter(function(c){
-        return c.status==='ativo' && c.data_fim && c.data_fim>=hoje && c.data_fim<=_str30pan && !renovadosIds.has(c.id);
+        return c.status==='ativo' && c.data_fim && c.data_fim<=_str30pan && !renovadosIds.has(c.id);
       }).slice().sort(function(a,b){ return (a.data_fim||'').localeCompare(b.data_fim||''); });
 
       var _despPendList = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), dashMes)
         .filter(function(d){ return d.status!=='pago' && !d.data_pagamento; })
+        /* despesas avulsas vencidas de meses anteriores não somem do painel ao navegar para o mês atual */
+        .concat(dashMes===mesAtual ? (despesas||[]).filter(function(d){
+          return !isRetLucro(d) && !d.recorrente && d.status!=='pago' && !d.data_pagamento && d.data && d.data<hoje && d.data.slice(0,7)!==dashMes;
+        }) : [])
         .slice().sort(function(a,b){ return (a.data||'').localeCompare(b.data||''); });
 
       var _recList = (contratos||[]).filter(function(c){
+        var _inMes = c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === dashMes;
+        /* contratos vencidos de meses anteriores continuam aparecendo ao navegar para o mês atual */
+        var _vencidoOutroMes = dashMes===mesAtual && c.previsao_pagamento && c.previsao_pagamento < hoje && c.previsao_pagamento.slice(0,7) !== dashMes;
         return c.status !== 'cancelado'
           && c.status_pagamento !== 'pago'
           && c.status_pagamento !== 'isento'
-          && c.previsao_pagamento
-          && c.previsao_pagamento.slice(0,7) === dashMes;
+          && (_inMes || _vencidoOutroMes);
       }).slice().sort(function(a,b){ return (a.previsao_pagamento||'').localeCompare(b.previsao_pagamento||''); });
 
       var _renShow  = renDashExp  ? _renList      : _renList.slice(0,4);
@@ -24975,6 +24982,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         var placa  = (ve&&ve.placa) || '--';
         var modelo = ve ? ((ve.marca||'')+' '+(ve.modelo||'')).trim() : '';
         var diasRest = Math.round((new Date(c.data_fim+'T00:00:00')-new Date(hoje+'T00:00:00'))/(864e5));
+        var isVencidoRen = diasRest < 0;
         var cor = diasRest<=1 ? C.red : diasRest<=7 ? C.orange : C.blue;
         var _cid = c.id;
 
@@ -24995,7 +25003,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           )
           /* círculo de prazo */
           , React.createElement('div', { style:{ flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 14px 0 6px' } }
-            , React.createElement('div', { style: diasRest===0 ? Object.assign({
+            , React.createElement('div', { style: (diasRest<=0) ? Object.assign({
                 width:40, height:40, borderRadius:'50%',
                 border:'2px solid '+cor, background:cor+'18',
                 display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', lineHeight:1
@@ -25004,7 +25012,9 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                 border:'2px solid '+cor, background:cor+'18',
                 display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', lineHeight:1
               } }
-              , diasRest<=1
+              , isVencidoRen
+                ? React.createElement('span', { style:{ fontSize:8, fontWeight:800, color:cor, textAlign:'center', lineHeight:1.15 } }, Math.abs(diasRest)+'d atraso')
+                : diasRest<=1
                 ? React.createElement('span', { style:{ fontSize: diasRest===0 ? 9 : 8, fontWeight:800, color:cor, textAlign:'center', lineHeight:1.15 } }, diasRest===0 ? 'HOJE' : 'AMANHÃ')
                 : React.createElement(React.Fragment, null
                     , React.createElement('span', { style:{ fontSize:14, fontWeight:800, color:cor, lineHeight:1 } }, diasRest)
@@ -25021,7 +25031,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           onBaixar:function(){ window.__pendingRenovarId = _cid; setTab('contratos'); },
           baixarLabel:'Renovar',
           onDelete:null,
-          wrapStyle: diasRest===0 ? Object.assign({ borderBottom:'1px solid '+C.border+'66' }, _hojeRowGlow) : { borderBottom:'1px solid '+C.border+'66' }
+          wrapStyle: (diasRest<=0) ? Object.assign({ borderBottom:'1px solid '+C.border+'66' }, _hojeRowGlow) : { borderBottom:'1px solid '+C.border+'66' }
         }, _inner);
       };
 
@@ -25050,6 +25060,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         var pct = venceu||venceHj ? 100 : Math.max(0, Math.round((1 - diasAte/30)*100));
         var catIcon = d.manutencao_id ? '🔧' : (_CAT_ICON[d.categoria] || '📦');
         var statusTxt = venceu ? diasAt+'d atraso' : venceHj ? 'vence hoje' : (d.data ? fmtDate(d.data) : '');
+        var isUrgenteDesp = venceu || venceHj;
         var _did  = d.id;
         var _dmes = (d.data||dashMes).slice(0,7);
 
@@ -25059,7 +25070,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         }
           /* ícone categoria */
           , React.createElement('div', { style:{ width:44, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center' } }
-            , React.createElement('div', { style: Object.assign({ width:32, height:32, borderRadius:10, background:cor+'18', display:'flex', alignItems:'center', justifyContent:'center', fontSize:15 }, venceHj ? { animation:'ag-tw-blink 1s ease-in-out infinite' } : {}) }, catIcon)
+            , React.createElement('div', { style: Object.assign({ width:32, height:32, borderRadius:10, background:cor+'18', display:'flex', alignItems:'center', justifyContent:'center', fontSize:15 }, isUrgenteDesp ? { animation:'ag-tw-blink 1s ease-in-out infinite' } : {}) }, catIcon)
           )
           /* corpo */
           , React.createElement('div', { style:{ flex:1, minWidth:0, padding:'9px 8px 9px 0' } }
@@ -25068,7 +25079,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
             )
             , React.createElement('div', { style:{ display:'flex', alignItems:'center', gap:5, marginTop:2 } }
               , React.createElement('span', { style:{ fontSize:10, color:C.sub } }, d.categoria||'')
-              , statusTxt && React.createElement('span', { style:{ display:'flex', alignItems:'center' } }, venceHj ? _hojeBlinkDot() : null, React.createElement('span', { style:{ fontSize:10, fontWeight:600, color:cor } }, '· '+statusTxt))
+              , statusTxt && React.createElement('span', { style:{ display:'flex', alignItems:'center' } }, isUrgenteDesp ? _hojeBlinkDot() : null, React.createElement('span', { style:{ fontSize:10, fontWeight:600, color:cor } }, '· '+statusTxt))
             )
             /* barra de urgência */
             , React.createElement('div', { style:{ marginTop:6, height:3, borderRadius:3, background:cor+'1F', overflow:'hidden' } }
@@ -25086,7 +25097,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           onBaixar:function(){ _agBaixar({type:'desp',id:_did}); }, baixarLabel:'Baixar',
           onEdit:function(){ setFinDeepLink({subTab:'despesas',itemId:_did,mes:_dmes}); setTab('financeiro'); }, editLabel:'Editar',
           onDelete:null,
-          wrapStyle: venceHj ? Object.assign({ borderBottom:'1px solid '+C.border+'66' }, _hojeRowGlow) : { borderBottom:'1px solid '+C.border+'66' }
+          wrapStyle: isUrgenteDesp ? Object.assign({ borderBottom:'1px solid '+C.border+'66' }, _hojeRowGlow) : { borderBottom:'1px solid '+C.border+'66' }
         }, _inner);
       };
 
@@ -25110,6 +25121,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         var cor       = diasParaVencer <= 1 ? C.red : diasParaVencer <= 7 ? C.orange : C.green;
         var pct       = venceu||venceHj ? 100 : Math.max(0, Math.round((1 - diasAte/30)*100));
         var statusTxt = venceu ? diasAt+'d atraso' : venceHj ? 'vence hoje' : (dtVenc ? fmtDate(dtVenc) : '');
+        var isUrgenteRec = venceu || venceHj;
         var _cid  = c.id;
 
         var _inner = React.createElement('div', {
@@ -25118,7 +25130,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         }
           /* ícone */
           , React.createElement('div', { style:{ width:44, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center' } }
-            , React.createElement('div', { style: Object.assign({ width:32, height:32, borderRadius:10, background:cor+'18', display:'flex', alignItems:'center', justifyContent:'center', fontSize:15 }, venceHj ? { animation:'ag-tw-blink 1s ease-in-out infinite' } : {}) }, '🚗')
+            , React.createElement('div', { style: Object.assign({ width:32, height:32, borderRadius:10, background:cor+'18', display:'flex', alignItems:'center', justifyContent:'center', fontSize:15 }, isUrgenteRec ? { animation:'ag-tw-blink 1s ease-in-out infinite' } : {}) }, '🚗')
           )
           /* corpo */
           , React.createElement('div', { style:{ flex:1, minWidth:0, padding:'9px 8px 9px 0' } }
@@ -25126,7 +25138,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
             , React.createElement('div', { style:{ display:'flex', alignItems:'center', gap:5, marginTop:2 } }
               , React.createElement('span', { style:{ background:C.border, borderRadius:5, padding:'1px 6px', fontWeight:700, letterSpacing:'0.5px', fontSize:10, color:C.sub } }, placa)
               , modelo ? React.createElement('span', { style:{ fontSize:11, color:C.sub } }, '· '+modelo) : null
-              , venceHj ? _hojeBlinkDot() : null
+              , isUrgenteRec ? _hojeBlinkDot() : null
               , statusTxt ? React.createElement('span', { style:{ fontSize:10, fontWeight:600, color:cor } }, '· '+statusTxt) : null
             )
             /* barra de urgência */
@@ -25146,7 +25158,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           action2:function(){ onItemNav({type:'contrato',id:_cid},'contratos'); },
           action2Label:'Ver', action2Icon:'\u{1F441}', action2Color:'rgba(0,122,255,0.92)',
           onDelete:null,
-          wrapStyle: venceHj ? Object.assign({ borderBottom:'1px solid '+C.border+'66' }, _hojeRowGlow) : { borderBottom:'1px solid '+C.border+'66' }
+          wrapStyle: isUrgenteRec ? Object.assign({ borderBottom:'1px solid '+C.border+'66' }, _hojeRowGlow) : { borderBottom:'1px solid '+C.border+'66' }
         }, _inner);
       };
 

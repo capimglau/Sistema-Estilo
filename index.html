@@ -40094,6 +40094,24 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     });
   });
 
+  // RESERVAS — data em que a reserva chegou (sempre lançada no dia do recebimento)
+  var _recebidasEm = {};
+  try { _recebidasEm = JSON.parse(localStorage.getItem("ag_reservas_recebidas_em") || "{}") || {}; } catch(e) {}
+  (reservas || []).forEach(function(rs) {
+    if (rs.status === "cancelada") return;
+    var dataChegada = _recebidasEm[String(rs.id)];
+    if (!dataChegada) return;
+    var ve = (veiculos||[]).find(function(x){ return x.id==rs.veiculo_id; });
+    eventos.push({
+      data: dataChegada, tipo: "reserva_recebida",
+      cor: "#5AC8FA",
+      emoji: "📩",
+      titulo: "Reserva recebida · " + (rs.nome||"--") + (rs.veiculo ? " · " + rs.veiculo : (ve ? " · " + ve.placa : "")),
+      sub: "Recebida em " + fmtD(dataChegada) + (rs.data_retirada ? " · Retirada " + fmtD(rs.data_retirada) : ""),
+      tab: "reservas"
+    });
+  });
+
   // ORÇAMENTO PESSOAL
   orcItens.forEach(function(it) {
     var data = it.data || (it.mes ? it.mes + "-01" : null);
@@ -43304,60 +43322,18 @@ function AgConfirmModal({ dlg, onResult }) {
 }
 
 function App() {
+  // ── Sessão sem expiração: o app fica sempre desbloqueado até logout manual ──
+  // (sem TTL de 15min em background e sem auto-bloqueio por inatividade —
+  // necessário para a notificação de reserva funcionar mesmo com o app em segundo plano)
   var _AG_SESS_KEY = "ag_session_v1";
-  var _AG_SESS_TTL = 15 * 60 * 1000; // 15 minutos
-  function _readSess() { try { var s = JSON.parse(localStorage.getItem(_AG_SESS_KEY) || "null"); if (!s || !s.usuario) return null; if (s.left_at && (Date.now() - s.left_at) >= _AG_SESS_TTL) return null; return s.usuario; } catch(e) { return null; } }
+  function _readSess() { try { var s = JSON.parse(localStorage.getItem(_AG_SESS_KEY) || "null"); if (!s || !s.usuario) return null; return s.usuario; } catch(e) { return null; } }
   const [logado, setLogado] = useState(function() { return _readSess() !== null; });
   const [usuarioAtual, setUsuarioAtual] = useState(function() { return _readSess(); });
   function handleLogin(usuario) {
     setUsuarioAtual(usuario); setLogado(true); document.body.classList.add('ag-logado');
-    try { localStorage.setItem(_AG_SESS_KEY, JSON.stringify({ usuario: usuario, left_at: null })); } catch(e) {}
+    try { localStorage.setItem(_AG_SESS_KEY, JSON.stringify({ usuario: usuario })); } catch(e) {}
   }
-  React.useEffect(function() {
-    if (logado) document.body.classList.add('ag-logado');
-    function onHide() {
-      try { var s = JSON.parse(localStorage.getItem(_AG_SESS_KEY) || "null"); if (s && s.usuario) localStorage.setItem(_AG_SESS_KEY, JSON.stringify(Object.assign({}, s, { left_at: Date.now() }))); } catch(e) {}
-    }
-    function onShow() {
-      if (!logado) return;
-      try {
-        var s = JSON.parse(localStorage.getItem(_AG_SESS_KEY) || "null");
-        if (!s || !s.usuario || (s.left_at && (Date.now() - s.left_at) >= _AG_SESS_TTL)) {
-          setLogado(false); setUsuarioAtual(null); document.body.classList.remove('ag-logado'); localStorage.removeItem(_AG_SESS_KEY);
-        } else {
-          localStorage.setItem(_AG_SESS_KEY, JSON.stringify(Object.assign({}, s, { left_at: null })));
-        }
-      } catch(e) {}
-    }
-    function onVis() { if (document.visibilityState === 'hidden') onHide(); else onShow(); }
-    document.addEventListener('visibilitychange', onVis);
-    document.addEventListener('pagehide', onHide);
-    return function() { document.removeEventListener('visibilitychange', onVis); document.removeEventListener('pagehide', onHide); };
-  }, [logado]);
-
-  // ── Bloqueio de tela após 8 horas de inatividade ──────────────────────────
-  React.useEffect(function() {
-    if (!logado) return;
-    var _INATIV_MS = 8 * 60 * 60 * 1000; // 8 horas sem interação
-    var _last = Date.now();
-    function _lock() {
-      setLogado(false); setUsuarioAtual(null);
-      document.body.classList.remove('ag-logado');
-      try { localStorage.removeItem(_AG_SESS_KEY); } catch(e) {}
-    }
-    function _activity() { _last = Date.now(); }
-    function _check() { if (Date.now() - _last >= _INATIV_MS) _lock(); }
-    var _evs = ['mousedown', 'keydown', 'touchstart', 'mousemove', 'scroll', 'click'];
-    _evs.forEach(function(ev) { document.addEventListener(ev, _activity, { passive: true, capture: true }); });
-    var _iv = setInterval(_check, 60 * 1000); // verifica a cada minuto
-    function _onVis() { if (document.visibilityState === 'visible') _check(); }
-    document.addEventListener('visibilitychange', _onVis);
-    return function() {
-      clearInterval(_iv);
-      document.removeEventListener('visibilitychange', _onVis);
-      _evs.forEach(function(ev) { document.removeEventListener(ev, _activity, { capture: true }); });
-    };
-  }, [logado]);
+  React.useEffect(function() { if (logado) document.body.classList.add('ag-logado'); }, []);
 
   const [tab, setTab] = useState(function(){
     var TABS_VALIDAS = ["inicio","cadastro","frota","clientes","contratos","reservas","multas","manutencao","operacional","financeiro","relatorios","simulador","config","calendario","linha_do_tempo","usuarios"];
@@ -43784,6 +43760,15 @@ function App() {
     var seen; try { seen = JSON.parse(raw) || []; } catch(e) { seen = []; }
     var novas = reservas.filter(function(r) { return seen.indexOf(String(r.id)) === -1; });
     if (novas.length) {
+      // Registra a data de chegada de cada reserva nova — usada pela Agenda/Calendário
+      // para sempre lançar um evento no dia em que a reserva foi recebida.
+      var RECEBIDAS_KEY = "ag_reservas_recebidas_em";
+      var recebidasEm = {};
+      try { recebidasEm = JSON.parse(localStorage.getItem(RECEBIDAS_KEY) || "{}") || {}; } catch(e) {}
+      var hojeRecebida = _brNow().toISOString().split("T")[0];
+      novas.forEach(function(r) { recebidasEm[String(r.id)] = hojeRecebida; });
+      try { localStorage.setItem(RECEBIDAS_KEY, JSON.stringify(recebidasEm)); } catch(e) {}
+
       var tel = "5511989990949";
       var blocos = novas.map(function(r) {
         return "👤 " + (r.nome || "-") +

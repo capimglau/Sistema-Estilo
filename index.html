@@ -15453,6 +15453,7 @@ const db = {
       throw new Error("Nada foi excluído (RLS bloqueou). Rode em Configurações: alter table " + t + " disable row level security;");
     }
     this._audit(t, "delete", id, null);
+    return Array.isArray(j) ? j[0] : j; // registro excluído — usado para restaurar via "Desfazer"
   },
   async upload(path, file) {
     const r = await fetchWithTimeout(SB_URL + "/storage/v1/object/documentos/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": file.type, "x-upsert": "true", "Content-Disposition": "inline" }, body: file }, 60000);
@@ -22337,6 +22338,30 @@ function Toast({ msg, type }) {
   return el;
 }
 
+/* Popup temporário de "Desfazer" — usado após baixar/excluir e afins.
+   data: { msg, onUndo } | null. Some sozinho após alguns segundos (ver
+   agUndo() em App) ou ao tocar em "Desfazer"/fechar. */
+function UndoToast({ data, onDismiss }) {
+  if (!data) return null;
+  var el = React.createElement('div', {
+      style: { position: "fixed", bottom: 100, left: "50%", transform: "translateX(-50%)", background: "rgba(28,28,30,0.94)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", color: "#fff", padding: "10px 10px 10px 18px", borderRadius: 16, fontWeight: 600, fontSize: 14, zIndex: 99999, boxShadow: "0 8px 32px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,0.12)", maxWidth: "90vw", textAlign: "left", border: "1px solid rgba(255,255,255,0.14)", display: "flex", alignItems: "center", gap: 12 }
+    },
+    React.createElement('span', { style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, data.msg),
+    React.createElement('button', {
+      onClick: function(){ try { data.onUndo(); } catch(e){} onDismiss(); },
+      style: { background: "rgba(10,132,255,0.22)", border: "none", color: "#5AC8FA", fontWeight: 800, fontSize: 13, borderRadius: 10, padding: "7px 14px", cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" }
+    }, "Desfazer"),
+    React.createElement('button', {
+      onClick: function(){ onDismiss(); },
+      style: { background: "transparent", border: "none", color: "rgba(255,255,255,0.55)", fontSize: 15, cursor: "pointer", flexShrink: 0, padding: "4px 2px", lineHeight: 1 }
+    }, "✕")
+  );
+  if (window.ReactDOMFull && window.ReactDOMFull.createPortal) {
+    return window.ReactDOMFull.createPortal(el, document.body);
+  }
+  return el;
+}
+
 function Modal({ open, onClose, title, children, wide }) {
   React.useEffect(function() {
     if (!open) return;
@@ -23407,29 +23432,51 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       _r = await window.__agPrompt({ title:"Receber Pagamento", icon:"💰", label1:"Data do pagamento", type1:"date", default1:dtHoje });
       if (!_r || !_r.ok) return;
       var dtPag = _r.v1;
+      var ctAntes = (contratos||[]).find(function(x){ return x.id === ev.id; });
+      var statusOriginalCt = ctAntes ? ctAntes.status_pagamento : null;
+      var dataPagOriginalCt = ctAntes ? ctAntes.data_pagamento : null;
       await db.patch("contratos", ev.id, { status_pagamento:"pago", data_pagamento:dtPag });
       setContratos(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status_pagamento:"pago",data_pagamento:dtPag}):x; }); });
       var mesPag = dtPag.slice(0,7);
       var refKeyNovo = "fat_"+ev.id+"_"+mesPag;
       var recLinked = (receitas||[]).find(function(r){ return r.ref_fatura&&r.ref_fatura.startsWith("fat_"+ev.id+"_"); });
+      var recLinkedAntes = recLinked ? Object.assign({}, recLinked) : null;
       if (recLinked) {
         var patchRec = { data_pagamento:dtPag, status:"recebido" };
         if (recLinked.ref_fatura !== refKeyNovo) patchRec.ref_fatura = refKeyNovo;
         try { var updRec = await db.patch("receitas", recLinked.id, patchRec); setReceitas(function(p){ return p.map(function(r){ return r.id===recLinked.id?Object.assign({},r,updRec):r; }); }); } catch(e){ console.warn(e); }
       }
-      toast("✅ Pagamento registrado!");
+      window._agUndo("✅ Pagamento registrado!", async function(){
+        try {
+          await db.patch("contratos", ev.id, { status_pagamento: statusOriginalCt, data_pagamento: dataPagOriginalCt });
+          setContratos(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status_pagamento: statusOriginalCt, data_pagamento: dataPagOriginalCt}):x; }); });
+          if (recLinkedAntes) { try { await db.patch("receitas", recLinkedAntes.id, { status: recLinkedAntes.status, data_pagamento: recLinkedAntes.data_pagamento, ref_fatura: recLinkedAntes.ref_fatura }); setReceitas(function(p){ return p.map(function(r){ return r.id===recLinkedAntes.id?Object.assign({},r,recLinkedAntes):r; }); }); } catch(e){ console.warn(e); } }
+        } catch(e){ console.warn(e); }
+      });
     } else if (ev.type === "desp") {
       _r = await window.__agPrompt({ title:"Baixar Despesa", icon:"💸", label1:"Data do pagamento", type1:"date", default1:dtHoje });
       if (!_r || !_r.ok) return;
+      var despAntes = (despesas||[]).find(function(x){ return x.id === ev.id; });
+      var statusOriginalDesp = despAntes ? despAntes.status : null;
+      var dataPagOriginalDesp = despAntes ? despAntes.data_pagamento : null;
       await db.patch("despesas", ev.id, { status:"pago", data_pagamento:_r.v1 });
       setDespesas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status:"pago",data_pagamento:_r.v1}):x; }); });
-      toast("✅ Despesa baixada!");
+      window._agUndo("✅ Despesa baixada!", async function(){
+        await db.patch("despesas", ev.id, { status: statusOriginalDesp, data_pagamento: dataPagOriginalDesp });
+        setDespesas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status: statusOriginalDesp, data_pagamento: dataPagOriginalDesp}):x; }); });
+      });
     } else if (ev.type === "conta") {
       _r = await window.__agPrompt({ title:"Baixar Conta", icon:"💸", label1:"Data do pagamento", type1:"date", default1:dtHoje });
       if (!_r || !_r.ok) return;
+      var contaAntes = (contas||[]).find(function(x){ return x.id === ev.id; });
+      var statusOriginalConta = contaAntes ? contaAntes.status : null;
+      var dataPagOriginalConta = contaAntes ? contaAntes.data_pagamento : null;
       await db.patch("contas", ev.id, { status:"pago", data_pagamento:_r.v1 });
       setContas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status:"pago",data_pagamento:_r.v1}):x; }); });
-      toast("✅ Conta baixada!");
+      window._agUndo("✅ Conta baixada!", async function(){
+        await db.patch("contas", ev.id, { status: statusOriginalConta, data_pagamento: dataPagOriginalConta });
+        setContas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status: statusOriginalConta, data_pagamento: dataPagOriginalConta}):x; }); });
+      });
     }
   }
 
@@ -26804,7 +26851,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
                   , React.createElement('div', { style:{ fontSize:12,fontWeight:600 } }, fmtDate(u.data_inicio) + " – " + fmtDate(u.data_fim))
                   , kmRod !== null && React.createElement('div', { style:{ fontSize:11,color:C.sub } }, kmRod + " km rodados")
                 )
-                , React.createElement('button', { onClick:async function(){if(!confirm("Excluir este uso?"))return;try{await db.del("usos",u.id);setUsos(function(p){return p.filter(function(x){return x.id!==u.id;});});toast("Uso excluído.");}catch(e){toast("Erro!");}}, style:{ background:"none",border:"none",color:C.red,cursor:"pointer",fontSize:12 } }, "✕")
+                , React.createElement('button', { onClick:async function(){try{var removidoUso=await db.del("usos",u.id);setUsos(function(p){return p.filter(function(x){return x.id!==u.id;});});window._agUndo("Uso excluído.",async function(){var restauradoUso=await db.post("usos",removidoUso);setUsos(function(p){return [restauradoUso].concat(p);});});}catch(e){toast("Erro!");}}, style:{ background:"none",border:"none",color:C.red,cursor:"pointer",fontSize:12 } }, "✕")
               );
             })
         )
@@ -27143,7 +27190,14 @@ function Frota({ veiculos, setVeiculos, contratos, toast }) {
     } catch(e) { toast("Erro: " + e.message, "error"); }
     setLoading(false);
   }
-  async function remove(id) { if (!confirm("Excluir?")) return; await db.del("veiculos", id); setVeiculos(p => p.filter(v => v.id !== id)); toast("Excluido!"); }
+  async function remove(id) {
+    var removido = await db.del("veiculos", id);
+    setVeiculos(p => p.filter(v => v.id !== id));
+    window._agUndo("Veículo excluído.", async function(){
+      var restaurado = await db.post("veiculos", removido);
+      setVeiculos(p => [restaurado].concat(p));
+    });
+  }
   async function renovarDoc(v, campo, nome) {
     var atual = v[campo] || _brNow().toISOString().slice(0,10);
     var d = new Date(atual); d.setFullYear(d.getFullYear() + 1);
@@ -27368,7 +27422,14 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
     } catch(e) { toast("Erro: " + e.message, "error"); }
     setLoading(false);
   }
-  async function remove(id) { if (!confirm("Excluir?")) return; await db.del("clientes", id); setClientes(p => p.filter(c => c.id !== id)); toast("Excluido!"); }
+  async function remove(id) {
+    var removido = await db.del("clientes", id);
+    setClientes(p => p.filter(c => c.id !== id));
+    window._agUndo("Cliente excluído.", async function(){
+      var restaurado = await db.post("clientes", removido);
+      setClientes(p => [restaurado].concat(p));
+    });
+  }
   async function toggleBloquear(c) {
     const novo = !c.bloqueado;
     const motivo = novo ? prompt("Motivo do bloqueio:") : null;
@@ -27805,21 +27866,33 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     var id = modalExcluirContrato;
     setModalExcluirContrato(null); setExcluirTexto("");
     var ct = contratos.find(function(x){ return x.id === id; });
+    var statusOriginalCt = ct ? ct.status : null;
     try {
       // Soft cancel: marca como cancelado em vez de excluir
       await db.patch("contratos", id, { status: "cancelado" });
       setContratos(p => p.map(c => c.id === id ? Object.assign({}, c, { status: "cancelado" }) : c));
-      // Cancela receitas vinculadas
+      // Cancela receitas vinculadas (guarda status original de cada uma p/ desfazer)
       var recVinc = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + id + "_"); });
+      var recStatusOriginais = recVinc.map(function(r){ return { id: r.id, status: r.status }; });
       for (var _ri = 0; _ri < recVinc.length; _ri++) {
         try { var _u = await db.patch("receitas", recVinc[_ri].id, { status: "cancelada" }); setReceitas(function(p){ var _rid = recVinc[_ri].id; return p.map(function(r){ return r.id===_rid ? Object.assign({},r,{ status:"cancelada" }) : r; }); }); } catch(e){ console.warn(e); }
       }
       // Libera veículo se não há outro contrato ativo
+      var veiculoLiberadoId = null;
       if (ct && ct.veiculo_id) {
         var outroAtivo = contratos.some(function(x){ return x.id !== id && String(x.veiculo_id) === String(ct.veiculo_id) && x.status === "ativo"; });
-        if (!outroAtivo) { try { await db.patch("veiculos", ct.veiculo_id, { status: "disponivel" }); setVeiculos(function(p){ return p.map(function(v){ return String(v.id) === String(ct.veiculo_id) ? Object.assign({},v,{ status:"disponivel" }) : v; }); }); } catch(e){ console.warn(e); } }
+        if (!outroAtivo) { try { await db.patch("veiculos", ct.veiculo_id, { status: "disponivel" }); setVeiculos(function(p){ return p.map(function(v){ return String(v.id) === String(ct.veiculo_id) ? Object.assign({},v,{ status:"disponivel" }) : v; }); }); veiculoLiberadoId = ct.veiculo_id; } catch(e){ console.warn(e); } }
       }
-      toast("Contrato cancelado.");
+      window._agUndo("Contrato cancelado.", async function(){
+        try {
+          if (statusOriginalCt) { await db.patch("contratos", id, { status: statusOriginalCt }); setContratos(p => p.map(c => c.id === id ? Object.assign({}, c, { status: statusOriginalCt }) : c)); }
+          for (var _rj = 0; _rj < recStatusOriginais.length; _rj++) {
+            var _ro = recStatusOriginais[_rj];
+            try { await db.patch("receitas", _ro.id, { status: _ro.status }); setReceitas(function(p){ return p.map(function(r){ return r.id===_ro.id ? Object.assign({},r,{ status:_ro.status }) : r; }); }); } catch(e){ console.warn(e); }
+          }
+          if (veiculoLiberadoId != null) { await db.patch("veiculos", veiculoLiberadoId, { status: "alugado" }); setVeiculos(function(p){ return p.map(function(v){ return String(v.id) === String(veiculoLiberadoId) ? Object.assign({},v,{ status:"alugado" }) : v; }); }); }
+        } catch(e){ console.warn(e); }
+      });
     } catch(e) { toast("Erro: " + (e.message || e)); }
   }
   async function sincronizarRefFatura(c, dtPag) {
@@ -28195,18 +28268,43 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   async function confirmarBaixarCt() {
     var c = baixarCtModal;
     if (!c || !baixarCtData) return toast("Informe a data de pagamento", "error");
+    var statusOriginal = c.status_pagamento;
+    var dataPagOriginal = c.data_pagamento;
+    var recSnapshot = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); }).map(function(r){ return Object.assign({}, r); });
     try {
       await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: baixarCtData });
       setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:baixarCtData}) : x; }); });
       await sincronizarRefFatura(c, baixarCtData);
       setBaixarCtModal(null);
-      toast("✅ Contrato baixado!");
+      window._agUndo("Contrato baixado!", async function(){
+        try {
+          await db.patch("contratos", c.id, { status_pagamento: statusOriginal, data_pagamento: dataPagOriginal });
+          setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,{status_pagamento: statusOriginal, data_pagamento: dataPagOriginal}) : x; }); });
+          // Busca direto no banco (evita estado React desatualizado) o que ficou
+          // vinculado a este contrato após a baixa, e reverte ou remove.
+          var atuais = await db.get("receitas", "ref_fatura=like.fat_" + c.id + "_*");
+          for (var _ai = 0; _ai < atuais.length; _ai++) {
+            var atual = atuais[_ai];
+            var antes = recSnapshot.find(function(r){ return r.id === atual.id; });
+            if (antes) {
+              try { var upd = await db.patch("receitas", antes.id, { status: antes.status, data_pagamento: antes.data_pagamento, valor: antes.valor, ref_fatura: antes.ref_fatura, veiculo_id: antes.veiculo_id, forma_pagamento: antes.forma_pagamento }); setReceitas(function(p){ return p.map(function(r){ return r.id===antes.id ? Object.assign({},r,upd) : r; }); }); } catch(e){ console.warn(e); }
+            } else {
+              try { await db.del("receitas", atual.id); setReceitas(function(p){ return p.filter(function(r){ return r.id!==atual.id; }); }); } catch(e){ console.warn(e); }
+            }
+          }
+        } catch(e){ console.warn(e); }
+      });
     } catch(e) { toast("Erro: " + (e.message||String(e)), "error"); }
   }
   async function confirmarParcialCt() {
     var c = parcialCtModal;
     var vp = parseFloat(String(parcialCtValor).replace(",","."));
     if (!c || !parcialCtData || isNaN(vp) || vp <= 0) return toast("Informe o valor e a data", "error");
+    var statusOriginal = c.status_pagamento;
+    var valorPagoOriginal = c.valor_pago;
+    var dataPagOriginal = c.data_pagamento;
+    var recLinkAntes = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
+    var recOriginal = recLinkAntes ? Object.assign({}, recLinkAntes) : null;
     try {
       var patchData = { status_pagamento: "parcial", valor_pago: vp, data_pagamento: parcialCtData };
       await db.patch("contratos", c.id, patchData);
@@ -28220,7 +28318,15 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         } catch(e){ console.warn(e); }
       }
       setParcialCtModal(null);
-      toast("✅ Baixa parcial registrada!");
+      window._agUndo("Baixa parcial registrada!", async function(){
+        try {
+          await db.patch("contratos", c.id, { status_pagamento: statusOriginal, valor_pago: valorPagoOriginal, data_pagamento: dataPagOriginal });
+          setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,{status_pagamento: statusOriginal, valor_pago: valorPagoOriginal, data_pagamento: dataPagOriginal}) : x; }); });
+          if (recOriginal) {
+            try { await db.patch("receitas", recOriginal.id, { status: recOriginal.status, valor: recOriginal.valor, data_pagamento: recOriginal.data_pagamento }); setReceitas(function(p){ return p.map(function(x){ return x.id===recOriginal.id ? Object.assign({},x,recOriginal) : x; }); }); } catch(e){ console.warn(e); }
+          }
+        } catch(e){ console.warn(e); }
+      });
     } catch(e) { toast("Erro: " + (e.message||String(e)), "error"); }
   }
   const SC = { ativo: C.blue, concluido: C.green, cancelado: C.red };
@@ -28751,7 +28857,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                   , React.createElement('div', { style:{ fontSize:12,fontWeight:600 } }, fmtDate(u.data_inicio) + " – " + fmtDate(u.data_fim))
                   , kmRod !== null && React.createElement('div', { style:{ fontSize:11,color:C.sub } }, kmRod + " km rodados")
                 )
-                , React.createElement('button', { onClick:async function(){if(!confirm("Excluir este uso?"))return;try{await db.del("usos",u.id);setUsos(function(p){return p.filter(function(x){return x.id!==u.id;});});toast("Uso excluído.");}catch(e){toast("Erro!");}}, style:{ background:"none",border:"none",color:C.red,cursor:"pointer",fontSize:12 } }, "✕")
+                , React.createElement('button', { onClick:async function(){try{var removidoUso=await db.del("usos",u.id);setUsos(function(p){return p.filter(function(x){return x.id!==u.id;});});window._agUndo("Uso excluído.",async function(){var restauradoUso=await db.post("usos",removidoUso);setUsos(function(p){return [restauradoUso].concat(p);});});}catch(e){toast("Erro!");}}, style:{ background:"none",border:"none",color:C.red,cursor:"pointer",fontSize:12 } }, "✕")
               );
             })
         )
@@ -30061,7 +30167,15 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     setLoading(false);
   }
   async function remove(id) { setModalExcluir(id); }
-  async function confirmarExcluir(id) { setModalExcluir(null); await db.del("multas", id); setMultas(p => p.filter(m => m.id !== id)); toast("Excluído!"); }
+  async function confirmarExcluir(id) {
+    setModalExcluir(null);
+    var removido = await db.del("multas", id);
+    setMultas(p => p.filter(m => m.id !== id));
+    window._agUndo("Multa excluída.", async function(){
+      var restaurado = await db.post("multas", removido);
+      setMultas(p => [restaurado].concat(p));
+    });
+  }
   async function pagar(m) {
     var dt = prompt("Data do pagamento (AAAA-MM-DD):", _brNow().toISOString().split("T")[0]);
     if (!dt) return;
@@ -31316,14 +31430,20 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
   }
 
   async function remove(id) {
-    if (!confirm("Excluir?")) return;
-    await db.del("manutencao", id);
+    var removida = await db.del("manutencao", id);
     setManutencoes(p => p.filter(m => m.id !== id));
-    // Remove despesa vinculada se existir
+    // Remove despesa(s) vinculada(s) se existir(em)
     var despVinc = despesas.filter(d => d.manutencao_id == id);
-    for (var dv of despVinc) { await db.del("despesas", dv.id); }
+    var despRemovidas = [];
+    for (var dv of despVinc) { despRemovidas.push(await db.del("despesas", dv.id)); }
     setDespesas(p => p.filter(d => d.manutencao_id != id));
-    toast("Excluido!");
+    window._agUndo("Manutenção excluída.", async function(){
+      var restaurada = await db.post("manutencao", removida);
+      setManutencoes(p => [restaurada].concat(p));
+      for (var _di = 0; _di < despRemovidas.length; _di++) {
+        try { var rd = await db.post("despesas", despRemovidas[_di]); setDespesas(function(p){ return [rd].concat(p); }); } catch(e){ console.warn(e); }
+      }
+    });
   }
 
   async function concluir(m) {
@@ -32794,7 +32914,14 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     }
     setSaving(false);
   }
-  async function remove(id) { if (!confirm("Excluir?")) return; await db.del("orcamento_pessoal", id); setItens(p => p.filter(it => it.id !== id)); toast("Excluido!"); }
+  async function remove(id) {
+    var removido = await db.del("orcamento_pessoal", id);
+    setItens(p => p.filter(it => it.id !== id));
+    window._agUndo("Lançamento excluído.", async function(){
+      var restaurado = await db.post("orcamento_pessoal", removido);
+      setItens(p => [restaurado].concat(p));
+    });
+  }
 
   function ItemCard({ it, i, total }) {
     var isRecorrente = efetivoMes(it) !== filtroMes;
@@ -34671,28 +34798,36 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     setLoading(false);
   }
   async function removeDespesa(id) {
-    if (!confirm("Excluir?")) return;
     var desp = (despesas||[]).find(function(d){ return d.id === id; });
-    await db.del("despesas", id);
+    var removida = await db.del("despesas", id);
     setDespesas(p => p.filter(d => d.id !== id));
+    var orcEntryRemovido = null;
     if (desp && isRetLucro(desp)) {
       var tag = "[ret_loc:" + id + "]";
       var orcEntry = (_orcFresh||[]).find(function(o){ return (o.observacoes||"").indexOf(tag) !== -1; });
-      if (orcEntry) { try { await db.del("orcamento_pessoal", orcEntry.id); _setOrcFresh(function(p){ return (p||[]).filter(function(o){ return o.id !== orcEntry.id; }); }); } catch(e){} }
+      if (orcEntry) { try { await db.del("orcamento_pessoal", orcEntry.id); orcEntryRemovido = orcEntry; _setOrcFresh(function(p){ return (p||[]).filter(function(o){ return o.id !== orcEntry.id; }); }); } catch(e){} }
     }
-    toast("Excluido!");
+    window._agUndo("Despesa excluída.", async function(){
+      var restaurada = await db.post("despesas", removida);
+      setDespesas(p => [restaurada].concat(p));
+      if (orcEntryRemovido) { try { var r2 = await db.post("orcamento_pessoal", orcEntryRemovido); _setOrcFresh(function(p){ return [r2].concat(p||[]); }); } catch(e){} }
+    });
   }
   async function removeReceita(id) {
-    if (!confirm("Excluir receita?")) return;
     var rec = (receitas||[]).find(function(r){ return r.id === id; });
-    await db.del("receitas", id);
+    var removida = await db.del("receitas", id);
     setReceitas(p => p.filter(r => r.id !== id));
     // Sincronizar contrato se esta receita era o registro de pagamento
+    var ctIdSincronizado = null;
     if (rec && rec.ref_fatura && rec.status === "recebido") {
       var m = rec.ref_fatura.match(/^fat_(\d+)_/);
-      if (m) { var ctId = parseInt(m[1]); try { await db.patch("contratos", ctId, { status_pagamento: "pendente", data_pagamento: null }); setContratos(p => p.map(x => x.id===ctId ? Object.assign({},x,{status_pagamento:"pendente",data_pagamento:null}) : x)); } catch(e){ console.warn(e); } }
+      if (m) { var ctId = parseInt(m[1]); try { await db.patch("contratos", ctId, { status_pagamento: "pendente", data_pagamento: null }); setContratos(p => p.map(x => x.id===ctId ? Object.assign({},x,{status_pagamento:"pendente",data_pagamento:null}) : x)); ctIdSincronizado = ctId; } catch(e){ console.warn(e); } }
     }
-    toast("Excluído!");
+    window._agUndo("Receita excluída.", async function(){
+      var restaurada = await db.post("receitas", removida);
+      setReceitas(p => [restaurada].concat(p));
+      if (ctIdSincronizado != null) { try { await db.patch("contratos", ctIdSincronizado, { status_pagamento: "pago", data_pagamento: rec.data_pagamento || null }); setContratos(p => p.map(x => x.id===ctIdSincronizado ? Object.assign({},x,{status_pagamento:"pago",data_pagamento: rec.data_pagamento || null}) : x)); } catch(e){ console.warn(e); } }
+    });
   }
 
   // Totais gerais acumulados — contratos pagos integralmente + valor_pago dos parciais
@@ -41353,12 +41488,13 @@ function Reservas({ reservas, setReservas, toast }) {
   }
 
   async function excluir(id) {
-    if (!confirm("Excluir esta reserva?")) return;
     try {
-      await db.del("reservas", id);
+      var removida = await db.del("reservas", id);
       setReservas(function(p){ return p.filter(function(r){ return r.id !== id; }); });
-      toast("Reserva excluída!");
-      try { var fresh = await db.get("reservas"); setReservas(fresh || []); } catch(_){}
+      window._agUndo("Reserva excluída!", async function(){
+        var restaurada = await db.post("reservas", removida);
+        setReservas(function(p){ return [restaurada].concat(p); });
+      });
     } catch(e) { toast("Erro ao excluir: " + (e.message || "verifique permissões no Supabase"), "err"); }
   }
 
@@ -43651,6 +43787,21 @@ function App() {
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [toastState, setToastState] = useState({ msg: "", type: "ok" });
   const [novaReservaAlerta, setNovaReservaAlerta] = useState(null);
+  // Popup temporário de "Desfazer" — exibido após baixar/excluir e afins.
+  const [undoToastData, setUndoToastData] = useState(null);
+  const undoTimerRef = React.useRef(null);
+  function dismissUndoToast() { clearTimeout(undoTimerRef.current); setUndoToastData(null); }
+  React.useEffect(function(){
+    // agUndo(mensagem, desfazerFn, ms): mostra o popup; se ninguém tocar em
+    // "Desfazer" dentro do prazo, a ação (já efetivada) permanece valendo.
+    window._agUndo = function(msg, desfazerFn, ms) {
+      clearTimeout(undoTimerRef.current);
+      setUndoToastData({ msg: msg, onUndo: desfazerFn });
+      if (window._agSomEvento) window._agSomEvento(msg);
+      undoTimerRef.current = setTimeout(function(){ setUndoToastData(null); }, ms || 6000);
+    };
+    return function(){ delete window._agUndo; clearTimeout(undoTimerRef.current); };
+  }, []);
   // Modo do dashboard (locadora | pessoal) — espelhado do Início para a
   // barra fixa do topo trocar o logo pela foto pessoal no Orçamento Pessoal.
   const [dashPessoal, setDashPessoal] = useState(function(){ return window.__ag_modo_dash === "pessoal"; });
@@ -44247,6 +44398,7 @@ function App() {
       , erroTela && React.createElement('div', { onClick: function(){ setErroTela(""); }, style: { position: "fixed", top: 10, left: 10, right: 10, background: "#FF3B30", color: "#fff", padding: "10px 14px", borderRadius: 12, fontSize: 11, fontWeight: 600, zIndex: 100000, boxShadow: "0 4px 16px rgba(0,0,0,.35)", maxHeight: "40vh", overflowY: "auto", lineHeight: 1.4 } }, "⚠️ ERRO JS (toque para fechar): " + erroTela)
       , novaReservaBannerEl
       , React.createElement(Toast, { msg: toastState.msg, type: toastState.type, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3233}} )
+      , React.createElement(UndoToast, { data: undoToastData, onDismiss: dismissUndoToast })
       , React.createElement(BuscaGlobal, { open: buscaOpen, onClose: function(){ setBuscaOpen(false); }, contratos: contratos, clientes: clientes, veiculos: veiculos, multas: multas, setTab: navTab, setOperacionalSubTab: setOperacionalSubTab, C: C })
       , React.createElement(EnviarModal, { open: enviarOpen, onClose: function(){ setEnviarOpen(false); setEnviarPreset(null); }, contratos: contratos, clientes: clientes, veiculos: veiculos, multas: multas, empresa: empresa, C: C, preset: enviarPreset })
       /* Barra estendida 140px acima de y=0: cobre o topo por inteiro sem
@@ -44362,6 +44514,7 @@ function App() {
       , React.createElement('main', { style: { flex: 1, padding: "8px 24px 28px", overflowY: "auto", minWidth: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3246}}, page())
       , novaReservaBannerEl
       , React.createElement(Toast, { msg: toastState.msg, type: toastState.type, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3247}} )
+      , React.createElement(UndoToast, { data: undoToastData, onDismiss: dismissUndoToast })
       , React.createElement(BuscaGlobal, { open: buscaOpen, onClose: function(){ setBuscaOpen(false); }, contratos: contratos, clientes: clientes, veiculos: veiculos, multas: multas, setTab: navTab, setOperacionalSubTab: setOperacionalSubTab, C: C })
       , React.createElement(EnviarModal, { open: enviarOpen, onClose: function(){ setEnviarOpen(false); setEnviarPreset(null); }, contratos: contratos, clientes: clientes, veiculos: veiculos, multas: multas, empresa: empresa, C: C, preset: enviarPreset })
       , React.createElement(ClaudeAssistant, Object.assign({}, props, { mobile: false }))

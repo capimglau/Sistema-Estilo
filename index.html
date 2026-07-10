@@ -21613,6 +21613,24 @@ function fmtDate(d) { if (!d) return "--"; var p = d.split("-"); if (p.length !=
 //   Usar para MEDIR "quanto retirei de lucro" e para a receita do orçamento pessoal.
 function isRetLucro(d) { var c = d.categoria || ""; return c === "Retirada de Lucro" || c === "Ajuste de Saldo"; }
 function isRetLucroPura(d) { return (d.categoria || "") === "Retirada de Lucro"; }
+// Fatura de contrato realmente EMITIDA (ou além) — nunca considerar a receita "prevista" (placeholder
+// criado por criarFaturaPrevista) como já emitida. Único critério usado em TODOS os locais de emissão
+// do sistema (alertas, card de Contratos, agenda/ICS) para decidir se ainda falta emitir a fatura.
+function faturaContratoEmitida(refKey, receitas) {
+  return (receitas || []).some(function(r) {
+    return r.ref_fatura === refKey && (r.status === "emitida" || r.status === "recebido" || r.status === "parcial" || r.status === "isento" || !!r.numero_fatura || !!r.data_emissao);
+  });
+}
+// Próximo número sequencial de fatura (FAT-00001, FAT-00002, ...) — usado em TODOS os locais de
+// emissão (tela de Faturas, card de Contratos) para manter a numeração consistente.
+function proximoNumeroFatura(receitas) {
+  var todos = (receitas || []).filter(function(r) { return r.numero_fatura && r.numero_fatura.startsWith("FAT-"); });
+  var maxN = todos.reduce(function(m, r) {
+    var n = parseInt((r.numero_fatura || "FAT-00000").replace("FAT-", ""), 10);
+    return isNaN(n) ? m : Math.max(m, n);
+  }, 0);
+  return "FAT-" + String(maxN + 1).padStart(5, "0");
+}
 // Espelho [ret_loc:despId] no orçamento pessoal → id da despesa de origem (ou null se não for espelho).
 function _retLocDespId(it){ var m=((it&&it.observacoes)||"").match(/\[ret_loc:([^\]]+)\]/); return m?String(m[1]):null; }
 
@@ -23237,8 +23255,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
     // não apenas quando o pagamento foi recebido — emitir já cumpre a tarefa.
     var mesRef = c.previsao_pagamento.slice(0, 7);
     var rkEmit = "fat_" + c.id + "_" + mesRef;
-    var jaEmitida = (receitas||[]).some(function(r){ return r.ref_fatura === rkEmit && (r.status === "emitida" || r.status === "recebido" || r.status === "parcial" || r.status === "isento" || !!r.numero_fatura || !!r.data_emissao); });
-    return !jaEmitida;
+    return !faturaContratoEmitida(rkEmit, receitas);
   });
 
   const cnhVencida = clientes.filter(c => c.vencimento_cnh && c.vencimento_cnh < hoje);
@@ -23285,7 +23302,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
     // "Faturas a emitir" some assim que a fatura é emitida (não só quando recebida).
     var mesRefF = c.previsao_pagamento.slice(0, 7);
     var rkF = "fat_" + c.id + "_" + mesRefF;
-    return !(receitas || []).some(function(r) { return r.ref_fatura === rkF && (r.status === "emitida" || r.status === "recebido" || r.status === "parcial" || r.status === "isento" || !!r.numero_fatura || !!r.data_emissao); });
+    return !faturaContratoEmitida(rkF, receitas);
   });
   const str60 = new Date(_brNowMs() + 60*864e5).toISOString().split("T")[0];
   const str7doc = new Date(_brNowMs() + 7*864e5).toISOString().split("T")[0];
@@ -28565,7 +28582,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         var _cardAccent = (contratoVenceHoje||pagAtrasado) ? C.red : contratoVenceEm3 ? C.orange : isPago ? C.green : isParcial ? C.teal : isIsento ? C.gray : C.orange;
         var cardStyle = { background: "linear-gradient(160deg, " + _cardAccent + "12 0%, " + _cardAccent + "05 50%, " + C.card + " 100%)", borderRadius: 16, padding: "16px 16px", border: "1px solid " + _cardAccent + "30", borderTop: "2px solid " + _cardAccent + "55", boxShadow: (contratoVenceHoje||pagAtrasado) ? "0 0 0 1px " + C.red + "18, 0 2px 8px " + C.red + "0A" : "0 1px 4px rgba(0,0,0,0.05)" };
         var _str20 = new Date(_brNowMs() + 20*864e5).toISOString().split("T")[0];
-        var faturaAEmitir = c.status !== "cancelado" && c.status !== "concluido" && isPendente && c.previsao_pagamento && c.previsao_pagamento >= hoje && c.previsao_pagamento <= _str20 && !(receitas||[]).some(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
+        var faturaAEmitir = c.status !== "cancelado" && c.status !== "concluido" && isPendente && c.previsao_pagamento && c.previsao_pagamento >= hoje && c.previsao_pagamento <= _str20 && !faturaContratoEmitida("fat_"+c.id+"_"+c.previsao_pagamento.slice(0,7), receitas);
         var _cardClass = periodoExpirado ? "ag-expirado" : (contratoVenceHoje||pagAtrasado) ? "ag-urgent" : faturaAEmitir ? "ag-urgent" : "";
 
         return React.createElement(SwipeRow, { key: c.id,
@@ -28764,8 +28781,9 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                       var _recExist=(receitas||[]).find(function(r){return r.ref_fatura===_refFat;});
                       if(_recExist){
                         if(_recExist.status==="prevista"||!_recExist.status){
-                          await db.patch("receitas",_recExist.id,{status:"emitida",data_emissao:_dtEm});
-                          setReceitas(function(p){return p.map(function(r){return r.id===_recExist.id?Object.assign({},r,{status:"emitida",data_emissao:_dtEm}):r;});});
+                          var _numFat=_recExist.numero_fatura||proximoNumeroFatura(receitas);
+                          await db.patch("receitas",_recExist.id,{status:"emitida",data_emissao:_dtEm,numero_fatura:_numFat});
+                          setReceitas(function(p){return p.map(function(r){return r.id===_recExist.id?Object.assign({},r,{status:"emitida",data_emissao:_dtEm,numero_fatura:_numFat}):r;});});
                         }
                       } else {
                         var _novaFat=await db.post("receitas",{
@@ -28773,6 +28791,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                           valor:parseFloat(c.valor_total||0).toFixed(2),
                           data:_dtEm,data_emissao:_dtEm,
                           data_vencimento:c.previsao_pagamento,
+                          numero_fatura:proximoNumeroFatura(receitas),
                           status:"emitida",tipo:"locacao",
                           cliente_id:c.cliente_id,contrato_id:c.id,
                           ref_fatura:_refFat
@@ -36971,12 +36990,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       var totPg = competencias.filter(function(f){ return f.status==="paga"; }).reduce(function(s,f){ return s+f.valor; },0);
 
       async function proximoNumFatura() {
-        var todos = (receitas || []).filter(function(r){ return r.numero_fatura && r.numero_fatura.startsWith("FAT-"); });
-        var maxN = todos.reduce(function(m, r) {
-          var n = parseInt((r.numero_fatura || "FAT-00000").replace("FAT-", ""), 10);
-          return isNaN(n) ? m : Math.max(m, n);
-        }, 0);
-        return "FAT-" + String(maxN + 1).padStart(5, "0");
+        return proximoNumeroFatura(receitas);
       }
 
       async function emitir(fat) {
@@ -40107,7 +40121,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     if (!c.previsao_pagamento || c.status === "cancelado") return;
     if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return;
     var refKey = "fat_" + c.id + "_" + c.previsao_pagamento.slice(0,7);
-    if ((receitas||[]).some(function(r){ return r.ref_fatura === refKey; })) return;
+    if (faturaContratoEmitida(refKey, receitas)) return;
     var dtEmissao = new Date(c.previsao_pagamento + "T12:00:00");
     dtEmissao.setDate(dtEmissao.getDate() - 20);
     var dtEmissaoStr = dtEmissao.toISOString().split("T")[0];
@@ -40335,7 +40349,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
       if (!c.previsao_pagamento || c.status === "cancelado") return;
       if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return;
       var refKey = "fat_" + c.id + "_" + c.previsao_pagamento.slice(0,7);
-      if ((receitas||[]).some(function(r){ return r.ref_fatura === refKey; })) return;
+      if (faturaContratoEmitida(refKey, receitas)) return;
       var dtE = new Date(c.previsao_pagamento + "T12:00:00");
       dtE.setDate(dtE.getDate() - 20);
       var dtEStr = dtE.toISOString().split("T")[0];

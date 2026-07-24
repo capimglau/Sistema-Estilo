@@ -40427,7 +40427,7 @@ const ICONS = {
 window.__ICONS = ICONS; // expõe para drag highlight
 
 
-function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, setTab, orcItens: orcItensProp }) {
+function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, manutencoes, setTab, orcItens: orcItensProp }) {
   var hoje = _brNow().toISOString().split("T")[0];
   var now = new Date();
 
@@ -40536,6 +40536,23 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     });
   });
 
+  // CONTRATOS — renovação incompleta (pai concluído aponta para filho que não existe mais)
+  var idsContratosCal = new Set((contratos||[]).map(function(c){ return String(c.id); }));
+  var _hoje14strCal = _addDiasISO(hoje, -14);
+  (contratos || []).forEach(function(c) {
+    if (c.status !== "concluido" || !c.renovado_para || idsContratosCal.has(String(c.renovado_para))) return;
+    if (!c.data_fim || c.data_fim < _hoje14strCal) return;
+    var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;});
+    eventos.push({
+      data: c.data_fim, tipo: "renovacao_orfa",
+      cor: "#FF3B30",
+      emoji: "⚠️",
+      titulo: "Renovação incompleta · Contrato " + calRenLabel(c) + " · " + (cl&&cl.nome||"--"),
+      sub: "Encerrou em " + fmtD(c.data_fim) + " sem contrato de continuidade",
+      tab: "contratos"
+    });
+  });
+
   // MULTAS — vencimento
   (multas || []).forEach(function(m) {
     if (!m.vencimento || m.status === "pago") return;
@@ -40547,6 +40564,24 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
       emoji: "⚠️",
       titulo: "Multa " + (m.tipo||"") + " · " + (ve&&ve.placa||"--") + " · " + fmtV(m.valor),
       sub: (cl&&cl.nome||"--") + (m.descricao ? " · " + m.descricao : "") + (m.ait ? " · AIT " + m.ait : "") + " · #" + numCt(m.id),
+      tab: "multas"
+    });
+  });
+
+  // MULTAS — prazo de indicação de condutor ao órgão
+  (multas || []).forEach(function(m) {
+    if (m.status === "cancelada" || m.status === "cancelado") return;
+    if ((m.status_notificacao||"nao_notificado") === "notificado") return;
+    var prazo = m.prazo_notificacao_orgao || m.vencimento || "";
+    if (!prazo) return;
+    var ve = (veiculos||[]).find(function(x){return x.id==m.veiculo_id;});
+    var cl = (clientes||[]).find(function(x){return x.id==m.cliente_id;});
+    eventos.push({
+      data: prazo, tipo: "multa_notif",
+      cor: prazo < hoje ? "#FF3B30" : "#FF9500",
+      emoji: "🏛️",
+      titulo: "Prazo notificação ao órgão · " + (m.tipo||"Multa") + " · " + (ve&&ve.placa||"--"),
+      sub: (cl&&cl.nome||"--") + " · indique o condutor até " + fmtD(prazo),
       tab: "multas"
     });
   });
@@ -40634,7 +40669,9 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   });
 
   // MANUTENÇÕES — previsão de pagamento
+  var manutIdsComDespesa = new Set();
   (despesas||[]).filter(function(d){ return d.manutencao_id && d.data && !d.data_pagamento && d.status !== "pago"; }).forEach(function(d) {
+    manutIdsComDespesa.add(String(d.manutencao_id));
     if (despesasJaAdicionadas.has("man_"+d.id)) return;
     despesasJaAdicionadas.add("man_"+d.id);
     var atrasada = d.data < hoje;
@@ -40644,6 +40681,38 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
       emoji: "🔧",
       titulo: "Manutenção · " + (d.descricao||"--") + " · " + fmtV(d.valor),
       sub: (d.categoria||"") + (d.observacoes ? " · " + d.observacoes : ""),
+      tab: "manutencao"
+    });
+  });
+
+  // MANUTENÇÕES — prazo (saída) vencido, veículo ainda em oficina
+  (manutencoes||[]).filter(function(m){ return m.status === "em_andamento" && m.data_saida && m.data_saida < hoje; }).forEach(function(m) {
+    var ve = (veiculos||[]).find(function(v){ return v.id == m.veiculo_id; });
+    eventos.push({
+      data: m.data_saida, tipo: "manutencao_prazo",
+      cor: "#AF52DE",
+      emoji: "🔧",
+      titulo: "Manutenção com prazo vencido · " + (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção"),
+      sub: "Previsão de saída " + fmtD(m.data_saida),
+      tab: "manutencao"
+    });
+  });
+
+  // MANUTENÇÕES — pagamento em atraso (registro direto na manutenção, sem despesa vinculada)
+  (manutencoes||[]).filter(function(m){
+    if (m.status_financeiro === "pago" || !!m.data_pagamento) return false;
+    if (manutIdsComDespesa.has(String(m.id))) return false;
+    var dt = m.data_previsao_pagamento || m.data_entrada || "";
+    return dt && dt < hoje;
+  }).forEach(function(m) {
+    var ve = (veiculos||[]).find(function(v){ return v.id == m.veiculo_id; });
+    var dt = m.data_previsao_pagamento || m.data_entrada;
+    eventos.push({
+      data: dt, tipo: "manutencao",
+      cor: "#FF9500",
+      emoji: "🔧",
+      titulo: "Manutenção · " + (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção") + " · " + fmtV(m.custo),
+      sub: fmtD(dt),
       tab: "manutencao"
     });
   });
@@ -44599,7 +44668,7 @@ function App() {
       if (financeiroSubTab === "rentabilidade") return React.createElement(RentabilidadeVeiculos, { veiculos: veiculos, contratos: contratos, despesas: despesas, manutencoes: manutencoes, receitas: receitas });
       if (financeiroSubTab === "gestao") {
         if (gestaoSubTab === "linha_do_tempo") return React.createElement(LinhaDoTempo, { contratos: contratos, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, reservas: reservas, veiculos: veiculos, clientes: clientes, setTab: navTab });
-        if (gestaoSubTab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, setTab: setTab, orcItens: orcItens });
+        if (gestaoSubTab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens });
         if (gestaoSubTab === "previsao_caixa") return React.createElement(PrevisaoCaixa, { contratos: contratos, veiculos: veiculos, clientes: clientes, despesas: despesas, receitas: receitas, manutencoes: manutencoes });
         return React.createElement(Relatorios, { ...props });
       }
@@ -44610,7 +44679,7 @@ function App() {
     if (tab === "gestao") {
       if (gestaoSubTab === "simulador") return React.createElement(Simulador, { veiculos: veiculos, contratos: contratos, despesas: despesas, manutencoes: manutencoes, multas: multas, receitas: receitas, toast: toast });
       if (gestaoSubTab === "linha_do_tempo") return React.createElement(LinhaDoTempo, { contratos: contratos, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, reservas: reservas, veiculos: veiculos, clientes: clientes, setTab: navTab });
-      if (gestaoSubTab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, setTab: setTab, orcItens: orcItens });
+      if (gestaoSubTab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens });
       if (gestaoSubTab === "previsao_caixa") return React.createElement(PrevisaoCaixa, { contratos: contratos, veiculos: veiculos, clientes: clientes, despesas: despesas, receitas: receitas, manutencoes: manutencoes });
       return React.createElement(Relatorios, { ...props });
     }
@@ -44620,7 +44689,7 @@ function App() {
       if (configSubTab === "importar") return React.createElement(ImportarDados, { veiculos: veiculos, setVeiculos: setVeiculos, clientes: clientes, setClientes: setClientes, contratos: contratos, setContratos: setContratos, toast: toast });
       return React.createElement(Config, { empresa: empresa, setEmpresa: setEmpresa, toast: toast, darkMode: darkMode, toggleDark: toggleDark, setThemeDirect: setThemeDirect, temaList: TEMA_LIST, temaKeys: TEMA_KEYS, setClaudeKey: setClaudeKey, usuarioAtual: usuarioAtual, lgpdConsent: lgpdConsent, setLgpdConsent: setLgpdConsent, modPrivacidade: modPrivacidade, setModPrivacidade: setModPrivacidade, onLogout: function(){ setLogado(false); setUsuarioAtual(null); document.body.classList.remove('ag-logado'); try { localStorage.removeItem(_AG_SESS_KEY); } catch(e) {} } });
     }
-    if (tab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, setTab: setTab, orcItens: orcItens });
+    if (tab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens });
     if (tab === "linha_do_tempo") return React.createElement(LinhaDoTempo, { contratos: contratos, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, reservas: reservas, veiculos: veiculos, clientes: clientes, setTab: navTab });
     // usuarios agora é sub-aba de config — mantido para compatibilidade
     return null;

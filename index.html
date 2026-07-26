@@ -2332,6 +2332,31 @@ window.__agScrollTarget = function(el) {
   var d = window.__agScroller();
   return (!el || el === d || el === document || el === document.body) ? window : el;
 };
+
+/* ── Tema efetivo ────────────────────────────────────────────────────────────
+   Estilo AGI: com o iOS em modo noturno o app abre no tema Azul (dim). Mas
+   isso é só o PADRÃO de quem nunca escolheu — uma escolha explícita do usuário
+   (dm_manual salvo pelo botão "Alternar tema" ou pelo seletor em Config)
+   sempre vence. Antes o modo noturno forçava "dim" em todos os pontos e o
+   botão de tema não tinha efeito nenhum com o iPhone no escuro.
+   Resolver o tema em um lugar só mantém os 4 pontos de aplicação (script do
+   head, primeiro paint, meta theme-color e efeito do React) em sincronia. */
+window.__agSysDark = function() {
+  try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); }
+  catch(e) { return false; }
+};
+/* Chave salva pelo usuário, normalizada — null se nunca escolheu.
+   "2" = Azul (dim) · "12" = Cinza AGI (pearl) · "1" = tema Escuro removido. */
+window.__agTemaEscolhido = function() {
+  var k;
+  try { k = localStorage.getItem("dm_manual"); } catch(e) { return null; }
+  if (k === "1") k = "2";
+  return (k === "2" || k === "12") ? k : null;
+};
+/* Chave de tema efetiva: escolha do usuário ou, na falta dela, o modo do iOS. */
+window.__agTemaKey = function() {
+  return window.__agTemaEscolhido() || (window.__agSysDark() ? "2" : "12");
+};
 </script>
 <script>
 // Fix chart resolution on high-DPI/Retina screens
@@ -2359,19 +2384,13 @@ if (typeof Chart !== 'undefined') {
     if(t[0]!=="light") document.body.classList.add(t[0]);
     document.body.style.background=t[1];
   }
-  /* Aplica imediatamente ao carregar — usa tema manual salvo.
-     Estilo AGI: iOS em modo noturno exibe SOMENTE o tema azul (dim);
-     a status bar preta se funde e a preferência salva fica intacta. */
-  var _key = localStorage.getItem("dm_manual") || "12";
-  if (_key === "1") _key = "2"; /* tema Escuro removido → cai no Azul */
-  if (_key !== "2" && _key !== "12") _key = "12"; /* só Cinza/Azul */
-  var _sysDark = false;
-  try { _sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; } catch(e){}
+  /* Aplica imediatamente ao carregar — tema escolhido pelo usuário, ou o modo
+     do iOS quando ele nunca escolheu (ver window.__agTemaKey). */
   /* Este script roda no <head>, antes do <body> existir — chamar applyBody
      direto quebrava (document.body null) e o body ficava sem a cor do tema
      no primeiro paint, exatamente quando o iOS amostra a cor do canvas para
      pintar a status bar do PWA. Aplica assim que o body existir. */
-  var _applyKey = _sysDark ? "2" : _key;
+  var _applyKey = window.__agTemaKey();
   if (document.body) { applyBody(_applyKey); }
   else { document.addEventListener("DOMContentLoaded", function(){ applyBody(_applyKey); }); }
 })();</script>
@@ -15144,9 +15163,8 @@ window.ReactDOMFull=require_react_dom();
 <script>
 (function(){
   try {
-    var dm = (function(){var k={"1":"dark","2":"dim","12":"pearl"};return k[localStorage.getItem("dm_manual")]||"pearl";})();
-    /* Estilo AGI: iOS em modo noturno exibe SOMENTE o tema azul (dim) */
-    try { if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) dm = "dim"; } catch(e){}
+    /* Tema escolhido pelo usuário, ou o modo do iOS na falta de escolha. */
+    var dm = { "2": "dim", "12": "pearl" }[window.__agTemaKey()] || "pearl";
     var tc = {"light":"#FAFAFA","dark":"#0F0F14","dim":"#131c2c","cristal":"#E5EBF3","indigo":"#262636","pearl":"#f2f2f7"};
     /* Cor da faixa do status bar (notch) — acompanha a barra fixa do topo:
        branca no tema claro, cor do tema no escuro. No iOS standalone, essa
@@ -15181,13 +15199,7 @@ window.ReactDOMFull=require_react_dom();
    canvas nesse período para pintar a faixa da status bar do PWA. */
 (function(){
   try {
-    var k = localStorage.getItem("dm_manual") || "12";
-    if (k === "1") k = "2";
-    if (k !== "2" && k !== "12") k = "12";
-    var sysDark = false;
-    try { sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; } catch(e){}
-    if (sysDark) k = "2";
-    var th = { "2": ["dim", "#131c2c"], "12": ["pearl", "#f2f2f7"] }[k];
+    var th = { "2": ["dim", "#131c2c"], "12": ["pearl", "#f2f2f7"] }[window.__agTemaKey()];
     if (th) {
       if (th[0] !== "light") document.body.classList.add(th[0]);
       document.body.style.background = th[1];
@@ -44355,24 +44367,30 @@ function App() {
   }, []);
   const autoFaturaFeita = React.useRef(false);
   const mobile = useMobile();
+  // Mesma resolução usada pelos scripts de boot — ver window.__agTemaKey.
   const [darkMode, setDarkMode] = React.useState(() => {
-    var thMap={"1":"dim","2":"dim","12":"pearl"};
-    return thMap[localStorage.getItem("dm_manual")||"12"] || "pearl";
+    return { "2": "dim", "12": "pearl" }[window.__agTemaKey()] || "pearl";
   });
-  // Estilo AGI: segue o modo noturno do iOS — tema claro vira dark navy (dim)
-  const [sysDark, setSysDark] = React.useState(function(){ try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; } catch(e){ return false; } });
+  // Estilo AGI: o modo noturno do iOS é o PADRÃO de quem nunca escolheu tema —
+  // não um override permanente (senão o botão "Alternar tema" não teria efeito).
+  const [sysDark, setSysDark] = React.useState(function(){ return window.__agSysDark(); });
   React.useEffect(function(){
     try {
       var mq = window.matchMedia('(prefers-color-scheme: dark)');
-      var fn = function(e){ setSysDark(e.matches); };
+      var fn = function(e){
+        setSysDark(e.matches);
+        // Sem escolha explícita salva, o app acompanha o modo do sistema.
+        if (!window.__agTemaEscolhido()) setDarkMode(e.matches ? "dim" : "pearl");
+      };
       if (mq.addEventListener) mq.addEventListener('change', fn); else mq.addListener(fn);
       return function(){ if (mq.removeEventListener) mq.removeEventListener('change', fn); else mq.removeListener(fn); };
     } catch(e){}
   }, []);
   var TEMA_KEYS={"dim":"2","pearl":"12"};
-  // Cinza AGI primeiro; no modo noturno do iOS só o tema Azul (dim) fica disponível
+  // Cinza AGI primeiro. Os dois temas ficam sempre disponíveis — a escolha do
+  // usuário vale também com o iOS em modo noturno.
   var TEMA_LIST_FULL=[{id:"pearl",label:"Cinza AGI",bg:"#f2f2f7",card:"#FFFFFF",dot:"#1f5fa8"},{id:"dim",label:"Azul",bg:"#131c2c",card:"#1e2738",dot:"#5b9bd5"}];
-  var TEMA_LIST = sysDark ? TEMA_LIST_FULL.filter(function(t){ return t.id==="dim"; }) : TEMA_LIST_FULL;
+  var TEMA_LIST = TEMA_LIST_FULL;
   function setThemeDirect(theme) { setDarkMode(theme); localStorage.setItem("dm_manual", TEMA_KEYS[theme]||"12"); }
   function toggleDark() { setDarkMode(function(d){ var order=["pearl","dim"]; var i=order.indexOf(d); var n=order[(i+1)%order.length]; localStorage.setItem("dm_manual",TEMA_KEYS[n]||"12"); return n; }); }
 
@@ -44496,10 +44514,10 @@ function App() {
   }, [reservas]);
 
   useEffect(() => {
-    var _bgMap={"0":"#FAFAFA","1":"#0F0F14","2":"#131c2c","3":"#FFFFFF","4":"#E5EBF3","5":"#0D1117","6":"#1A2744","7":"#FAF5EC","8":"#1E1B4B","9":"#1C1C1E","11":"#07090F","12":"#f2f2f7","16":"#FFFFFF"};
-    var _dmManual = localStorage.getItem("dm_manual");
-    if (_dmManual !== "1" && _dmManual !== "2" && _dmManual !== "12") _dmManual = "12"; /* só Cinza/Escuro/Azul */
-    document.body.style.background = _bgMap[_dmManual] || "#f2f2f7";
+    /* Mesma chave dos scripts de boot e do efeito de tema — evita que o fundo
+       inicial do body divirja do tema aplicado quando o iOS está no escuro. */
+    var _bgMap={"2":"#131c2c","12":"#f2f2f7"};
+    document.body.style.background = _bgMap[window.__agTemaKey()] || "#f2f2f7";
     /* svh (viewport pequena, barra do Safari expandida): evita criar ~60px de
        scroll fantasma em telas curtas agora que quem rola é o documento. */
     document.body.style.minHeight = "100svh";
@@ -44551,9 +44569,9 @@ function App() {
 
   React.useEffect(function() {
     var _themes={"light":"#FAFAFA","dark":"#0F0F14","dim":"#131c2c","cristal":"#E5EBF3","indigo":"#262636","pearl":"#f2f2f7","midnight":"#0D1117","alpine":"#F0F4F8"};
-    // Estilo AGI: iOS em modo noturno exibe SOMENTE o tema azul (dim).
-    // A preferência salva (dm_manual) não é alterada — só a exibição.
-    var _eff = sysDark ? "dim" : darkMode;
+    // darkMode já nasce do __agTemaKey() (escolha do usuário ou, na falta
+    // dela, o modo do iOS) — nada de forçar "dim" aqui por cima.
+    var _eff = darkMode;
     document.body.classList.remove("dark","dim","sage","cristal","midnight","indigo","pro","pearl","alpine","offwhite","walnut");
     var _bg = _themes[_eff] || "#FAFAFA";
     if (_themes[_eff]) { if(_eff!=="light") document.body.classList.add(_eff); document.body.style.background = _bg; }
@@ -44906,7 +44924,7 @@ function App() {
          depender da precisão do safe-area. Sem box-shadow — o desfoque dela
          aparecia como "linha fina" sobre o branco. Escuro = cor do tema. */
       , React.createElement('div', {
-          style: { position:"fixed", top:-140, left:0, right:0, zIndex:99998, height: _agStandalone ? "calc(max(calc(env(safe-area-inset-top, 59px) + 40px), 99px) + 140px)" : "calc(env(safe-area-inset-top, 0px) + 180px)", display:"flex", alignItems:"flex-end", background:(sysDark || darkMode === "dim") ? "#131c2c" : "#FFFFFF", borderBottom:"1px solid var(--c-border)", WebkitTapHighlightColor:"transparent", cursor:"pointer" },
+          style: { position:"fixed", top:-140, left:0, right:0, zIndex:99998, height: _agStandalone ? "calc(max(calc(env(safe-area-inset-top, 59px) + 40px), 99px) + 140px)" : "calc(env(safe-area-inset-top, 0px) + 180px)", display:"flex", alignItems:"flex-end", background:(darkMode === "dim") ? "#131c2c" : "#FFFFFF", borderBottom:"1px solid var(--c-border)", WebkitTapHighlightColor:"transparent", cursor:"pointer" },
           onClick: function(){ var el=scrollContainerRef.current; if(el&&el.scrollTo){el.scrollTo({top:0,behavior:'smooth'});} else if(el){el.scrollTop=0;} try{window.scrollTo({top:0,behavior:'smooth'});}catch(e){} },
           onTouchEnd: function(){ var el=scrollContainerRef.current; if(el&&el.scrollTo){el.scrollTo({top:0,behavior:'smooth'});} else if(el){el.scrollTop=0;} try{window.scrollTo({top:0,behavior:'smooth'});}catch(e){} }
         },
@@ -44927,11 +44945,13 @@ function App() {
               ),
               dashPessoal ? React.createElement('span', { style: { fontSize:9, fontWeight:700, color:"#AF52DE", background:"rgba(175,82,222,0.12)", borderRadius:6, padding:"1px 5px", marginLeft:2, letterSpacing:0.3, flexShrink:0 } }, "PESSOAL") : null
             ),
-            React.createElement('div', { style: { display:"flex", alignItems:"center", gap:2, flexShrink:0 } },
+            /* gap 10 + alvos de 34×34 (altura útil da faixa): antes os três
+               botões tinham ~2px entre si e um pegava o toque do outro. */
+            React.createElement('div', { style: { display:"flex", alignItems:"center", gap:10, flexShrink:0 } },
               React.createElement('button', {
                 onClick: function(e){ e.stopPropagation(); var ORDER=["pearl","dim"]; var cur=document.body.className.split(' ').find(function(c){return ORDER.indexOf(c)>=0;})||'pearl'; var next=ORDER[(ORDER.indexOf(cur)+1)%ORDER.length]; document.dispatchEvent(new CustomEvent('ag:set-theme',{detail:next})); },
                 title: "Alternar tema",
-                style: { border:"none", background:"transparent", borderRadius:7, padding:"3px 5px", cursor:"pointer", display:"flex", alignItems:"center", flexShrink:0 }
+                style: { border:"none", background:"transparent", borderRadius:10, width:34, height:34, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, touchAction:"manipulation", WebkitTapHighlightColor:"transparent" }
               },
                 React.createElement('svg', { width:18, height:18, viewBox:"0 0 24 24", fill:"none", stroke:"var(--c-sub)", strokeWidth:2, strokeLinecap:"round", strokeLinejoin:"round" },
                   React.createElement('circle', { cx:12, cy:12, r:9 }),
@@ -44941,7 +44961,7 @@ function App() {
               React.createElement('button', {
                 onClick: function(e){ e.stopPropagation(); if (window.__ag_open_enviar) window.__ag_open_enviar(); },
                 title: "Enviar documento por WhatsApp",
-                style: { border:"none", background:"rgba(37,211,102,0.12)", borderRadius:"50%", width:30, height:30, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0, marginLeft:2 }
+                style: { border:"none", background:"rgba(37,211,102,0.12)", borderRadius:"50%", width:34, height:34, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0, touchAction:"manipulation", WebkitTapHighlightColor:"transparent" }
               },
                 React.createElement('svg', { width:16, height:16, viewBox:"0 0 24 24", fill:"#25D366" },
                   React.createElement('path', { d: "M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.872.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347zM12.052 21.785h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884zm8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" })
@@ -44950,7 +44970,7 @@ function App() {
               React.createElement('button', {
                 onClick: function(e){ e.stopPropagation(); window.dispatchEvent(new CustomEvent('open-claude')); },
                 title: "Assistente Claude IA",
-                style: { border:"none", background:"transparent", borderRadius:7, padding:"3px 5px", cursor:"pointer", display:"flex", alignItems:"center", flexShrink:0 }
+                style: { border:"none", background:"transparent", borderRadius:10, width:34, height:34, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, touchAction:"manipulation", WebkitTapHighlightColor:"transparent" }
               },
                 React.createElement('svg', { width:18, height:18, viewBox:"0 0 24 24", fill:"none" },
                   React.createElement('rect', { x:11, y:2.5, width:2, height:19, rx:1, fill:"#D97757", opacity:0.9 }),

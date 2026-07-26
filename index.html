@@ -20,7 +20,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0;outline:none;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;}
-html{background:#FAFAFA}
+/* Scroll do DOCUMENTO (ver .ag-app-shell): no mobile quem rola é o próprio
+   <html>, e não um container interno com position:fixed — é isso que permite
+   ao Safari do iOS minimizar a barra de busca ao rolar a página.
+   - overflow-x:hidden substitui o overflowX do antigo container fixo;
+   - overscroll-behavior-y:contain desliga o pull-to-refresh nativo, já que o
+     app tem o seu próprio (ver onTouchStart/onTouchEnd em App). */
+html{background:#FAFAFA;overflow-x:hidden;overscroll-behavior-y:contain}
 html:has(body.dark){background:#0F0F14}
 html:has(body.dim){background:#131c2c}
 html:has(body.midnight){background:#0D1117}
@@ -2311,6 +2317,22 @@ body.dim .lg-nav-btn:not(.lg-nav-btn-active) > span:last-child {
 }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+/* ── Scroller do app ─────────────────────────────────────────────────────────
+   O app mobile rola o próprio documento (e não um container interno com
+   position:fixed), para que o Safari do iOS minimize a barra de busca.
+   Estes dois helpers centralizam quem é o elemento que rola e onde escutar
+   os eventos de scroll — usados por todos os blocos <script> abaixo. */
+window.__agScroller = function() {
+  return document.scrollingElement || document.documentElement;
+};
+/* Eventos 'scroll' do scroller raiz são despachados em `document`, nunca em
+   <html> — logo o listener tem que ficar em window (ou document). */
+window.__agScrollTarget = function(el) {
+  var d = window.__agScroller();
+  return (!el || el === d || el === document || el === document.body) ? window : el;
+};
+</script>
 <script>
 // Fix chart resolution on high-DPI/Retina screens
 document.addEventListener('DOMContentLoaded', function() {
@@ -15255,7 +15277,7 @@ window.ReactDOMFull=require_react_dom();
   if (!isStandalone) return;
   var wasHidden = false;
   function unfreeze(){
-    var sc = document.querySelector('.ag-app-shell');
+    var sc = window.__agScroller();
     var keepTop = sc ? sc.scrollTop : 0;
     var root = document.getElementById('root');
     /* display none→'' força o WebKit a recompor o webview (destrava toques). */
@@ -22630,10 +22652,12 @@ function _pdfResumeRecover() {
   function kick() {
     var root = document.getElementById('root');
     if (root) { root.style.display = 'none'; void root.offsetHeight; root.style.display = ''; }
-    var sh = document.querySelector('.ag-app-shell');
+    /* Nudge de 1px no scroller do documento destrava o webview preservando a
+       posição de leitura — não usar window.scrollTo(0,0) aqui: agora que o
+       documento rola, isso jogaria o usuário para o topo ao voltar do share. */
+    var sh = window.__agScroller();
     if (sh) { try { sh.scrollTop += 1; sh.scrollTop -= 1; } catch(e) {} }
     try { window.dispatchEvent(new Event('resize')); } catch(e) {}
-    try { window.scrollTo(0, 0); } catch(e) {}
   }
   setTimeout(kick, 60);
   setTimeout(kick, 350);
@@ -44044,7 +44068,14 @@ function App() {
     _setAgDlg(null);
     if (_agDlgResolveRef.current) { _agDlgResolveRef.current(result); _agDlgResolveRef.current = null; }
   }
+  /* Container de scroll do app = scroller do documento (<html>). O ref deixou
+     de apontar para um div com overflow-y:auto quando o shell migrou para o
+     fluxo normal — ver .ag-app-shell. Todos os usos de
+     scrollContainerRef.current (scrollTop / scrollTo) seguem válidos. */
   const scrollContainerRef = React.useRef(null);
+  React.useEffect(function(){
+    scrollContainerRef.current = window.__agScroller();
+  }, []);
   React.useEffect(function(){
     window._agScrollTop = function(){ var _sc = scrollContainerRef.current; if (_sc) _sc.scrollTo({ top: 0, behavior: 'smooth' }); window.scrollTo({ top: 0, behavior: 'smooth' }); };
     return function(){ delete window._agScrollTop; };
@@ -44143,12 +44174,9 @@ function App() {
     showDock();
     if (t === "inicio") {
       setTimeout(function(){
+        // Um único scroller (o documento) — ver .ag-app-shell.
         var _sc = scrollContainerRef.current; if (_sc) _sc.scrollTo({ top: 0, behavior: 'smooth' });
         window.scrollTo({ top: 0, behavior: 'smooth' });
-        document.documentElement.scrollTo({ top: 0, behavior: 'smooth' });
-        document.body.scrollTo({ top: 0, behavior: 'smooth' });
-        var inner = document.querySelector('.ag-main-scroll');
-        if (inner) { inner.scrollTo({ top: 0, behavior: 'smooth' }); if (inner.parentElement) inner.parentElement.scrollTo({ top: 0, behavior: 'smooth' }); }
       }, 0);
     }
     if (t === "reservas" || t === "contratos" || t === "multas" || t === "manutencao") {
@@ -44295,8 +44323,6 @@ function App() {
       // Sempre sobe ao topo antes de abrir o painel
       var _sc = scrollContainerRef.current; if (_sc) _sc.scrollTo({ top: 0, behavior: 'smooth' });
       window.scrollTo({ top: 0, behavior: 'smooth' });
-      document.documentElement.scrollTop = 0;
-      document.body.scrollTop = 0;
     }
     window.__ag_open_shortcuts = _onOpenSC;
     // Listener React (fallback caso o global seja chamado antes de montar)
@@ -44474,7 +44500,9 @@ function App() {
     var _dmManual = localStorage.getItem("dm_manual");
     if (_dmManual !== "1" && _dmManual !== "2" && _dmManual !== "12") _dmManual = "12"; /* só Cinza/Escuro/Azul */
     document.body.style.background = _bgMap[_dmManual] || "#f2f2f7";
-    document.body.style.minHeight = "100vh";
+    /* svh (viewport pequena, barra do Safari expandida): evita criar ~60px de
+       scroll fantasma em telas curtas agora que quem rola é o documento. */
+    document.body.style.minHeight = "100svh";
     try { var pref = JSON.parse(localStorage.getItem("ag_prefs_v1") || "{}"); if (pref.dens) document.body.setAttribute("data-dens", pref.dens); } catch(e) {}
     // Pull-to-refresh: detecta swipe para baixo no topo da página
     var _pullStartY = 0;
@@ -44742,7 +44770,13 @@ function App() {
   );
 
   if (mobile) return React.createElement(React.Fragment, null,
-    React.createElement('div', { ref: scrollContainerRef, className: "ag-app-shell", onTouchStart: function(){ if(shortcutsOpenRef.current) return; resetDockTimer(); }, onClick: function(){ if(shortcutsOpenRef.current) return; resetDockTimer(); }, style: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, overflowY: "auto", overflowX: "hidden", WebkitOverflowScrolling: "touch", overscrollBehaviorY: "contain", background: "var(--c-bg)" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3221}}
+    /* Shell em fluxo normal (NÃO usar position:fixed + overflow-y:auto aqui):
+       o scroll precisa ser do documento para o Safari do iOS minimizar a barra
+       de busca. overflow-x e overscroll-behavior migraram para a regra `html`.
+       position:relative preserva o shell como bloco-contêiner dos filhos
+       absolutos; os filhos position:fixed (dock, barra do topo) continuam
+       ancorados na viewport porque o shell não tem transform/filter. */
+    React.createElement('div', { className: "ag-app-shell", onTouchStart: function(){ if(shortcutsOpenRef.current) return; resetDockTimer(); }, onClick: function(){ if(shortcutsOpenRef.current) return; resetDockTimer(); }, style: { position: "relative", minHeight: "100svh", background: "var(--c-bg)" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3221}}
           , React.createElement('div', { key: tab, className: "ag-main-scroll" + (tabDirRef.current === -1 ? " ag-back" : ""), style: { padding: (_agStandalone ? "max(calc(env(safe-area-inset-top, 59px) + 44px), 103px)" : "calc(env(safe-area-inset-top, 0px) + 44px)") + " 16px " + ("calc(env(safe-area-inset-bottom, 0px) + 156px)") } }
               /* botão Voltar removido — navegação exclusivamente pelo Dock */
               , page()
@@ -45153,6 +45187,10 @@ if (!__viewerMode) {
   }
 
   function findScrollDiv() {
+    // Mobile: quem rola é o documento (ver .ag-app-shell). Só cai na varredura
+    // por divs com overflow-y:auto no desktop, onde o <main> é o scroller.
+    var doc = window.__agScroller();
+    if (doc && doc.scrollHeight > doc.clientHeight + 20) return doc;
     var all = document.querySelectorAll('div, main');
     for (var i = 0; i < all.length; i++) {
       var s = all[i].style;
@@ -45171,9 +45209,11 @@ if (!__viewerMode) {
   function attach() {
     var el = findScrollDiv();
     if (!el || el === bound) return;
-    if (bound) bound.removeEventListener('scroll', onScroll);
+    if (bound) window.__agScrollTarget(bound).removeEventListener('scroll', onScroll);
     bound = el; lastY = el.scrollTop; accumulated = 0;
-    el.addEventListener('scroll', onScroll, { passive: true });
+    // __agScrollTarget: o scroller raiz emite 'scroll' em document/window,
+    // nunca no próprio <html> — escutar em `el` não dispararia nada.
+    window.__agScrollTarget(el).addEventListener('scroll', onScroll, { passive: true });
   }
 
   // Detecta abertura/fechamento do painel via MutationObserver
@@ -45508,7 +45548,9 @@ if (!__viewerMode) {
   // Feedback leve ao atingir topo ou fim do scroll
   var _lastEdge = 0;
   document.addEventListener('scroll', function(e) {
-    var el = e.target;
+    // Scroll do documento chega com target = document (sem scrollTop próprio):
+    // resolve para <html>, que é o elemento que de fato rola.
+    var el = (e.target === document) ? window.__agScroller() : e.target;
     if (!el || !el.scrollTop && el.scrollTop !== 0) return;
     var now = Date.now();
     if (now - _lastEdge < 400) return;
@@ -46869,9 +46911,9 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
 // replica o comportamento do iOS de tocar na nav bar para subir ao topo.
 (function(){
   function scrollTop() {
-    // Usa o pai do .ag-main-scroll, que é sempre o container com overflow-y:auto
-    var inner = document.querySelector('.ag-main-scroll');
-    var sc = inner && inner.parentElement;
+    // O scroll do app mobile é o do documento (ver .ag-app-shell) — o antigo
+    // pai do .ag-main-scroll não rola mais.
+    var sc = window.__agScroller();
     if (sc) sc.scrollTo({ top: 0, behavior: 'smooth' });
   }
   var startY = null, startX = null;

@@ -25368,13 +25368,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         "Conta de Agua":"💧","Cartao de Credito":"💳","Juridico":"⚖️","Multas":"🚨",
         "Estacionamento":"🅿️","Pedagio":"🛣️","Outros":"📦","Prejuizo":"📉","Juros":"💸"
       };
-      var CAT_CORES = [
-        "#7BAAD2","#8A87CF","#7CC9A0","#E8B875","#E09590",
-        "#B89DD4","#D4977A","#72B8C0","#C4B068","#72BBCC"
-      ];
       var [listaAberta, setListaAberta] = React.useState(false);
-      var [catShowVal, setCatShowVal] = React.useState(false);
-      var [cliShowVal, setCliShowVal] = React.useState(false);
 
       // Calcula despesas agrupadas por categoria — respeita filtro previstas/efetivadas
       var catMap = {};
@@ -25406,8 +25400,6 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         // ainda mostra o card com filtro mas avisa vazio
       }
 
-      var maxVal = catArr.length > 0 ? catArr[0].val : 1;
-      var top = catArr.slice(0,8);
       var diasMes = new Date(parseInt(dashMes.slice(0,4)), parseInt(dashMes.slice(5,7)), 0).getDate();
       var mediaDiaria = diasMes > 0 ? totalCat / diasMes : 0;
 
@@ -25451,9 +25443,81 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       }
       var cliArr = Object.keys(cliMap).map(function(k){ return { nome:k, val:cliMap[k] }; }).sort(function(a,b){ return b.val-a.val; });
       var totalCli = cliArr.reduce(function(s,x){ return s+x.val; },0);
-      var topCli = cliArr.slice(0,8);
-      var maxCli = topCli.length > 0 ? topCli[0].val : 1;
-      var CLI_CORES = ["#7BAAD2","#8A87CF","#7CC9A0","#E8B875","#E09590","#B89DD4","#D4977A","#72B8C0","#C4B068","#72BBCC"];
+      // ── Barras "previsto × pago/recebido" (estilo Top 10) ──
+      var _hojeISO = _brNow().toISOString().slice(0,10);
+      var _corPago = C.green, _corPrevisto = "#B8860B";
+
+      // Despesas por categoria: previsto (total) × pago
+      var catPrevMap = {}, catPagoMap = {}, catVencMap = {};
+      resolverDespesasDoMes(despesas.filter(function(d){ return !isRetLucro(d); }), dashMes).forEach(function(d){
+        var cat = d.categoria || "Outros";
+        var val = parseFloat(d.valor||0);
+        var pago = d.status === "pago" || !!d.data_pagamento;
+        catPrevMap[cat] = (catPrevMap[cat]||0) + val;
+        if (pago) catPagoMap[cat] = (catPagoMap[cat]||0) + val;
+        else if ((d.data||"") < _hojeISO) catVencMap[cat] = true;
+      });
+      manFiltradas.forEach(function(m){
+        var val = parseFloat(m.custo||0);
+        var pago = m.status_financeiro === "pago" || !!m.data_pagamento;
+        catPrevMap["Manutenção"] = (catPrevMap["Manutenção"]||0) + val;
+        if (pago) catPagoMap["Manutenção"] = (catPagoMap["Manutenção"]||0) + val;
+        else if ((m.data_previsao_pagamento||m.data_entrada||"") < _hojeISO) catVencMap["Manutenção"] = true;
+      });
+      var catBars = Object.keys(catPrevMap).map(function(k){
+        return { label:k, previsto:catPrevMap[k], recebido:catPagoMap[k]||0, vencido:!!catVencMap[k] };
+      }).sort(function(a,b){ return b.previsto-a.previsto; }).slice(0,10);
+      var maxPrevistoCat = catBars.length > 0 ? catBars[0].previsto : 1;
+
+      // Receitas por cliente: previsto (total) × recebido
+      var cliPrevMap = {}, cliPagoMap = {}, cliVencMap = {};
+      contratos.filter(function(c){ return c.previsao_pagamento && c.previsao_pagamento.slice(0,7)===dashMes && c.status!=="cancelado"; }).forEach(function(c){
+        var cl = (clientes||[]).find(function(x){ return x.id==c.cliente_id; });
+        var nome = cl ? cl.nome : "Sem cliente";
+        var total = parseFloat(c.valor_total||0);
+        var pagoVal = c.status_pagamento==="pago" ? total : c.status_pagamento==="parcial" ? parseFloat(c.valor_pago||0) : 0;
+        cliPrevMap[nome] = (cliPrevMap[nome]||0) + total;
+        if (pagoVal>0) cliPagoMap[nome] = (cliPagoMap[nome]||0) + pagoVal;
+        if (c.status_pagamento!=="pago" && (c.previsao_pagamento||"") < _hojeISO) cliVencMap[nome] = true;
+      });
+      (receitas||[]).filter(function(r){ return !r.ref_fatura && receitaVisivelNoMes(r,dashMes); }).forEach(function(r){
+        var cl = (clientes||[]).find(function(x){ return x.id==r.cliente_id; });
+        var nome = cl ? cl.nome : (r.descricao || "Avulso");
+        var val = parseFloat(r.valor||0);
+        cliPrevMap[nome] = (cliPrevMap[nome]||0) + val;
+        if (r.status==="recebido") cliPagoMap[nome] = (cliPagoMap[nome]||0) + val;
+        else if ((r.data||"") < _hojeISO) cliVencMap[nome] = true;
+      });
+      var cliBars = Object.keys(cliPrevMap).map(function(k){
+        return { label:k, previsto:cliPrevMap[k], recebido:cliPagoMap[k]||0, vencido:!!cliVencMap[k] };
+      }).sort(function(a,b){ return b.previsto-a.previsto; }).slice(0,10);
+      var maxPrevistoCli = cliBars.length > 0 ? cliBars[0].previsto : 1;
+
+      function _fmtK(v){ return v >= 1000 ? "R$"+(function(){ var r=Math.round(v/100)/10; return r===Math.floor(r)?r+'k':r.toFixed(1).replace('.',',')+'k'; })() : "R$"+Math.round(v); }
+
+      // Linha de barra "previsto × pago/recebido" (estilo Top 10 clientes)
+      function BarRow(x, i, maxPrevisto, firstNameOnly, onClick) {
+        var pct = x.previsto > 0 ? Math.min(100, (x.recebido/x.previsto)*100) : (x.recebido>0?100:0);
+        var barLenPct = maxPrevisto > 0 ? Math.max(8, (x.previsto/maxPrevisto)*100) : 100;
+        var gapCor = x.vencido ? C.red : C.orange;
+        var nome = firstNameOnly ? (x.label||"").trim().split(/\s+/)[0] : x.label;
+        return React.createElement('div', { key:i, onClick:onClick, style:{ display:"flex", alignItems:"center", gap:9, padding:"8px 0", cursor:onClick?"pointer":"default" } }
+          , React.createElement('div', { style:{ width:18, height:18, borderRadius:6, background:"rgba(120,120,128,0.14)", color:C.sub, fontSize:10, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 } }, i+1)
+          , React.createElement('div', { style:{ width:72, fontSize:12, fontWeight:600, color:"var(--c-text)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flexShrink:0 } }, nome)
+          , React.createElement('div', { style:{ flex:1, position:"relative", height:10 } }
+            , React.createElement('div', { style:{ position:"absolute", left:0, top:"50%", transform:"translateY(-50%)", width:barLenPct+"%", height:6, borderRadius:999, overflow:"hidden", display:"flex" } }
+              , React.createElement('div', { style:{ width:pct+"%", height:"100%", background:_corPago } })
+              , React.createElement('div', { style:{ width:(100-pct)+"%", height:"100%", background:gapCor } })
+            )
+            , React.createElement('div', { style:{ position:"absolute", left:(barLenPct*pct/100)+"%", top:"50%", width:10, height:10, borderRadius:"50%", background:"#fff", border:"2px solid "+_corPago, transform:"translate(-50%,-50%)", boxShadow:"0 1px 3px rgba(0,0,0,0.25)" } })
+          )
+          , React.createElement('div', { style:{ fontSize:11.5, fontWeight:700, whiteSpace:"nowrap", flexShrink:0, textAlign:"right", minWidth:100 } }
+            , React.createElement('span', { style:{ color:_corPago } }, _fmtK(x.recebido))
+            , React.createElement('span', { style:{ color:C.sub, fontWeight:500 } }, " / ")
+            , React.createElement('span', { style:{ color:_corPrevisto } }, _fmtK(x.previsto))
+          )
+        );
+      }
 
       // helper 3D color shade
       function _hx3d(c,d,s){var r=parseInt(c.slice(1,3),16),g=parseInt(c.slice(3,5),16),b=parseInt(c.slice(5,7),16);r=s>0?Math.min(255,r+d):Math.max(0,r-d);g=s>0?Math.min(255,g+d):Math.max(0,g-d);b=s>0?Math.min(255,b+d):Math.max(0,b-d);return"#"+(r<16?"0":"")+r.toString(16)+(g<16?"0":"")+g.toString(16)+(b<16?"0":"")+b.toString(16);}
@@ -25545,44 +25609,19 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                   )
                   , React.createElement('div', { style:{ fontSize:11, color:C.sub, opacity:0.6, paddingTop:2 } }, "→")
                 )
-                /* donut + legenda */
-                , totalCat === 0
-                  ? React.createElement('div', { style:{ padding:"28px 16px", textAlign:"center", color:C.sub, fontSize:12 } }, "Nenhuma despesa "+catFiltro+" neste m\xeas")
-                  : (function(){
-                      var sz=104, cx=sz/2, cy=sz/2, R=sz*0.44, ri=sz*0.28;
-                      var slcs=[]; var ang=-Math.PI/2;
-                      var gap=top.length>1?0.03:0;
-                      top.forEach(function(x,i){
-                        var a=(x.val/totalCat)*2*Math.PI, eff=Math.max(0.01,a-gap), ea=ang+eff;
-                        var x1=cx+R*Math.cos(ang),y1=cy+R*Math.sin(ang),x2=cx+R*Math.cos(ea),y2=cy+R*Math.sin(ea);
-                        var xi1=cx+ri*Math.cos(ang),yi1=cy+ri*Math.sin(ang),xi2=cx+ri*Math.cos(ea),yi2=cy+ri*Math.sin(ea);
-                        var la=eff>Math.PI?1:0;
-                        var p=['M',xi1.toFixed(1),yi1.toFixed(1),'L',x1.toFixed(1),y1.toFixed(1),'A',R,R,0,la,1,x2.toFixed(1),y2.toFixed(1),'L',xi2.toFixed(1),yi2.toFixed(1),'A',ri,ri,0,la,0,xi1.toFixed(1),yi1.toFixed(1),'Z'].join(' ');
-                        slcs.push({path:p,color:CAT_CORES[i%CAT_CORES.length],label:x.cat,value:x.val,pct:Math.round(x.val/totalCat*100)});
-                        ang+=a;
-                      });
-                      return React.createElement('div', { style:{ display:"flex", alignItems:"center", gap:10, padding:"12px 16px 16px" } }
-                        , React.createElement('svg', { width:sz, height:sz, viewBox:"0 0 "+sz+" "+sz, style:{ flexShrink:0, cursor:"pointer" },
-                            onClick:function(e){ e.stopPropagation(); setCatShowVal(function(v){return !v;}); } }
-                          , React.createElement('circle', { cx:cx, cy:cy, r:ri-1, fill:"var(--c-card)" })
-                          , slcs.map(function(s,i){ return React.createElement('path', { key:i, d:s.path, fill:s.color, stroke:"var(--c-card)", strokeWidth:1.5 }); })
-                          , React.createElement('text', { x:cx, y:cy-6, textAnchor:"middle", fontSize:9, fontWeight:600, fill:C.sub, fontFamily:"-apple-system,sans-serif" }, "Total")
-                          , React.createElement('text', { x:cx, y:cy+9, textAnchor:"middle", fontSize:9.5, fontWeight:900, fill:"var(--c-text)", fontFamily:"-apple-system,sans-serif" }, fmtBRLint(totalCat))
-                          , React.createElement('text', { x:cx, y:cy+22, textAnchor:"middle", fontSize:7.5, fontWeight:600, fill:C.sub, fontFamily:"-apple-system,sans-serif", opacity:0.6 }, catShowVal?"toque: %":"toque: R$")
-                        )
-                        , React.createElement('div', { style:{ flex:1, display:"flex", flexDirection:"column", gap:7, minWidth:0 } }
-                          , slcs.map(function(s,i){
-                              return React.createElement('div', { key:i,
-                                onClick:function(e){ e.stopPropagation(); setFinDeepLink({subTab:"despesas",cat:s.label}); setTab("financeiro"); },
-                                style:{ display:"flex", alignItems:"center", gap:6, cursor:"pointer" } }
-                                , React.createElement('div', { style:{ width:8, height:8, borderRadius:"50%", background:s.color, flexShrink:0 } })
-                                , React.createElement('div', { style:{ flex:1, fontSize:11, fontWeight:600, color:"var(--c-text)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, s.label)
-                                , React.createElement('span', { style:{ fontSize:11, fontWeight:700, color:s.color, flexShrink:0 } }, catShowVal ? fmtBRLint(s.value) : s.pct+"%")
-                              );
-                            })
-                        )
-                      );
-                    })()
+                /* barras previsto × pago (estilo Top 10) */
+                , catBars.length === 0
+                  ? React.createElement('div', { style:{ padding:"28px 16px", textAlign:"center", color:C.sub, fontSize:12 } }, "Nenhuma despesa neste m\xeas")
+                  : React.createElement('div', { style:{ padding:"8px 16px 12px" } }
+                      , React.createElement('div', { style:{ display:"flex", justifyContent:"flex-end", gap:3, fontSize:9, fontWeight:700, textTransform:"uppercase", letterSpacing:0.4, marginBottom:2 } }
+                        , React.createElement('span', { style:{ color:_corPago } }, "Pago")
+                        , React.createElement('span', { style:{ color:C.sub } }, "/")
+                        , React.createElement('span', { style:{ color:_corPrevisto } }, "Previsto")
+                      )
+                      , catBars.map(function(x,i){
+                          return BarRow(x, i, maxPrevistoCat, false, function(e){ e.stopPropagation(); setFinDeepLink({subTab:"despesas",cat:x.label}); setTab("financeiro"); });
+                        })
+                    )
               )
           )
 
@@ -25601,42 +25640,19 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                   )
                   , React.createElement('div', { style:{ fontSize:11, color:C.sub, opacity:0.6, paddingTop:2 } }, "→")
                 )
-                /* donut + legenda */
-                , totalCli === 0
-                  ? React.createElement('div', { style:{ padding:"28px 16px", textAlign:"center", color:C.sub, fontSize:12 } }, "Nenhuma receita "+catFiltro+" neste m\xeas")
-                  : (function(){
-                      var sz=104, cx=sz/2, cy=sz/2, R=sz*0.44, ri=sz*0.28;
-                      var slcs=[]; var ang=-Math.PI/2;
-                      var gap=topCli.length>1?0.03:0;
-                      topCli.forEach(function(x,i){
-                        var a=(x.val/totalCli)*2*Math.PI, eff=Math.max(0.01,a-gap), ea=ang+eff;
-                        var x1=cx+R*Math.cos(ang),y1=cy+R*Math.sin(ang),x2=cx+R*Math.cos(ea),y2=cy+R*Math.sin(ea);
-                        var xi1=cx+ri*Math.cos(ang),yi1=cy+ri*Math.sin(ang),xi2=cx+ri*Math.cos(ea),yi2=cy+ri*Math.sin(ea);
-                        var la=eff>Math.PI?1:0;
-                        var p=['M',xi1.toFixed(1),yi1.toFixed(1),'L',x1.toFixed(1),y1.toFixed(1),'A',R,R,0,la,1,x2.toFixed(1),y2.toFixed(1),'L',xi2.toFixed(1),yi2.toFixed(1),'A',ri,ri,0,la,0,xi1.toFixed(1),yi1.toFixed(1),'Z'].join(' ');
-                        slcs.push({path:p,color:CLI_CORES[i%CLI_CORES.length],label:x.nome,value:x.val,pct:Math.round(x.val/totalCli*100)});
-                        ang+=a;
-                      });
-                      return React.createElement('div', { style:{ display:"flex", alignItems:"center", gap:10, padding:"12px 16px 16px" } }
-                        , React.createElement('svg', { width:sz, height:sz, viewBox:"0 0 "+sz+" "+sz, style:{ flexShrink:0, cursor:"pointer" },
-                            onClick:function(e){ e.stopPropagation(); setCliShowVal(function(v){return !v;}); } }
-                          , React.createElement('circle', { cx:cx, cy:cy, r:ri-1, fill:"var(--c-card)" })
-                          , slcs.map(function(s,i){ return React.createElement('path', { key:i, d:s.path, fill:s.color, stroke:"var(--c-card)", strokeWidth:1.5 }); })
-                          , React.createElement('text', { x:cx, y:cy-6, textAnchor:"middle", fontSize:9, fontWeight:600, fill:C.sub, fontFamily:"-apple-system,sans-serif" }, "Total")
-                          , React.createElement('text', { x:cx, y:cy+9, textAnchor:"middle", fontSize:9.5, fontWeight:900, fill:"var(--c-text)", fontFamily:"-apple-system,sans-serif" }, fmtBRLint(totalCli))
-                          , React.createElement('text', { x:cx, y:cy+22, textAnchor:"middle", fontSize:7.5, fontWeight:600, fill:C.sub, fontFamily:"-apple-system,sans-serif", opacity:0.6 }, cliShowVal?"toque: %":"toque: R$")
-                        )
-                        , React.createElement('div', { style:{ flex:1, display:"flex", flexDirection:"column", gap:7, minWidth:0 } }
-                          , slcs.map(function(s,i){
-                              return React.createElement('div', { key:i, style:{ display:"flex", alignItems:"center", gap:6 } }
-                                , React.createElement('div', { style:{ width:8, height:8, borderRadius:"50%", background:s.color, flexShrink:0 } })
-                                , React.createElement('div', { style:{ flex:1, fontSize:11, fontWeight:600, color:"var(--c-text)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, s.label)
-                                , React.createElement('span', { style:{ fontSize:11, fontWeight:700, color:s.color, flexShrink:0 } }, cliShowVal ? fmtBRLint(s.value) : s.pct+"%")
-                              );
-                            })
-                        )
-                      );
-                    })()
+                /* barras previsto × recebido (estilo Top 10 clientes) */
+                , cliBars.length === 0
+                  ? React.createElement('div', { style:{ padding:"28px 16px", textAlign:"center", color:C.sub, fontSize:12 } }, "Nenhuma receita neste m\xeas")
+                  : React.createElement('div', { style:{ padding:"8px 16px 12px" } }
+                      , React.createElement('div', { style:{ display:"flex", justifyContent:"flex-end", gap:3, fontSize:9, fontWeight:700, textTransform:"uppercase", letterSpacing:0.4, marginBottom:2 } }
+                        , React.createElement('span', { style:{ color:_corPago } }, "Recebido")
+                        , React.createElement('span', { style:{ color:C.sub } }, "/")
+                        , React.createElement('span', { style:{ color:_corPrevisto } }, "Previsto")
+                      )
+                      , cliBars.map(function(x,i){
+                          return BarRow(x, i, maxPrevistoCli, true);
+                        })
+                    )
               )
           )
 

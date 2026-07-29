@@ -23563,6 +23563,18 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         await db.patch("contas", ev.id, { status: statusOriginalConta, data_pagamento: dataPagOriginalConta });
         setContas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status: statusOriginalConta, data_pagamento: dataPagOriginalConta}):x; }); });
       });
+    } else if (ev.type === "receita") {
+      _r = await window.__agPrompt({ title:"Receber Pagamento", icon:"💰", label1:"Data do pagamento", type1:"date", default1:dtHoje });
+      if (!_r || !_r.ok) return;
+      var recAntes = (receitas||[]).find(function(x){ return x.id === ev.id; });
+      var statusOriginalRec = recAntes ? recAntes.status : null;
+      var dataPagOriginalRec = recAntes ? recAntes.data_pagamento : null;
+      await db.patch("receitas", ev.id, { status:"recebido", data_pagamento:_r.v1 });
+      setReceitas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status:"recebido",data_pagamento:_r.v1}):x; }); });
+      window._agUndo("✅ Recebimento registrado!", async function(){
+        await db.patch("receitas", ev.id, { status: statusOriginalRec, data_pagamento: dataPagOriginalRec });
+        setReceitas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status: statusOriginalRec, data_pagamento: dataPagOriginalRec}):x; }); });
+      });
     }
   }
 
@@ -25096,16 +25108,24 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       var _ctsPendRV = (contratos||[]).filter(function(c){ return c.status!=='cancelado' && c.status_pagamento!=='pago' && c.status_pagamento!=='isento'; });
       var _avPendRV  = (receitas||[]).filter(function(r){ return !r.ref_fatura && r.status!=='recebido' && r.status!=='isento'; });
 
-      var _rVencList = _ctsPendRV.filter(function(c){ return c.previsao_pagamento && c.previsao_pagamento < hoje; })
-        .map(function(c){ var cl=(clientes||[]).find(function(x){ return x.id==c.cliente_id; }); return { key:'ct-'+c.id, nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), valor:_restanteCt(c), data:c.previsao_pagamento, onClick:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); } }; })
-        .concat(_avPendRV.filter(function(r){ return r.data && r.data < hoje; })
-          .map(function(r){ return { key:'rc-'+r.id, nome:r.descricao||r.categoria||'Recebimento', valor:_restanteRc(r), data:r.data, onClick:function(){ onItemNav({type:'receita',id:r.id,mes:(r.data||dashMes).slice(0,7)},'financeiro'); } }; }))
+      var _mkCtItem = function(c){
+        var cl=(clientes||[]).find(function(x){ return x.id==c.cliente_id; });
+        return { key:'ct-'+c.id, nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), valor:_restanteCt(c), data:c.previsao_pagamento,
+          onClick:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); },
+          onBaixar: c.status_pagamento!=='pago' ? function(){ _agBaixar({type:'ct',id:c.id}); } : null };
+      };
+      var _mkRcItem = function(r){
+        return { key:'rc-'+r.id, nome:r.descricao||r.categoria||'Recebimento', valor:_restanteRc(r), data:r.data,
+          onClick:function(){ onItemNav({type:'receita',id:r.id,mes:(r.data||dashMes).slice(0,7)},'financeiro'); },
+          onBaixar: r.status!=='recebido' ? function(){ _agBaixar({type:'receita',id:r.id}); } : null };
+      };
+
+      var _rVencList = _ctsPendRV.filter(function(c){ return c.previsao_pagamento && c.previsao_pagamento < hoje; }).map(_mkCtItem)
+        .concat(_avPendRV.filter(function(r){ return r.data && r.data < hoje; }).map(_mkRcItem))
         .sort(function(a,b){ return (a.data||'').localeCompare(b.data||''); });
 
-      var _rHojeList = _ctsPendRV.filter(function(c){ return c.previsao_pagamento === hoje; })
-        .map(function(c){ var cl=(clientes||[]).find(function(x){ return x.id==c.cliente_id; }); return { key:'ct-'+c.id, nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), valor:_restanteCt(c), data:c.previsao_pagamento, onClick:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); } }; })
-        .concat(_avPendRV.filter(function(r){ return r.data === hoje; })
-          .map(function(r){ return { key:'rc-'+r.id, nome:r.descricao||r.categoria||'Recebimento', valor:_restanteRc(r), data:r.data, onClick:function(){ onItemNav({type:'receita',id:r.id,mes:(r.data||dashMes).slice(0,7)},'financeiro'); } }; }));
+      var _rHojeList = _ctsPendRV.filter(function(c){ return c.previsao_pagamento === hoje; }).map(_mkCtItem)
+        .concat(_avPendRV.filter(function(r){ return r.data === hoje; }).map(_mkRcItem));
 
       /* reaproveita ctsMes (contratos do mês corrente do dashboard, já tratando pago via data_pagamento) —
          "boleto" aqui é o mesmo documento já controlado por faturaContratoEmitida/numero_fatura/data_emissao,
@@ -25121,18 +25141,29 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       var _mkBoletoItem = function(c){
         var cl = (clientes||[]).find(function(x){ return x.id==c.cliente_id; });
         var ve = (veiculos||[]).find(function(x){ return x.id==c.veiculo_id; });
-        return { key:'bol-'+c.id, nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), placa:(ve&&ve.placa)||'', valor:parseFloat(c.valor_total||0), data:c.previsao_pagamento, onClick:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); } };
+        return { key:'bol-'+c.id, nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), placa:(ve&&ve.placa)||'', valor:parseFloat(c.valor_total||0), data:c.previsao_pagamento,
+          onClick:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); },
+          onBaixar: c.status_pagamento!=='pago' ? function(){ _agBaixar({type:'ct',id:c.id}); } : null };
       };
 
       var _panBaseRV = { background:C.card, borderRadius:18, border:'1px solid '+C.border, overflow:'hidden', boxShadow:'0 1px 12px rgba(0,0,0,0.05)' };
+      /* card com tom claro na cor do status — vermelho (vencidos) / azul (hoje) */
+      var _tintCard = function(cor){ return Object.assign({}, _panBaseRV, { background:cor+'20', border:'1px solid '+cor+'45' }); };
       var _itemRowRV = function(it, cor){
-        return React.createElement('div', { key:it.key, onClick:it.onClick, style:{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, padding:'10px 16px', borderTop:'1px solid '+C.border+'66', cursor:'pointer' } }
+        var _inner = React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, padding:'10px 16px', cursor:'pointer' }, onClick:it.onClick }
           , React.createElement('div', { style:{ minWidth:0, flex:1 } }
             , React.createElement('div', { style:{ fontSize:12.5, fontWeight:700, color:'var(--c-text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }, it.nome)
             , it.placa ? React.createElement('div', { style:{ fontSize:10, color:C.sub, marginTop:2 } }, it.placa) : (it.data ? React.createElement('div', { style:{ fontSize:10, color:C.sub, marginTop:2 } }, fmtDate(it.data)) : null)
           )
           , React.createElement('span', { style:{ fontSize:12.5, fontWeight:800, color:cor, flexShrink:0 } }, fmtBRL(it.valor))
         );
+        return React.createElement(SwipeRow, {
+          key:it.key,
+          onBaixar: it.onBaixar || null, baixarLabel:'Baixar',
+          action2:it.onClick, action2Label:'Ver', action2Icon:'\u{1F441}', action2Color:'rgba(0,122,255,0.92)',
+          onDelete:null,
+          wrapStyle:{ borderTop:'1px solid '+C.border+'66' }
+        }, _inner);
       };
       var _emptyRV = function(msg){ return React.createElement('div', { style:{ padding:'16px', textAlign:'center', color:C.sub, fontSize:12 } }, msg); };
       var _hdrRV = function(icon, label, count, cor){
@@ -25148,16 +25179,16 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
 
       return React.createElement('div', { style:{ marginTop:24 } }
         , React.createElement('div', { style:Object.assign({ display:'grid' }, desktop ? { gap:10, gridTemplateColumns:'1fr 1fr' } : { gap:16, gridTemplateColumns:'1fr' }) }
-          /* ── RECEBIMENTOS VENCIDOS ── */
-          , React.createElement('div', { style:_panBaseRV }
+          /* ── RECEBIMENTOS VENCIDOS (tom vermelho claro) ── */
+          , React.createElement('div', { style:_tintCard(C.red) }
             , _hdrRV('⚠️', 'Recebimentos vencidos', _rVencList.length, C.red)
             , _rVencList.length===0
               ? _emptyRV('Nenhum recebimento vencido ✓')
               : React.createElement(React.Fragment, null, (recVencExp?_rVencList:_rVencList.slice(0,4)).map(function(it){ return _itemRowRV(it, C.red); }))
             , _moreBtnRV(_rVencList, recVencExp, setRecVencExp, C.red)
           )
-          /* ── RECEBIMENTOS DE HOJE ── */
-          , React.createElement('div', { style:_panBaseRV }
+          /* ── RECEBIMENTOS DE HOJE (tom azul claro) ── */
+          , React.createElement('div', { style:_tintCard(C.blue) }
             , _hdrRV('📅', 'Recebimentos de hoje', _rHojeList.length, C.blue)
             , _rHojeList.length===0
               ? _emptyRV('Nada vencendo hoje')

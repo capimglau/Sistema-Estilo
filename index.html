@@ -28110,6 +28110,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   const [parcialCtModal, setParcialCtModal] = useState(null);
   const [parcialCtData, setParcialCtData] = useState("");
   const [parcialCtValor, setParcialCtValor] = useState("");
+  const [encerrarCtModal, setEncerrarCtModal] = useState(null);
+  const [encerrarCtForm, setEncerrarCtForm] = useState({});
   function limparFiltros() { setFilDe(""); setFilAte(""); setFilVeiculo(""); setFilCliente(""); }
   var _abrirNovoContratoRef = React.useRef(null);
   _abrirNovoContratoRef.current = function() {
@@ -28548,22 +28550,35 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       toast("Renovado! Novo contrato nº " + numCt(novo.id));
     } catch(e) { toast("Erro ao renovar: " + e.message, "error"); }
   }
-  async function concluir(ct) {
-    var kmFinal = ct.km_final || "";
-    var obs = "";
-    var kmFinalInput = prompt("KM de retorno do veículo (atual: " + (ct.km_final || "não informado") + "):", kmFinal);
-    if (kmFinalInput === null) return;
-    var obsInput = prompt("Observações do encerramento (opcional):", "");
-    if (obsInput === null) return;
+  function abrirEncerrarCt(ct) {
+    setEncerrarCtForm({
+      data_fim: ct.data_fim || hoje,
+      hora_devolucao: ct.hora_devolucao || "",
+      km_final: ct.km_final || "",
+      combustivel_retorno: ct.combustivel_retorno || "",
+      checklist_devolucao: ct.checklist_devolucao || "",
+      observacoes: ""
+    });
+    setEncerrarCtModal(ct);
+  }
+  async function confirmarEncerrarCt() {
+    var ct = encerrarCtModal;
+    if (!ct) return;
+    var f = encerrarCtForm;
     var patchData = { status: "concluido" };
-    if (kmFinalInput) patchData.km_final = parseFloat(kmFinalInput);
-    if (obsInput) patchData.observacoes = (ct.observacoes ? ct.observacoes + "\n" : "") + "Encerramento: " + obsInput;
+    if (f.data_fim) patchData.data_fim = f.data_fim;
+    if (f.hora_devolucao) patchData.hora_devolucao = f.hora_devolucao;
+    if (f.km_final) patchData.km_final = parseFloat(f.km_final);
+    if (f.combustivel_retorno) patchData.combustivel_retorno = f.combustivel_retorno;
+    if (f.checklist_devolucao) patchData.checklist_devolucao = f.checklist_devolucao;
+    if (f.observacoes) patchData.observacoes = (ct.observacoes ? ct.observacoes + "\n" : "") + "Encerramento: " + f.observacoes;
     await db.patch("contratos", ct.id, patchData);
     // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
     var outroAtivoEncerrar = contratos.some(function(x){
       return x.id !== ct.id && String(x.veiculo_id) === String(ct.veiculo_id) && x.status === "ativo";
     });
     setContratos(p => p.map(c => c.id === ct.id ? Object.assign({}, c, patchData) : c));
+    setEncerrarCtModal(null);
     toast(outroAtivoEncerrar ? "Encerrado! Veículo ainda possui contrato ativo." : "Encerrado! Veículo liberado.");
   }
   async function confirmarBaixarCt() {
@@ -28938,6 +28953,10 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             var obsLimpa = (c.observacoes || "").split("\n").filter(function(l) { var t = l.trim(); return !/^(Recebido em \d{4}-\d{2}-\d{2}|Pagamento completo em \d{4}-\d{2}-\d{2}|Renovação contrato #\d+)/.test(t); }).join("\n").trim();
             return obsLimpa && React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 4, fontStyle: "italic", whiteSpace: "pre-line", lineClamp: 2, overflow: "hidden", maxHeight: 34 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1056}}, obsLimpa);
           })()
+          , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 10 } }
+            , React.createElement('button', { className: "lg-pill lg-ghost", style: { flex: 1, color: C.sub }, onClick: function(e){ e.stopPropagation(); setForm(Object.assign({}, c)); setEdit(c.id); setModal(true); } }, "✏️ Editar")
+            , React.createElement('button', { className: "lg-pill lg-ghost", style: { flex: 1, color: C.red }, onClick: function(e){ e.stopPropagation(); remove(c.id); } }, "🗑️ Excluir")
+          )
           , React.createElement('select', {
               value: "",
               style: Object.assign({}, FI, { marginTop: 10, width: "100%", fontSize: 13, padding: "8px 10px", cursor: "pointer" }),
@@ -29017,7 +29036,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                     toast("↩ Pagamento revertido");
                   })();
                 }
-                else if (action === "encerrar") concluir(c);
+                else if (action === "encerrar") abrirEncerrarCt(c);
                 else if (action === "reabrir") {
                   (async function(){
                     if (!confirm("Reabrir contrato como ativo?")) return;
@@ -29105,12 +29124,14 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             , (c.status === "concluido" || c.status === "cancelado") ? React.createElement('option', { value: "reabrir" }, "↩ Reabrir") : null
             , c.status === "concluido" && c.renovado_para ? React.createElement('option', { value: "desfazer_renovacao" }, "↩ Desfazer renovação") : null
             , c.status === "concluido" && c.renovado_para && !contratos.find(function(x){ return String(x.id)===String(c.renovado_para); }) ? React.createElement('option', { value: "corrigir_renovacao" }, "🔧 Corrigir renovação (filho não existe)") : null
-            , React.createElement('option', { value: "contrato" }, "📄 Contrato")
-            , React.createElement('option', { value: "fatura" }, "🧾 Fatura")
             , c.status === "ativo" ? React.createElement('option', { value: "uso" }, "📍 Uso") : null
-            , React.createElement('option', { value: "extras" }, "+ Extras")
-            , React.createElement('option', { value: "checklist" }, "✓ Check List")
-            , React.createElement('option', { value: "docs" }, "📎 Docs")
+            , React.createElement('optgroup', { label: "··· Mais" }
+              , React.createElement('option', { value: "contrato" }, "📄 Contrato")
+              , React.createElement('option', { value: "fatura" }, "🧾 Fatura")
+              , React.createElement('option', { value: "extras" }, "+ Extras")
+              , React.createElement('option', { value: "checklist" }, "✓ Check List")
+              , React.createElement('option', { value: "docs" }, "📎 Docs")
+            )
             , React.createElement('option', { value: "excluir" }, "✕ Excluir")
           )
         )
@@ -29453,6 +29474,60 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         , React.createElement('div', { style: { display:'grid',gridTemplateColumns:'1fr 1fr',gap:12 } }
           , React.createElement('button', { onClick:function(){ setParcialCtModal(null); }, style: { border:'1.5px solid var(--c-border)',background:'transparent',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer',color:'var(--c-text)' } }, 'Cancelar')
           , React.createElement('button', { onClick:confirmarParcialCt, style: { border:'none',background:'linear-gradient(135deg,#0e6db5,#007AFF)',color:'#fff',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer' } }, '\u2b21 Registrar Parcial')
+        )
+      )
+    )
+
+    /* -- MODAL ENCERRAR CONTRATO -- */
+    , encerrarCtModal && React.createElement('div', { style: { position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',zIndex:1200,display:'flex',alignItems:'flex-end',backdropFilter:'blur(6px)' } }
+      , React.createElement('div', { style: { background:'var(--c-card)',borderRadius:'22px 22px 0 0',width:'100%',padding:'24px 20px 44px',boxSizing:'border-box',maxHeight:'90dvh',overflowY:'auto',WebkitOverflowScrolling:'touch' } }
+        , React.createElement('div', { style: { width:36,height:4,background:'var(--c-border)',borderRadius:2,margin:'0 auto 20px',cursor:'pointer' }, onClick: function(){ setEncerrarCtModal(null); } })
+        , React.createElement('div', { style: { fontSize:18,fontWeight:800,color:'var(--c-text)',marginBottom:6,letterSpacing:-.3 } }, '\ud83c\udfc1 Encerrar Contrato')
+        , React.createElement('div', { style: { fontSize:13,color:'var(--c-sub)',marginBottom:20 } }
+          , (clientes.find(function(x){ return x.id==encerrarCtModal.cliente_id; })||{}).nome||'\u2014'
+          , ' \u00b7 '
+          , (function(){ var ve=veiculos.find(function(x){ return x.id==encerrarCtModal.veiculo_id; }); return ve ? ve.placa+(ve.modelo?' '+ve.modelo:'') : '\u2014'; })()
+        )
+        , React.createElement('div', { style: { display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16 } }
+          , React.createElement('div', null
+            , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Data de encerramento')
+            , React.createElement('input', { type:'date', value:encerrarCtForm.data_fim||'', onChange:function(e){ setEncerrarCtForm(function(p){ return Object.assign({},p,{data_fim:e.target.value}); }); },
+                style: { display:'block',width:'100%',marginTop:7,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } })
+          )
+          , React.createElement('div', null
+            , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Hora de devolu\u00e7\u00e3o')
+            , React.createElement('input', { type:'time', value:encerrarCtForm.hora_devolucao||'', onChange:function(e){ setEncerrarCtForm(function(p){ return Object.assign({},p,{hora_devolucao:e.target.value}); }); },
+                style: { display:'block',width:'100%',marginTop:7,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } })
+          )
+        )
+        , React.createElement('div', { style: { display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16 } }
+          , React.createElement('div', null
+            , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Quilometragem de retorno')
+            , React.createElement('input', { type:'number', value:encerrarCtForm.km_final||'', placeholder:encerrarCtModal.km_final||'KM atual', onChange:function(e){ setEncerrarCtForm(function(p){ return Object.assign({},p,{km_final:e.target.value}); }); },
+                style: { display:'block',width:'100%',marginTop:7,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } })
+          )
+          , React.createElement('div', null
+            , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Combust\u00edvel no retorno')
+            , React.createElement('select', { value:encerrarCtForm.combustivel_retorno||'', onChange:function(e){ setEncerrarCtForm(function(p){ return Object.assign({},p,{combustivel_retorno:e.target.value}); }); },
+                style: { display:'block',width:'100%',marginTop:7,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } }
+              , React.createElement('option', { value:'' }, 'N\u00e3o informado')
+              , React.createElement('option', { value:'vazio' }, 'Vazio')
+              , React.createElement('option', { value:'1/4' }, '1/4')
+              , React.createElement('option', { value:'1/2' }, '1/2')
+              , React.createElement('option', { value:'3/4' }, '3/4')
+              , React.createElement('option', { value:'cheio' }, 'Cheio')
+            )
+          )
+        )
+        , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Checklist / avarias na devolu\u00e7\u00e3o')
+        , React.createElement('textarea', { value:encerrarCtForm.checklist_devolucao||'', placeholder:'Ex: Arranh\u00e3o no para-choque traseiro...', onChange:function(e){ setEncerrarCtForm(function(p){ return Object.assign({},p,{checklist_devolucao:e.target.value}); }); },
+            style: { display:'block',width:'100%',marginTop:7,marginBottom:16,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:14,color:'var(--c-text)',boxSizing:'border-box',outline:'none',resize:'vertical',minHeight:60 } })
+        , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Observa\u00e7\u00f5es do encerramento')
+        , React.createElement('textarea', { value:encerrarCtForm.observacoes||'', placeholder:'Opcional', onChange:function(e){ setEncerrarCtForm(function(p){ return Object.assign({},p,{observacoes:e.target.value}); }); },
+            style: { display:'block',width:'100%',marginTop:7,marginBottom:22,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:14,color:'var(--c-text)',boxSizing:'border-box',outline:'none',resize:'vertical',minHeight:50 } })
+        , React.createElement('div', { style: { display:'grid',gridTemplateColumns:'1fr 1fr',gap:12 } }
+          , React.createElement('button', { onClick:function(){ setEncerrarCtModal(null); }, style: { border:'1.5px solid var(--c-border)',background:'transparent',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer',color:'var(--c-text)' } }, 'Cancelar')
+          , React.createElement('button', { onClick:confirmarEncerrarCt, style: { border:'none',background:'linear-gradient(135deg,#15803d,#34C759)',color:'#fff',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer' } }, '\ud83c\udfc1 Confirmar Encerramento')
         )
       )
     )

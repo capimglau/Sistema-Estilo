@@ -22269,7 +22269,7 @@ function BottomSheet({ open, onClose, title, children }) {
 /* ── EFFECT 10 · SwipeRow ── */
 /* Swipe ESQUERDA (←) → revela Baixar + Editar à DIREITA do conteúdo
    Swipe DIREITA  (→) → revela Excluir à ESQUERDA do conteúdo        */
-function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel, deleteLabel, action2, action2Label, action2Icon, action2Color, wrapStyle, onRight, rightLabel, rightIcon, rightColor }) {
+function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel, deleteLabel, action2, action2Label, action2Icon, action2Color, wrapStyle, onRight, rightLabel, rightIcon, rightColor, leftActions }) {
   var wrapRef = React.useRef(null);
   var _sw = React.useRef({ on:false, sx:0, sy:0, dx:0, dir:null, moved:false });
 
@@ -22280,12 +22280,22 @@ function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel
   if(onRight)  rightActions.push({ label: rightLabel||'Ação', icon: rightIcon||'⚡', color: rightColor||'rgba(88,86,214,0.92)', fn: onRight });
   var revealR = rightActions.length * 72;
 
-  /* Lado ESQUERDO (revelar com swipe →): Excluir */
-  var leftActionFn    = action2 || onDelete;
-  var leftActionLabel = action2 ? (action2Label||'Ação') : (deleteLabel||'Excluir');
-  var leftActionIcon  = action2 ? (action2Icon||'⚡') : '🗑️';
-  var leftActionColor = action2 ? (action2Color||'rgba(52,199,89,0.92)') : 'rgba(255,59,48,0.92)';
-  var revealL = leftActionFn ? 75 : 0;
+  /* Lado ESQUERDO (revelar com swipe →): Excluir (ou lista customizada via leftActions) */
+  var leftActionsArr = [];
+  if (leftActions && leftActions.length) {
+    leftActionsArr = leftActions;
+  } else {
+    var leftActionFn = action2 || onDelete;
+    if (leftActionFn) {
+      leftActionsArr = [{
+        label: action2 ? (action2Label||'Ação') : (deleteLabel||'Excluir'),
+        icon:  action2 ? (action2Icon||'⚡') : '🗑️',
+        color: action2 ? (action2Color||'rgba(52,199,89,0.92)') : 'rgba(255,59,48,0.92)',
+        fn: leftActionFn
+      }];
+    }
+  }
+  var revealL = leftActionsArr.length * 72;
 
   function getClient(e){ return e.touches ? { x:e.touches[0].clientX, y:e.touches[0].clientY } : { x:e.clientX, y:e.clientY }; }
   function getInner(){ return wrapRef.current && wrapRef.current.querySelector('.ag-sw-inner'); }
@@ -22295,7 +22305,7 @@ function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel
     /* captura o offset inicial caso a row já esteja aberta num dos lados */
     var isSwiped  = wrapRef.current && wrapRef.current.classList.contains('ag-swiped');
     var isSwipedR = wrapRef.current && wrapRef.current.classList.contains('ag-swiped-r');
-    var off = isSwiped ? -revealR : isSwipedR ? revealL : 0;
+    var off = isSwiped ? -revealR : isSwipedR ? revealL : 0; // eslint-disable-line
     _sw.current = { on:true, sx:c.x, sy:c.y, dx:off, dir:null, moved:false, off:off };
     var inner = getInner(); if(inner) inner.style.transition = 'none';
   }
@@ -22370,13 +22380,15 @@ function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel
   return React.createElement('div', { ref:wrapRef, className:'ag-swipe-wrap',
       style: Object.assign({ '--sw-reveal': revealR+'px', '--sw-reveal-r': revealL+'px' }, wrapStyle||{}) },
 
-    /* Ações ESQUERDA (swipe → revela): Excluir */
-    leftActionFn && React.createElement('div', { className:'ag-swipe-actions-r', style:{ width: revealL } },
-      React.createElement('button', { className:'ag-sw-btn',
-          style:{ background:leftActionColor, flex:1 },
-          onClick:function(e){ closeSwipe(e); leftActionFn(); } },
-        React.createElement('span', { style:{fontSize:18} }, leftActionIcon), leftActionLabel
-      )
+    /* Ações ESQUERDA (swipe → revela): Excluir / lista customizada */
+    leftActionsArr.length > 0 && React.createElement('div', { className:'ag-swipe-actions-r', style:{ width: revealL } },
+      leftActionsArr.map(function(a, i){
+        return React.createElement('button', { key:i, className:'ag-sw-btn',
+            style:{ background:a.color, flex:1 },
+            onClick:function(e){ closeSwipe(e); a.fn(); } },
+          React.createElement('span', { style:{fontSize:18} }, a.icon), a.label
+        );
+      })
     ),
 
     /* Ações DIREITA (swipe ← revela): Baixar + Editar */
@@ -28084,6 +28096,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   const [filter, setFilter] = useState("mes");
   const [modalExcluirContrato, setModalExcluirContrato] = useState(null);
   const [excluirTexto, setExcluirTexto] = useState("");
+  const [ctSheet, setCtSheet] = useState(null);
   const [usoModal, setUsoModal] = useState(false);
   const [usoContrato, setUsoContrato] = useState(null);
   const [usoForm, setUsoForm] = useState({});
@@ -28749,6 +28762,148 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   var kpiAtrasado = fil2.filter(function(c){ return c.status_pagamento!=="pago" && c.status_pagamento!=="isento" && c.status!=="cancelado" && c.previsao_pagamento && c.previsao_pagamento < hoje; }).reduce(function(s,c){ return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)); }, 0);
   var kpiAtivos = fil2.filter(function(c){ return c.status==="ativo" && c.status!=="cancelado"; }).length;
   var kpiPct = totalFil > 0 ? Math.round(kpiPago/totalFil*100) : 0;
+  function execCtAction(c, action) {
+    if (!c || !action) return;
+    var cl = getCl(c.cliente_id); var ve = getVe(c.veiculo_id);
+    if (action === "receber") {
+      (async function(){
+        var _r = await window.__agPrompt({ title: "Receber Pagamento", icon: "💰", label1: "Data do pagamento", type1: "date", default1: _brNow().toISOString().split("T")[0] });
+        if (!_r.ok) return;
+        var dtPag = _r.v1;
+        await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtPag });
+        setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dtPag }) : x));
+        await sincronizarRefFatura(c, dtPag);
+        toast("✅ Pagamento registrado!");
+      })();
+    }
+    else if (action === "receber_parcial") {
+      (async function(){
+        var _r = await window.__agPrompt2({ title: "Recebimento Parcial", icon: "💵", label1: "Valor recebido (R$)", type1: "text", label2: "Data do recebimento", type2: "date", default2: _brNow().toISOString().split("T")[0] });
+        if (!_r.ok) return;
+        var valParcial = parseFloat(_r.v1.replace(",","."));
+        if (!valParcial || valParcial <= 0) { toast("Valor inválido!"); return; }
+        var dtPag = _r.v2;
+        await db.patch("contratos", c.id, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag });
+        setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag }) : x));
+        var recParcial = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
+        if (recParcial) {
+          try { var updRP = await db.patch("receitas", recParcial.id, { status: "parcial", data_pagamento: dtPag }); setReceitas(p=>p.map(x=>x.id===recParcial.id?Object.assign({},x,updRP):x)); } catch(e){ console.warn(e); }
+        }
+        toast("💵 Parcial de " + fmtBRL(valParcial) + " registrado!");
+      })();
+    }
+    else if (action === "editar_parcial") { setForm(Object.assign({}, c, { _edicaoParcial: true })); setEdit(c.id); setModal(true); }
+    else if (action === "completar_pgto") {
+      (async function(){
+        var _r = await window.__agPrompt({ title: "Completar Pagamento", icon: "✅", label1: "Data do pagamento", type1: "date", default1: _brNow().toISOString().split("T")[0] });
+        if (!_r.ok) return;
+        var dtPag = _r.v1;
+        await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtPag });
+        setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dtPag }) : x));
+        await sincronizarRefFatura(c, dtPag);
+        toast("✅ Pagamento completo!");
+      })();
+    }
+    else if (action === "reverter_parcial") {
+      (async function(){
+        var _rRev = await window.__agConfirm({ title: "Reverter Pagamento", icon: "↩️", message: "Reverter pagamento parcial para 'a receber'? O valor pago será apagado.", okLabel: "Reverter", danger: true });
+        if (!_rRev.ok) return;
+        await db.patch("contratos", c.id, { status_pagamento: "pendente", valor_pago: null });
+        setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pendente", valor_pago: null }) : x));
+        var recParcRev = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_") && r.status==="parcial"; });
+        if (recParcRev) {
+          var novoSt = recParcRev.numero_fatura ? "emitida" : "prevista";
+          try { var updRev = await db.patch("receitas", recParcRev.id, { status: novoSt, data_pagamento: null }); setReceitas(p=>p.map(x=>x.id===recParcRev.id?Object.assign({},x,updRev):x)); } catch(e){ console.warn(e); }
+        }
+        toast("↩ Pagamento parcial revertido");
+      })();
+    }
+    else if (action === "reverter_pgto") {
+      (async function(){
+        var _rRevP = await window.__agConfirm({ title: "Reverter Pagamento", icon: "↩️", message: "Reverter pagamento para 'a receber'?", okLabel: "Reverter", danger: true });
+        if (!_rRevP.ok) return;
+        await db.patch("contratos", c.id, { status_pagamento: "pendente", valor_pago: null, data_pagamento: null });
+        setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pendente", valor_pago: null, data_pagamento: null }) : x));
+        var _mesPag = c.data_pagamento ? c.data_pagamento.slice(0,7) : null;
+        var _mesPrev = (c.previsao_pagamento || c.data_fim || "").slice(0, 7);
+        var _rx = null;
+        if (_mesPag) { var _rkPag = "fat_"+c.id+"_"+_mesPag; _rx = (receitas||[]).find(function(r){return r.ref_fatura===_rkPag;}); }
+        if (!_rx && _mesPrev) { var _rkPrev = "fat_"+c.id+"_"+_mesPrev; _rx = (receitas||[]).find(function(r){return r.ref_fatura===_rkPrev;}); }
+        if (_rx && _rx.status==="recebido") { try { var _ru = await db.patch("receitas", _rx.id, { status: "prevista", data_pagamento: null }); setReceitas(p=>p.map(x=>x.id===_rx.id?Object.assign({},x,_ru):x)); } catch(e){ console.warn(e); } }
+        toast("↩ Pagamento revertido");
+      })();
+    }
+    else if (action === "reabrir") {
+      (async function(){
+        if (!confirm("Reabrir contrato como ativo?")) return;
+        await db.patch("contratos", c.id, { status: "ativo" });
+        setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status: "ativo" }) : x));
+        toast("↩ Contrato reaberto");
+      })();
+    }
+    else if (action === "desfazer_renovacao") {
+      (async function(){
+        if (!confirm("Desfazer renovação? O contrato renovado (#" + numCt(c.renovado_para) + ") será excluído e este voltará a 'ativo'.")) return;
+        try {
+          var filhoId = c.renovado_para;
+          var recFilho = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + filhoId + "_"); });
+          for (var _rfi = 0; _rfi < recFilho.length; _rfi++) {
+            try { await db.del("receitas", recFilho[_rfi].id); } catch(e) { console.warn(e); }
+          }
+          if (recFilho.length > 0) setReceitas(function(p){ return p.filter(function(r){ return !r.ref_fatura || !r.ref_fatura.startsWith("fat_" + filhoId + "_"); }); });
+          await db.del("contratos", filhoId);
+          await db.patch("contratos", c.id, { status: "ativo", renovado_para: null });
+          setContratos(p => p.filter(x => x.id !== filhoId).map(x => x.id === c.id ? Object.assign({}, x, { status: "ativo", renovado_para: null }) : x));
+          toast("↩ Renovação desfeita. Contrato restaurado.");
+        } catch(e) { toast("Erro ao desfazer: " + e.message, "error"); }
+      })();
+    }
+    else if (action === "corrigir_renovacao") {
+      (async function(){
+        if (!confirm("Limpar vínculo de renovação? O contrato continuará como 'concluído' mas sem apontar para o contrato filho (que pode não existir mais). O alerta de renovação incompleta vai sumir.")) return;
+        try {
+          await db.patch("contratos", c.id, { renovado_para: null });
+          setContratos(function(p){ return p.map(function(x){ return x.id === c.id ? Object.assign({}, x, { renovado_para: null }) : x; }); });
+          toast("✓ Vínculo de renovação limpo. Alerta removido.");
+        } catch(e) { toast("Erro: " + e.message, "error"); }
+      })();
+    }
+    else if (action === "contrato") printContrato(c, cl, ve, empresa);
+    else if (action === "fatura") {
+      printFatura(c, cl, ve, empresa);
+      (async function(){
+        try {
+          var _mesFat=(c.previsao_pagamento||c.data_fim||hoje).slice(0,7);
+          var _refFat="fat_"+c.id+"_"+_mesFat;
+          var _dtEm=hoje;
+          var _recExist=(receitas||[]).find(function(r){return r.ref_fatura===_refFat;});
+          if(_recExist){
+            if(_recExist.status==="prevista"||!_recExist.status){
+              var _numFat=_recExist.numero_fatura||proximoNumeroFatura(receitas);
+              await db.patch("receitas",_recExist.id,{status:"emitida",data_emissao:_dtEm,numero_fatura:_numFat});
+              setReceitas(function(p){return p.map(function(r){return r.id===_recExist.id?Object.assign({},r,{status:"emitida",data_emissao:_dtEm,numero_fatura:_numFat}):r;});});
+            }
+          } else {
+            var _novaFat=await db.post("receitas",{
+              descricao:"Fatura locação #"+numCt(c.id),
+              valor:parseFloat(c.valor_total||0).toFixed(2),
+              data:_dtEm,data_emissao:_dtEm,
+              data_vencimento:c.previsao_pagamento,
+              numero_fatura:proximoNumeroFatura(receitas),
+              status:"emitida",tipo:"locacao",
+              cliente_id:c.cliente_id,contrato_id:c.id,
+              ref_fatura:_refFat
+            });
+            setReceitas(function(p){return p.concat([_novaFat]);});
+          }
+        } catch(e){ console.warn("Erro ao registrar emissão:",e); }
+      })();
+    }
+    else if (action === "uso") { setUsoContrato(c); setUsoForm({ data_inicio: hoje, data_fim: hoje, km_inicial: c.km_inicial || "", km_final: "", observacoes: "" }); setUsoModal(true); }
+    else if (action === "extras") { setExtrasContrato(c); setExtrasList(c.despesas_extras ? JSON.parse(c.despesas_extras) : []); setExtrasModal(true); }
+    else if (action === "checklist") { setCheckContrato(c); setCheckModal(true); }
+    else if (action === "docs") { setDocsContrato(c); setDocsModal(true); }
+  }
   return React.createElement('div', { className: "pg-fade", "data-no-cm": "1", style: { display: "flex", flexDirection: "column", gap: 18 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 952}}
     , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 953}}
       , React.createElement('div', { className: "pg-title", __self: this, __source: {fileName: _jsxFileName, lineNumber: 954}}, "Contratos")
@@ -28892,8 +29047,10 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           editLabel: 'Parcial',
           onRight: (c.status === 'ativo' && !c.renovado_para) ? function(){ renovar(c); } : null,
           rightLabel: 'Renovar', rightIcon: '🔄', rightColor: 'rgba(255,149,0,0.92)',
-          onDelete: function(){ remove(c.id); },
-          deleteLabel: 'Cancelar'
+          leftActions: [
+            { label: 'Excluir', icon: '🗑️', color: 'rgba(255,59,48,0.92)', fn: function(){ remove(c.id); } },
+            { label: 'Editar', icon: '✏️', color: 'rgba(0,122,255,0.92)', fn: function(){ setForm(Object.assign({}, c)); setEdit(c.id); setModal(true); } }
+          ].concat(c.status === 'ativo' ? [{ label: 'Encerrar', icon: '🏁', color: 'rgba(255,149,0,0.92)', fn: function(){ abrirEncerrarCt(c); } }] : [])
         },
         React.createElement('div', { className: _cardClass, style: Object.assign({}, cardStyle, periodoExpirado ? { cursor: "pointer" } : {}), onClick: periodoExpirado ? function(e){ if(!e.target.closest('select,button,input,a')) renovar(c); } : undefined }
           /* Linha 1: Cliente em destaque + valor */
@@ -28953,190 +29110,57 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             var obsLimpa = (c.observacoes || "").split("\n").filter(function(l) { var t = l.trim(); return !/^(Recebido em \d{4}-\d{2}-\d{2}|Pagamento completo em \d{4}-\d{2}-\d{2}|Renovação contrato #\d+)/.test(t); }).join("\n").trim();
             return obsLimpa && React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 4, fontStyle: "italic", whiteSpace: "pre-line", lineClamp: 2, overflow: "hidden", maxHeight: 34 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1056}}, obsLimpa);
           })()
-          , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 10 } }
-            , React.createElement('button', { className: "lg-pill lg-ghost", style: { flex: 1, color: C.sub }, onClick: function(e){ e.stopPropagation(); setForm(Object.assign({}, c)); setEdit(c.id); setModal(true); } }, "✏️ Editar")
-            , React.createElement('button', { className: "lg-pill lg-ghost", style: { flex: 1, color: C.red }, onClick: function(e){ e.stopPropagation(); remove(c.id); } }, "🗑️ Excluir")
-          )
-          , React.createElement('select', {
-              value: "",
-              style: Object.assign({}, FI, { marginTop: 10, width: "100%", fontSize: 13, padding: "8px 10px", cursor: "pointer" }),
-              onChange: function(e) {
-                var action = e.target.value;
-                e.target.value = "";
-                if (!action) return;
-                if (action === "editar") { setForm(Object.assign({}, c)); setEdit(c.id); setModal(true); }
-                else if (action === "renovar") renovar(c);
-                else if (action === "receber") {
-                  (async function(){
-                    var _r = await window.__agPrompt({ title: "Receber Pagamento", icon: "💰", label1: "Data do pagamento", type1: "date", default1: _brNow().toISOString().split("T")[0] });
-                    if (!_r.ok) return;
-                    var dtPag = _r.v1;
-                    await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtPag });
-                    setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dtPag }) : x));
-                    await sincronizarRefFatura(c, dtPag);
-                    toast("✅ Pagamento registrado!");
-                  })();
-                }
-                else if (action === "receber_parcial") {
-                  (async function(){
-                    var _r = await window.__agPrompt2({ title: "Recebimento Parcial", icon: "💵", label1: "Valor recebido (R$)", type1: "text", label2: "Data do recebimento", type2: "date", default2: _brNow().toISOString().split("T")[0] });
-                    if (!_r.ok) return;
-                    var valParcial = parseFloat(_r.v1.replace(",","."));
-                    if (!valParcial || valParcial <= 0) { toast("Valor inválido!"); return; }
-                    var dtPag = _r.v2;
-                    await db.patch("contratos", c.id, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag });
-                    setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "parcial", valor_pago: valParcial, data_pagamento: dtPag }) : x));
-                    // Sincronizar receita vinculada
-                    var recParcial = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
-                    if (recParcial) {
-                      try { var updRP = await db.patch("receitas", recParcial.id, { status: "parcial", data_pagamento: dtPag }); setReceitas(p=>p.map(x=>x.id===recParcial.id?Object.assign({},x,updRP):x)); } catch(e){ console.warn(e); }
-                    }
-                    toast("💵 Parcial de " + fmtBRL(valParcial) + " registrado!");
-                  })();
-                }
-                else if (action === "editar_parcial") { setForm(Object.assign({}, c, { _edicaoParcial: true })); setEdit(c.id); setModal(true); }
-                else if (action === "completar_pgto") {
-                  (async function(){
-                    var _r = await window.__agPrompt({ title: "Completar Pagamento", icon: "✅", label1: "Data do pagamento", type1: "date", default1: _brNow().toISOString().split("T")[0] });
-                    if (!_r.ok) return;
-                    var dtPag = _r.v1;
-                    await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtPag });
-                    setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dtPag }) : x));
-                    await sincronizarRefFatura(c, dtPag);
-                    toast("✅ Pagamento completo!");
-                  })();
-                }
-                else if (action === "reverter_parcial") {
-                  (async function(){
-                    var _rRev = await window.__agConfirm({ title: "Reverter Pagamento", icon: "↩️", message: "Reverter pagamento parcial para 'a receber'? O valor pago será apagado.", okLabel: "Reverter", danger: true });
-                    if (!_rRev.ok) return;
-                    await db.patch("contratos", c.id, { status_pagamento: "pendente", valor_pago: null });
-                    setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pendente", valor_pago: null }) : x));
-                    // Reverter receita vinculada (parcial → emitida ou prevista)
-                    var recParcRev = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_") && r.status==="parcial"; });
-                    if (recParcRev) {
-                      var novoSt = recParcRev.numero_fatura ? "emitida" : "prevista";
-                      try { var updRev = await db.patch("receitas", recParcRev.id, { status: novoSt, data_pagamento: null }); setReceitas(p=>p.map(x=>x.id===recParcRev.id?Object.assign({},x,updRev):x)); } catch(e){ console.warn(e); }
-                    }
-                    toast("↩ Pagamento parcial revertido");
-                  })();
-                }
-                else if (action === "reverter_pgto") {
-                  (async function(){
-                    var _rRevP = await window.__agConfirm({ title: "Reverter Pagamento", icon: "↩️", message: "Reverter pagamento para 'a receber'?", okLabel: "Reverter", danger: true });
-                    if (!_rRevP.ok) return;
-                    await db.patch("contratos", c.id, { status_pagamento: "pendente", valor_pago: null, data_pagamento: null });
-                    setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pendente", valor_pago: null, data_pagamento: null }) : x));
-                    var _mesPag = c.data_pagamento ? c.data_pagamento.slice(0,7) : null;
-                    var _mesPrev = (c.previsao_pagamento || c.data_fim || "").slice(0, 7);
-                    var _rx = null;
-                    if (_mesPag) { var _rkPag = "fat_"+c.id+"_"+_mesPag; _rx = (receitas||[]).find(function(r){return r.ref_fatura===_rkPag;}); }
-                    if (!_rx && _mesPrev) { var _rkPrev = "fat_"+c.id+"_"+_mesPrev; _rx = (receitas||[]).find(function(r){return r.ref_fatura===_rkPrev;}); }
-                    if (_rx && _rx.status==="recebido") { try { var _ru = await db.patch("receitas", _rx.id, { status: "prevista", data_pagamento: null }); setReceitas(p=>p.map(x=>x.id===_rx.id?Object.assign({},x,_ru):x)); } catch(e){ console.warn(e); } }
-                    toast("↩ Pagamento revertido");
-                  })();
-                }
-                else if (action === "encerrar") abrirEncerrarCt(c);
-                else if (action === "reabrir") {
-                  (async function(){
-                    if (!confirm("Reabrir contrato como ativo?")) return;
-                    await db.patch("contratos", c.id, { status: "ativo" });
-                    // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
-                    setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status: "ativo" }) : x));
-                    toast("↩ Contrato reaberto");
-                  })();
-                }
-                else if (action === "desfazer_renovacao") {
-                  (async function(){
-                    if (!confirm("Desfazer renovação? O contrato renovado (#" + numCt(c.renovado_para) + ") será excluído e este voltará a 'ativo'.")) return;
-                    try {
-                      var filhoId = c.renovado_para;
-                      // Cascade: exclui receitas vinculadas ao contrato filho
-                      var recFilho = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + filhoId + "_"); });
-                      for (var _rfi = 0; _rfi < recFilho.length; _rfi++) {
-                        try { await db.del("receitas", recFilho[_rfi].id); } catch(e) { console.warn(e); }
-                      }
-                      if (recFilho.length > 0) setReceitas(function(p){ return p.filter(function(r){ return !r.ref_fatura || !r.ref_fatura.startsWith("fat_" + filhoId + "_"); }); });
-                      await db.del("contratos", filhoId);
-                      await db.patch("contratos", c.id, { status: "ativo", renovado_para: null });
-                      setContratos(p => p.filter(x => x.id !== filhoId).map(x => x.id === c.id ? Object.assign({}, x, { status: "ativo", renovado_para: null }) : x));
-                      toast("↩ Renovação desfeita. Contrato restaurado.");
-                    } catch(e) { toast("Erro ao desfazer: " + e.message, "error"); }
-                  })();
-                }
-                else if (action === "corrigir_renovacao") {
-                  (async function(){
-                    if (!confirm("Limpar vínculo de renovação? O contrato continuará como 'concluído' mas sem apontar para o contrato filho (que pode não existir mais). O alerta de renovação incompleta vai sumir.")) return;
-                    try {
-                      await db.patch("contratos", c.id, { renovado_para: null });
-                      setContratos(function(p){ return p.map(function(x){ return x.id === c.id ? Object.assign({}, x, { renovado_para: null }) : x; }); });
-                      toast("✓ Vínculo de renovação limpo. Alerta removido.");
-                    } catch(e) { toast("Erro: " + e.message, "error"); }
-                  })();
-                }
-                else if (action === "contrato") printContrato(c, cl, ve, empresa);
-                else if (action === "fatura") {
-                  printFatura(c, cl, ve, empresa);
-                  // Registrar emissão no sistema
-                  (async function(){
-                    try {
-                      var _mesFat=(c.previsao_pagamento||c.data_fim||hoje).slice(0,7);
-                      var _refFat="fat_"+c.id+"_"+_mesFat;
-                      var _dtEm=hoje;
-                      var _recExist=(receitas||[]).find(function(r){return r.ref_fatura===_refFat;});
-                      if(_recExist){
-                        if(_recExist.status==="prevista"||!_recExist.status){
-                          var _numFat=_recExist.numero_fatura||proximoNumeroFatura(receitas);
-                          await db.patch("receitas",_recExist.id,{status:"emitida",data_emissao:_dtEm,numero_fatura:_numFat});
-                          setReceitas(function(p){return p.map(function(r){return r.id===_recExist.id?Object.assign({},r,{status:"emitida",data_emissao:_dtEm,numero_fatura:_numFat}):r;});});
-                        }
-                      } else {
-                        var _novaFat=await db.post("receitas",{
-                          descricao:"Fatura locação #"+numCt(c.id),
-                          valor:parseFloat(c.valor_total||0).toFixed(2),
-                          data:_dtEm,data_emissao:_dtEm,
-                          data_vencimento:c.previsao_pagamento,
-                          numero_fatura:proximoNumeroFatura(receitas),
-                          status:"emitida",tipo:"locacao",
-                          cliente_id:c.cliente_id,contrato_id:c.id,
-                          ref_fatura:_refFat
-                        });
-                        setReceitas(function(p){return p.concat([_novaFat]);});
-                      }
-                    } catch(e){ console.warn("Erro ao registrar emissão:",e); }
-                  })();
-                }
-                else if (action === "uso") { setUsoContrato(c); setUsoForm({ data_inicio: hoje, data_fim: hoje, km_inicial: c.km_inicial || "", km_final: "", observacoes: "" }); setUsoModal(true); }
-                else if (action === "extras") { setExtrasContrato(c); setExtrasList(c.despesas_extras ? JSON.parse(c.despesas_extras) : []); setExtrasModal(true); }
-                else if (action === "checklist") { setCheckContrato(c); setCheckModal(true); }
-                else if (action === "docs") { setDocsContrato(c); setDocsModal(true); }
-                else if (action === "excluir") remove(c.id);
-              }
-            }
-            , React.createElement('option', { value: "" }, "— Ações —")
-            , isPendente ? React.createElement('option', { value: "receber" }, "💰 Receber") : null
-            , (isPendente || isParcial) ? React.createElement('option', { value: "receber_parcial" }, "💵 Receber parcial") : null
-            , isParcial ? React.createElement('option', { value: "editar_parcial" }, "✏ Editar parcial") : null
-            , isParcial ? React.createElement('option', { value: "completar_pgto" }, "✅ Completar pgto") : null
-            , isParcial ? React.createElement('option', { value: "reverter_parcial" }, "↩ Reverter parcial") : null
-            , isPago ? React.createElement('option', { value: "reverter_pgto" }, "↩ Reverter pgto") : null
-            , c.status === "ativo" ? React.createElement('option', { value: "encerrar" }, "Encerrar") : null
-            , (c.status === "concluido" || c.status === "cancelado") ? React.createElement('option', { value: "reabrir" }, "↩ Reabrir") : null
-            , c.status === "concluido" && c.renovado_para ? React.createElement('option', { value: "desfazer_renovacao" }, "↩ Desfazer renovação") : null
-            , c.status === "concluido" && c.renovado_para && !contratos.find(function(x){ return String(x.id)===String(c.renovado_para); }) ? React.createElement('option', { value: "corrigir_renovacao" }, "🔧 Corrigir renovação (filho não existe)") : null
-            , c.status === "ativo" ? React.createElement('option', { value: "uso" }, "📍 Uso") : null
-            , React.createElement('optgroup', { label: "··· Mais" }
-              , React.createElement('option', { value: "contrato" }, "📄 Contrato")
-              , React.createElement('option', { value: "fatura" }, "🧾 Fatura")
-              , React.createElement('option', { value: "extras" }, "+ Extras")
-              , React.createElement('option', { value: "checklist" }, "✓ Check List")
-              , React.createElement('option', { value: "docs" }, "📎 Docs")
-            )
-            , React.createElement('option', { value: "excluir" }, "✕ Excluir")
-          )
+          , React.createElement('button', {
+              className: "lg-pill lg-ghost",
+              style: { marginTop: 10, width: "100%", fontSize: 13 },
+              onClick: function(e){ e.stopPropagation(); setCtSheet(c); }
+            }, "⋯ Mais ações")
         )
         );
         });
+      })()
+    )
+    , React.createElement(BottomSheet, { open: !!ctSheet, onClose: function(){ setCtSheet(null); }, title: ctSheet ? "Contrato nº " + numCt(ctSheet.id) : "" }
+      , ctSheet && (() => {
+        var cs = ctSheet;
+        var csIsPago = cs.status_pagamento === "pago";
+        var csIsParcial = cs.status_pagamento === "parcial";
+        function csAct(action){ var c = ctSheet; setCtSheet(null); execCtAction(c, action); }
+        return React.createElement(React.Fragment, null
+          , csIsParcial && React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('reverter_parcial'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '↩'), 'Reverter parcial'
+          )
+          , csIsPago && React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('reverter_pgto'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '↩'), 'Reverter pgto'
+          )
+          , (cs.status === "concluido" || cs.status === "cancelado") && React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('reabrir'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '↩'), 'Reabrir'
+          )
+          , cs.status === "concluido" && cs.renovado_para && React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('desfazer_renovacao'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '↩'), 'Desfazer renovação'
+          )
+          , cs.status === "concluido" && cs.renovado_para && !contratos.find(function(x){ return String(x.id)===String(cs.renovado_para); }) && React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('corrigir_renovacao'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '🔧'), 'Corrigir renovação (filho não existe)'
+          )
+          , cs.status === "ativo" && React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('uso'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '📍'), 'Uso'
+          )
+          , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('contrato'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '📄'), 'Contrato'
+          )
+          , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('fatura'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '🧾'), 'Fatura'
+          )
+          , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('extras'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '+'), 'Extras'
+          )
+          , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('checklist'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '✓'), 'Check List'
+          )
+          , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('docs'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '📎'), 'Docs'
+          )
+        );
       })()
     )
     /* Modal Registrar Uso */

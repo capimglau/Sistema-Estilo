@@ -15602,20 +15602,13 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
 
     update(dataByRing) {
       this._lastData = dataByRing;
-      // Esmaecer é uma decisão GLOBAL, não por anel: se algo está
-      // selecionado em qualquer anel (ex.: um tipo), o outro anel (ex.:
-      // proprietário) não tem nada "selecionado" nele mesmo, mas também
-      // não deve ficar em destaque — senão a fatia que sobra ali (às
-      // vezes um anel inteiro, se só um dono tiver aquele tipo) parece
-      // uma segunda seleção por engano.
-      const anySelected = this.rings.some(cfg => (dataByRing[cfg.id] || []).some(it => it.selected));
       this.rings.forEach(cfg => {
         const items = dataByRing[cfg.id] || [];
-        this._renderRing(cfg, items, anySelected);
+        this._renderRing(cfg, items);
       });
     }
 
-    _renderRing(cfg, items, anySelected) {
+    _renderRing(cfg, items) {
       this._ensureSheen(cfg);
       const segs = this._computeSegs(cfg, items);
       const sig = segs.map(s => s.key).join('|');
@@ -15631,6 +15624,12 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
         this._prevSig[cfg.id] = sig;
       }
       const sheen = group.querySelector('.sb3d-sheen');
+      // Aqui os dois anéis são eixos INDEPENDENTES (receita por cliente x
+      // despesa por categoria, sem relação entre si) — diferente do AGI,
+      // onde os dois anéis são recortes do MESMO dado. Por isso o
+      // esmaecimento é por anel: selecionar um cliente não deve esmaecer
+      // as categorias de despesa (não têm nada a ver uma com a outra).
+      const anySelected = segs.some(s => s.selected);
 
       segs.forEach(s => {
         let rec = this._els[cfg.id][s.key];
@@ -26214,6 +26213,45 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       );
     })()
 
+    /* ── GRÁFICO: Receita por Cliente x Despesa por Categoria (Sunburst3D) ── */
+    , (() => {
+      function _rdClienteDaReceita(r){
+        var ctId = r.contrato_id;
+        if (!ctId && r.ref_fatura) { var m = r.ref_fatura.match(/^fat_(\d+)_/); if (m) ctId = m[1]; }
+        if (ctId) {
+          var ct = (contratos||[]).find(function(c){ return String(c.id) === String(ctId); });
+          if (ct) { var cl = (clientes||[]).find(function(x){ return x.id == ct.cliente_id; }); if (cl && cl.nome) return cl.nome; }
+        }
+        return "Avulsa / sem cliente";
+      }
+      // Contratos do mês ainda sem receita vinculada (mesma regra usada em
+      // Financeiro pra não contar duas vezes a mesma locação).
+      var _rdCtsDoMes = (contratos||[]).filter(function(c){
+        if (!c.previsao_pagamento) return false;
+        if (c.status === "cancelado" || c.status === "concluido") return false;
+        if (c.renovado_para) return false;
+        if (c.previsao_pagamento.slice(0,7) !== dashMes) return false;
+        if ((receitas||[]).some(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); })) return false;
+        return true;
+      });
+      var rdReceitaRowsInicio = (receitas||[]).filter(function(r){ return receitaVisivelNoMes(r, dashMes); })
+        .map(function(r){ return { chave: _rdClienteDaReceita(r), valor: parseFloat(r.valor||0) }; })
+        .concat(_rdCtsDoMes.map(function(c){
+          var cl = (clientes||[]).find(function(x){ return x.id == c.cliente_id; });
+          return { chave: cl && cl.nome ? cl.nome : "Avulsa / sem cliente", valor: parseFloat(c.valor_total||0) };
+        }))
+        .filter(function(r){ return r.valor>0.005; });
+      var _rdManFiltradas = (manutencoes||[]).filter(function(m){
+        if (!manVisivelNoMes(m, dashMes)) return false;
+        return !(despesas||[]).some(function(d){ return String(d.manutencao_id) === String(m.id); });
+      });
+      var rdDespesaRowsInicio = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), dashMes)
+        .map(function(d){ return { chave: d.categoria||"Outros", valor: parseFloat(d.valor||0) }; })
+        .concat(_rdManFiltradas.map(function(m){ return { chave:"Manutenção", valor: parseFloat(m.custo||0) }; }))
+        .filter(function(r){ return r.valor>0.005; });
+      return React.createElement(RdSunburstCard, { receitaRows: rdReceitaRowsInicio, despesaRows: rdDespesaRowsInicio, C: C, CARD_CLS: CARD_CLS });
+    })()
+
     /* ── GRÁFICO: Despesas por Categoria (estilo Pinterest) ── */
     , (() => {
       var CAT_ICONS = {
@@ -35763,82 +35801,66 @@ function OrcamentosClientes({ veiculos, clientes, empresa, toast }) {
 }
 
 // -- GRÁFICO RECEITAS x DESPESAS (Sunburst3D) -------------------------------
-// Anel interno = Natureza (Receita/Despesa), anel externo = Categoria.
-// Componente genérico components/sunburst3d.js (mesmo do painel "Faturamento
-// por categoria" do AGI) — aqui só a "cola": pega `rows` ({natureza,
-// categoria,valor}[] do mês selecionado) e liga clique/hub/legenda.
-var RD_COR_NATUREZA = { "Receita": "#34C759", "Despesa": "#FF3B30" };
+// Anel interno = Receita por CLIENTE, anel externo = Despesa por CATEGORIA.
+// Dois eixos independentes (não é a mesma base de dados recortada de duas
+// formas, como no AGI) — por isso cada anel tem seu próprio filtro, sem
+// nenhum cruzar/esmaecer o outro. Componente genérico
+// components/sunburst3d.js — aqui só a "cola": pega as duas listas já
+// agregadas por chave ({chave,valor}[]) e liga clique/hub/legenda.
 var RD_COR_CATEGORIA = {
-  // despesas (mesma paleta do card "Despesas por Categoria")
   "Combustivel":"#E8B875","Manutenção":"#D98A9A","Impostos":"#8A87CF","Salarios":"#B89DD4",
   "Aluguel":"#7BAAD2","Marketing":"#7CC9A0","Seguros":"#D4977A","Financiamento":"#B8A080",
   "Contabilidade":"#72B8C0","Outros":"#A0A0A8","Multas":"#E09590","IPVA":"#D4B06A",
   "Internet":"#6DC490","Juridico":"#85C8D8",
-  // receitas
-  "Locação":"#34C759","Deposito":"#30B0C7","Multa Cobrada":"#5AC8FA","Servico":"#63E6BE",
 };
+var RD_PALETTE_CLIENTE = ["#34C759","#30B0C7","#5AC8FA","#63E6BE","#4CD964","#5EE3B0","#2FB380","#8BD450"];
 var RD_PALETTE_FALLBACK = ["#8E8E93","#B89DD4","#7BAAD2","#D98A9A","#7CC9A0"];
 
-function RdSunburstCard({ rows, C, CARD_CLS }) {
+function rdAbbrev(v) {
+  var abs = Math.abs(v);
+  var txt = abs >= 1000 ? (v / 1000).toFixed(1).replace(".0", "") + "k" : v.toFixed(0);
+  return "R$ " + txt;
+}
+function rdSum(list) { return list.reduce(function (s, r) { return s + r.valor; }, 0); }
+// Agrupa {chave,valor}[] em itens {key,value,color,selected} pro componente —
+// mesma agregação nos dois anéis, só muda a paleta de cor.
+function rdGroupBy(rows, selSet, paleta) {
+  var sums = {};
+  rows.forEach(function (r) { sums[r.chave] = (sums[r.chave] || 0) + r.valor; });
+  return Object.keys(sums).map(function (k) { return { key: k, value: sums[k] }; })
+    .sort(function (a, b) { return b.value - a.value; })
+    .map(function (it, idx) { return {
+      key: it.key, value: it.value, valueLabel: fmtBRL(it.value),
+      color: paleta[it.key] || (Array.isArray(paleta) ? paleta[idx % paleta.length] : RD_PALETTE_FALLBACK[idx % RD_PALETTE_FALLBACK.length]),
+      selected: selSet.has(it.key),
+    }; });
+}
+
+function RdSunburstCard({ receitaRows, despesaRows, C, CARD_CLS }) {
   var stageRef = React.useRef(null);
   var chartRef = React.useRef(null);
-  var legNatRef = React.useRef(null);
-  var legCatRef = React.useRef(null);
-  var _f = React.useState({ natureza: new Set(), categoria: new Set() });
-  var filtro = _f[0], setFiltro = _f[1];
+  var legRecRef = React.useRef(null);
+  var legDespRef = React.useRef(null);
+  var _fr = React.useState(new Set()); var selReceita = _fr[0], setSelReceita = _fr[1];
+  var _fd = React.useState(new Set()); var selDespesa = _fd[0], setSelDespesa = _fd[1];
 
-  function sum(list) { return list.reduce(function (s, r) { return s + r.valor; }, 0); }
-  function filterMatch(r) {
-    return (!filtro.natureza.size || filtro.natureza.has(r.natureza))
-        && (!filtro.categoria.size || filtro.categoria.has(r.categoria));
-  }
-  // Anel específico exclui o filtro da PRÓPRIA dimensão (senão selecionar
-  // uma categoria faz o anel de categoria colapsar pra só ela mesma).
-  function rowsForRing(dim) {
-    return rows.filter(function (r) {
-      if (dim !== "natureza" && filtro.natureza.size && !filtro.natureza.has(r.natureza)) return false;
-      if (dim !== "categoria" && filtro.categoria.size && !filtro.categoria.has(r.categoria)) return false;
-      return true;
-    });
-  }
-  function rdAbbrev(v) {
-    var abs = Math.abs(v);
-    var txt = abs >= 1000 ? (v / 1000).toFixed(1).replace(".0", "") + "k" : v.toFixed(0);
-    return "R$ " + txt;
-  }
-  function itemsFor(dim) {
-    var list = rowsForRing(dim);
-    var grand = sum(list);
-    if (!grand) return [];
-    var sums = {};
-    list.forEach(function (r) { var k = r[dim]; sums[k] = (sums[k] || 0) + r.valor; });
-    return Object.keys(sums).map(function (k) { return { key: k, value: sums[k] }; })
-      .sort(function (a, b) { return b.value - a.value; })
-      .map(function (it, idx) {
-        var color = dim === "natureza"
-          ? (RD_COR_NATUREZA[it.key] || "#8E8E93")
-          : (RD_COR_CATEGORIA[it.key] || RD_PALETTE_FALLBACK[idx % RD_PALETTE_FALLBACK.length]);
-        return {
-          key: it.key, value: it.value, valueLabel: fmtBRL(it.value), color: color,
-          selected: filtro[dim].has(it.key),
-        };
-      });
-  }
-  function toggle(dim, key) {
-    setFiltro(function (prev) {
-      var next = { natureza: new Set(prev.natureza), categoria: new Set(prev.categoria) };
-      if (next[dim].has(key)) next[dim].delete(key); else next[dim].add(key);
+  function toggle(ringId, key) {
+    var set = ringId === "receita" ? selReceita : selDespesa;
+    var setter = ringId === "receita" ? setSelReceita : setSelDespesa;
+    setter(function (prev) {
+      var next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
       return next;
     });
   }
-  function limpar() { setFiltro({ natureza: new Set(), categoria: new Set() }); }
+  function limpar() { setSelReceita(new Set()); setSelDespesa(new Set()); }
 
   React.useEffect(function () {
     if (!stageRef.current || !window.Sunburst3D || chartRef.current) return;
     chartRef.current = new window.Sunburst3D(stageRef.current, {
       rings: [
-        { id: "natureza", mode: "avatar", rIn: 104, rOut: 194, markR: 149, gapDeg: 0.9, labelR: 249, grow: 12, power: 0.4 },
-        { id: "categoria", mode: "avatar", rIn: 208, rOut: 308, markR: 258, gapDeg: 0.7, labelR: 316, grow: 14, power: 0.5, big: true },
+        { id: "receita", mode: "avatar", rIn: 104, rOut: 194, markR: 149, gapDeg: 0.9, labelR: 249, grow: 12, power: 0.4 },
+        { id: "despesa", mode: "avatar", rIn: 208, rOut: 308, markR: 258, gapDeg: 0.7, labelR: 316, grow: 14, power: 0.5, big: true },
       ],
       getLabel: function (ringId, key) { return key; },
       getShortLabel: function (ringId, key) { return key.slice(0, 3).toUpperCase(); },
@@ -35850,39 +35872,49 @@ function RdSunburstCard({ rows, C, CARD_CLS }) {
 
   React.useEffect(function () {
     if (!chartRef.current) return;
-    chartRef.current.update({ natureza: itemsFor("natureza"), categoria: itemsFor("categoria") });
-    var groups = [Array.from(filtro.natureza), Array.from(filtro.categoria)].filter(function (g) { return g.length; });
-    var selCount = groups.reduce(function (n, g) { return n + g.length; }, 0);
-    var label = selCount === 0 ? "Total do mês"
-      : selCount > 4 ? selCount + " filtros"
-      : groups.map(function (g) { return g.join(" + "); }).join(" · ");
-    chartRef.current.setHub({ label: label, value: rdAbbrev(sum(rows.filter(filterMatch))) });
-    if (legNatRef.current) chartRef.current.renderLegend("natureza", legNatRef.current, { title: "Natureza" });
-    if (legCatRef.current) chartRef.current.renderLegend("categoria", legCatRef.current, { title: "Categoria" });
+    chartRef.current.update({
+      receita: rdGroupBy(receitaRows, selReceita, RD_PALETTE_CLIENTE),
+      despesa: rdGroupBy(despesaRows, selDespesa, RD_COR_CATEGORIA),
+    });
+    var totalReceita = rdSum(receitaRows), totalDespesa = rdSum(despesaRows);
+    var recSelArr = Array.from(selReceita), despSelArr = Array.from(selDespesa);
+    var recValue = recSelArr.length ? rdSum(receitaRows.filter(function (r) { return selReceita.has(r.chave); })) : totalReceita;
+    var despValue = despSelArr.length ? rdSum(despesaRows.filter(function (r) { return selDespesa.has(r.chave); })) : totalDespesa;
+    var recLabel = recSelArr.length === 1 ? recSelArr[0] : recSelArr.length > 1 ? recSelArr.length + " clientes" : "Receita";
+    var despLabel = despSelArr.length === 1 ? despSelArr[0] : despSelArr.length > 1 ? despSelArr.length + " categorias" : "Despesa";
+    chartRef.current.setHub({
+      label: recLabel,
+      value: rdAbbrev(recValue),
+      sub: despLabel + ": " + fmtBRL(despValue),
+      sub2: "Resultado: " + fmtBRL(recValue - despValue),
+    });
+    if (legRecRef.current) chartRef.current.renderLegend("receita", legRecRef.current, { title: "Clientes" });
+    if (legDespRef.current) chartRef.current.renderLegend("despesa", legDespRef.current, { title: "Categoria" });
   });
 
-  var algumFiltro = filtro.natureza.size > 0 || filtro.categoria.size > 0;
+  var algumFiltro = selReceita.size > 0 || selDespesa.size > 0;
+  var semDados = receitaRows.length === 0 && despesaRows.length === 0;
 
   return React.createElement('div', { className: CARD_CLS, style: { background: "var(--c-card)", borderRadius: 18, border: "1px solid " + C.border, padding: 16 } },
     React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
-      React.createElement('div', { style: { fontSize: 12, fontWeight: 700 } }, "🌐 Receitas x Despesas por Categoria"),
+      React.createElement('div', { style: { fontSize: 12, fontWeight: 700 } }, "🌐 Receita por Cliente x Despesa por Categoria"),
       algumFiltro && React.createElement('button', {
         onClick: limpar,
         style: { fontSize: 11, color: C.purple, background: "transparent", border: "none", cursor: "pointer", fontWeight: 600 }
       }, "✕ Limpar")
     ),
-    rows.length === 0
+    semDados
       ? React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 20, fontSize: 13 } }, "Nenhum lançamento neste mês")
       : React.createElement('div', { className: "sb3d-body" },
           React.createElement('div', { ref: stageRef }),
           React.createElement('div', { className: "sb3d-legends" },
             React.createElement('div', { className: "sb3d-legend-block" },
-              React.createElement('div', { className: "sb3d-legend-title" }, "Natureza"),
-              React.createElement('ul', { className: "sb3d-legend", ref: legNatRef })
+              React.createElement('div', { className: "sb3d-legend-title" }, "Receita por cliente"),
+              React.createElement('ul', { className: "sb3d-legend", ref: legRecRef })
             ),
             React.createElement('div', { className: "sb3d-legend-block" },
-              React.createElement('div', { className: "sb3d-legend-title" }, "Categoria"),
-              React.createElement('ul', { className: "sb3d-legend", ref: legCatRef })
+              React.createElement('div', { className: "sb3d-legend-title" }, "Despesa por categoria"),
+              React.createElement('ul', { className: "sb3d-legend", ref: legDespRef })
             )
           )
         )
@@ -37496,26 +37528,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       var DS         = dadosMeses[idxSel];
       var nomeMesSel = new Date(mesSel+"-15").toLocaleString("pt-BR",{month:"long",year:"numeric"});
 
-      /* ── Linhas Receita+Despesa do mês selecionado, pro gráfico Sunburst3D —
-         usa as MESMAS listas que já alimentam as telas Receitas e Despesas
-         (recFiltradas, despFiltradas+manSemDesp, calculadas lá em cima no
-         corpo do Financeiro — já resolvem parcial/recorrente/contrato-como-
-         receita/manutenção-sem-despesa, dedup de ref_fatura etc.), só
-         reduzidas a {natureza,categoria,valor} por linha. De propósito NÃO
-         aplica os filtros de categoria (filtroCatRec/filtroCatDesp) dessas
-         telas — senão o total do gráfico mudaria sozinho conforme o que
-         estiver selecionado ali; o gráfico tem seu próprio filtro. */
-      var rdRows = recFiltradas.map(function(r){
-          return { natureza:"Receita", categoria:r.categoria||"Outros", valor:parseFloat(r.valor||0) };
-        })
-        .concat(despFiltradas.filter(function(d){ return !isRetLucro(d); }).map(function(d){
-          return { natureza:"Despesa", categoria:d.categoria||"Outros", valor:parseFloat(d.valor||0) };
-        }))
-        .concat(manSemDesp.map(function(mn){
-          return { natureza:"Despesa", categoria:"Manutenção", valor:parseFloat(mn.valor||0) };
-        }))
-        .filter(function(r){ return r.valor>0.005; });
-
       /* ── Orçamento por categoria ── */
       var budEmp = budEmpState; var setBudEmp = setBudEmpState;
       var metaFat = parseFloat(localStorage.getItem(META_KEY)||0);
@@ -37745,8 +37757,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               React.createElement('line',{x1:20,y1:BAR_H,x2:340,y2:BAR_H,stroke:C.border,strokeWidth:.5})
             )
           ),
-          /* Receitas x Despesas por categoria (Sunburst3D) */
-          React.createElement(RdSunburstCard,{rows:rdRows,C:C,CARD_CLS:CARD_CLS}),
           /* Pizza despesas + legenda */
           React.createElement('div',{className:CARD_CLS,style:{background:"var(--c-card)",borderRadius:18,border:"1px solid "+C.border,padding:16}},
             React.createElement('div',{style:{fontSize:12,fontWeight:700,marginBottom:12}},"\uD83C\uDF69 Despesas por Categoria — "+nomeMesSel),

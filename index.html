@@ -15212,6 +15212,662 @@ window.ReactDOMFull=require_react_dom();
   } catch(e){}
 })();
 </script>
+<style id="sb3d-styles">
+/* ═══════════════════════════════════════════════════════════════════
+   Sunburst3D — componente de anéis concêntricos premium (SVG puro)
+   Visual apenas — nenhuma regra aqui conhece dados de negócio.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.sb3d-stage { position: relative; width: 100%; max-width: 546px; aspect-ratio: 1 / 1; margin: 8px auto 4px; flex: none; }
+.sb3d-body { display: flex; flex-direction: column; }
+@media (min-width: 920px) {
+  /* -10% + mais -10% pedidos: 546px -> 491px -> ~442px. A legenda volta
+     a esticar até a borda do card (flex:1 1 0) — capar a largura tinha
+     deixado um vão vazio grande do lado direito, com a legenda
+     "encostada" no gráfico por comparação. O gap do gráfico até a
+     legenda usa o MESMO valor do padding horizontal do próprio .card
+     (22px, ver index.html) — daí a legenda fica com espaçamento
+     simétrico dos dois lados. */
+  .sb3d-body { flex-direction: row; align-items: center; gap: 22px; }
+  .sb3d-stage { margin: 8px 0; flex: 0 0 442px; }
+  .sb3d-legends { flex: 1 1 0; flex-direction: column; margin-top: 0; min-width: 0; gap: 16px; }
+  /* Fontes/espaçamento da legenda menores, acompanhando o gráfico —
+     mais um passo além da base (que já reduziu ~1px/font). */
+  .sb3d-legend-block { flex-basis: 180px; min-width: 160px; }
+  .sb3d-legend-title { font-size: 8.5px; margin-bottom: 5px; }
+  .sb3d-legend { gap: 1px; }
+  .sb3d-legend li { padding: 4px 6px; font-size: 9.5px; column-gap: 6px; }
+  .sb3d-legend-val { font-size: 9.3px; }
+  .sb3d-legend-pct { font-size: 8px; min-width: 25px; }
+  .sb3d-legend-bar-wrap { height: 3.5px; margin-top: 2.5px; }
+  .sb3d-legend-sq { width: 5px; height: 5px; }
+  /* Teste: nomes de proprietário com uma fonte "de vitrine" (a mesma
+     família nativa do sistema, SF Pro no Mac/iOS) em vez da fonte
+     padrão do app — só o nome, não o valor/percentual ao lado. */
+  .sb3d-legend li[data-ring="dono"] .sb3d-legend-nm {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'DM Sans', sans-serif;
+    letter-spacing: -.01em;
+  }
+}
+@media (max-width: 760px) {
+  .sb3d-stage { max-width: none; width: calc(100% + 44px); margin-left: -22px; margin-right: -22px; }
+}
+
+/* (Chegou a ter um leve rotateX/rotateY de perspectiva aqui — tirado:
+   um transform 3D no SVG força o navegador a reamostrar o desenho
+   inteiro através da matriz de perspectiva, e em tela não-retina isso
+   deixa tudo (traços finos, texto) visivelmente borrado. O relevo
+   das fatias (extrusão/gradiente/sombra) já dá a sensação de 3D sem
+   esse custo.) */
+.sb3d-stage > svg { width: 100%; height: 100%; overflow: visible; }
+
+.sb3d-slice { cursor: pointer; transform-box: fill-box; transform-origin: center; transition: opacity .22s ease; }
+.sb3d-slice.mode-icon { transition: transform .38s cubic-bezier(.2,.85,.3,1), opacity .22s ease; }
+.sb3d-slice.mode-avatar { transition: transform .32s cubic-bezier(.25,.9,.35,1), opacity .22s ease; }
+.sb3d-slice path.main { transition: filter .2s; stroke: rgba(6,10,20,.32); stroke-width: 1; stroke-linejoin: round; }
+.sb3d-slice path.side { transition: filter .2s; }
+.sb3d-sheen { transition: opacity .2s; }
+/* Com alguma fatia selecionada no anel, o resto esmaece. Só reduzir a
+   opacidade não bastou (uma cor viva tipo o azul do Silvio ainda lê
+   forte a 40% em cima de fundo escuro) — dessatura também, então o
+   contraste com a fatia selecionada (cor cheia) fica óbvio, e no
+   hover volta quase ao normal pra continuar dando pra explorar. */
+.sb3d-slice.dimmed { opacity: .3; }
+.sb3d-slice.dimmed path.main { filter: grayscale(.65) drop-shadow(1px 2px 3px rgba(12,18,30,.16)) !important; }
+body.dark .sb3d-slice.dimmed path.main { filter: grayscale(.65) drop-shadow(1px 2px 3px rgba(0,0,0,.3)) !important; }
+.sb3d-slice.dimmed:hover { opacity: .7; }
+.sb3d-slice.dimmed:hover path.main { filter: grayscale(.25) drop-shadow(1px 2px 3px rgba(12,18,30,.16)) !important; }
+body.dark .sb3d-slice.dimmed:hover path.main { filter: grayscale(.25) drop-shadow(1px 2px 3px rgba(0,0,0,.3)) !important; }
+
+/* Entrada: cada fatia nasce do centro (spring simplificado, 600ms). */
+@keyframes sb3d-enter {
+  0%   { opacity: 0; transform: scale(.4); }
+  55%  { opacity: 1; transform: scale(1.045); }
+  80%  { transform: scale(.99); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.sb3d-slice.sb3d-entering { animation: sb3d-enter .6s cubic-bezier(.22,1,.36,1) both; }
+
+/* Sombra em duas camadas (contato + elevação), deslocada pra
+   baixo-direita — a luz do componente vem de cima-esquerda. */
+.sb3d-ring-outer { filter: drop-shadow(6px 16px 26px rgba(12,18,30,.18)); }
+.sb3d-slice.mode-icon path.main { filter: drop-shadow(1px 2px 3px rgba(12,18,30,.26)) drop-shadow(4px 9px 16px rgba(12,18,30,.18)); }
+.sb3d-slice.mode-icon:hover path.main { filter: drop-shadow(2px 3px 5px rgba(12,18,30,.3)) drop-shadow(5px 11px 20px rgba(12,18,30,.22)) brightness(1.06); }
+.sb3d-slice.mode-avatar path.main { filter: drop-shadow(1px 2px 3px rgba(12,18,30,.18)); }
+.sb3d-slice.mode-avatar:hover path.main { filter: drop-shadow(2px 3px 5px rgba(12,18,30,.24)) brightness(1.05); }
+/* Clique: sobe levemente + ~5% maior + brilho — já coberto pelo scale
+   no JS (translate/scale) + esta sombra mais forte + saturação. */
+.sb3d-slice.mode-avatar.is-selected path.main { filter: drop-shadow(3px 6px 12px rgba(12,18,30,.28)) brightness(1.1) saturate(1.08); }
+.sb3d-slice.mode-icon.is-selected path.main { filter: drop-shadow(3px 7px 14px rgba(12,18,30,.3)) brightness(1.08) saturate(1.06); }
+
+/* Modo escuro: brilho neon com a própria cor da fatia (--sc), por cima
+   do relevo/extrusão — efeito de vidro sob luz de neon. */
+body.dark .sb3d-slice.mode-icon path.main { filter: drop-shadow(1px 2px 3px rgba(0,0,0,.5)) drop-shadow(4px 9px 16px rgba(0,0,0,.35)) drop-shadow(0 0 14px var(--sc)) drop-shadow(0 0 3px var(--sc)); }
+body.dark .sb3d-slice.mode-icon:hover path.main { filter: drop-shadow(2px 3px 5px rgba(0,0,0,.55)) drop-shadow(5px 11px 20px rgba(0,0,0,.4)) drop-shadow(0 0 18px var(--sc)) drop-shadow(0 0 4px var(--sc)) brightness(1.08); }
+body.dark .sb3d-slice.mode-avatar path.main { filter: drop-shadow(1px 2px 3px rgba(0,0,0,.4)) drop-shadow(0 0 12px var(--sc)) drop-shadow(0 0 3px var(--sc)); }
+body.dark .sb3d-slice.mode-avatar:hover path.main { filter: drop-shadow(2px 3px 5px rgba(0,0,0,.45)) drop-shadow(0 0 16px var(--sc)) drop-shadow(0 0 4px var(--sc)) brightness(1.06); }
+body.dark .sb3d-slice.is-selected path.main { filter: drop-shadow(3px 6px 12px rgba(0,0,0,.5)) drop-shadow(0 0 22px var(--sc)) drop-shadow(0 0 6px var(--sc)) brightness(1.12) saturate(1.1); }
+body.dark .sb3d-slice path.main { stroke: rgba(0,0,0,.5); }
+body.dark .sb3d-slice .hi { mix-blend-mode: screen; }
+/* Esmaecida: sem o friso/especular nem o glow neon do escuro (a cor +
+   grayscale já resolvem lá em cima — filter de novo aqui ia por cima
+   dessas regras e desfazer o grayscale). */
+.sb3d-slice.dimmed .hi,
+.sb3d-slice.dimmed .inhi,
+.sb3d-slice.dimmed .sb3d-rim { opacity: 0 !important; }
+/* Friso neon no contorno inteiro (as 4 bordas da fatia) — diferente do
+   drop-shadow ambiente acima (que só borra ao redor), isso traça uma
+   linha fina e nítida em cima do próprio contorno, tipo tubo de neon,
+   igual à referência. Só no escuro; no claro fica invisível (stroke
+   none). */
+.sb3d-rim { stroke-width: 0; opacity: 0; }
+body.dark .sb3d-rim {
+  stroke-width: 1.8; opacity: .85; mix-blend-mode: screen;
+  filter: drop-shadow(0 0 3px var(--sc)) drop-shadow(0 0 7px var(--sc));
+}
+body.dark .sb3d-stage::before {
+  content: ''; position: absolute; inset: -12%; z-index: 0; pointer-events: none;
+  background: radial-gradient(circle at 50% 46%, rgba(61,125,255,.22), rgba(120,90,255,.10) 45%, transparent 70%);
+  filter: blur(6px);
+}
+body.dark .sb3d-stage > svg { position: relative; z-index: 1; }
+body.dark .sb3d-cards { z-index: 1; }
+
+.sb3d-halo { fill: none; opacity: 0; transition: opacity .32s ease; pointer-events: none; }
+.sb3d-halo.on { opacity: .55; }
+.sb3d-icon { pointer-events: none; color: #fff; opacity: .98; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.3)); transition: transform .25s cubic-bezier(.2,.85,.3,1); }
+/* font-size vem inline por fatia (Sunburst3D.fitLabel) — o valor aqui é
+   só um teto de segurança caso algum consumidor não passe a fonte. */
+.sb3d-avatar text { pointer-events: none; fill: #fff; font-size: 14px; font-weight: 800; text-anchor: middle; dominant-baseline: central; font-family: inherit; paint-order: stroke; stroke: rgba(0,0,0,.42); stroke-width: 3px; stroke-linejoin: round; }
+.sb3d-connector { stroke: var(--c-sub); stroke-width: 1; opacity: 0; fill: none; transition: opacity .25s; }
+
+/* ─── Hub: cartão glass (glassmorphism de verdade — HTML+backdrop-filter,
+   não dá pra simular direito só com SVG) ─── */
+.sb3d-hub {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; cursor: pointer; z-index: 2; user-select: none;
+  background: color-mix(in srgb, var(--c-card) 62%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid color-mix(in srgb, #fff 55%, transparent);
+  border-radius: 50%;
+  box-shadow: 0 1px 1px rgba(255,255,255,.6) inset, 0 -6px 14px rgba(0,0,0,.06) inset, 0 10px 28px rgba(12,18,30,.16);
+  transition: transform .18s cubic-bezier(.2,.85,.3,1), box-shadow .18s;
+}
+.sb3d-hub:hover { transform: translate(-50%,-50%) scale(1.03); }
+.sb3d-hub:active { transform: translate(-50%,-50%) scale(.98); }
+body.dark .sb3d-hub {
+  background: color-mix(in srgb, var(--c-card) 55%, transparent);
+  border-color: color-mix(in srgb, #fff 18%, transparent);
+  box-shadow: 0 1px 1px rgba(255,255,255,.08) inset, 0 -6px 14px rgba(0,0,0,.35) inset, 0 10px 30px rgba(0,0,0,.45), 0 0 24px rgba(80,120,255,.12);
+}
+.sb3d-hub-label { font-size: 10.5px; font-weight: 700; color: var(--c-sub); letter-spacing: .05em; text-transform: uppercase; max-width: 88%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb3d-hub-value { font-size: 19px; font-weight: 800; color: var(--c-text); letter-spacing: -.01em; margin-top: 2px; }
+.sb3d-hub-sub { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: #16a34a; margin-top: 3px; }
+body.dark .sb3d-hub-sub { color: #4ade80; }
+.sb3d-hub-sub2 { font-size: 10px; color: var(--c-sub); font-weight: 600; margin-top: 1px; }
+
+/* ─── Tag flutuante / tooltip glass (fatia selecionada ou em hover) ─── */
+.sb3d-cards { position: absolute; inset: 0; pointer-events: none; }
+.sb3d-tag {
+  position: absolute; pointer-events: auto; display: flex; align-items: center; gap: 7px;
+  background: color-mix(in srgb, var(--c-card) 78%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(160%);
+  backdrop-filter: blur(10px) saturate(160%);
+  border: 1px solid color-mix(in srgb, #fff 40%, var(--c-border));
+  border-radius: 11px; padding: 6px 9px;
+  box-shadow: 0 1px 0 rgba(255,255,255,.5) inset, 0 2px 8px rgba(0,0,0,.08);
+  cursor: pointer; transform: translate(var(--tx,-50%),-50%) scale(.9); opacity: 0;
+  transition: transform .3s cubic-bezier(.2,.85,.3,1), opacity .25s; max-width: 160px; z-index: 2;
+}
+.sb3d-tag.left { flex-direction: row-reverse; }
+.sb3d-tag.left .sb3d-tag-txt { align-items: flex-end; text-align: right; }
+.sb3d-tag.show { opacity: 1; transform: translate(var(--tx,-50%),-50%) scale(1); }
+.sb3d-tag-dot { width: 9px; height: 9px; border-radius: 3px; flex: none; box-shadow: 0 0 0 1px rgba(255,255,255,.4) inset; }
+.sb3d-tag-txt { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.sb3d-tag-name { font-size: 11.5px; font-weight: 700; color: var(--c-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb3d-tag-val { font-size: 10.5px; color: var(--c-sub); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sb3d-tag-pct { font-size: 9.5px; color: var(--c-sub); font-weight: 700; opacity: .8; }
+
+/* ─── Legenda premium: bolinha, nome, barra, valor, percentual ─── */
+.sb3d-legends { display: flex; gap: 24px; margin-top: 14px; flex-wrap: wrap; }
+.sb3d-legend-block { flex: 1 1 220px; min-width: 200px; }
+.sb3d-legend-title { font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--c-sub); margin: 0 0 7px 2px; }
+.sb3d-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.sb3d-legend li {
+  display: grid; grid-template-columns: 10px 1fr auto; grid-template-rows: auto auto; column-gap: 8px;
+  align-items: center; padding: 6px 7px; border-radius: 10px; cursor: pointer;
+  transition: background .12s, box-shadow .12s; font-size: 11.5px;
+}
+.sb3d-legend li:hover { background: var(--c-bg); }
+.sb3d-legend li.on { background: var(--c-bg); box-shadow: inset 0 0 0 1.5px var(--c-text); }
+.sb3d-legend li.nosel { cursor: default; }
+/* Bolinha discreta em vez do quadrado (que ficava grande demais perto
+   do texto pequeno da legenda) — só um indicador de cor, sutil. */
+.sb3d-legend-sq { grid-column: 1; grid-row: 1 / span 2; width: 6px; height: 6px; border-radius: 50%; align-self: center; box-shadow: 0 0 0 1px rgba(255,255,255,.3) inset; }
+.sb3d-legend-nm { grid-column: 2; grid-row: 1; color: var(--c-text); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sb3d-legend-right { grid-column: 3; grid-row: 1; display: flex; align-items: baseline; gap: 6px; justify-self: end; }
+.sb3d-legend-val { color: var(--c-text); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; font-family: 'DM Mono', ui-monospace, monospace; }
+.sb3d-legend-pct { color: var(--c-sub); font-size: 9.5px; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 32px; text-align: right; }
+.sb3d-legend-bar-wrap { grid-column: 2 / span 2; grid-row: 2; height: 4px; border-radius: 99px; background: var(--c-bg); box-shadow: inset 0 1px 1.5px rgba(0,0,0,.06); overflow: hidden; margin-top: 3px; }
+.sb3d-legend-bar { height: 100%; border-radius: 99px; transition: width .5s cubic-bezier(.22,1,.36,1); box-shadow: 0 0 6px 0 var(--bc, transparent); }
+
+@media (max-width: 760px) { .sb3d-legends { flex-direction: column; gap: 8px; } }
+@media (prefers-reduced-motion: reduce) {
+  .sb3d-slice, .sb3d-tag, .sb3d-connector, .sb3d-halo, .sb3d-legend-bar { transition: none !important; animation: none !important; }
+}
+
+</style>
+<script id="sb3d-engine">
+/* ═══════════════════════════════════════════════════════════════════
+   Sunburst3D — anéis concêntricos premium em SVG puro (sem libs, sem
+   Canvas). Componente genérico: não conhece nada do domínio (não sabe
+   o que é "Locação" ou "proprietário") — só recebe, por anel, uma
+   lista de {key,value,color,selected?,locked?} e desenha.
+
+   Uso:
+     const chart = new Sunburst3D(containerEl, {
+       rings: [
+         {id:'inner', rIn:100, rOut:188, mode:'icon',   gapDeg:.9, power:.3},
+         {id:'outer', rIn:200, rOut:312, mode:'avatar', gapDeg:.7, power:.5},
+       ],
+       getIcon:  (ringId,key) => '<path .../>' | null,
+       getLabel: (ringId,key) => 'AB' | null,
+       onToggle: (ringId,key) => {...},   // clique na fatia/tag/quadrado da legenda
+       onOpen:   (ringId,key) => {...},   // clique no nome da legenda
+     });
+     chart.update({ inner:[{key,value,color,selected}, ...], outer:[...] });
+     chart.setHub({label,value,sub,subIcon});
+     chart.renderLegend('inner', ulEl, {title:'Tipo'});
+   ═══════════════════════════════════════════════════════════════════ */
+(function (global) {
+  'use strict';
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const el = (tag, cls) => { const e = document.createElementNS(SVGNS, tag); if (cls) e.setAttribute('class', cls); return e; };
+
+  function mix(hex, target, amt) {
+    const h = hex.replace('#', ''), t = target.replace('#', '');
+    const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+    const tr = parseInt(t.slice(0, 2), 16), tg = parseInt(t.slice(2, 4), 16), tb = parseInt(t.slice(4, 6), 16);
+    const mr = Math.round(r + (tr - r) * amt), mg = Math.round(g + (tg - g) * amt), mb = Math.round(b + (tb - b) * amt);
+    return '#' + [mr, mg, mb].map(x => x.toString(16).padStart(2, '0')).join('');
+  }
+  function luminance(hex) {
+    const h = hex.replace('#', '');
+    const [r, g, b] = [0, 2, 4].map(i => {
+      const c = parseInt(h.slice(i, i + 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }
+  const markColor = hex => (luminance(hex) > 0.42 ? '#16202E' : '#ffffff');
+
+  let uid = 0;
+
+  class Sunburst3D {
+    constructor(container, opts) {
+      this.container = container;
+      this.size = opts.size || 640;
+      this.cx = this.size / 2; this.cy = this.size / 2;
+      this.lightAngle = opts.light != null ? opts.light : 315;
+      this.rings = opts.rings || [];
+      this.getIcon = opts.getIcon || (() => null);
+      this.getLabel = opts.getLabel || (() => null);
+      this.getShortLabel = opts.getShortLabel || (() => null);
+      this.onToggle = opts.onToggle || (() => {});
+      this.onOpen = opts.onOpen || (() => {});
+      this.uid = ++uid;
+      this._els = {}; // ringId -> { key -> record }
+      this._prevSig = {}; // ringId -> signature string (pra saber quando repovoar)
+      this._lastData = {};
+      this._build();
+    }
+
+    // ─── ângulo -> ponto, luz -> fator 0..1 ───
+    polar(r, angDeg) {
+      const a = (angDeg - 90) * Math.PI / 180;
+      return { x: this.cx + r * Math.cos(a), y: this.cy + r * Math.sin(a) };
+    }
+    ringPath(rOut, rIn, a0, a1) {
+      const p1 = this.polar(rOut, a0), p2 = this.polar(rOut, a1);
+      const p3 = this.polar(rIn, a1), p4 = this.polar(rIn, a0);
+      const large = a1 - a0 > 180 ? 1 : 0;
+      return `M${p1.x} ${p1.y} A${rOut} ${rOut} 0 ${large} 1 ${p2.x} ${p2.y} L${p3.x} ${p3.y} A${rIn} ${rIn} 0 ${large} 0 ${p4.x} ${p4.y} Z`;
+    }
+    lightFactor(midDeg) {
+      const d = (midDeg - this.lightAngle) * Math.PI / 180;
+      return (1 + Math.cos(d)) / 2;
+    }
+    // Maior fonte (até maxFs) que cabe na corda da fatia nesse raio, sem
+    // passar de minFs; se nem o rótulo curto cabe no mínimo, não mostra
+    // nada em vez de estourar/sobrepor a fatia vizinha.
+    fitLabel(radius, spanDeg, full, short) {
+      const chord = 2 * radius * Math.sin(Math.min(spanDeg, 170) * Math.PI / 360) * 0.82;
+      const maxFs = 15, minFs = 7.5, avgCharW = 0.58;
+      const tryFit = text => {
+        if (!text) return null;
+        const fs = Math.min(maxFs, chord / (text.length * avgCharW));
+        return fs >= minFs ? { text, fs: fs.toFixed(1) } : null;
+      };
+      return tryFit(full) || tryFit(short);
+    }
+
+    _build() {
+      const c = this.container;
+      c.classList.add('sb3d-stage');
+      c.innerHTML = '';
+      const svg = el('svg'); svg.setAttribute('viewBox', `0 0 ${this.size} ${this.size}`); svg.setAttribute('aria-hidden', 'true');
+      const defs = el('defs'); defs.setAttribute('id', `sb3d-defs-${this.uid}`);
+      svg.appendChild(defs);
+      const haloG = el('g'); const connG = el('g');
+      svg.appendChild(haloG); svg.appendChild(connG);
+      this._svg = svg; this._defs = defs; this._haloG = haloG; this._connG = connG;
+
+      // O anel maior (rOut) recebe a sombra de elevação do conjunto
+      // inteiro — quem chama decide qual é (cfg.big:true), já que é o
+      // único que sabe a ordem visual pretendida dos anéis.
+      this._ringGroups = {};
+      this.rings.forEach(cfg => {
+        const g = el('g', 'sb3d-ring' + (cfg.big ? ' sb3d-ring-outer' : ''));
+        g.dataset.ring = cfg.id;
+        svg.appendChild(g);
+        this._ringGroups[cfg.id] = g;
+        this._els[cfg.id] = {};
+      });
+
+      c.appendChild(svg);
+
+      const cards = document.createElement('div'); cards.className = 'sb3d-cards';
+      c.appendChild(cards); this._cards = cards;
+
+      const hub = document.createElement('div'); hub.className = 'sb3d-hub';
+      hub.innerHTML = '<div class="sb3d-hub-label"></div><div class="sb3d-hub-value"></div><div class="sb3d-hub-sub" style="display:none"></div><div class="sb3d-hub-sub2" style="display:none"></div>';
+      hub.addEventListener('click', () => this._hubClick && this._hubClick());
+      // O cartão glass preenche o vão livre no meio do anel mais interno
+      // (2× o rIn dele, em % do stage) — nasce do próprio config, não é
+      // um número fixo solto no CSS.
+      const innerMost = Math.min(...this.rings.map(r => r.rIn));
+      const hubPct = (innerMost * 2 / this.size * 100 * 0.94).toFixed(2) + '%';
+      hub.style.width = hubPct; hub.style.height = hubPct;
+      c.appendChild(hub); this._hub = hub;
+    }
+
+    onHubClick(fn) { this._hubClick = fn; }
+
+    setHub({ label, value, sub, sub2 }) {
+      this._hub.querySelector('.sb3d-hub-label').textContent = label || '';
+      this._hub.querySelector('.sb3d-hub-value').textContent = value || '';
+      const subEl = this._hub.querySelector('.sb3d-hub-sub');
+      if (sub) { subEl.style.display = ''; subEl.textContent = sub; } else subEl.style.display = 'none';
+      const sub2El = this._hub.querySelector('.sb3d-hub-sub2');
+      if (sub2) { sub2El.style.display = ''; sub2El.textContent = sub2; } else sub2El.style.display = 'none';
+    }
+
+    _ensureSheen(cfg) {
+      if (cfg._sheenDone) return;
+      cfg._sheenDone = true;
+      const gradId = `sb3d-sheen-${this.uid}-${cfg.id}`;
+      const grad = el('linearGradient'); grad.setAttribute('id', gradId);
+      grad.setAttribute('x1', '0%'); grad.setAttribute('y1', '0%'); grad.setAttribute('x2', '0%'); grad.setAttribute('y2', '100%');
+      grad.innerHTML = '<stop offset="0%" stop-color="#ffffff" stop-opacity=".18"/><stop offset="40%" stop-color="#ffffff" stop-opacity="0"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>';
+      this._defs.appendChild(grad);
+      const sheen = el('path', 'sb3d-sheen');
+      sheen.setAttribute('d', this.ringPath(cfg.rOut, cfg.rIn, 0, 359.9));
+      sheen.setAttribute('fill', `url(#${gradId})`);
+      sheen.setAttribute('pointer-events', 'none');
+      this._ringGroups[cfg.id].appendChild(sheen);
+    }
+
+    // ─── calcula ângulos a partir dos valores (proporcional, com
+    // suavização opcional via power<1 pra fatias minúsculas não
+    // sumirem) — a única "matemática de gráfico" do componente. ───
+    _computeSegs(cfg, items) {
+      const p = cfg.power || 1;
+      const weights = items.map(it => Math.pow(Math.max(it.value, 0), p));
+      const wSum = weights.reduce((a, b) => a + b, 0) || 1;
+      const total = items.reduce((a, b) => a + Math.max(b.value, 0), 0) || 1;
+      const gap = cfg.gapDeg != null ? cfg.gapDeg : 1;
+      let acc = 0;
+      return items.map((it, i) => {
+        const frac = Math.max(weights[i] / wSum, 0.004);
+        const startA = acc * 360, endA = (acc + frac) * 360;
+        acc += frac;
+        const mid = (startA + endA) / 2;
+        const rad = (mid - 90) * Math.PI / 180;
+        return { ...it, startA: startA + gap / 2, endA: endA - gap / 2, mid,
+          pct: it.value / total * 100, dir: { x: Math.cos(rad), y: Math.sin(rad) } };
+      });
+    }
+
+    update(dataByRing) {
+      this._lastData = dataByRing;
+      // Esmaecer é uma decisão GLOBAL, não por anel: se algo está
+      // selecionado em qualquer anel (ex.: um tipo), o outro anel (ex.:
+      // proprietário) não tem nada "selecionado" nele mesmo, mas também
+      // não deve ficar em destaque — senão a fatia que sobra ali (às
+      // vezes um anel inteiro, se só um dono tiver aquele tipo) parece
+      // uma segunda seleção por engano.
+      const anySelected = this.rings.some(cfg => (dataByRing[cfg.id] || []).some(it => it.selected));
+      this.rings.forEach(cfg => {
+        const items = dataByRing[cfg.id] || [];
+        this._renderRing(cfg, items, anySelected);
+      });
+    }
+
+    _renderRing(cfg, items, anySelected) {
+      this._ensureSheen(cfg);
+      const segs = this._computeSegs(cfg, items);
+      const sig = segs.map(s => s.key).join('|');
+      const group = this._ringGroups[cfg.id];
+      const store = this._els[cfg.id];
+      if (this._prevSig[cfg.id] !== sig) {
+        // mantém a <path class="sb3d-sheen"> (última filha), só limpa fatias
+        Array.from(group.querySelectorAll(':scope > g.sb3d-slice')).forEach(n => n.remove());
+        this._haloG.querySelectorAll(`[data-ring="${cfg.id}"]`).forEach(n => n.remove());
+        this._connG.querySelectorAll(`[data-ring="${cfg.id}"]`).forEach(n => n.remove());
+        this._cards.querySelectorAll(`[data-ring="${cfg.id}"]`).forEach(n => n.remove());
+        this._els[cfg.id] = {};
+        this._prevSig[cfg.id] = sig;
+      }
+      const sheen = group.querySelector('.sb3d-sheen');
+
+      segs.forEach(s => {
+        let rec = this._els[cfg.id][s.key];
+        let isNew = false;
+        if (!rec) {
+          isNew = true;
+          rec = this._createSlice(cfg, s);
+          this._els[cfg.id][s.key] = rec;
+          group.insertBefore(rec.g, sheen);
+        }
+        rec.g.classList.toggle('dimmed', anySelected && !s.selected);
+        this._updateSlice(cfg, rec, s);
+        if (isNew) {
+          rec.g.classList.add('sb3d-entering');
+          rec.g.addEventListener('animationend', () => rec.g.classList.remove('sb3d-entering'), { once: true });
+        }
+      });
+    }
+
+    _createSlice(cfg, s) {
+      const g = el('g', `sb3d-slice mode-${cfg.mode}`);
+      g.dataset.ring = cfg.id; g.dataset.key = s.key;
+
+      const side = el('path', 'side'); side.setAttribute('pointer-events', 'none');
+      side.setAttribute('transform', 'translate(5,11)');
+      g.appendChild(side);
+
+      const path = el('path', 'main'); path.setAttribute('pointer-events', 'none');
+      g.appendChild(path);
+      const gradId = `sb3d-grad-${this.uid}-${cfg.id}-${Math.random().toString(36).slice(2, 8)}`;
+      const grad = el('linearGradient'); grad.setAttribute('id', gradId); grad.setAttribute('gradientUnits', 'userSpaceOnUse');
+      grad.innerHTML = '<stop class="s0" offset="0%"/><stop class="s1" offset="52%"/><stop class="s2" offset="100%"/>';
+      this._defs.appendChild(grad);
+      path.setAttribute('fill', `url(#${gradId})`);
+
+      const hi = el('path', 'hi'); hi.setAttribute('fill', 'none'); hi.setAttribute('stroke', '#fff');
+      hi.setAttribute('stroke-width', 1.6); hi.setAttribute('stroke-linecap', 'round'); hi.setAttribute('pointer-events', 'none');
+      g.appendChild(hi);
+      const inHi = el('path', 'inhi'); inHi.setAttribute('fill', 'none'); inHi.setAttribute('stroke', '#fff');
+      inHi.setAttribute('stroke-width', 1.4); inHi.setAttribute('stroke-linecap', 'round'); inHi.setAttribute('pointer-events', 'none');
+      g.appendChild(inHi);
+      // Friso neon no CONTORNO INTEIRO da fatia (as 4 bordas: arco de
+      // fora, arco de dentro e os 2 lados retos) — só aparece no modo
+      // escuro (.sb3d-rim na CSS). O hi/inHi acima só cobrem o lado
+      // virado pra luz; isso aqui é o brilho parelho em toda a borda,
+      // igual à referência.
+      const rim = el('path', 'sb3d-rim'); rim.setAttribute('fill', 'none');
+      rim.setAttribute('stroke-linejoin', 'round'); rim.setAttribute('pointer-events', 'none');
+      g.appendChild(rim);
+
+      const markG = el('g', cfg.mode === 'icon' ? 'sb3d-icon' : 'sb3d-avatar');
+      g.appendChild(markG);
+
+      // Área de toque menor que a fatia visual e recuada das bordas
+      // (ver _updateSlice) — no celular, o dedo cobre com facilidade um
+      // pedaço do anel vizinho perto da fronteira entre os dois anéis;
+      // encolher e centralizar a área clicável evita pegar a fatia
+      // errada. path.main fica só visual (pointer-events:none).
+      const hit = el('path', 'hit'); hit.setAttribute('fill', 'transparent'); hit.setAttribute('pointer-events', 'all');
+      g.appendChild(hit);
+
+      hit.addEventListener('click', () => { if (!s.locked) this.onToggle(cfg.id, s.key); });
+      hit.addEventListener('pointerenter', () => this._hoverTag(cfg, s.key, true));
+      hit.addEventListener('pointerleave', () => this._hoverTag(cfg, s.key, false));
+
+      let halo = null;
+      if (cfg.mode === 'avatar') {
+        halo = el('path', 'sb3d-halo'); halo.dataset.ring = cfg.id; halo.dataset.key = s.key;
+        halo.setAttribute('stroke-width', 3);
+        this._haloG.appendChild(halo);
+      }
+      const line = el('line', 'sb3d-connector'); line.dataset.ring = cfg.id; line.dataset.key = s.key;
+      this._connG.appendChild(line);
+
+      const tag = document.createElement('div');
+      tag.className = 'sb3d-tag'; tag.dataset.ring = cfg.id; tag.dataset.key = s.key;
+      tag.innerHTML = '<span class="sb3d-tag-dot"></span><span class="sb3d-tag-txt"><span class="sb3d-tag-name"></span><span class="sb3d-tag-val"></span></span><span class="sb3d-tag-pct"></span>';
+      tag.addEventListener('click', () => { if (!s.locked) this.onToggle(cfg.id, s.key); });
+      this._cards.appendChild(tag);
+
+      return { g, path, side, hi, inHi, rim, hit, markG, grad, halo, line, tag, hover: false };
+    }
+
+    _hoverTag(cfg, key, on) {
+      const rec = this._els[cfg.id][key];
+      if (!rec) return;
+      rec.hover = on;
+      this._positionTag(cfg, rec, this._lastSeg(cfg, key));
+    }
+    _lastSeg(cfg, key) {
+      const items = this._lastData[cfg.id] || [];
+      const segs = this._computeSegs(cfg, items);
+      return segs.find(s => s.key === key);
+    }
+
+    _updateSlice(cfg, rec, s) {
+      const d = this.ringPath(cfg.rOut, cfg.rIn, s.startA, s.endA);
+      rec.path.setAttribute('d', d);
+      rec.side.setAttribute('d', d);
+      rec.rim.setAttribute('d', d);
+      rec.rim.setAttribute('stroke', s.color);
+      rec.g.classList.toggle('is-selected', !!s.selected);
+
+      // Área de clique bem recuada (~28% da espessura em cada borda,
+      // centralizada) — bem menor que a fatia pintada, pra sobrar uma
+      // faixa "morta" bem mais folgada entre os dois anéis onde nenhum
+      // dos dois responde ao toque, em vez do dedo grudar sempre no
+      // anel vizinho (17% não bastou no teste real em celular).
+      const inset = (cfg.rOut - cfg.rIn) * 0.28;
+      rec.hit.setAttribute('d', this.ringPath(cfg.rOut - inset, cfg.rIn + inset, s.startA, s.endA));
+
+      const lf = this.lightFactor(s.mid);
+      rec.side.setAttribute('fill', mix(s.color, '#000000', 0.56 - lf * 0.16));
+      // No próprio grupo (não só no path) pra hi/inHi/rim, todos irmãos
+      // do path, também poderem usar var(--sc) — custom property só
+      // desce pra descendentes, não pra irmãos.
+      rec.g.style.setProperty('--sc', s.color);
+
+      const gp1 = this.polar(cfg.rOut + 8, s.mid), gp2 = this.polar(cfg.rIn - 8, s.mid);
+      rec.grad.setAttribute('x1', gp1.x); rec.grad.setAttribute('y1', gp1.y);
+      rec.grad.setAttribute('x2', gp2.x); rec.grad.setAttribute('y2', gp2.y);
+      rec.grad.querySelector('.s0').setAttribute('stop-color', mix(s.color, '#ffffff', 0.20 + lf * 0.24));
+      rec.grad.querySelector('.s1').setAttribute('stop-color', s.color);
+      rec.grad.querySelector('.s2').setAttribute('stop-color', mix(s.color, '#000000', 0.30 - lf * 0.08));
+
+      if (s.endA - s.startA > 13) {
+        const hiSpan = Math.min(s.endA - s.startA - 4, 26);
+        const a0 = s.mid - hiSpan / 2, a1 = s.mid + hiSpan / 2;
+        const hp1 = this.polar(cfg.rOut - 2, a0), hp2 = this.polar(cfg.rOut - 2, a1);
+        rec.hi.setAttribute('d', `M${hp1.x} ${hp1.y} A${cfg.rOut - 2} ${cfg.rOut - 2} 0 0 1 ${hp2.x} ${hp2.y}`);
+        rec.hi.setAttribute('opacity', (0.12 + lf * 0.36).toFixed(2));
+        rec.hi.style.display = '';
+        const ip1 = this.polar(cfg.rIn + 2, a0), ip2 = this.polar(cfg.rIn + 2, a1);
+        rec.inHi.setAttribute('d', `M${ip1.x} ${ip1.y} A${cfg.rIn + 2} ${cfg.rIn + 2} 0 0 1 ${ip2.x} ${ip2.y}`);
+        rec.inHi.setAttribute('opacity', (0.08 + lf * 0.34).toFixed(2));
+        rec.inHi.style.display = '';
+      } else { rec.hi.style.display = 'none'; rec.inHi.style.display = 'none'; }
+
+      const mc = markColor(s.color);
+      if (cfg.mode === 'icon') {
+        const icon = this.getIcon(cfg.id, s.key);
+        const ip = this.polar(cfg.markR || (cfg.rOut + cfg.rIn) / 2, s.mid);
+        if (icon) rec.markG.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${icon}</svg>`;
+        else rec.markG.innerHTML = '';
+        rec.markG.style.color = mc;
+        const scale = s.selected ? 2.15 : 1.6;
+        rec.markG.setAttribute('transform', `translate(${ip.x - 12 * scale} ${ip.y - 12 * scale}) scale(${scale})`);
+        rec.g.style.transform = s.selected ? `translate(${s.dir.x * (cfg.explode || 18)}px, ${s.dir.y * (cfg.explode || 18)}px)` : '';
+      } else {
+        // Nome completo do proprietário direto na fatia, numa fonte que
+        // encolhe pra caber na corda da fatia (2·R·sen(ângulo/2)) — fatia
+        // larga (Silvio, ~80%) lê o nome grande; fatia fina (Silvio 2,
+        // ~2%) cai pra um tamanho bem menor e, se nem assim couber, usa
+        // as iniciais (getShortLabel) como último recurso.
+        const markR = cfg.markR || (cfg.rOut + cfg.rIn) / 2;
+        const label = s.locked ? '' : this.fitLabel(markR, s.endA - s.startA, this.getLabel(cfg.id, s.key), this.getShortLabel(cfg.id, s.key));
+        if (label) {
+          const ap = this.polar(markR, s.mid);
+          rec.markG.innerHTML = `<text x="${ap.x}" y="${ap.y + 0.5}" style="fill:${mc};font-size:${label.fs}px">${label.text}</text>`;
+        } else rec.markG.innerHTML = '';
+        const op = this.polar((cfg.rOut + cfg.rIn) / 2, s.mid);
+        rec.g.style.transformOrigin = `${op.x}px ${op.y}px`;
+        rec.g.style.transform = s.selected ? 'scale(1.045)' : '';
+        if (rec.halo) {
+          const grow = cfg.grow || 14;
+          rec.halo.setAttribute('d', this.ringPath(cfg.rOut + grow, Math.max(cfg.rIn - grow * 0.4, 0), s.startA, s.endA));
+          rec.halo.setAttribute('stroke', s.color);
+          rec.halo.setAttribute('fill', s.color);
+          rec.halo.classList.toggle('on', !!s.selected);
+        }
+      }
+
+      this._positionTag(cfg, rec, s);
+    }
+
+    _positionTag(cfg, rec, s) {
+      if (!s) return;
+      const labelR = cfg.labelR != null ? cfg.labelR : cfg.rOut + 40;
+      const lp = this.polar(labelR, s.mid);
+      const show = !!s.selected || !!rec.hover;
+      rec.tag.classList.toggle('show', show);
+      rec.tag.style.left = (lp.x / this.size * 100) + '%';
+      rec.tag.style.top = (lp.y / this.size * 100) + '%';
+      rec.tag.classList.toggle('left', s.dir.x < -0.15);
+      // A tag ficou mais larga com o % (Locação/Silvio, perto da lateral,
+      // tomam quase o anel inteiro) — precisa de mais folga que antes
+      // pra não estourar a borda da tela.
+      const tx = -50 - Math.max(-42, Math.min(42, s.dir.x * 42));
+      rec.tag.style.setProperty('--tx', tx + '%');
+      rec.tag.querySelector('.sb3d-tag-dot').style.background = s.color;
+      rec.tag.querySelector('.sb3d-tag-name').textContent = s.key;
+      rec.tag.querySelector('.sb3d-tag-val').textContent = s.valueLabel != null ? s.valueLabel : s.value;
+      rec.tag.querySelector('.sb3d-tag-pct').textContent = s.pct.toFixed(s.pct < 10 ? 1 : 0) + '%';
+
+      if (s.selected) {
+        const edgeR = cfg.mode === 'icon' ? cfg.rOut + (cfg.explode || 18) : cfg.rOut + (cfg.grow || 14) * 0.6;
+        const outerP = this.polar(edgeR, s.mid);
+        rec.line.setAttribute('x1', outerP.x); rec.line.setAttribute('y1', outerP.y);
+        rec.line.setAttribute('x2', lp.x); rec.line.setAttribute('y2', lp.y);
+        rec.line.style.opacity = 0.32;
+      } else {
+        rec.line.style.opacity = 0;
+      }
+    }
+
+    // ─── Legenda premium: quadrado, nome, valor, percentual, barra ───
+    renderLegend(ringId, ulEl, opts) {
+      opts = opts || {};
+      const items = this._lastData[ringId] || [];
+      const segs = this._computeSegs(this._ringById(ringId), items);
+      ulEl.innerHTML = '';
+      segs.forEach(s => {
+        const li = document.createElement('li');
+        li.className = s.locked ? 'nosel' : (s.selected ? 'on' : '');
+        li.dataset.ring = ringId; li.dataset.key = s.key;
+        const barPct = Math.max(s.pct, s.pct > 0 ? 0.6 : 0);
+        li.innerHTML =
+          `<span class="sb3d-legend-sq" style="background:${s.color}"></span>` +
+          `<span class="sb3d-legend-nm">${s.key}</span>` +
+          `<span class="sb3d-legend-right"><span class="sb3d-legend-pct">${s.pct.toFixed(s.pct < 10 ? 1 : 0)}%</span><span class="sb3d-legend-val">${s.valueLabel != null ? s.valueLabel : s.value}</span></span>` +
+          `<span class="sb3d-legend-bar-wrap"><span class="sb3d-legend-bar" style="width:${barPct}%;background:${s.color};--bc:${s.color}66"></span></span>`;
+        if (!s.locked) {
+          li.querySelector('.sb3d-legend-sq').addEventListener('click', e => { e.stopPropagation(); this.onToggle(ringId, s.key); });
+          li.addEventListener('click', () => this.onOpen(ringId, s.key));
+        }
+        ulEl.appendChild(li);
+      });
+      if (opts.title) ulEl.setAttribute('aria-label', opts.title);
+    }
+
+    _ringById(id) { return this.rings.find(r => r.id === id); }
+  }
+
+  global.Sunburst3D = Sunburst3D;
+})(window);
+
+</script>
 </head>
 <body>
 <script>
@@ -35106,6 +35762,133 @@ function OrcamentosClientes({ veiculos, clientes, empresa, toast }) {
   );
 }
 
+// -- GRÁFICO RECEITAS x DESPESAS (Sunburst3D) -------------------------------
+// Anel interno = Natureza (Receita/Despesa), anel externo = Categoria.
+// Componente genérico components/sunburst3d.js (mesmo do painel "Faturamento
+// por categoria" do AGI) — aqui só a "cola": pega `rows` ({natureza,
+// categoria,valor}[] do mês selecionado) e liga clique/hub/legenda.
+var RD_COR_NATUREZA = { "Receita": "#34C759", "Despesa": "#FF3B30" };
+var RD_COR_CATEGORIA = {
+  // despesas (mesma paleta do card "Despesas por Categoria")
+  "Combustivel":"#E8B875","Manutenção":"#D98A9A","Impostos":"#8A87CF","Salarios":"#B89DD4",
+  "Aluguel":"#7BAAD2","Marketing":"#7CC9A0","Seguros":"#D4977A","Financiamento":"#B8A080",
+  "Contabilidade":"#72B8C0","Outros":"#A0A0A8","Multas":"#E09590","IPVA":"#D4B06A",
+  "Internet":"#6DC490","Juridico":"#85C8D8",
+  // receitas
+  "Locação":"#34C759","Deposito":"#30B0C7","Multa Cobrada":"#5AC8FA","Servico":"#63E6BE",
+};
+var RD_PALETTE_FALLBACK = ["#8E8E93","#B89DD4","#7BAAD2","#D98A9A","#7CC9A0"];
+
+function RdSunburstCard({ rows, C, CARD_CLS }) {
+  var stageRef = React.useRef(null);
+  var chartRef = React.useRef(null);
+  var legNatRef = React.useRef(null);
+  var legCatRef = React.useRef(null);
+  var _f = React.useState({ natureza: new Set(), categoria: new Set() });
+  var filtro = _f[0], setFiltro = _f[1];
+
+  function sum(list) { return list.reduce(function (s, r) { return s + r.valor; }, 0); }
+  function filterMatch(r) {
+    return (!filtro.natureza.size || filtro.natureza.has(r.natureza))
+        && (!filtro.categoria.size || filtro.categoria.has(r.categoria));
+  }
+  // Anel específico exclui o filtro da PRÓPRIA dimensão (senão selecionar
+  // uma categoria faz o anel de categoria colapsar pra só ela mesma).
+  function rowsForRing(dim) {
+    return rows.filter(function (r) {
+      if (dim !== "natureza" && filtro.natureza.size && !filtro.natureza.has(r.natureza)) return false;
+      if (dim !== "categoria" && filtro.categoria.size && !filtro.categoria.has(r.categoria)) return false;
+      return true;
+    });
+  }
+  function rdAbbrev(v) {
+    var abs = Math.abs(v);
+    var txt = abs >= 1000 ? (v / 1000).toFixed(1).replace(".0", "") + "k" : v.toFixed(0);
+    return "R$ " + txt;
+  }
+  function itemsFor(dim) {
+    var list = rowsForRing(dim);
+    var grand = sum(list);
+    if (!grand) return [];
+    var sums = {};
+    list.forEach(function (r) { var k = r[dim]; sums[k] = (sums[k] || 0) + r.valor; });
+    return Object.keys(sums).map(function (k) { return { key: k, value: sums[k] }; })
+      .sort(function (a, b) { return b.value - a.value; })
+      .map(function (it, idx) {
+        var color = dim === "natureza"
+          ? (RD_COR_NATUREZA[it.key] || "#8E8E93")
+          : (RD_COR_CATEGORIA[it.key] || RD_PALETTE_FALLBACK[idx % RD_PALETTE_FALLBACK.length]);
+        return {
+          key: it.key, value: it.value, valueLabel: fmtBRL(it.value), color: color,
+          selected: filtro[dim].has(it.key),
+        };
+      });
+  }
+  function toggle(dim, key) {
+    setFiltro(function (prev) {
+      var next = { natureza: new Set(prev.natureza), categoria: new Set(prev.categoria) };
+      if (next[dim].has(key)) next[dim].delete(key); else next[dim].add(key);
+      return next;
+    });
+  }
+  function limpar() { setFiltro({ natureza: new Set(), categoria: new Set() }); }
+
+  React.useEffect(function () {
+    if (!stageRef.current || !window.Sunburst3D || chartRef.current) return;
+    chartRef.current = new window.Sunburst3D(stageRef.current, {
+      rings: [
+        { id: "natureza", mode: "avatar", rIn: 104, rOut: 194, markR: 149, gapDeg: 0.9, labelR: 249, grow: 12, power: 0.4 },
+        { id: "categoria", mode: "avatar", rIn: 208, rOut: 308, markR: 258, gapDeg: 0.7, labelR: 316, grow: 14, power: 0.5, big: true },
+      ],
+      getLabel: function (ringId, key) { return key; },
+      getShortLabel: function (ringId, key) { return key.slice(0, 3).toUpperCase(); },
+      onToggle: function (ringId, key) { toggle(ringId, key); },
+      onOpen: function (ringId, key) { toggle(ringId, key); },
+    });
+    chartRef.current.onHubClick(limpar);
+  }, []);
+
+  React.useEffect(function () {
+    if (!chartRef.current) return;
+    chartRef.current.update({ natureza: itemsFor("natureza"), categoria: itemsFor("categoria") });
+    var groups = [Array.from(filtro.natureza), Array.from(filtro.categoria)].filter(function (g) { return g.length; });
+    var selCount = groups.reduce(function (n, g) { return n + g.length; }, 0);
+    var label = selCount === 0 ? "Total do mês"
+      : selCount > 4 ? selCount + " filtros"
+      : groups.map(function (g) { return g.join(" + "); }).join(" · ");
+    chartRef.current.setHub({ label: label, value: rdAbbrev(sum(rows.filter(filterMatch))) });
+    if (legNatRef.current) chartRef.current.renderLegend("natureza", legNatRef.current, { title: "Natureza" });
+    if (legCatRef.current) chartRef.current.renderLegend("categoria", legCatRef.current, { title: "Categoria" });
+  });
+
+  var algumFiltro = filtro.natureza.size > 0 || filtro.categoria.size > 0;
+
+  return React.createElement('div', { className: CARD_CLS, style: { background: "var(--c-card)", borderRadius: 18, border: "1px solid " + C.border, padding: 16 } },
+    React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+      React.createElement('div', { style: { fontSize: 12, fontWeight: 700 } }, "🌐 Receitas x Despesas por Categoria"),
+      algumFiltro && React.createElement('button', {
+        onClick: limpar,
+        style: { fontSize: 11, color: C.purple, background: "transparent", border: "none", cursor: "pointer", fontWeight: 600 }
+      }, "✕ Limpar")
+    ),
+    rows.length === 0
+      ? React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 20, fontSize: 13 } }, "Nenhum lançamento neste mês")
+      : React.createElement('div', { className: "sb3d-body" },
+          React.createElement('div', { ref: stageRef }),
+          React.createElement('div', { className: "sb3d-legends" },
+            React.createElement('div', { className: "sb3d-legend-block" },
+              React.createElement('div', { className: "sb3d-legend-title" }, "Natureza"),
+              React.createElement('ul', { className: "sb3d-legend", ref: legNatRef })
+            ),
+            React.createElement('div', { className: "sb3d-legend-block" },
+              React.createElement('div', { className: "sb3d-legend-title" }, "Categoria"),
+              React.createElement('ul', { className: "sb3d-legend", ref: legCatRef })
+            )
+          )
+        )
+  );
+}
+
 // -- FINANCEIRO ------------------------------------------------------------─
 function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setContas, contratos, setContratos, manutencoes, setManutencoes, multas, veiculos, clientes, empresa, toast, finDeepLink, setFinDeepLink, orcItens, onOrcItensChange }) {
   const [modal, setModal] = useState(false);
@@ -36713,6 +37496,26 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       var DS         = dadosMeses[idxSel];
       var nomeMesSel = new Date(mesSel+"-15").toLocaleString("pt-BR",{month:"long",year:"numeric"});
 
+      /* ── Linhas Receita+Despesa do mês selecionado, pro gráfico Sunburst3D —
+         usa as MESMAS listas que já alimentam as telas Receitas e Despesas
+         (recFiltradas, despFiltradas+manSemDesp, calculadas lá em cima no
+         corpo do Financeiro — já resolvem parcial/recorrente/contrato-como-
+         receita/manutenção-sem-despesa, dedup de ref_fatura etc.), só
+         reduzidas a {natureza,categoria,valor} por linha. De propósito NÃO
+         aplica os filtros de categoria (filtroCatRec/filtroCatDesp) dessas
+         telas — senão o total do gráfico mudaria sozinho conforme o que
+         estiver selecionado ali; o gráfico tem seu próprio filtro. */
+      var rdRows = recFiltradas.map(function(r){
+          return { natureza:"Receita", categoria:r.categoria||"Outros", valor:parseFloat(r.valor||0) };
+        })
+        .concat(despFiltradas.filter(function(d){ return !isRetLucro(d); }).map(function(d){
+          return { natureza:"Despesa", categoria:d.categoria||"Outros", valor:parseFloat(d.valor||0) };
+        }))
+        .concat(manSemDesp.map(function(mn){
+          return { natureza:"Despesa", categoria:"Manutenção", valor:parseFloat(mn.valor||0) };
+        }))
+        .filter(function(r){ return r.valor>0.005; });
+
       /* ── Orçamento por categoria ── */
       var budEmp = budEmpState; var setBudEmp = setBudEmpState;
       var metaFat = parseFloat(localStorage.getItem(META_KEY)||0);
@@ -36942,6 +37745,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               React.createElement('line',{x1:20,y1:BAR_H,x2:340,y2:BAR_H,stroke:C.border,strokeWidth:.5})
             )
           ),
+          /* Receitas x Despesas por categoria (Sunburst3D) */
+          React.createElement(RdSunburstCard,{rows:rdRows,C:C,CARD_CLS:CARD_CLS}),
           /* Pizza despesas + legenda */
           React.createElement('div',{className:CARD_CLS,style:{background:"var(--c-card)",borderRadius:18,border:"1px solid "+C.border,padding:16}},
             React.createElement('div',{style:{fontSize:12,fontWeight:700,marginBottom:12}},"\uD83C\uDF69 Despesas por Categoria — "+nomeMesSel),

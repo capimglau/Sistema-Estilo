@@ -23127,7 +23127,7 @@ function UndoToast({ data, onDismiss }) {
   return el;
 }
 
-function Modal({ open, onClose, title, children, wide }) {
+function Modal({ open, onClose, title, children, wide, full }) {
   React.useEffect(function() {
     if (!open) return;
     var prev = document.body.style.overflow;
@@ -23148,7 +23148,7 @@ function Modal({ open, onClose, title, children, wide }) {
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      padding: "24px 16px",
+      padding: full ? "10px" : "24px 16px",
       boxSizing: "border-box"}
   },
     React.createElement('div', {
@@ -23158,8 +23158,9 @@ function Modal({ open, onClose, title, children, wide }) {
         position: "relative",
         borderRadius: 20,
         width: "100%",
-        maxWidth: wide ? 860 : 620,
-        maxHeight: "calc(100dvh - 48px)",
+        maxWidth: full ? "calc(100vw - 20px)" : (wide ? 860 : 620),
+        maxHeight: full ? "calc(100dvh - 20px)" : "calc(100dvh - 48px)",
+        height: full ? "calc(100dvh - 20px)" : undefined,
         display: "flex",
         flexDirection: "column",
         boxSizing: "border-box",
@@ -26252,10 +26253,10 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         return true;
       });
       var rdReceitaRowsInicio = (receitas||[]).filter(function(r){ return receitaVisivelNoMes(r, dashMes); })
-        .map(function(r){ return { chave: _rdClienteDaReceita(r), valor: parseFloat(r.valor||0) }; })
+        .map(function(r){ return { chave: _rdClienteDaReceita(r), valor: parseFloat(r.valor||0), descricao: r.descricao||"Receita", data: r.data_pagamento||r.data, status: r.status }; })
         .concat(_rdCtsDoMes.map(function(c){
           var cl = (clientes||[]).find(function(x){ return x.id == c.cliente_id; });
-          return { chave: cl && cl.nome ? cl.nome : "Avulsa / sem cliente", valor: parseFloat(c.valor_total||0) };
+          return { chave: cl && cl.nome ? cl.nome : "Avulsa / sem cliente", valor: parseFloat(c.valor_total||0), descricao: "Contrato #"+c.id, data: c.previsao_pagamento, status: c.status_pagamento };
         }))
         .filter(function(r){ return r.valor>0.005; });
       var _rdManFiltradas = (manutencoes||[]).filter(function(m){
@@ -26263,8 +26264,8 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         return !(despesas||[]).some(function(d){ return String(d.manutencao_id) === String(m.id); });
       });
       var rdDespesaRowsInicio = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), dashMes)
-        .map(function(d){ return { chave: d.categoria||"Outros", valor: parseFloat(d.valor||0) }; })
-        .concat(_rdManFiltradas.map(function(m){ return { chave:"Manutenção", valor: parseFloat(m.custo||0) }; }))
+        .map(function(d){ return { chave: d.categoria||"Outros", valor: parseFloat(d.valor||0), descricao: d.descricao||d.categoria||"Despesa", data: d.data_pagamento||d.data, status: d.status }; })
+        .concat(_rdManFiltradas.map(function(m){ return { chave:"Manutenção", valor: parseFloat(m.custo||0), descricao: m.descricao||"Manutenção", data: m.data_previsao_pagamento||m.data_entrada, status: m.status }; }))
         .filter(function(r){ return r.valor>0.005; });
       return React.createElement(RdSunburstCard, { receitaRows: rdReceitaRowsInicio, despesaRows: rdDespesaRowsInicio, C: C, CARD_CLS: CARD_CLS });
     })()
@@ -35919,6 +35920,13 @@ function RdSunburstCard({ receitaRows, despesaRows, C, CARD_CLS }) {
   }
   function limpar() { setSelReceita(new Set()); setSelDespesa(new Set()); }
 
+  // Item clicado na legenda abaixo do gráfico circular — abre janela
+  // quase em tela cheia com a descrição de todos os lançamentos daquele
+  // cliente/categoria (não apenas o total agregado da fatia).
+  var _dt = React.useState(null); var detalhe = _dt[0], setDetalhe = _dt[1];
+  function abrirDetalhe(ringId, key) { setDetalhe({ ringId: ringId, key: key }); }
+  function fecharDetalhe() { setDetalhe(null); }
+
   React.useEffect(function () {
     if (!stageRef.current || !window.Sunburst3D || chartRef.current) return;
     chartRef.current = new window.Sunburst3D(stageRef.current, {
@@ -35933,7 +35941,7 @@ function RdSunburstCard({ receitaRows, despesaRows, C, CARD_CLS }) {
       getLabel: function (ringId, key) { return ringId === "receita" ? key.split(" ")[0] : key; },
       getShortLabel: function (ringId, key) { return (ringId === "receita" ? key.split(" ")[0] : key).slice(0, 3).toUpperCase(); },
       onToggle: function (ringId, key) { toggle(ringId, key); },
-      onOpen: function (ringId, key) { toggle(ringId, key); },
+      onOpen: function (ringId, key) { abrirDetalhe(ringId, key); },
     });
     chartRef.current.onHubClick(limpar);
   }, []);
@@ -36006,7 +36014,35 @@ function RdSunburstCard({ receitaRows, despesaRows, C, CARD_CLS }) {
               )
             )
           )
-        )
+        ),
+    detalhe && (function () {
+      var rows = (detalhe.ringId === "receita" ? receitaRows : despesaRows).filter(function (r) { return r.chave === detalhe.key; });
+      var totalDet = rdSum(rows);
+      var corDet = detalhe.ringId === "receita" ? C.green : C.red;
+      var ordenados = rows.slice().sort(function (a, b) { return String(b.data || "").localeCompare(String(a.data || "")); });
+      return React.createElement(Modal, {
+        open: true, onClose: fecharDetalhe, full: true,
+        title: (detalhe.ringId === "receita" ? "💰 " : "💸 ") + detalhe.key
+      },
+        React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, padding: "10px 14px", background: "var(--c-bg)", borderRadius: 12 } },
+          React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub } }, ordenados.length + " lançamento" + (ordenados.length === 1 ? "" : "s")),
+          React.createElement('span', { style: { fontSize: 16, fontWeight: 800, color: corDet } }, fmtBRL(totalDet))
+        ),
+        ordenados.length === 0
+          ? React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30, fontSize: 13 } }, "Nenhum lançamento encontrado")
+          : React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 1, background: C.border, borderRadius: 12, overflow: "hidden" } },
+              ordenados.map(function (r, i) {
+                return React.createElement('div', { key: i, style: { background: "var(--c-card)", padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 } },
+                  React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+                    React.createElement('div', { style: { fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.descricao || detalhe.key),
+                    React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, (r.data ? fmtDate(r.data) : "sem data") + (r.status ? " · " + r.status : ""))
+                  ),
+                  React.createElement('div', { style: { fontSize: 14, fontWeight: 800, color: corDet, flexShrink: 0 } }, fmtBRL(r.valor))
+                );
+              })
+            )
+      );
+    })()
   );
 }
 

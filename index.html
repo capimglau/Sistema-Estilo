@@ -29326,12 +29326,30 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (f.combustivel_retorno) patchData.combustivel_retorno = f.combustivel_retorno;
     if (f.checklist_devolucao) patchData.checklist_devolucao = f.checklist_devolucao;
     if (f.observacoes) patchData.observacoes = (ct.observacoes ? ct.observacoes + "\n" : "") + "Encerramento: " + f.observacoes;
+    // Encerramento antecipado (devolução antes da data_fim originalmente contratada):
+    // reduz valor_total proporcionalmente aos dias efetivamente usados.
+    if (f.data_fim && ct.data_inicio && ct.data_fim && f.data_fim < ct.data_fim) {
+      var diasContratados = Math.max(1, Math.ceil((new Date(ct.data_fim) - new Date(ct.data_inicio)) / 86400000));
+      var diasEfetivos = Math.max(1, Math.ceil((new Date(f.data_fim) - new Date(ct.data_inicio)) / 86400000));
+      var diariaProp = parseFloat(ct.valor_total || 0) / diasContratados;
+      patchData.valor_total = (diariaProp * diasEfetivos).toFixed(2);
+    }
     await db.patch("contratos", ct.id, patchData);
     // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
     var outroAtivoEncerrar = contratos.some(function(x){
       return x.id !== ct.id && String(x.veiculo_id) === String(ct.veiculo_id) && x.status === "ativo";
     });
     setContratos(p => p.map(c => c.id === ct.id ? Object.assign({}, c, patchData) : c));
+    // Sincroniza a receita vinculada (fatura do contrato) com o novo valor_total proporcional
+    if (patchData.valor_total) {
+      var recLinkEnc = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+ct.id+"_"); });
+      if (recLinkEnc) {
+        try {
+          var updRLEnc = await db.patch("receitas", recLinkEnc.id, { valor: patchData.valor_total });
+          setReceitas(p => p.map(x => x.id === recLinkEnc.id ? Object.assign({}, x, updRLEnc) : x));
+        } catch(e) { console.warn(e); }
+      }
+    }
     setEncerrarCtModal(null);
     toast(outroAtivoEncerrar ? "Encerrado! Veículo ainda possui contrato ativo." : "Encerrado! Veículo liberado.");
   }

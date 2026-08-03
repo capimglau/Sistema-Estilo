@@ -16135,24 +16135,20 @@ var __viewerMode = false;
   if (!ids.length) return;
   __viewerMode = true;
   document.body.innerHTML = '<div style="font-family:Arial,sans-serif;text-align:center;padding:60px;color:#888">Carregando fatura' + (ids.length > 1 ? 's' : '') + '...</div>';
-  var hdrs = { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY };
+  var hdrs = { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": "application/json" };
   var base = SB_URL + "/rest/v1/";
-  Promise.all([
-    fetch(base + "contratos?id=in.(" + ids.join(",") + ")&select=*", {headers: hdrs}).then(function(r){ return r.json(); }),
-    fetch(base + "config?select=*&order=id.desc&limit=1", {headers: hdrs}).then(function(r){ return r.json(); })
-  ]).then(function(res) {
-    var cts = res[0] || []; var emp = res[1][0] || {};
+  /* Rota pública (sem login) — não usa mais SELECT direto nas tabelas (isso
+     exigiria manter clientes/veiculos/contratos abertos pro anon = qualquer
+     um lê o banco inteiro). Usa a function fatura_publica(), que roda como
+     SECURITY DEFINER no Postgres e devolve só os registros dos ids pedidos. */
+  fetch(base + "rpc/fatura_publica", { method: "POST", headers: hdrs, body: JSON.stringify({ p_ids: ids.map(Number) }) }).then(function(r){ return r.json(); }).then(function(res) {
+    var cts = res.contratos || []; var emp = (res.empresa && res.empresa[0]) || {};
     if (!cts.length) { document.body.innerHTML = '<div style="text-align:center;padding:60px;color:red">Fatura não encontrada.</div>'; return; }
     // Mantém a ordem solicitada nos ids
     var ord = {}; ids.forEach(function(x, i){ ord[String(x)] = i; });
     cts.sort(function(a, b){ return (ord[String(a.id)] || 0) - (ord[String(b.id)] || 0); });
-    var clIds = cts.map(function(c){ return c.cliente_id; }).filter(Boolean);
-    var veIds = cts.map(function(c){ return c.veiculo_id; }).filter(Boolean);
-    return Promise.all([
-      clIds.length ? fetch(base + "clientes?id=in.(" + clIds.join(",") + ")&select=*", {headers: hdrs}).then(function(r){ return r.json(); }) : Promise.resolve([]),
-      veIds.length ? fetch(base + "veiculos?id=in.(" + veIds.join(",") + ")&select=*", {headers: hdrs}).then(function(r){ return r.json(); }) : Promise.resolve([])
-    ]).then(function(res2) {
-      var cls = res2[0] || []; var ves = res2[1] || [];
+    (function() {
+      var cls = res.clientes || []; var ves = res.veiculos || [];
       var html;
       if (cts.length === 1) {
         var ct = cts[0];
@@ -16168,12 +16164,57 @@ var __viewerMode = false;
       document.open("text/html", "replace");
       document.write(html);
       document.close();
-    });
+    })();
   }).catch(function(e) {
     document.body.innerHTML = '<div style="text-align:center;padding:60px;color:red">Erro ao carregar: ' + e.message + '</div>';
   });
 })();
 const HDR = { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": "application/json" };
+
+/* ── Autenticação real via Supabase Auth (JWT) ──────────────────────────────
+   HDR.Authorization começa com a anon key (só serve pra endpoints públicos,
+   ex.: viewer de fatura). Depois de login, passamos a mandar o access_token
+   do usuário autenticado — é esse token que o RLS do banco valida via
+   auth.role()/auth.uid(). Mutar HDR.Authorization em vez de recriar o objeto
+   garante que todo `headers: HDR` (db.get/getAll) já usado pelo app inteiro
+   passe a usar o token certo sem precisar tocar em cada chamada. */
+const AUTH_URL = SB_URL + "/auth/v1";
+var _sbRefreshTimer = null;
+
+function _sbSetToken(access_token) {
+  HDR.Authorization = "Bearer " + (access_token || SB_KEY);
+}
+
+async function _sbAuthReq(path, body) {
+  const r = await fetchWithTimeout(AUTH_URL + path, {
+    method: "POST",
+    headers: { apikey: SB_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(body || {})
+  }, 20000);
+  const j = await r.json().catch(function(){ return {}; });
+  if (!r.ok) throw new Error(j.error_description || j.msg || j.message || ("Erro " + r.status));
+  return j;
+}
+
+function sbSignIn(email, password) { return _sbAuthReq("/token?grant_type=password", { email: email, password: password }); }
+function sbSignUp(email, password) { return _sbAuthReq("/signup", { email: email, password: password }); }
+function sbRefreshToken(refresh_token) { return _sbAuthReq("/token?grant_type=refresh_token", { refresh_token: refresh_token }); }
+function sbRecover(email) { return _sbAuthReq("/recover", { email: email }); }
+async function sbSignOut(access_token) {
+  try { await fetchWithTimeout(AUTH_URL + "/logout", { method: "POST", headers: { apikey: SB_KEY, Authorization: "Bearer " + (access_token || SB_KEY) } }, 10000); } catch(e) {}
+}
+function _sbScheduleRefresh(refresh_token, expires_in, onRefreshed) {
+  if (_sbRefreshTimer) clearTimeout(_sbRefreshTimer);
+  if (!refresh_token) return;
+  var ms = Math.max(15000, ((expires_in || 3600) - 60) * 1000);
+  _sbRefreshTimer = setTimeout(async function() {
+    try {
+      var j = await sbRefreshToken(refresh_token);
+      _sbSetToken(j.access_token);
+      onRefreshed && onRefreshed(j);
+    } catch(e) { /* refresh token expirado — próxima chamada à API vai falhar (401/403) e o usuário terá que logar de novo */ }
+  }, ms);
+}
 
 const cache = {
   get: function(k) { try { var v = localStorage.getItem("cache_" + k); return v ? JSON.parse(v) : null; } catch(e) { return null; } },
@@ -16271,7 +16312,7 @@ const db = {
     return Array.isArray(j) ? j[0] : j; // registro excluído — usado para restaurar via "Desfazer"
   },
   async upload(path, file) {
-    const r = await fetchWithTimeout(SB_URL + "/storage/v1/object/documentos/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": file.type, "x-upsert": "true", "Content-Disposition": "inline" }, body: file }, 60000);
+    const r = await fetchWithTimeout(SB_URL + "/storage/v1/object/documentos/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: HDR.Authorization, "Content-Type": file.type, "x-upsert": "true", "Content-Disposition": "inline" }, body: file }, 60000);
     if (!r.ok) throw new Error("Upload falhou. Verifique o bucket 'documentos' no Supabase Storage.");
     return SB_URL + "/storage/v1/object/public/documentos/" + path;
   }
@@ -40577,20 +40618,56 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
     , React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, {padding:0,overflow:'hidden'}) }
       , React.createElement('div', {style:{padding:'16px 18px 12px',borderBottom:'1px solid '+C.border,display:'flex',justifyContent:'space-between',alignItems:'center'}},
         React.createElement('div', null,
-          React.createElement('div', {style:{fontSize:13,fontWeight:800,color:'var(--c-text)'}}, '🗄️ SQL — Execute no Supabase'),
-          React.createElement('div', {style:{fontSize:11,color:C.sub,marginTop:2}}, 'Script completo de configuração')
+          React.createElement('div', {style:{fontSize:13,fontWeight:800,color:'var(--c-text)'}}, '🗄️ SQL — Estrutura das tabelas'),
+          React.createElement('div', {style:{fontSize:11,color:C.sub,marginTop:2}}, 'Cria tabelas/colunas que ainda não existirem (sem afetar permissões)')
         ),
         React.createElement('button', {
           style:{background:C.blue,color:'#fff',border:'none',borderRadius:10,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer'},
           onClick:function(){
-            var sql="alter table clientes disable row level security;\ngrant all on clientes to anon;\nalter table veiculos disable row level security;\ngrant all on veiculos to anon;\nalter table contratos disable row level security;\ngrant all on contratos to anon;\nalter table multas disable row level security;\ngrant all on multas to anon;\nalter table manutencao disable row level security;\ngrant all on manutencao to anon;\ngrant usage, select on all sequences in schema public to anon;\ncreate table if not exists despesas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, observacoes text);\nalter table despesas disable row level security;\ngrant all on despesas to anon;\ncreate table if not exists receitas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, forma_pagamento text, observacoes text);\nalter table receitas disable row level security;\ngrant all on receitas to anon;\ncreate table if not exists contas (id bigserial primary key, descricao text, categoria text, valor numeric, vencimento date, status text default 'pendente', tipo text default 'pagar', observacoes text);\nalter table contas disable row level security;\ngrant all on contas to anon;\ncreate table if not exists orcamento_pessoal (id bigserial primary key, descricao text, categoria text, valor numeric, tipo text default 'despesa', mes text, data date, data_pagamento date, status text default 'previsto', observacoes text, recorrente boolean default false, prazo_recorrencia integer, recorrencia_origem_id bigint, forma_pagamento text);\nalter table orcamento_pessoal disable row level security;\ngrant all on orcamento_pessoal to anon;\ngrant insert, update, delete on orcamento_pessoal to anon;\ngrant usage, select on sequence orcamento_pessoal_id_seq to anon;\nalter table clientes add column if not exists bloqueado boolean default false;\nalter table veiculos add column if not exists venc_ipva date;\nalter table veiculos add column if not exists venc_seguro date;\nalter table contratos add column if not exists km_franquia numeric;\nalter table contratos add column if not exists forma_pagamento text;\nalter table contratos add column if not exists previsao_pagamento date;\nalter table contratos add column if not exists status_pagamento text default 'pendente';\nalter table despesas add column if not exists status text default 'previsto';\nalter table despesas add column if not exists data_pagamento date;\nalter table despesas add column if not exists recorrente boolean default false;\nalter table despesas add column if not exists prazo_recorrencia integer;\nalter table despesas add column if not exists recorrencia_origem_id bigint;\nalter table despesas add column if not exists manutencao_id bigint;\nalter table receitas add column if not exists status text default 'previsto';\nalter table receitas add column if not exists data_pagamento date;\nalter table receitas add column if not exists recorrente boolean default false;\nalter table receitas add column if not exists prazo_recorrencia integer;\nalter table manutencao add column if not exists status_financeiro text default 'pendente';\nalter table manutencao add column if not exists data_pagamento date;\nalter table manutencao add column if not exists data_previsao_pagamento date;\nalter table multas add column if not exists vencimento date;\nalter table multas add column if not exists data_pagamento date;\nalter table multas add column if not exists cobrado_cliente text default 'nao';\nalter table multas add column if not exists valor_cobrado numeric;\nalter table config add column if not exists claude_api_key text;\ncreate table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());\nalter table audit_log disable row level security;\ncreate table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);\nalter table ocupacao_historico disable row level security;";
+            var sql="create table if not exists despesas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, observacoes text);\ncreate table if not exists receitas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, forma_pagamento text, observacoes text);\ncreate table if not exists contas (id bigserial primary key, descricao text, categoria text, valor numeric, vencimento date, status text default 'pendente', tipo text default 'pagar', observacoes text);\ncreate table if not exists orcamento_pessoal (id bigserial primary key, descricao text, categoria text, valor numeric, tipo text default 'despesa', mes text, data date, data_pagamento date, status text default 'previsto', observacoes text, recorrente boolean default false, prazo_recorrencia integer, recorrencia_origem_id bigint, forma_pagamento text);\nalter table clientes add column if not exists bloqueado boolean default false;\nalter table veiculos add column if not exists venc_ipva date;\nalter table veiculos add column if not exists venc_seguro date;\nalter table contratos add column if not exists km_franquia numeric;\nalter table contratos add column if not exists forma_pagamento text;\nalter table contratos add column if not exists previsao_pagamento date;\nalter table contratos add column if not exists status_pagamento text default 'pendente';\nalter table despesas add column if not exists status text default 'previsto';\nalter table despesas add column if not exists data_pagamento date;\nalter table despesas add column if not exists recorrente boolean default false;\nalter table despesas add column if not exists prazo_recorrencia integer;\nalter table despesas add column if not exists recorrencia_origem_id bigint;\nalter table despesas add column if not exists manutencao_id bigint;\nalter table receitas add column if not exists status text default 'previsto';\nalter table receitas add column if not exists data_pagamento date;\nalter table receitas add column if not exists recorrente boolean default false;\nalter table receitas add column if not exists prazo_recorrencia integer;\nalter table manutencao add column if not exists status_financeiro text default 'pendente';\nalter table manutencao add column if not exists data_pagamento date;\nalter table manutencao add column if not exists data_previsao_pagamento date;\nalter table multas add column if not exists vencimento date;\nalter table multas add column if not exists data_pagamento date;\nalter table multas add column if not exists cobrado_cliente text default 'nao';\nalter table multas add column if not exists valor_cobrado numeric;\nalter table config add column if not exists claude_api_key text;\ncreate table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());\ncreate table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);";
             if(navigator.clipboard){navigator.clipboard.writeText(sql).then(function(){toast('✅ SQL copiado! Cole no Supabase → SQL Editor','success');}).catch(function(){toast('Erro ao copiar','error');});}
             else{var ta=document.createElement('textarea');ta.value=sql;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();toast('✅ SQL copiado!','success');}
           }
         }, '📋 Copiar SQL')
       )
       , React.createElement('pre', {style:{margin:0,padding:'14px 18px',fontSize:10,lineHeight:1.7,color:C.sub,fontFamily:'monospace',overflowX:'auto',whiteSpace:'pre-wrap',wordBreak:'break-word',maxHeight:200,overflowY:'auto',background:C.bg}},
-        'alter table clientes disable row level security;\ngrant all on clientes to anon;\nalter table veiculos disable row level security;\n...\ncreate table if not exists orcamento_pessoal (...);\n...\n[Clique em Copiar SQL]'
+        'create table if not exists despesas (...);\ncreate table if not exists receitas (...);\nalter table clientes add column if not exists bloqueado boolean default false;\n...\n[Clique em Copiar SQL]'
+      )
+    )
+
+    , React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, {padding:0,overflow:'hidden',border:'1px solid '+C.red}) }
+      , React.createElement('div', {style:{padding:'16px 18px 12px',borderBottom:'1px solid '+C.border,display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}},
+        React.createElement('div', null,
+          React.createElement('div', {style:{fontSize:13,fontWeight:800,color:C.red}}, '🔒 SQL — Ativar segurança (RLS + login real)'),
+          React.createElement('div', {style:{fontSize:11,color:C.sub,marginTop:2,maxWidth:520}}, 'Execute só depois que TODOS os usuários já tiverem e-mail/senha cadastrados em Config → Usuários (ou no primeiro acesso). Antes disso, ninguém autenticado vai conseguir usar o app se você já tiver rodado este script.')
+        ),
+        React.createElement('button', {
+          style:{background:C.red,color:'#fff',border:'none',borderRadius:10,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer',flexShrink:0},
+          onClick:function(){
+            var tabelas = "clientes,veiculos,contratos,multas,manutencao,despesas,receitas,contas,orcamento_pessoal,orcamentos,audit_log,ocupacao_historico,perfis,usuarios,config,reservas,usos";
+            var lista = tabelas.split(",");
+            var sql = "alter table usuarios add column if not exists email text unique;\nalter table usuarios add column if not exists auth_user_id uuid references auth.users(id);\n\n";
+            lista.forEach(function(t){ sql += "alter table " + t + " enable row level security;\n"; });
+            sql += "\n";
+            lista.forEach(function(t){ sql += "drop policy if exists \"auth_all_" + t + "\" on " + t + ";\ncreate policy \"auth_all_" + t + "\" on " + t + " for all to authenticated using (true) with check (true);\n"; });
+            sql += "\nrevoke all on " + lista.join(", ") + " from anon;\n";
+            sql += "grant select, insert, update, delete on " + lista.join(", ") + " to authenticated;\n";
+            sql += "grant usage on all sequences in schema public to authenticated;\n\n";
+            sql += "-- Função pública (sem login) usada só pelo link de fatura compartilhado (?viewer=fatura).\n-- Roda como SECURITY DEFINER e devolve apenas os registros ligados aos ids pedidos —\n-- diferente do anon aberto de antes, não dá pra usá-la para listar o banco inteiro.\n";
+            sql += "create or replace function public.fatura_publica(p_ids bigint[])\nreturns jsonb\nlanguage sql\nsecurity definer\nset search_path = public\nas $$\n  select jsonb_build_object(\n    'contratos', coalesce((select jsonb_agg(c) from contratos c where c.id = any(p_ids)), '[]'::jsonb),\n    'clientes', coalesce((select jsonb_agg(cl) from clientes cl where cl.id in (select cliente_id from contratos where id = any(p_ids))), '[]'::jsonb),\n    'veiculos', coalesce((select jsonb_agg(v) from veiculos v where v.id in (select veiculo_id from contratos where id = any(p_ids))), '[]'::jsonb),\n    'empresa', coalesce((select jsonb_agg(cf) from (select * from config order by id desc limit 1) cf), '[]'::jsonb)\n  );\n$$;\nrevoke all on function public.fatura_publica(bigint[]) from public;\ngrant execute on function public.fatura_publica(bigint[]) to anon;\n";
+            if(navigator.clipboard){navigator.clipboard.writeText(sql).then(function(){toast('✅ SQL copiado! Cole no Supabase → SQL Editor','success');}).catch(function(){toast('Erro ao copiar','error');});}
+            else{var ta=document.createElement('textarea');ta.value=sql;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();toast('✅ SQL copiado!','success');}
+          }
+        }, '📋 Copiar SQL de segurança')
+      )
+      , React.createElement('div', {style:{padding:'14px 18px',fontSize:12,color:C.sub,lineHeight:1.7}},
+        React.createElement('div', {style:{marginBottom:8}}, "Este script:"),
+        React.createElement('ul', {style:{margin:'0 0 8px 18px',padding:0}},
+          React.createElement('li', null, "Ativa Row Level Security em todas as tabelas — só usuários autenticados (com login real) leem/gravam."),
+          React.createElement('li', null, "Remove o acesso anônimo que ficava liberado por padrão em todo o banco."),
+          React.createElement('li', null, "Cria uma função segura só para o link público de fatura, sem reabrir as tabelas para o anon.")
+        ),
+        React.createElement('div', {style:{color:C.orange,fontWeight:600}}, "Antes de rodar: em Authentication → Providers → Email no Supabase, desative \"Confirm email\" (é um app interno de equipe — sem isso, cada novo login precisa confirmar por e-mail antes do primeiro acesso).")
       )
     )    // ── Seção LGPD ───────────────────────────────────────────────────────────
     , (function(){
@@ -42657,7 +42734,7 @@ function LoginScreen({ onLogin }) {
   var _us2 = React.useState(null); var usuarioSel = _us2[0], setUsuarioSel = _us2[1];
   var _pin = React.useState(""); var pin = _pin[0], setPin = _pin[1];
   // Campos primeiro acesso
-  var _fa = React.useState({ nome: "", pin: "", confirmPin: "" }); var primeiroAcesso = _fa[0], setPrimeiroAcesso = _fa[1];
+  var _fa = React.useState({ nome: "", email: "", pin: "", confirmPin: "" }); var primeiroAcesso = _fa[0], setPrimeiroAcesso = _fa[1];
   var _sa = React.useState(false); var salvando = _sa[0], setSalvando = _sa[1];
   var _lg = React.useState("pwa-icon.png"); var logoUrl = _lg[0], setLogoUrl = _lg[1];
   var _en = React.useState("Estilo Rent a Car"); var nomeEmpresa = _en[0], setNomeEmpresa = _en[1];
@@ -42706,13 +42783,27 @@ function LoginScreen({ onLogin }) {
 
   async function criarPrimeiroAdmin() {
     var n = (primeiroAcesso.nome || "").trim();
+    var email = (primeiroAcesso.email || "").trim().toLowerCase();
     var p = primeiroAcesso.pin;
     var c = primeiroAcesso.confirmPin;
     if (!n) { setErro("Informe seu nome."); return; }
-    if (!p || p.length < 4) { setErro("PIN deve ter ao menos 4 dígitos."); return; }
-    if (p !== c) { setErro("Os PINs não coincidem."); return; }
+    if (!email || email.indexOf("@") < 0) { setErro("Informe um e-mail válido."); return; }
+    if (!p || p.length < 6) { setErro("A senha deve ter ao menos 6 caracteres."); return; }
+    if (p !== c) { setErro("As senhas não coincidem."); return; }
     setSalvando(true); setErro("");
     try {
+      // Cria a conta real de autenticação no Supabase Auth (login de fato passa a ser validado pelo banco, não só pela UI)
+      var authRes = await sbSignUp(email, p);
+      var tok = authRes.access_token ? authRes : null;
+      if (!tok) {
+        try { tok = await sbSignIn(email, p); } catch(e2) { /* provavelmente exige confirmação de e-mail — tratado abaixo */ }
+      }
+      if (!tok) {
+        setErro("Conta criada, mas o Supabase exige confirmação de e-mail antes do primeiro login. Confirme o e-mail enviado a " + email + " e depois faça login normalmente. (Ou peça para desativar \"Confirm email\" em Authentication → Providers → Email no Supabase, já que este é um app interno de equipe.)");
+        setSalvando(false);
+        return;
+      }
+      _sbSetToken(tok.access_token);
       // Seed perfis padrão se não existirem
       var pfsExist = await db.get("perfis");
       var pfsLista = pfsExist || [];
@@ -42723,8 +42814,9 @@ function LoginScreen({ onLogin }) {
         }
       }
       var adminPerfil = pfsLista.find(function(pf){ return pf.nome === "Administrador"; }) || pfsLista[0];
-      var novoUsuario = await db.post("usuarios", { nome: n, pin: p, perfil_id: adminPerfil ? adminPerfil.id : null, ativo: true });
-      if (novoUsuario) { onLogin(Object.assign({}, novoUsuario, { perfil: adminPerfil })); }
+      var authUserId = (tok.user && tok.user.id) || null;
+      var novoUsuario = await db.post("usuarios", { nome: n, email: email, auth_user_id: authUserId, perfil_id: adminPerfil ? adminPerfil.id : null, ativo: true });
+      if (novoUsuario) { onLogin(Object.assign({}, novoUsuario, { perfil: adminPerfil }), tok); }
       else { setErro("Erro ao criar usuário."); }
     } catch(e) {
       setErro("Erro: " + (e.message || String(e)));
@@ -42736,13 +42828,33 @@ function LoginScreen({ onLogin }) {
     setUsuarioSel(u); setPin(""); setErro(""); setTela("digitar_pin");
   }
 
-  function verificarPin() {
+  async function verificarPin() {
     if (!usuarioSel) return;
-    if (pin === usuarioSel.pin) {
-      onLogin(usuarioSel);
-    } else {
-      setErro("PIN incorreto."); setPin("");
+    if (!usuarioSel.email) {
+      setErro("Este usuário ainda não tem login seguro configurado. Peça a um administrador para cadastrar seu e-mail em Config → Usuários.");
+      return;
     }
+    setSalvando(true); setErro("");
+    try {
+      var tok = await sbSignIn(usuarioSel.email, pin);
+      _sbSetToken(tok.access_token);
+      onLogin(usuarioSel, tok);
+    } catch(e) {
+      setErro("Senha incorreta."); setPin("");
+    }
+    setSalvando(false);
+  }
+
+  async function esqueciSenha() {
+    if (!usuarioSel || !usuarioSel.email) return;
+    setSalvando(true); setErro("");
+    try {
+      await sbRecover(usuarioSel.email);
+      setErro("Enviamos um link de redefinição de senha para " + usuarioSel.email + ".");
+    } catch(e) {
+      setErro("Erro ao enviar redefinição: " + (e.message || e));
+    }
+    setSalvando(false);
   }
 
   var bgStyle = { minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, background: "linear-gradient(135deg, #1e3a6e 0%, #1A2744 60%, #0F1830 100%)" };
@@ -42770,11 +42882,15 @@ function LoginScreen({ onLogin }) {
             React.createElement('input', { type: "text", value: primeiroAcesso.nome, onChange: function(e){ setPrimeiroAcesso(function(p){ return Object.assign({},p,{nome:e.target.value}); }); }, placeholder: "Ex: João Silva", style: { width: "100%", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(109,40,217,0.25)", background: "rgba(139,92,246,0.08)", color: "#3b1f6a", fontSize: 15, outline: "none", boxSizing: "border-box" } })
           ),
           React.createElement('div', null,
-            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "rgba(75,45,120,0.7)", marginBottom: 5 } }, "PIN (mínimo 4 dígitos)"),
-            React.createElement('input', { type: "password", value: primeiroAcesso.pin, onChange: function(e){ setPrimeiroAcesso(function(p){ return Object.assign({},p,{pin:e.target.value}); }); }, placeholder: "••••", style: { width: "100%", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(109,40,217,0.25)", background: "rgba(139,92,246,0.08)", color: "#3b1f6a", fontSize: 15, outline: "none", boxSizing: "border-box", letterSpacing: 6 } })
+            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "rgba(75,45,120,0.7)", marginBottom: 5 } }, "Seu e-mail"),
+            React.createElement('input', { type: "email", value: primeiroAcesso.email, onChange: function(e){ setPrimeiroAcesso(function(p){ return Object.assign({},p,{email:e.target.value}); }); }, placeholder: "voce@email.com", style: { width: "100%", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(109,40,217,0.25)", background: "rgba(139,92,246,0.08)", color: "#3b1f6a", fontSize: 15, outline: "none", boxSizing: "border-box" } })
           ),
           React.createElement('div', null,
-            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "rgba(75,45,120,0.7)", marginBottom: 5 } }, "Confirmar PIN"),
+            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "rgba(75,45,120,0.7)", marginBottom: 5 } }, "Senha (mínimo 6 caracteres)"),
+            React.createElement('input', { type: "password", value: primeiroAcesso.pin, onChange: function(e){ setPrimeiroAcesso(function(p){ return Object.assign({},p,{pin:e.target.value}); }); }, placeholder: "••••••", style: { width: "100%", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(109,40,217,0.25)", background: "rgba(139,92,246,0.08)", color: "#3b1f6a", fontSize: 15, outline: "none", boxSizing: "border-box", letterSpacing: 6 } })
+          ),
+          React.createElement('div', null,
+            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "rgba(75,45,120,0.7)", marginBottom: 5 } }, "Confirmar senha"),
             React.createElement('input', { type: "password", value: primeiroAcesso.confirmPin, onChange: function(e){ setPrimeiroAcesso(function(p){ return Object.assign({},p,{confirmPin:e.target.value}); }); }, placeholder: "••••", onKeyDown: function(e){ if(e.key==="Enter") criarPrimeiroAdmin(); }, style: { width: "100%", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(109,40,217,0.25)", background: "rgba(139,92,246,0.08)", color: "#3b1f6a", fontSize: 15, outline: "none", boxSizing: "border-box", letterSpacing: 6 } })
           ),
           React.createElement('button', { onClick: criarPrimeiroAdmin, disabled: salvando, style: { width: "100%", padding: "14px", borderRadius: 14, border: "1px solid rgba(80,88,100,0.35)", background: salvando ? "rgba(94,102,115,0.3)" : "linear-gradient(135deg, #5e6673, #404855)", color: "#fff", fontSize: 16, fontWeight: 700, cursor: salvando ? "default" : "pointer", boxShadow: "0 4px 16px rgba(94,102,115,0.25)", marginTop: 4 } },
@@ -42827,11 +42943,12 @@ function LoginScreen({ onLogin }) {
           React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: "#3b1f6a" } }, u.nome),
           u.perfil && React.createElement('div', { style: { fontSize: 13, color: "rgba(75,45,120,0.6)", marginTop: 2 } }, u.perfil.nome)
         ),
-        React.createElement('div', { style: { fontSize: 14, color: "rgba(75,45,120,0.7)", textAlign: "center", marginBottom: 16 } }, "Digite seu PIN"),
+        React.createElement('div', { style: { fontSize: 14, color: "rgba(75,45,120,0.7)", textAlign: "center", marginBottom: 16 } }, "Digite sua senha"),
         erro && React.createElement('div', { style: { background: "rgba(255,59,48,0.18)", border: "1px solid rgba(255,59,48,0.4)", borderRadius: 10, padding: "10px 14px", color: "#ff6b6b", fontSize: 13, marginBottom: 14, textAlign: "center" } }, erro),
-        React.createElement('input', { type: "password", value: pin, onChange: function(e){ setPin(e.target.value); setErro(""); }, onKeyDown: function(e){ if(e.key==="Enter") verificarPin(); }, placeholder: "••••", autoFocus: true, style: { width: "100%", textAlign: "center", fontSize: 28, letterSpacing: 12, padding: "14px 16px", borderRadius: 14, border: "1px solid rgba(109,40,217,0.25)", outline: "none", background: "rgba(139,92,246,0.08)", color: "#3b1f6a", boxSizing: "border-box" } }),
-        React.createElement('button', { onClick: verificarPin, style: { width: "100%", background: "linear-gradient(135deg, #5e6673, #404855)", color: "#fff", border: "none", borderRadius: 14, padding: "14px", fontSize: 16, fontWeight: 600, cursor: "pointer", marginTop: 14, boxShadow: "0 4px 16px rgba(94,102,115,0.25)" } }, "Entrar"),
-        React.createElement('button', { onClick: function(){ setTela("escolher_usuario"); setErro(""); setPin(""); }, style: { background: "none", border: "none", color: "rgba(75,45,120,0.55)", fontSize: 14, cursor: "pointer", marginTop: 12, width: "100%" } }, "← Voltar")
+        React.createElement('input', { type: "password", value: pin, onChange: function(e){ setPin(e.target.value); setErro(""); }, onKeyDown: function(e){ if(e.key==="Enter") verificarPin(); }, placeholder: "••••••", autoFocus: true, style: { width: "100%", textAlign: "center", fontSize: 28, letterSpacing: 12, padding: "14px 16px", borderRadius: 14, border: "1px solid rgba(109,40,217,0.25)", outline: "none", background: "rgba(139,92,246,0.08)", color: "#3b1f6a", boxSizing: "border-box" } }),
+        React.createElement('button', { onClick: verificarPin, disabled: salvando, style: { width: "100%", background: salvando ? "rgba(94,102,115,0.4)" : "linear-gradient(135deg, #5e6673, #404855)", color: "#fff", border: "none", borderRadius: 14, padding: "14px", fontSize: 16, fontWeight: 600, cursor: salvando ? "default" : "pointer", marginTop: 14, boxShadow: "0 4px 16px rgba(94,102,115,0.25)" } }, salvando ? "Entrando…" : "Entrar"),
+        u.email && React.createElement('button', { onClick: esqueciSenha, disabled: salvando, style: { background: "none", border: "none", color: "rgba(75,45,120,0.55)", fontSize: 13, cursor: "pointer", marginTop: 10, width: "100%" } }, "Esqueci minha senha"),
+        React.createElement('button', { onClick: function(){ setTela("escolher_usuario"); setErro(""); setPin(""); }, style: { background: "none", border: "none", color: "rgba(75,45,120,0.55)", fontSize: 14, cursor: "pointer", marginTop: 4, width: "100%" } }, "← Voltar")
       )
     );
   }
@@ -44659,7 +44776,7 @@ function Usuarios({ usuarioAtual, toast }) {
   var _modalP = React.useState(false); var modalP = _modalP[0], setModalP = _modalP[1];
   var _editU = React.useState(null); var editU = _editU[0], setEditU = _editU[1];
   var _editP = React.useState(null); var editP = _editP[0], setEditP = _editP[1];
-  var _formU = React.useState({ nome: "", pin: "", confirmPin: "", perfil_id: "", ativo: true, foto_url: "" }); var formU = _formU[0], setFormU = _formU[1];
+  var _formU = React.useState({ nome: "", email: "", pin: "", confirmPin: "", perfil_id: "", ativo: true, foto_url: "" }); var formU = _formU[0], setFormU = _formU[1];
   var _formP = React.useState({ nome: "", descricao: "", permissoes: { tabs: [], criar: true, editar: true, excluir: true } }); var formP = _formP[0], setFormP = _formP[1];
   var _salvU = React.useState(false); var salvU = _salvU[0], setSalvU = _salvU[1];
   var _salvP = React.useState(false); var salvP = _salvP[0], setSalvP = _salvP[1];
@@ -44711,37 +44828,65 @@ function Usuarios({ usuarioAtual, toast }) {
 
   function abrirNovoUsuario() {
     setEditU(null);
-    setFormU({ nome: "", pin: "", confirmPin: "", perfil_id: pfs.length ? pfs[0].id : "", ativo: true, foto_url: "" });
+    setFormU({ nome: "", email: "", pin: "", confirmPin: "", perfil_id: pfs.length ? pfs[0].id : "", ativo: true, foto_url: "" });
     setModalU(true);
   }
 
   function abrirEditUsuario(u) {
     setEditU(u);
-    setFormU({ nome: u.nome, pin: "", confirmPin: "", perfil_id: u.perfil_id || (pfs.length ? pfs[0].id : ""), ativo: u.ativo !== false, foto_url: u.foto_url || "" });
+    setFormU({ nome: u.nome, email: u.email || "", pin: "", confirmPin: "", perfil_id: u.perfil_id || (pfs.length ? pfs[0].id : ""), ativo: u.ativo !== false, foto_url: u.foto_url || "" });
     setModalU(true);
   }
 
   async function salvarUsuario() {
     var n = (formU.nome||"").trim();
+    var email = (formU.email||"").trim().toLowerCase();
+    var jaTemLogin = editU && editU.auth_user_id;
     if (!n) { toast("Informe o nome.", "error"); return; }
-    if (!editU && (!formU.pin || formU.pin.length < 4)) { toast("PIN deve ter ao menos 4 dígitos.", "error"); return; }
-    if (!editU && formU.pin !== formU.confirmPin) { toast("PINs não coincidem.", "error"); return; }
-    if (formU.pin && formU.pin !== formU.confirmPin) { toast("PINs não coincidem.", "error"); return; }
+    // Precisa criar/migrar login seguro (usuário novo, ou usuário antigo sem auth_user_id ainda)
+    if (!jaTemLogin) {
+      if (!email || email.indexOf("@") < 0) { toast("Informe um e-mail válido — é o login real do usuário no banco.", "error"); return; }
+      if (!formU.pin || formU.pin.length < 6) { toast("A senha deve ter ao menos 6 caracteres.", "error"); return; }
+      if (formU.pin !== formU.confirmPin) { toast("As senhas não coincidem.", "error"); return; }
+    } else if (formU.pin && formU.pin !== formU.confirmPin) {
+      toast("As senhas não coincidem.", "error"); return;
+    }
     setSalvU(true);
     try {
       var payload = { nome: n, perfil_id: formU.perfil_id ? Number(formU.perfil_id) : null, ativo: formU.ativo, foto_url: formU.foto_url || null };
-      if (formU.pin) payload.pin = formU.pin;
+      if (!jaTemLogin) {
+        // Cria a conta de autenticação de verdade no Supabase (é ela que o RLS do banco confere — nunca só a senha local)
+        var authRes = await sbSignUp(email, formU.pin);
+        var authUserId = (authRes.user && authRes.user.id) || authRes.id || null;
+        payload.email = email;
+        payload.auth_user_id = authUserId;
+        if (!authUserId) throw new Error("O Supabase não retornou o usuário criado — verifique as configurações de Authentication.");
+      } else if (formU.pin) {
+        toast("Para trocar a senha de outro usuário, use \"Enviar redefinição\" — não é possível definir a senha de outra pessoa diretamente por segurança.", "error");
+      }
       if (editU) {
         await db.patch("usuarios", editU.id, payload);
-        toast("Usuário atualizado!");
+        toast(jaTemLogin ? "Usuário atualizado!" : "Usuário atualizado e login seguro criado!");
       } else {
-        await db.post("usuarios", Object.assign({ pin: formU.pin }, payload));
-        toast("Usuário criado!");
+        await db.post("usuarios", payload);
+        toast("Usuário criado com login seguro!");
       }
       setModalU(false);
       carregarTudo();
-    } catch(e) { toast("Erro: " + (e.message||e), "error"); }
+    } catch(e) {
+      var msg = e.message || String(e);
+      if (/already registered|already exists/i.test(msg)) msg = "Já existe uma conta com este e-mail.";
+      toast("Erro: " + msg, "error");
+    }
     setSalvU(false);
+  }
+
+  async function enviarRedefinicao(u) {
+    if (!u.email) { toast("Este usuário não tem e-mail cadastrado.", "error"); return; }
+    try {
+      await sbRecover(u.email);
+      toast("Link de redefinição enviado para " + u.email + ".");
+    } catch(e) { toast("Erro: " + (e.message||e), "error"); }
   }
 
   async function excluirUsuario(u) {
@@ -44844,12 +44989,16 @@ function Usuarios({ usuarioAtual, toast }) {
                 : React.createElement('div', { style: { width: 44, height: 44, borderRadius: "50%", background: cor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, color: "#fff", flexShrink: 0 } }, inicial),
               React.createElement('div', { style: { flex: 1, minWidth: 0 } },
                 React.createElement('div', { style: { fontSize: 15, fontWeight: 700, color: "var(--c-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, u.nome + (ehVoce ? " (você)" : "")),
-                u.perfil && React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)", marginTop: 2 } }, u.perfil.nome)
+                u.perfil && React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)", marginTop: 2 } }, u.perfil.nome),
+                u.email
+                  ? React.createElement('div', { style: { fontSize: 11, color: "var(--c-sub)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, u.email)
+                  : React.createElement('div', { style: { fontSize: 11, color: C.red, marginTop: 2 } }, "Sem login seguro — edite para configurar")
               )
             ),
             React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between" } },
               React.createElement('span', { style: badgeStyle(u.ativo !== false ? "#059669" : "#DC2626") }, u.ativo !== false ? "Ativo" : "Inativo"),
-              isAdmin && React.createElement('div', { style: { display: "flex", gap: 6 } },
+              isAdmin && React.createElement('div', { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+                u.email && u.auth_user_id && React.createElement('button', { onClick: function(){ enviarRedefinicao(u); }, style: { background: "rgba(37,99,235,0.12)", border: "none", borderRadius: 8, padding: "5px 10px", fontSize: 12, color: "#2563EB", cursor: "pointer", fontWeight: 600 } }, "Redefinir senha"),
                 React.createElement('button', { onClick: function(){ abrirEditUsuario(u); }, style: { background: "rgba(94,102,115,0.12)", border: "none", borderRadius: 8, padding: "5px 10px", fontSize: 12, color: C.purple, cursor: "pointer", fontWeight: 600 } }, "Editar"),
                 !ehVoce && React.createElement('button', { onClick: function(){ setConfDel(u); }, style: { background: "rgba(220,38,38,0.12)", border: "none", borderRadius: 8, padding: "5px 10px", fontSize: 12, color: C.red, cursor: "pointer", fontWeight: 600 } }, "Excluir")
               )
@@ -44903,12 +45052,23 @@ function Usuarios({ usuarioAtual, toast }) {
         React.createElement(Lbl, { label: "Nome" },
           React.createElement('input', { type: "text", value: formU.nome, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{nome:e.target.value}); }); }, placeholder: "Nome completo", style: FI })
         ),
-        React.createElement(Lbl, { label: editU ? "Novo PIN (deixe vazio para manter)" : "PIN (mínimo 4 dígitos)" },
-          React.createElement('input', { type: "password", value: formU.pin, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{pin:e.target.value}); }); }, placeholder: "••••", style: Object.assign({}, FI, { letterSpacing: 6 }) })
-        ),
-        React.createElement(Lbl, { label: "Confirmar PIN" },
-          React.createElement('input', { type: "password", value: formU.confirmPin, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{confirmPin:e.target.value}); }); }, placeholder: "••••", style: Object.assign({}, FI, { letterSpacing: 6 }) })
-        ),
+        (!editU || !editU.auth_user_id)
+          ? React.createElement(Lbl, { label: "E-mail (login)" },
+              React.createElement('input', { type: "email", value: formU.email, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{email:e.target.value}); }); }, placeholder: "usuario@email.com", style: FI })
+            )
+          : React.createElement(Lbl, { label: "E-mail (login)" },
+              React.createElement('input', { type: "email", value: formU.email, disabled: true, style: Object.assign({}, FI, { opacity: 0.6 }) })
+            ),
+        (!editU || !editU.auth_user_id)
+          ? React.createElement(React.Fragment, null,
+              React.createElement(Lbl, { label: "Senha (mínimo 6 caracteres)" },
+                React.createElement('input', { type: "password", value: formU.pin, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{pin:e.target.value}); }); }, placeholder: "••••••", style: Object.assign({}, FI, { letterSpacing: 6 }) })
+              ),
+              React.createElement(Lbl, { label: "Confirmar senha" },
+                React.createElement('input', { type: "password", value: formU.confirmPin, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{confirmPin:e.target.value}); }); }, placeholder: "••••••", style: Object.assign({}, FI, { letterSpacing: 6 }) })
+              )
+            )
+          : React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)" } }, "Este usuário já tem login seguro. Para trocar a senha, use \"Redefinir senha\" na lista."),
         React.createElement(Lbl, { label: "Perfil de Acesso" },
           React.createElement('select', { value: formU.perfil_id, onChange: function(e){ setFormU(function(f){ return Object.assign({},f,{perfil_id:e.target.value}); }); }, style: FI },
             React.createElement('option', { value: "" }, "Selecionar perfil…"),
@@ -45672,14 +45832,49 @@ function App() {
   // (sem TTL de 15min em background e sem auto-bloqueio por inatividade —
   // necessário para a notificação de reserva funcionar mesmo com o app em segundo plano)
   var _AG_SESS_KEY = "ag_session_v1";
-  function _readSess() { try { var s = JSON.parse(localStorage.getItem(_AG_SESS_KEY) || "null"); if (!s || !s.usuario) return null; return s.usuario; } catch(e) { return null; } }
-  const [logado, setLogado] = useState(function() { return _readSess() !== null; });
-  const [usuarioAtual, setUsuarioAtual] = useState(function() { return _readSess(); });
-  function handleLogin(usuario) {
-    setUsuarioAtual(usuario); setLogado(true); document.body.classList.add('ag-logado');
-    try { localStorage.setItem(_AG_SESS_KEY, JSON.stringify({ usuario: usuario })); } catch(e) {}
+  function _readSess() { try { var s = JSON.parse(localStorage.getItem(_AG_SESS_KEY) || "null"); if (!s || !s.usuario) return null; return s; } catch(e) { return null; } }
+  var _sessInicial = React.useRef(_readSess()).current;
+  const [logado, setLogado] = useState(function() { return _sessInicial !== null; });
+  const [usuarioAtual, setUsuarioAtual] = useState(function() { return _sessInicial ? _sessInicial.usuario : null; });
+  function _persistSess(usuario, tok) {
+    var sess = { usuario: usuario, access_token: tok.access_token, refresh_token: tok.refresh_token, expires_at: Date.now() + (tok.expires_in || 3600) * 1000 };
+    try { localStorage.setItem(_AG_SESS_KEY, JSON.stringify(sess)); } catch(e) {}
   }
-  React.useEffect(function() { if (logado) document.body.classList.add('ag-logado'); }, []);
+  function handleLogin(usuario, tok) {
+    setUsuarioAtual(usuario); setLogado(true); document.body.classList.add('ag-logado');
+    if (tok && tok.access_token) {
+      _sbSetToken(tok.access_token);
+      _persistSess(usuario, tok);
+      _sbScheduleRefresh(tok.refresh_token, tok.expires_in, function(j){ _persistSess(usuario, j); });
+    }
+  }
+  function handleLogout() {
+    var s = _readSess();
+    setLogado(false); setUsuarioAtual(null);
+    document.body.classList.remove('ag-logado');
+    try { localStorage.removeItem(_AG_SESS_KEY); } catch(e) {}
+    if (_sbRefreshTimer) clearTimeout(_sbRefreshTimer);
+    sbSignOut(s && s.access_token);
+    _sbSetToken(null);
+  }
+  React.useEffect(function() {
+    if (logado) document.body.classList.add('ag-logado');
+    // Restaura o token de acesso salvo (a Authorization enviada ao Supabase precisa
+    // ser o JWT do usuário — sem isso, toda chamada volta a usar a anon key e o RLS bloqueia).
+    if (_sessInicial && _sessInicial.access_token) {
+      var restanteMs = (_sessInicial.expires_at || 0) - Date.now();
+      if (restanteMs < 60000 && _sessInicial.refresh_token) {
+        sbRefreshToken(_sessInicial.refresh_token).then(function(j) {
+          _sbSetToken(j.access_token);
+          _persistSess(_sessInicial.usuario, j);
+          _sbScheduleRefresh(j.refresh_token, j.expires_in, function(j2){ _persistSess(_sessInicial.usuario, j2); });
+        }).catch(function(){ handleLogout(); });
+      } else {
+        _sbSetToken(_sessInicial.access_token);
+        _sbScheduleRefresh(_sessInicial.refresh_token, restanteMs / 1000, function(j){ _persistSess(_sessInicial.usuario, j); });
+      }
+    }
+  }, []);
 
   const [tab, setTab] = useState(function(){
     var TABS_VALIDAS = ["inicio","cadastro","frota","clientes","contratos","reservas","multas","manutencao","operacional","financeiro","relatorios","simulador","config","calendario","linha_do_tempo","usuarios"];
@@ -46392,7 +46587,7 @@ function App() {
       if (configSubTab === "simulador") return React.createElement(Simulador, { veiculos: veiculos, contratos: contratos, despesas: despesas, manutencoes: manutencoes, multas: multas, receitas: receitas, toast: toast });
       if (configSubTab === "usuarios") return React.createElement(Usuarios, { usuarioAtual: usuarioAtual, toast: toast });
       if (configSubTab === "importar") return React.createElement(ImportarDados, { veiculos: veiculos, setVeiculos: setVeiculos, clientes: clientes, setClientes: setClientes, contratos: contratos, setContratos: setContratos, toast: toast });
-      return React.createElement(Config, { empresa: empresa, setEmpresa: setEmpresa, toast: toast, darkMode: darkMode, toggleDark: toggleDark, setThemeDirect: setThemeDirect, temaList: TEMA_LIST, temaKeys: TEMA_KEYS, setClaudeKey: setClaudeKey, usuarioAtual: usuarioAtual, lgpdConsent: lgpdConsent, setLgpdConsent: setLgpdConsent, modPrivacidade: modPrivacidade, setModPrivacidade: setModPrivacidade, onLogout: function(){ setLogado(false); setUsuarioAtual(null); document.body.classList.remove('ag-logado'); try { localStorage.removeItem(_AG_SESS_KEY); } catch(e) {} } });
+      return React.createElement(Config, { empresa: empresa, setEmpresa: setEmpresa, toast: toast, darkMode: darkMode, toggleDark: toggleDark, setThemeDirect: setThemeDirect, temaList: TEMA_LIST, temaKeys: TEMA_KEYS, setClaudeKey: setClaudeKey, usuarioAtual: usuarioAtual, lgpdConsent: lgpdConsent, setLgpdConsent: setLgpdConsent, modPrivacidade: modPrivacidade, setModPrivacidade: setModPrivacidade, onLogout: handleLogout });
     }
     if (tab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens });
     if (tab === "linha_do_tempo") return React.createElement(LinhaDoTempo, { contratos: contratos, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, reservas: reservas, veiculos: veiculos, clientes: clientes, setTab: navTab });

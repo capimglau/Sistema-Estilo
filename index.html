@@ -42731,30 +42731,25 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
 
 
 function LoginScreen({ onLogin }) {
-  // Estados de carregamento e dados
-  var _us = React.useState(null); var usuarios = _us[0], setUsuarios = _us[1];
-  var _pf = React.useState(null); var perfis = _pf[0], setPerfis = _pf[1];
   var _ld = React.useState(true); var carregando = _ld[0], setCarregando = _ld[1];
   var _er = React.useState(""); var erro = _er[0], setErro = _er[1];
-  // Estado da tela: "loading" | "primeiro_acesso" | "escolher_usuario" | "digitar_pin"
+  // Estado da tela: "loading" | "login" | "primeiro_acesso"
   var _tl = React.useState("loading"); var tela = _tl[0], setTela = _tl[1];
-  var _us2 = React.useState(null); var usuarioSel = _us2[0], setUsuarioSel = _us2[1];
-  var _pin = React.useState(""); var pin = _pin[0], setPin = _pin[1];
+  var _le = React.useState(""); var loginEmail = _le[0], setLoginEmail = _le[1];
+  var _ls = React.useState(""); var loginSenha = _ls[0], setLoginSenha = _ls[1];
   // Campos primeiro acesso
   var _fa = React.useState({ nome: "", email: "", pin: "", confirmPin: "" }); var primeiroAcesso = _fa[0], setPrimeiroAcesso = _fa[1];
   var _sa = React.useState(false); var salvando = _sa[0], setSalvando = _sa[1];
   var _lg = React.useState("pwa-icon.png"); var logoUrl = _lg[0], setLogoUrl = _lg[1];
   var _en = React.useState("Estilo Rent a Car"); var nomeEmpresa = _en[0], setNomeEmpresa = _en[1];
 
-  var AVATAR_COLORS = ["#5E6673","#2563EB","#059669","#D97706","#DC2626","#0891B2","#5E6673","#BE185D"];
-
-  function avatarColor(nome) {
-    var idx = (nome || "?").charCodeAt(0) % AVATAR_COLORS.length;
-    return AVATAR_COLORS[idx];
-  }
-
   React.useEffect(function() {
     async function carregar() {
+      // Com RLS ativo, ninguém sem sessão consegue ler nenhuma tabela — inclusive
+      // "config" (usada só pra pegar o logo/nome da empresa no fundo da tela de
+      // login). Por isso isso é best-effort: se falhar, mostra o ícone padrão e
+      // segue direto pro formulário de login, sem tentar adivinhar se existem
+      // usuários cadastrados (não dá mais pra saber isso antes de autenticar).
       try {
         var cfg = await db.get("config", "limit=1");
         var empresa = cfg && cfg[0];
@@ -42763,30 +42758,51 @@ function LoginScreen({ onLogin }) {
           if (iconUrl) setLogoUrl(iconUrl);
           if (empresa.nome) setNomeEmpresa(empresa.nome);
         }
-        var pfs = await db.get("perfis");
-        var usrs = await db.get("usuarios", "ativo=eq.true&order=nome.asc");
-        setPerfis(pfs || []);
-        // Merge perfil into each user
-        var usrsComPerfil = (usrs || []).map(function(u) {
-          var p = (pfs || []).find(function(pf){ return pf.id === u.perfil_id; }) || null;
-          return Object.assign({}, u, { perfil: p });
-        });
-        setUsuarios(usrsComPerfil);
-        if (!usrsComPerfil || usrsComPerfil.length === 0) {
-          setTela("primeiro_acesso");
-        } else {
-          setTela("escolher_usuario");
-        }
-      } catch(e) {
-        // Tabelas podem não existir ainda — tratar como primeiro acesso
-        setUsuarios([]);
-        setPerfis([]);
-        setTela("primeiro_acesso");
-      }
+      } catch(e) { /* sem acesso antes de logar — usa o padrão, sem problema */ }
       setCarregando(false);
+      setTela("login");
     }
     carregar();
   }, []);
+
+  async function fazerLogin() {
+    var em = (loginEmail || "").trim().toLowerCase();
+    if (!em || !loginSenha) { setErro("Informe e-mail e senha."); return; }
+    setSalvando(true); setErro("");
+    try {
+      var tok = await sbSignIn(em, loginSenha);
+      _sbSetToken(tok.access_token);
+      var uid = tok.user && tok.user.id;
+      var rows = await db.get("usuarios", "auth_user_id=eq." + uid);
+      var usuario = rows && rows[0];
+      if (!usuario) {
+        setErro("Login válido, mas não há cadastro de usuário vinculado a essa conta. Peça a um administrador para vincular seu e-mail em Config → Usuários.");
+        _sbSetToken(null);
+        setSalvando(false);
+        return;
+      }
+      var pfs = await db.get("perfis");
+      var perfil = (pfs || []).find(function(pf){ return pf.id === usuario.perfil_id; }) || null;
+      onLogin(Object.assign({}, usuario, { perfil: perfil }), tok);
+    } catch(e) {
+      setErro(_traduzErroAuth(e.message));
+      _sbSetToken(null);
+    }
+    setSalvando(false);
+  }
+
+  async function esqueciSenha() {
+    var em = (loginEmail || "").trim().toLowerCase();
+    if (!em) { setErro("Informe seu e-mail antes de pedir a redefinição."); return; }
+    setSalvando(true); setErro("");
+    try {
+      await sbRecover(em);
+      setErro("Enviamos um link de redefinição de senha para " + em + ".");
+    } catch(e) {
+      setErro("Erro ao enviar redefinição: " + (e.message || e));
+    }
+    setSalvando(false);
+  }
 
   async function criarPrimeiroAdmin() {
     var n = (primeiroAcesso.nome || "").trim();
@@ -42831,39 +42847,6 @@ function LoginScreen({ onLogin }) {
     setSalvando(false);
   }
 
-  function selecionarUsuario(u) {
-    setUsuarioSel(u); setPin(""); setErro(""); setTela("digitar_pin");
-  }
-
-  async function verificarPin() {
-    if (!usuarioSel) return;
-    if (!usuarioSel.email) {
-      setErro("Este usuário ainda não tem login seguro configurado. Peça a um administrador para cadastrar seu e-mail em Config → Usuários.");
-      return;
-    }
-    setSalvando(true); setErro("");
-    try {
-      var tok = await sbSignIn(usuarioSel.email, pin);
-      _sbSetToken(tok.access_token);
-      onLogin(usuarioSel, tok);
-    } catch(e) {
-      setErro(_traduzErroAuth(e.message)); setPin("");
-    }
-    setSalvando(false);
-  }
-
-  async function esqueciSenha() {
-    if (!usuarioSel || !usuarioSel.email) return;
-    setSalvando(true); setErro("");
-    try {
-      await sbRecover(usuarioSel.email);
-      setErro("Enviamos um link de redefinição de senha para " + usuarioSel.email + ".");
-    } catch(e) {
-      setErro("Erro ao enviar redefinição: " + (e.message || e));
-    }
-    setSalvando(false);
-  }
-
   var bgStyle = { minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, background: "linear-gradient(135deg, #1e3a6e 0%, #1A2744 60%, #0F1830 100%)" };
   var cardStyle = { position: "relative", isolation: "isolate", background: "rgba(255,255,255,0.82)", backdropFilter: "blur(20px) saturate(160%)", WebkitBackdropFilter: "blur(20px) saturate(160%)", borderRadius: 24, padding: "32px 28px", width: "100%", maxWidth: 420, boxShadow: "0 8px 40px rgba(109,40,217,0.10), inset 0 1px 0 rgba(255,255,255,0.80)", border: "1px solid rgba(109,40,217,0.15)" };
   var titleStyle = { fontSize: 19, fontWeight: 800, color: "#3b1f6a", textAlign: "center", marginBottom: 6 };
@@ -42902,60 +42885,35 @@ function LoginScreen({ onLogin }) {
           ),
           React.createElement('button', { onClick: criarPrimeiroAdmin, disabled: salvando, style: { width: "100%", padding: "14px", borderRadius: 14, border: "1px solid rgba(80,88,100,0.35)", background: salvando ? "rgba(94,102,115,0.3)" : "linear-gradient(135deg, #5e6673, #404855)", color: "#fff", fontSize: 16, fontWeight: 700, cursor: salvando ? "default" : "pointer", boxShadow: "0 4px 16px rgba(94,102,115,0.25)", marginTop: 4 } },
             salvando ? "Criando…" : "Criar Administrador"
-          )
-        )
-      )
-    );
-  }
-
-  if (tela === "escolher_usuario") {
-    return React.createElement('div', { style: bgStyle },
-      React.createElement('div', { style: cardStyle },
-        logoUrl ? React.createElement('img', { src: logoUrl, alt: "", style: { maxWidth: "82%", maxHeight: 140, width: "auto", height: "auto", objectFit: "contain", display: "block", margin: "0 auto 20px" } }) : React.createElement('div', { style: { fontSize: 24, textAlign: "center", marginBottom: 8 } }, "🚗"),
-        React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 16, justifyContent: "center", marginTop: 8 } },
-          (usuarios || []).map(function(u) {
-            var inicial = (u.nome || "?")[0].toUpperCase();
-            var cor = avatarColor(u.nome);
-            return React.createElement('div', { key: u.id, onClick: function(){ selecionarUsuario(u); }, style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 8, cursor: "pointer", padding: "12px 10px", borderRadius: 16, background: "rgba(109,40,217,0.07)", border: "1px solid rgba(109,40,217,0.18)", transition: "all 0.15s", minWidth: 80 } },
-              u.foto_url
-                ? React.createElement('img', { src: u.foto_url, style: { width: 56, height: 56, borderRadius: "50%", objectFit: "cover", boxShadow: "0 4px 12px rgba(0,0,0,0.25)" } })
-                : React.createElement('div', { style: { width: 56, height: 56, borderRadius: "50%", background: cor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 800, color: "#fff", boxShadow: "0 4px 12px rgba(0,0,0,0.25)" } }, inicial),
-              React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "#3b1f6a", textAlign: "center", maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, u.nome),
-              u.perfil && React.createElement('div', { style: { fontSize: 10, color: "rgba(75,45,120,0.6)", textAlign: "center" } }, u.perfil.nome)
-            );
-          })
-        ),
-        React.createElement('a', { href: "apresentacao.html", target: "_blank", rel: "noopener", style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 20, color: "rgba(75,45,120,0.45)", fontSize: 13, textDecoration: "none" } },
-          React.createElement('svg', { width: 13, height: 13, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.5, strokeLinecap: "round", strokeLinejoin: "round" },
-            React.createElement('path', { d: "M15 3h6v6" }),
-            React.createElement('path', { d: "M10 14L21 3" }),
-            React.createElement('path', { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" })
           ),
-          "Ver apresentação"
+          React.createElement('button', { onClick: function(){ setTela("login"); setErro(""); }, style: { background: "none", border: "none", color: "rgba(75,45,120,0.55)", fontSize: 13, cursor: "pointer", marginTop: 4, width: "100%" } }, "← Já tenho conta, voltar pro login")
         )
       )
     );
   }
 
-  if (tela === "digitar_pin") {
-    var u = usuarioSel || {};
-    var inicial2 = (u.nome || "?")[0].toUpperCase();
-    var cor2 = avatarColor(u.nome);
+  if (tela === "login") {
     return React.createElement('div', { style: bgStyle },
       React.createElement('div', { style: cardStyle },
-        React.createElement('div', { style: { display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 24 } },
-          u.foto_url
-            ? React.createElement('img', { src: u.foto_url, style: { width: 72, height: 72, borderRadius: "50%", objectFit: "cover", marginBottom: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.30)" } })
-            : React.createElement('div', { style: { width: 72, height: 72, borderRadius: "50%", background: cor2, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 800, color: "#fff", marginBottom: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.30)" } }, inicial2),
-          React.createElement('div', { style: { fontSize: 20, fontWeight: 700, color: "#3b1f6a" } }, u.nome),
-          u.perfil && React.createElement('div', { style: { fontSize: 13, color: "rgba(75,45,120,0.6)", marginTop: 2 } }, u.perfil.nome)
-        ),
-        React.createElement('div', { style: { fontSize: 14, color: "rgba(75,45,120,0.7)", textAlign: "center", marginBottom: 16 } }, "Digite sua senha"),
-        erro && React.createElement('div', { style: { background: "rgba(255,59,48,0.18)", border: "1px solid rgba(255,59,48,0.4)", borderRadius: 10, padding: "10px 14px", color: "#ff6b6b", fontSize: 13, marginBottom: 14, textAlign: "center" } }, erro),
-        React.createElement('input', { type: "password", value: pin, onChange: function(e){ setPin(e.target.value); setErro(""); }, onKeyDown: function(e){ if(e.key==="Enter") verificarPin(); }, placeholder: "••••••", autoFocus: true, style: { width: "100%", textAlign: "center", fontSize: 28, letterSpacing: 12, padding: "14px 16px", borderRadius: 14, border: "1px solid rgba(109,40,217,0.25)", outline: "none", background: "rgba(139,92,246,0.08)", color: "#3b1f6a", boxSizing: "border-box" } }),
-        React.createElement('button', { onClick: verificarPin, disabled: salvando, style: { width: "100%", background: salvando ? "rgba(94,102,115,0.4)" : "linear-gradient(135deg, #5e6673, #404855)", color: "#fff", border: "none", borderRadius: 14, padding: "14px", fontSize: 16, fontWeight: 600, cursor: salvando ? "default" : "pointer", marginTop: 14, boxShadow: "0 4px 16px rgba(94,102,115,0.25)" } }, salvando ? "Entrando…" : "Entrar"),
-        u.email && React.createElement('button', { onClick: esqueciSenha, disabled: salvando, style: { background: "none", border: "none", color: "rgba(75,45,120,0.55)", fontSize: 13, cursor: "pointer", marginTop: 10, width: "100%" } }, "Esqueci minha senha"),
-        React.createElement('button', { onClick: function(){ setTela("escolher_usuario"); setErro(""); setPin(""); }, style: { background: "none", border: "none", color: "rgba(75,45,120,0.55)", fontSize: 14, cursor: "pointer", marginTop: 4, width: "100%" } }, "← Voltar")
+        logoUrl ? React.createElement('img', { src: logoUrl, alt: "", style: { maxWidth: "82%", maxHeight: 140, width: "auto", height: "auto", objectFit: "contain", display: "block", margin: "0 auto 20px" } }) : React.createElement('div', { style: { fontSize: 26, textAlign: "center", marginBottom: 12 } }, "🚗"),
+        React.createElement('div', { style: titleStyle }, nomeEmpresa),
+        React.createElement('div', { style: subStyle }, "Entrar"),
+        erro && React.createElement('div', { style: { background: "rgba(255,59,48,0.18)", border: "1px solid rgba(255,59,48,0.4)", borderRadius: 10, padding: "10px 14px", color: "#ff6b6b", fontSize: 13, marginBottom: 16 } }, erro),
+        React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 } },
+          React.createElement('div', null,
+            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "rgba(75,45,120,0.7)", marginBottom: 5 } }, "E-mail"),
+            React.createElement('input', { type: "email", value: loginEmail, onChange: function(e){ setLoginEmail(e.target.value); setErro(""); }, placeholder: "voce@email.com", autoFocus: true, style: { width: "100%", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(109,40,217,0.25)", background: "rgba(139,92,246,0.08)", color: "#3b1f6a", fontSize: 15, outline: "none", boxSizing: "border-box" } })
+          ),
+          React.createElement('div', null,
+            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "rgba(75,45,120,0.7)", marginBottom: 5 } }, "Senha"),
+            React.createElement('input', { type: "password", value: loginSenha, onChange: function(e){ setLoginSenha(e.target.value); setErro(""); }, onKeyDown: function(e){ if(e.key==="Enter") fazerLogin(); }, placeholder: "••••••", style: { width: "100%", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(109,40,217,0.25)", background: "rgba(139,92,246,0.08)", color: "#3b1f6a", fontSize: 15, outline: "none", boxSizing: "border-box", letterSpacing: 6 } })
+          ),
+          React.createElement('button', { onClick: fazerLogin, disabled: salvando, style: { width: "100%", padding: "14px", borderRadius: 14, border: "1px solid rgba(80,88,100,0.35)", background: salvando ? "rgba(94,102,115,0.3)" : "linear-gradient(135deg, #5e6673, #404855)", color: "#fff", fontSize: 16, fontWeight: 700, cursor: salvando ? "default" : "pointer", boxShadow: "0 4px 16px rgba(94,102,115,0.25)", marginTop: 4 } },
+            salvando ? "Entrando…" : "Entrar"
+          ),
+          React.createElement('button', { onClick: esqueciSenha, disabled: salvando, style: { background: "none", border: "none", color: "rgba(75,45,120,0.55)", fontSize: 13, cursor: "pointer", marginTop: 2, width: "100%" } }, "Esqueci minha senha"),
+          React.createElement('button', { onClick: function(){ setTela("primeiro_acesso"); setErro(""); }, style: { background: "none", border: "none", color: "rgba(75,45,120,0.45)", fontSize: 12, cursor: "pointer", marginTop: 8, width: "100%" } }, "Primeiro acesso — criar administrador")
+        )
       )
     );
   }

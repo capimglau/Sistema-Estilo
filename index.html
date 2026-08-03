@@ -23234,11 +23234,17 @@ function Modal({ open, onClose, title, children, wide, full }) {
     document.body.style.overflow = 'hidden';
     return function() { document.body.style.overflow = prev; };
   }, [open]);
+  // Só fecha no clique do fundo (overlay) se o toque também COMEÇOU no fundo —
+  // evita fechar por engano quando um arrasto/seleção de texto dentro de um
+  // campo termina "escapando" para fora da área do card.
+  var overlayPressRef = React.useRef(false);
 
   if (!open) return null;
 
   var overlay = React.createElement('div', {
-    onClick: onClose,
+    onMouseDown: function(e){ overlayPressRef.current = (e.target === e.currentTarget); },
+    onTouchStart: function(e){ overlayPressRef.current = (e.target === e.currentTarget); },
+    onClick: function(e){ if (overlayPressRef.current && e.target === e.currentTarget) onClose(); },
     style: {
       position: "fixed", inset: 0,
       background: "rgba(0,0,0,0.52)",
@@ -46022,23 +46028,30 @@ function App() {
   useEffect(() => {
     /* Mesma chave dos scripts de boot e do efeito de tema — evita que o fundo
        inicial do body divirja do tema aplicado quando o iOS está no escuro. */
-    var _bgMap={"2":"#131c2c","12":"#f2f2f7"};
+    var _bgMap={"2":"#131c2c","12":"#f2f2f7","16":"#0E0D14"};
     document.body.style.background = _bgMap[window.__agTemaKey()] || "#f2f2f7";
     /* svh (viewport pequena, barra do Safari expandida): evita criar ~60px de
        scroll fantasma em telas curtas agora que quem rola é o documento. */
     document.body.style.minHeight = "100svh";
     try { var pref = JSON.parse(localStorage.getItem("ag_prefs_v1") || "{}"); if (pref.dens) document.body.setAttribute("data-dens", pref.dens); } catch(e) {}
-    // Pull-to-refresh: detecta swipe para baixo no topo da página
+    // Pull-to-refresh: detecta swipe para baixo no topo da página — nunca
+    // enquanto um modal/sheet estiver aberto, senão rolar/arrastar dentro de
+    // um formulário (a página de fundo continua no topo) dispara um refresh
+    // completo dos dados e interrompe a edição em andamento.
     var _pullStartY = 0;
     var _pulling = false;
+    function _agModalAberto() {
+      return !!(document.querySelector('.lg-modal') || document.querySelector('.ag-sheet.open'));
+    }
     function onTouchStart(e) {
+      if (_agModalAberto()) { _pulling = false; return; }
       var _sc = scrollContainerRef.current;
       var _sy = _sc ? _sc.scrollTop : window.scrollY;
       if (_sy <= 0) { _pullStartY = e.touches[0].clientY; _pulling = true; }
       else { _pulling = false; }
     }
     function onTouchEnd(e) {
-      if (!_pulling) return;
+      if (!_pulling || _agModalAberto()) { _pulling = false; return; }
       var dy = e.changedTouches[0].clientY - _pullStartY;
       if (dy > 80) {
         setPullRefreshing(true);
@@ -46715,12 +46728,13 @@ if (!__viewerMode) {
   var startX = null, startY = null, active = false;
   document.addEventListener("touchstart", function(e){
     startX = e.touches[0].clientX; startY = e.touches[0].clientY;
-    // Nunca ativa swipe-back se o toque começou dentro do dock (lg-nav) ou de
-    // um campo editável — senão selecionar/apagar texto perto da borda
-    // esquerda (comum em modais de formulário) fecha a tela por engano.
+    // Nunca ativa swipe-back se o toque começou dentro do dock (lg-nav), de
+    // um campo editável, ou com um modal/sheet aberto — senão interagir com
+    // um formulário perto da borda esquerda fecha a tela por engano.
     var inDock = e.target && e.target.closest && e.target.closest('.lg-nav');
     var inField = e.target && e.target.closest && e.target.closest('input, textarea, select, [contenteditable="true"]');
-    active = !inDock && !inField && startX <= 28;
+    var modalAberto = document.querySelector('.lg-modal') || document.querySelector('.ag-sheet.open');
+    active = !inDock && !inField && !modalAberto && startX <= 28;
   }, { passive: true });
   document.addEventListener("touchmove", function(e){
     if (!active || !startX) return;

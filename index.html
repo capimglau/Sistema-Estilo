@@ -26034,12 +26034,40 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         var _periodo = (c.data_inicio && c.data_fim) ? (fmtDate(c.data_inicio)+' → '+fmtDate(c.data_fim)) : '';
         var _sub = [(ve&&ve.placa)||'', _periodo].filter(Boolean).join(' · ');
         var _dias = _diasAteVenc(c.previsao_pagamento);
+        var _mesRef = c.previsao_pagamento ? c.previsao_pagamento.slice(0,7) : '';
+        var _refKey = 'fat_'+c.id+'_'+_mesRef;
+        var _onEmitir = function(){
+          var recExist = (receitas||[]).find(function(r){ return r.ref_fatura===_refKey; });
+          var dtEmissao = hoje;
+          (async function(){
+            try {
+              var num = (recExist && recExist.numero_fatura) ? recExist.numero_fatura : proximoNumeroFatura(receitas);
+              if (recExist) {
+                await db.patch("receitas", recExist.id, { status:"emitida", data_emissao:dtEmissao, numero_fatura:num });
+                setReceitas(function(p){ return p.map(function(r){ return r.id===recExist.id?Object.assign({},r,{status:"emitida",data_emissao:dtEmissao,numero_fatura:num}):r; }); });
+              } else {
+                var nova = await db.post("receitas", {
+                  descricao:"Fatura "+((cl&&cl.nome)||'')+" — "+((ve&&ve.placa)||'')+(_mesRef?(' ('+_mesRef+')'):''),
+                  valor:parseFloat(c.valor_total||0), categoria:"Locacao",
+                  data:dtEmissao, data_emissao:dtEmissao,
+                  data_vencimento:c.previsao_pagamento, numero_fatura:num,
+                  ref_fatura:_refKey, status:"emitida",
+                  forma_pagamento:"Pix",
+                  cliente_id:c.cliente_id, veiculo_id:c.veiculo_id, contrato_id:c.id
+                });
+                setReceitas(function(p){ return [nova, ...p]; });
+              }
+              toast(num+" emitida!");
+            } catch(e){ toast("Erro ao emitir."); }
+          })();
+        };
         return { key:'bol-'+c.id, nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), sub:_sub,
           vencTxt: c.previsao_pagamento ? fmtDate(c.previsao_pagamento) : '',
           emissaoAtrasada: !!(isPendente && _dias!==null && _dias<0),
           valor:parseFloat(c.valor_total||0), data:c.previsao_pagamento,
           onClick:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); },
-          onBaixar: c.status_pagamento!=='pago' ? function(){ _agBaixar({type:'ct',id:c.id}); } : null };
+          onBaixar: isPendente ? _onEmitir : (c.status_pagamento!=='pago' ? function(){ _agBaixar({type:'ct',id:c.id}); } : null),
+          baixarLabel: isPendente ? 'Emitir' : 'Baixar' };
       };
 
       var _panBaseRV = { background:C.card, borderRadius:18, border:'1px solid '+C.border, overflow:'hidden', boxShadow:'0 1px 12px rgba(0,0,0,0.05)' };
@@ -26064,7 +26092,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         );
         return React.createElement(SwipeRow, {
           key:it.key,
-          onBaixar: it.onBaixar || null, baixarLabel:'Baixar',
+          onBaixar: it.onBaixar || null, baixarLabel: it.baixarLabel || 'Baixar',
           action2:it.onClick, action2Label:'Ver', action2Icon:'\u{1F441}', action2Color:'rgba(0,122,255,0.92)',
           onDelete:null,
           /* dentro de painel colorido (tom presente) não desenha nenhuma linha — o painel

@@ -29161,6 +29161,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   const [parcialCtValor, setParcialCtValor] = useState("");
   const [encerrarCtModal, setEncerrarCtModal] = useState(null);
   const [encerrarCtForm, setEncerrarCtForm] = useState({});
+  const [substVeiculoModal, setSubstVeiculoModal] = useState(null);
+  const [substVeiculoForm, setSubstVeiculoForm] = useState({});
   function limparFiltros() { setFilDe(""); setFilAte(""); setFilVeiculo(""); setFilCliente(""); }
   var _abrirNovoContratoRef = React.useRef(null);
   _abrirNovoContratoRef.current = function() {
@@ -29704,6 +29706,72 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     setEncerrarCtModal(null);
     toast(outroAtivoEncerrar ? "Encerrado! Veículo ainda possui contrato ativo." : "Encerrado! Veículo liberado.");
   }
+  function abrirSubstituirVeiculo(ct) {
+    setSubstVeiculoForm({ veiculo_id: "", data_substituicao: hoje, km_inicial_novo: "" });
+    setSubstVeiculoModal(ct);
+  }
+  // Divide o contrato em dois "trechos" na data da troca: o contrato original
+  // termina no dia anterior à troca (com o valor_total proporcional aos dias
+  // rodados no veículo antigo) e um novo contrato nasce no veículo novo, cobrindo
+  // o restante do período original (com o valor_total proporcional restante).
+  // Segue o mesmo padrão de encadeamento já usado em renovar()/confirmarEncerrarCt().
+  async function confirmarSubstituirVeiculo() {
+    var ct = substVeiculoModal;
+    var f = substVeiculoForm;
+    if (!ct) return;
+    if (!f.veiculo_id) { toast("Selecione o veículo novo.", "error"); return; }
+    if (String(f.veiculo_id) === String(ct.veiculo_id)) { toast("Selecione um veículo diferente do atual.", "error"); return; }
+    if (!f.data_substituicao) { toast("Informe a data da substituição.", "error"); return; }
+    if (!ct.data_inicio || !ct.data_fim) { toast("Contrato sem período definido — não é possível dividir o valor.", "error"); return; }
+    if (f.data_substituicao <= ct.data_inicio || f.data_substituicao > ct.data_fim) {
+      toast("A data da substituição precisa estar dentro do período do contrato.", "error"); return;
+    }
+    var dataFimAntigo = new Date(f.data_substituicao + "T00:00:00");
+    dataFimAntigo.setDate(dataFimAntigo.getDate() - 1);
+    var dataFimAntigoStr = dataFimAntigo.toISOString().split("T")[0];
+    var diasContratados = Math.max(1, Math.ceil((new Date(ct.data_fim) - new Date(ct.data_inicio)) / 86400000));
+    var diasAntigos = Math.max(1, Math.ceil((new Date(dataFimAntigoStr) - new Date(ct.data_inicio)) / 86400000));
+    var valorOriginal = parseFloat(ct.valor_total || 0);
+    var valorAntigo = Math.round((valorOriginal * diasAntigos / diasContratados) * 100) / 100;
+    var valorNovo = Math.round((valorOriginal - valorAntigo) * 100) / 100;
+    var veAntigo = getVe(ct.veiculo_id); var veNovo = getVe(f.veiculo_id);
+    var notaTroca = "Substituição de veículo em " + fmtDate(f.data_substituicao) + ": "
+      + (veAntigo ? veAntigo.placa : "?") + " → " + (veNovo ? veNovo.placa : "?");
+    try {
+      var patchAntigo = {
+        status: "concluido",
+        data_fim: dataFimAntigoStr,
+        valor_total: valorAntigo.toFixed(2),
+        observacoes: (ct.observacoes ? ct.observacoes + "\n" : "") + notaTroca
+      };
+      await db.patch("contratos", ct.id, patchAntigo);
+      setContratos(function(p){ return p.map(function(x){ return x.id === ct.id ? Object.assign({}, x, patchAntigo) : x; }); });
+      // Sincroniza a receita vinculada ao trecho antigo com o valor proporcional
+      var recLinkAntigo = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+ct.id+"_"); });
+      if (recLinkAntigo) {
+        try {
+          var updRLA = await db.patch("receitas", recLinkAntigo.id, { valor: patchAntigo.valor_total });
+          setReceitas(function(p){ return p.map(function(x){ return x.id === recLinkAntigo.id ? Object.assign({}, x, updRLA) : x; }); });
+        } catch(e) { console.warn(e); }
+      }
+      var payloadNovo = {
+        cliente_id: ct.cliente_id, veiculo_id: f.veiculo_id,
+        data_inicio: f.data_substituicao, data_fim: ct.data_fim,
+        km_inicial: f.km_inicial_novo || null, km_final: null,
+        km_franquia: ct.km_franquia, valor_km_excedente: ct.valor_km_excedente,
+        valor_total: valorNovo.toFixed(2), status: "ativo",
+        status_pagamento: "pendente",
+        forma_pagamento: ct.forma_pagamento,
+        previsao_pagamento: ct.previsao_pagamento,
+        observacoes: "Substituição de veículo do contrato #" + numCt(ct.id) + " (" + (veAntigo ? veAntigo.placa : "?") + ")."
+      };
+      var novo = await db.post("contratos", payloadNovo);
+      setContratos(function(p){ return p.concat([novo]); });
+      await criarFaturaPrevista(novo);
+      setSubstVeiculoModal(null);
+      toast("Veículo substituído! " + fmtBRL(valorAntigo) + " no " + (veAntigo?veAntigo.placa:"antigo") + " + " + fmtBRL(valorNovo) + " no " + (veNovo?veNovo.placa:"novo") + ".");
+    } catch(e) { toast("Erro ao substituir veículo: " + e.message, "error"); }
+  }
   async function confirmarBaixarCt() {
     var c = baixarCtModal;
     if (!c || !baixarCtData) return toast("Informe a data de pagamento", "error");
@@ -30032,6 +30100,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       })();
     }
     else if (action === "uso") { setUsoContrato(c); setUsoForm({ data_inicio: hoje, data_fim: hoje, km_inicial: c.km_inicial || "", km_final: "", observacoes: "" }); setUsoModal(true); }
+    else if (action === "substituir_veiculo") { abrirSubstituirVeiculo(c); }
     else if (action === "extras") { setExtrasContrato(c); setExtrasList(c.despesas_extras ? JSON.parse(c.despesas_extras) : []); setExtrasModal(true); }
     else if (action === "checklist") { setCheckContrato(c); setCheckModal(true); }
     else if (action === "docs") { setDocsContrato(c); setDocsModal(true); }
@@ -30178,6 +30247,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             { label: 'Excluir', icon: '🗑️', color: 'rgba(255,59,48,0.92)', fn: function(){ remove(c.id); } },
             { label: 'Editar', icon: '✏️', color: 'rgba(0,122,255,0.92)', fn: function(){ setForm(Object.assign({}, c)); setEdit(c.id); setModal(true); } }
           ].concat(c.status === 'ativo' ? [{ label: 'Encerrar', icon: '🏁', color: 'rgba(255,149,0,0.92)', fn: function(){ abrirEncerrarCt(c); } }] : [])
+            .concat(c.status === 'ativo' ? [{ label: 'Trocar veículo', icon: '🚗', color: 'rgba(88,86,214,0.92)', fn: function(){ abrirSubstituirVeiculo(c); } }] : [])
         },
         React.createElement('div', { className: _cardClass, style: Object.assign({}, cardStyle, periodoExpirado ? { cursor: "pointer" } : {}), onClick: periodoExpirado ? function(e){ if(!e.target.closest('select,button,input,a')) renovar(c); } : undefined }
           /* Linha 1: Cliente em destaque + valor */
@@ -30272,6 +30342,9 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           )
           , cs.status === "ativo" && React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('uso'); } }
             , React.createElement('span', { className:'ag-sheet-icon' }, '📍'), 'Uso'
+          )
+          , cs.status === "ativo" && React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('substituir_veiculo'); } }
+            , React.createElement('span', { className:'ag-sheet-icon' }, '🚗'), 'Trocar veículo'
           )
           , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ csAct('contrato'); } }
             , React.createElement('span', { className:'ag-sheet-icon' }, '📄'), 'Contrato'
@@ -30678,6 +30751,67 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           , React.createElement('button', { onClick:confirmarEncerrarCt, style: { border:'none',background:'linear-gradient(135deg,#15803d,#34C759)',color:'#fff',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer' } }, '\ud83c\udfc1 Confirmar Encerramento')
         )
     )
+
+    /* -- MODAL SUBSTITUIR VE\u00cdCULO -- */
+    , substVeiculoModal && (function(){
+        var ct = substVeiculoModal;
+        var cl = clientes.find(function(x){ return x.id == ct.cliente_id; });
+        var veAtual = veiculos.find(function(x){ return x.id == ct.veiculo_id; });
+        var veiculosDisponiveis = veiculos.filter(function(v){ return String(v.id) !== String(ct.veiculo_id); });
+        var preview = null;
+        if (substVeiculoForm.veiculo_id && substVeiculoForm.data_substituicao && ct.data_inicio && ct.data_fim
+            && substVeiculoForm.data_substituicao > ct.data_inicio && substVeiculoForm.data_substituicao <= ct.data_fim) {
+          var dFimAntigo = new Date(substVeiculoForm.data_substituicao + "T00:00:00"); dFimAntigo.setDate(dFimAntigo.getDate()-1);
+          var dFimAntigoStr = dFimAntigo.toISOString().split("T")[0];
+          var diasTot = Math.max(1, Math.ceil((new Date(ct.data_fim) - new Date(ct.data_inicio)) / 86400000));
+          var diasAnt = Math.max(1, Math.ceil((new Date(dFimAntigoStr) - new Date(ct.data_inicio)) / 86400000));
+          var vTot = parseFloat(ct.valor_total||0);
+          var vAnt = Math.round((vTot*diasAnt/diasTot)*100)/100;
+          var vNov = Math.round((vTot-vAnt)*100)/100;
+          var veNovoPrev = veiculos.find(function(x){ return String(x.id)===String(substVeiculoForm.veiculo_id); });
+          preview = { dFimAntigoStr:dFimAntigoStr, diasAnt:diasAnt, diasNov:diasTot-diasAnt, vAnt:vAnt, vNov:vNov, veNovoPrev:veNovoPrev };
+        }
+        return React.createElement(Modal, { open: true, onClose: function(){ setSubstVeiculoModal(null); }, full: true, title: '\ud83d\ude97 Trocar ve\u00edculo do contrato' }
+          , React.createElement('div', { style: { fontSize:13,color:'var(--c-sub)',marginBottom:20 } }
+              , (cl&&cl.nome)||'\u2014', ' \u00b7 Ve\u00edculo atual: ', React.createElement('b', null, veAtual ? veAtual.placa+(veAtual.modelo?' '+veAtual.modelo:'') : '\u2014')
+            )
+          , React.createElement('div', { style: { marginBottom:16 } }
+              , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Ve\u00edculo novo')
+              , React.createElement('select', { value:substVeiculoForm.veiculo_id||'', onChange:function(e){ setSubstVeiculoForm(function(p){ return Object.assign({},p,{veiculo_id:e.target.value}); }); },
+                  style: { display:'block',width:'100%',marginTop:7,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } }
+                , React.createElement('option', { value:'' }, 'Selecione...')
+                , veiculosDisponiveis.map(function(v){ return React.createElement('option', { key:v.id, value:v.id }, v.placa + (v.modelo?' \u2014 '+v.marca+' '+v.modelo:'') + (statusEfetivoVeiculo(v,contratos)==='alugado' ? ' (alugado)' : '')); })
+              )
+            )
+          , React.createElement('div', { style: { display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16 } }
+              , React.createElement('div', null
+                , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Data da substitui\u00e7\u00e3o')
+                , React.createElement('input', { type:'date', value:substVeiculoForm.data_substituicao||'', min:ct.data_inicio, max:ct.data_fim, onChange:function(e){ setSubstVeiculoForm(function(p){ return Object.assign({},p,{data_substituicao:e.target.value}); }); },
+                    style: { display:'block',width:'100%',marginTop:7,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } })
+                )
+              , React.createElement('div', null
+                , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'KM inicial do novo ve\u00edculo')
+                , React.createElement('input', { type:'number', value:substVeiculoForm.km_inicial_novo||'', placeholder:'Opcional', onChange:function(e){ setSubstVeiculoForm(function(p){ return Object.assign({},p,{km_inicial_novo:e.target.value}); }); },
+                    style: { display:'block',width:'100%',marginTop:7,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } })
+                )
+            )
+          , preview && React.createElement('div', { style: { background:C.blue+'12', border:'1px solid '+C.blue+'30', borderRadius:14, padding:'14px 16px', marginBottom:20 } }
+              , React.createElement('div', { style:{ fontSize:12,fontWeight:700,color:'var(--c-text)',marginBottom:8 } }, 'Divis\u00e3o do valor (' + fmtBRL(parseFloat(ct.valor_total||0)) + ' total)')
+              , React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', fontSize:13, marginBottom:4 } }
+                , React.createElement('span', { style:{color:C.sub} }, (veAtual&&veAtual.placa||'\u2014') + ' \u00b7 ' + fmtDate(ct.data_inicio) + ' \u2192 ' + fmtDate(preview.dFimAntigoStr) + ' (' + preview.diasAnt + 'd)')
+                , React.createElement('b', null, fmtBRL(preview.vAnt))
+                )
+              , React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', fontSize:13 } }
+                , React.createElement('span', { style:{color:C.sub} }, (preview.veNovoPrev&&preview.veNovoPrev.placa||'\u2014') + ' \u00b7 ' + fmtDate(substVeiculoForm.data_substituicao) + ' \u2192 ' + fmtDate(ct.data_fim) + ' (' + preview.diasNov + 'd)')
+                , React.createElement('b', null, fmtBRL(preview.vNov))
+                )
+            )
+          , React.createElement('div', { style: { display:'grid',gridTemplateColumns:'1fr 1fr',gap:12 } }
+              , React.createElement('button', { onClick:function(){ setSubstVeiculoModal(null); }, style: { border:'1.5px solid var(--c-border)',background:'transparent',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer',color:'var(--c-text)' } }, 'Cancelar')
+              , React.createElement('button', { onClick:confirmarSubstituirVeiculo, style: { border:'none',background:'linear-gradient(135deg,#5856D6,#8B7FE8)',color:'#fff',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer' } }, '\ud83d\ude97 Confirmar Troca')
+            )
+        );
+      })()
 
     /* -- MODAL EXCLUIR CONTRATO -- */
     , modalExcluirContrato && (function(){

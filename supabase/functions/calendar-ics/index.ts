@@ -1,9 +1,13 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 Deno.serve(async (_req) => {
+  // Usa a service_role (só existe aqui no servidor, nunca chega no cliente) —
+  // desde que o RLS foi ativado no banco, a anon key não lê mais nenhuma
+  // tabela, e essa function é uma agregação pública controlada (só monta
+  // eventos de calendário com os campos que ela mesma escolhe expor).
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_ANON_KEY")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
   );
 
   const [
@@ -17,12 +21,12 @@ Deno.serve(async (_req) => {
     { data: orcItens = [] },
     { data: reservas = [] },
   ] = await Promise.all([
-    supabase.from("contratos").select("*").limit(500),
+    supabase.from("contratos").select("*").limit(5000),
     supabase.from("clientes").select("*"),
     supabase.from("veiculos").select("*"),
     supabase.from("multas").select("*"),
     supabase.from("contas").select("*"),
-    supabase.from("receitas").select("*").limit(1000),
+    supabase.from("receitas").select("*").limit(5000),
     supabase.from("despesas").select("*"),
     supabase.from("orcamento_pessoal").select("*"),
     supabase.from("reservas").select("*"),

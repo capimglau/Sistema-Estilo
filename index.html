@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="c064775"/>
+<meta name="ag-build" content="d78348b"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -40052,7 +40052,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 }
 
 // -- RELATORIOS ------------------------------------------------------------─
-function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despesas, receitas, empresa }) {
+function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despesas, receitas, setReceitas, empresa, toast }) {
   const [tab, setTab] = useState("geral");
   const [de, setDe] = useState("");
   const [ate, setAte] = useState("");
@@ -40062,6 +40062,8 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   const [fatClientes, setFatClientes] = useState([]);
   const [fatClienteOpen, setFatClienteOpen] = useState(false);
   const [fatSit, setFatSit] = useState("");
+  const [fatSelMode, setFatSelMode] = useState(false);
+  const [fatSel, setFatSel] = useState({});
 
   var receita = contratos.reduce((s, c) => {
     if (c.status === "concluido" || c.status_pagamento === "pago") return s + parseFloat(c.valor_total || 0);
@@ -40096,9 +40098,10 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     /* Para filtro de período: paga usa data_pagamento, demais usa previsao/vencimento */
     var dtFiltro = (sit === "paga" && dtPag) ? dtPag : dtRef;
     var foiEmitida = !!(recPrinc && (recPrinc.data_emissao || recPrinc.numero_fatura));
+    var refKey = "fat_" + c.id + "_" + (dtRef ? dtRef.slice(0,7) : "");
     return { c:c, cl:cl, ve:ve, sit:sit, dtFiltro:dtFiltro, dtPag:dtPag, dtRef:dtRef,
              valor: parseFloat(c.valor_total||0), numeroFatura: recPrinc ? recPrinc.numero_fatura : null,
-             foiEmitida: foiEmitida };
+             foiEmitida: foiEmitida, recId: recPrinc ? recPrinc.id : null, refKey: refKey };
   });
   var faturasFil = _fatList.filter(function(f) {
     if (de && f.dtFiltro && f.dtFiltro < de) return false;
@@ -40174,6 +40177,47 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     h += '<p style="text-align:center;font-size:10px;color:#aaa;margin-top:20px">AutoGest Pro - ' + new Date().toLocaleString("pt-BR") + '</p>';
     h += '<scr' + 'ipt>window.print();</scr' + 'ipt></body></html>';
     openPdfPage(h);
+  }
+  function toggleFatSel(refKey) {
+    setFatSel(function(p) { var n = Object.assign({}, p); if (n[refKey]) delete n[refKey]; else n[refKey] = true; return n; });
+  }
+  var fatEmitiveis = faturasFil.filter(function(f){ return f.sit === "prevista" || f.sit === "vencida"; });
+  var fatSelVisiveis = fatEmitiveis.filter(function(f){ return fatSel[f.refKey]; });
+  async function emitirFaturasSelecionadas() {
+    var alvo = fatSelVisiveis;
+    if (!alvo.length) { toast("Nenhuma fatura prevista/vencida selecionada."); return; }
+    var dtEmissao = _hojeRelat;
+    var maxN = (receitas||[]).filter(function(r){ return r.numero_fatura && r.numero_fatura.startsWith("FAT-"); })
+      .reduce(function(m,r){ var n = parseInt((r.numero_fatura||"FAT-00000").replace("FAT-",""),10); return isNaN(n)?m:Math.max(m,n); }, 0);
+    var novas = [], patches = {}, ok = 0;
+    for (var i = 0; i < alvo.length; i++) {
+      var f = alvo[i]; maxN++; var num = "FAT-" + String(maxN).padStart(5,"0");
+      try {
+        if (f.recId) {
+          await db.patch("receitas", f.recId, { status: "emitida", data_emissao: dtEmissao, numero_fatura: num });
+          patches[f.recId] = { status: "emitida", data_emissao: dtEmissao, numero_fatura: num };
+        } else {
+          var nova = await db.post("receitas", {
+            descricao: "Fatura " + (f.cl.nome||"") + " — " + (f.ve.placa||"") + " (" + (f.dtRef||"").slice(0,7) + ")",
+            valor: f.valor, categoria: "Locacao",
+            data: dtEmissao, data_emissao: dtEmissao,
+            data_vencimento: f.dtRef, numero_fatura: num,
+            ref_fatura: f.refKey, status: "emitida",
+            forma_pagamento: "Pix",
+            cliente_id: f.c.cliente_id, veiculo_id: f.c.veiculo_id,
+            contrato_id: f.c.id
+          });
+          novas.push(nova);
+        }
+        ok++;
+      } catch(e) {}
+    }
+    setReceitas(function(p) {
+      var arr = p.map(function(r){ return patches[r.id] ? Object.assign({}, r, patches[r.id]) : r; });
+      return novas.concat(arr);
+    });
+    toast(ok + " fatura(s) emitida(s)!");
+    setFatSel({}); setFatSelMode(false);
   }
 
   return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2620}}
@@ -40260,12 +40304,28 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
         )
         , React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: function(){ setDe(""); setAte(""); setFatClientes([]); setFatSit(""); } }, "Limpar")
       )
+      /* ── Seleção para emissão em lote ── */
+      , fatEmitiveis.length > 0 && React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } }
+        , React.createElement('button', { type: "button", onClick: function(){ setFatSelMode(function(v){ if (v) setFatSel({}); return !v; }); },
+            style: { padding: "9px 12px", borderRadius: 12, border: "1.5px solid " + (fatSelMode ? C.blue : C.border), background: fatSelMode ? "rgba(0,122,255,0.1)" : "transparent", color: fatSelMode ? C.blue : C.text, fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" } }
+          , fatSelMode ? "✕ Cancelar seleção" : "☑️ Selecionar faturas para emitir")
+        , fatSelMode && React.createElement('button', { type: "button", onClick: function(){ var all = {}; fatEmitiveis.forEach(function(f){ all[f.refKey] = true; }); setFatSel(all); },
+            style: { padding: "9px 12px", borderRadius: 12, border: "1px solid " + C.border, background: "transparent", color: C.sub, fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" } }
+          , "Selecionar todas (" + fatEmitiveis.length + ")")
+        , fatSelMode && fatSelVisiveis.length > 0 && React.createElement('span', { style: { fontSize: 12, color: C.sub } }, fatSelVisiveis.length + " selecionada(s)")
+        , fatSelMode && fatSelVisiveis.length > 0 && React.createElement('button', { type: "button", onClick: emitirFaturasSelecionadas,
+            style: { marginLeft: "auto", padding: "9px 14px", borderRadius: 12, border: "none", background: C.blue, color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" } }
+          , "📤 Emitir (" + fatSelVisiveis.length + ")")
+      )
       /* ── Lista de faturas ── */
       , React.createElement('div', { className: "lg-card", style: CARD }
         , faturasFil.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 } }, "Nenhuma fatura encontrada com os filtros selecionados")
         , faturasFil.map(function(f, i) {
             var sitCor = { prevista: C.sub, emitida: C.blue, paga: C.green, vencida: C.red }[f.sit] || C.sub;
-            return React.createElement('div', { key: f.c.id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: i < faturasFil.length - 1 ? "1px solid " + C.border : "none", gap: 8 } }
+            var emitivel = f.sit === "prevista" || f.sit === "vencida";
+            var isSel = !!fatSel[f.refKey];
+            return React.createElement('div', { key: f.c.id, onClick: (fatSelMode && emitivel) ? function(){ toggleFatSel(f.refKey); } : undefined, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: i < faturasFil.length - 1 ? "1px solid " + C.border : "none", gap: 8, cursor: (fatSelMode && emitivel) ? "pointer" : "default" } }
+              , fatSelMode && React.createElement('div', { style: { flexShrink: 0, width: 20, height: 20, borderRadius: 6, border: "2px solid " + (emitivel ? (isSel ? C.blue : C.sub) : C.border), background: isSel ? C.blue : "transparent", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, opacity: emitivel ? 1 : 0.35 } }, isSel ? "✓" : "")
               , React.createElement('div', { style: { minWidth: 0, flex: 1 } }
                 , React.createElement('div', { style: { fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }
                   , f.cl.nome || "--"

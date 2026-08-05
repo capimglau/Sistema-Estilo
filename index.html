@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="d78348b"/>
+<meta name="ag-build" content="a147b2b"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -23432,25 +23432,64 @@ function UploadField({ label, value, onChange, accept, pasta, nome, onSelect }) 
    confiável (no desktop o logo não aparecia, embora a MESMA url funcionasse
    dentro do app). Embutindo o PNG no próprio HTML o cabeçalho não depende de
    requisição nenhuma — e o PDF salvo fica autocontido.
-   Reduz para no máx. 320px de altura: sobra resolução para um render de 80px
-   sem inchar o HTML gerado. */
-var _logoEmbed = { url: null, data: null };
+   Usa fetch+blob (em vez de Image+canvas) porque a versão anterior não tinha
+   tratamento de erro: se a imagem falhasse por qualquer motivo transitório
+   (rede lenta no boot do app, canvas "tainted" por CORS), _logoEmbed ficava
+   permanentemente vazio pelo resto da sessão e NENHUM documento saía com logo
+   — daí o problema "voltar" mesmo depois do fix anterior. Guarda a Promise em
+   andamento para que chamadas concorrentes (vários documentos impressos em
+   sequência) reaproveitem o mesmo carregamento em vez de disparar N vezes. */
+var _logoEmbed = { url: null, data: null, promise: null };
 function preloadLogoEmbed(url) {
-  if (!url || _logoEmbed.url === url) return;
-  var img = new Image();
-  img.crossOrigin = "anonymous";
-  img.onload = function() {
-    try {
-      var maxH = 320;
-      var esc = img.naturalHeight > maxH ? maxH / img.naturalHeight : 1;
-      var cv = document.createElement("canvas");
-      cv.width = Math.round(img.naturalWidth * esc);
-      cv.height = Math.round(img.naturalHeight * esc);
-      cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
-      _logoEmbed = { url: url, data: cv.toDataURL("image/png") };
-    } catch(e) { /* canvas contaminado: segue usando a URL original */ }
-  };
-  img.src = url;
+  ensureLogoEmbed(url);
+}
+function ensureLogoEmbed(url) {
+  if (!url) return Promise.resolve(null);
+  if (_logoEmbed.url === url && _logoEmbed.data) return Promise.resolve(_logoEmbed.data);
+  if (_logoEmbed.url === url && _logoEmbed.promise) return _logoEmbed.promise;
+  var p = fetch(url, { mode: "cors" }).then(function(resp) {
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    return resp.blob();
+  }).then(function(blob) {
+    // Redimensiona via <img src="blob:..."> — um blob: URL criado a partir de um
+    // Blob que o próprio JS já buscou nunca "contamina" o canvas (a origem é do
+    // documento, não do servidor remoto), então isso funciona mesmo quando o
+    // servidor da imagem original não manda cabeçalhos CORS.
+    return new Promise(function(resolve, reject) {
+      var objUrl = URL.createObjectURL(blob);
+      var img = new Image();
+      img.onload = function() {
+        try {
+          var maxH = 320;
+          var esc = img.naturalHeight > maxH ? maxH / img.naturalHeight : 1;
+          var cv = document.createElement("canvas");
+          cv.width = Math.round(img.naturalWidth * esc) || 1;
+          cv.height = Math.round(img.naturalHeight * esc) || 1;
+          cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+          resolve(cv.toDataURL("image/png"));
+        } catch(e) {
+          // Fallback: sem resize, mas ainda embutido via FileReader
+          var fr = new FileReader();
+          fr.onload = function() { resolve(fr.result); };
+          fr.onerror = function() { reject(fr.error || new Error("FileReader falhou")); };
+          fr.readAsDataURL(blob);
+        } finally {
+          URL.revokeObjectURL(objUrl);
+        }
+      };
+      img.onerror = function() { URL.revokeObjectURL(objUrl); reject(new Error("Falha ao decodificar imagem")); };
+      img.src = objUrl;
+    });
+  }).then(function(dataUrl) {
+    _logoEmbed = { url: url, data: dataUrl, promise: null };
+    return dataUrl;
+  }).catch(function(e) {
+    console.warn("Falha ao embutir logo:", e);
+    if (_logoEmbed.url === url) _logoEmbed = { url: null, data: null, promise: null };
+    return null;
+  });
+  _logoEmbed = { url: url, data: null, promise: p };
+  return p;
 }
 
 /* Variáveis nas cláusulas -----------------------------------------------------
@@ -23801,8 +23840,15 @@ function openPdfPage(html, preOpenedWin) {
   document.body.appendChild(div);
 }
 
-function printContrato(ct, cl, ve, emp) {
+async function printContrato(ct, cl, ve, emp) {
   cl = cl || {}; ve = ve || {}; emp = emp || {};
+  // Abre a janela AGORA (ainda dentro do gesto de clique original) e só grava o
+  // conteúdo depois de aguardar o logo embutido — abrir depois do await faz o
+  // Safari tratar como popup não confiável. Ver ensureLogoEmbed().
+  var _isPWAct = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+  var _wct = null;
+  if (!_isPWAct) { _wct = window.open("", "_blank"); if (!_wct) { alert("Permita popups para gerar o PDF."); return; } }
+  await ensureLogoEmbed(emp.logo_url);
   var dias = 0;
   if (ct.data_inicio && ct.data_fim) dias = Math.max(1, Math.ceil((new Date(ct.data_fim) - new Date(ct.data_inicio)) / 86400000));
   var clausulas = emp.clausulas || "1. O locatário é responsável por danos ao veículo durante a locação.\n2. O veículo deve ser devolvido com o mesmo nível de combustível.\n3. É proibido o uso do veículo para práticas ilegais.\n4. Multas ocorridas durante o período são de responsabilidade do locatário.\n5. Em caso de sinistro, comunicar imediatamente a locadora.\n6. O não cumprimento do prazo implica cobrança de diária adicional.";
@@ -23870,7 +23916,7 @@ function printContrato(ct, cl, ve, emp) {
   h += '</div></div>';
   h += '<p style="text-align:center;font-size:10px;color:#aaa;margin-top:20px;padding-top:12px;border-top:1px solid #E5E5EA">' + (emp.nome||"") + (emp.cnpj?' — CNPJ '+emp.cnpj:'') + '<br/>AutoGest Pro — Gerado em ' + new Date().toLocaleString("pt-BR") + '</p>';
   h += "<scr"+"ipt>window.print();</scr"+"ipt></body></html>";
-  openPdfPage(h);
+  openPdfPage(h, _wct);
 }
 
 function _buildFaturaBody(ct, cl, ve, emp) {
@@ -23915,7 +23961,12 @@ function _buildFaturaBody(ct, cl, ve, emp) {
 
 var _FATURA_CSS = 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;max-width:750px;margin:14px auto;font-size:13px;color:#1C1C1E;background:#fff}.np{display:flex;gap:10px;margin-bottom:14px}table{width:100%;border-collapse:collapse}th{background:#F2F2F7;padding:6px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;border-bottom:2px solid #E5E5EA;color:#3C3C43}td{padding:6px 12px;border-bottom:1px solid #F2F2F7}.tot td{font-size:18px;font-weight:800;color:#34C759;border-top:2px solid #1C1C1E;border-bottom:none}.ib{background:#F9F9F9;border-radius:10px;padding:8px 12px;margin:6px 0;font-size:12px;line-height:1.5}.sig{display:flex;gap:40px;margin-top:32px}.sl{flex:1;text-align:center;color:#555;font-size:12px}.sl-line{border-top:1.5px solid #1C1C1E;padding-top:6px;font-weight:500}.pix-box{background:#E8F0FF;border-radius:10px;padding:8px 12px;margin:8px 0;font-size:12px;border-left:3px solid #007AFF}.alerta-vencido{background:#FEECEB;border-radius:10px;padding:8px 12px;margin:8px 0;font-size:13px;font-weight:700;color:#C0392B;text-align:center;border:1px solid #ffcccc}@media print{.np{display:none}body{margin:0}}';
 
-function printFatura(ct, cl, ve, emp) {
+async function printFatura(ct, cl, ve, emp) {
+  emp = emp || {};
+  var _isPWAft = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+  var _wft = null;
+  if (!_isPWAft) { _wft = window.open("", "_blank"); if (!_wft) { alert("Permita popups para gerar o PDF."); return; } }
+  await ensureLogoEmbed(emp.logo_url);
   // Nome do CLIENTE da fatura (locatário, primeiro nome/palavra), não da locadora —
   // a locadora já aparece no cabeçalho do PDF. Formato do arquivo: Fatura_nome_placa.
   var _nomeCurto = ((cl && cl.nome) || 'Cliente').trim().split(/\s+/)[0];
@@ -23924,7 +23975,7 @@ function printFatura(ct, cl, ve, emp) {
   h += '<div class="np"><button onclick="try{(window.parent&&window.parent._printPdfOverlay)?window.parent._printPdfOverlay():window.print()}catch(e){window.print()}" style="flex:1;background:#007AFF;color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:700;cursor:pointer">🖨️ Imprimir / Salvar PDF</button><button ' + _PDF_CLOSE_BTN + ' style="background:#F2F2F7;border:none;border-radius:10px;padding:12px 20px;font-size:15px;cursor:pointer">✕ Fechar</button></div>';
   h += _buildFaturaBody(ct, cl, ve, emp);
   h += "<scr"+"ipt>window.print();</scr"+"ipt></body></html>";
-  openPdfPage(h);
+  openPdfPage(h, _wft);
 }
 
 // Gera um único PDF com várias faturas (uma por página). `list` aceita
@@ -23947,14 +23998,23 @@ function buildFaturasLoteHtml(list, emp, opts) {
   return h;
 }
 
-function printFaturasLote(list, emp) {
+async function printFaturasLote(list, emp) {
   list = (list || []).filter(Boolean);
   if (!list.length) { alert("Selecione ao menos uma fatura."); return; }
-  openPdfPage(buildFaturasLoteHtml(list, emp, { closeBtn: true, autoPrint: true }));
+  emp = emp || {};
+  var _isPWAlt = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+  var _wlt = null;
+  if (!_isPWAlt) { _wlt = window.open("", "_blank"); if (!_wlt) { alert("Permita popups para gerar o PDF."); return; } }
+  await ensureLogoEmbed(emp.logo_url);
+  openPdfPage(buildFaturasLoteHtml(list, emp, { closeBtn: true, autoPrint: true }), _wlt);
 }
 
-function printChecklist(ct, cl, ve, emp, tipo) {
+async function printChecklist(ct, cl, ve, emp, tipo) {
   cl = cl||{}; ve = ve||{}; emp = emp||{};
+  var _isPWAcl = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+  var _wcl = null;
+  if (!_isPWAcl) { _wcl = window.open("", "_blank"); if (!_wcl) { alert("Permita popups para gerar o PDF."); return; } }
+  await ensureLogoEmbed(emp.logo_url);
   var titulo = tipo === "devolucao" ? "VISTORIA DE DEVOLUÇÃO" : "VISTORIA DE RETIRADA";
   var data = tipo === "devolucao" ? ct.data_fim : ct.data_inicio;
   var items = [
@@ -23994,7 +24054,7 @@ function printChecklist(ct, cl, ve, emp, tipo) {
   h += '<div class="sl"><div style="height:64px"></div><div class="sl-line">' + (cl.nome||"Locatário") + '<br/><span style="font-weight:400;font-size:11px">Declaro que conferi e aceito</span></div></div></div>';
   h += '<p style="text-align:center;font-size:10px;color:#bbb;margin-top:20px;border-top:1px solid #E5E5EA;padding-top:12px">AutoGest Pro — ' + new Date().toLocaleString("pt-BR") + '</p>';
   h += "<scr"+"ipt>window.print();</scr"+"ipt></body></html>";
-  openPdfPage(h);
+  openPdfPage(h, _wcl);
 }
 
 function shareWhatsApp(ct, cl, ve, emp) {
@@ -32240,8 +32300,12 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       try { await navigator.clipboard.writeText(url); alert("Link copiado!"); } catch(e) { prompt("Copie o link:", url); }
     }
   }
-  function printNotificacao(m, cl, ve) {
+  async function printNotificacao(m, cl, ve) {
     var emp = empresa || {};
+    var _isPWAnt = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+    var _wnt = null;
+    if (!_isPWAnt) { _wnt = window.open("", "_blank"); if (!_wnt) { alert("Permita popups para gerar o PDF."); return; } }
+    await ensureLogoEmbed(emp.logo_url);
     var _slug = function(s){ return (s||"").trim().replace(/\s+/g,"_").replace(/[^\w\-]/g,""); };
     var titulo = 'Notificacao_' + _slug(cl && cl.nome) + '_' + _slug(ve && ve.placa) + (m.ait ? '_' + _slug(m.ait) : '');
     var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + titulo + '</title>';
@@ -32275,7 +32339,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     h += '<div class="sig"><div class="sl">Assinatura do Cliente<br/><span style="font-size:11px;color:#aaa">' + ((cl && cl.nome) || '') + '</span></div><div class="sl">Assinatura da Locadora<br/><span style="font-size:11px;color:#aaa">' + (emp.nome || '') + '</span></div></div>';
     h += '<p style="text-align:center;font-size:10px;color:#aaa;margin-top:24px">' + (emp.nome || '') + (emp.cnpj ? ' — CNPJ ' + emp.cnpj : '') + (emp.telefone ? ' — Tel ' + emp.telefone : '') + '<br/>AutoGest Pro — ' + new Date().toLocaleString("pt-BR") + '</p>';
     h += '</body></html>';
-    openPdfPage(h);
+    openPdfPage(h, _wnt);
   }
   const SC = { pendente: C.orange, pago: C.green, contestado: C.red };
   const total = fil.reduce((s, m) => s + parseFloat(m.valor || 0), 0);
@@ -40119,7 +40183,11 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   });
   var totalFaturas = faturasFil.reduce(function(s,f){ return s + f.valor; }, 0);
 
-  function imprimirGeral() {
+  async function imprimirGeral() {
+    var _isPWArg = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+    var _wrg = null;
+    if (!_isPWArg) { _wrg = window.open("", "_blank"); if (!_wrg) { alert("Permita popups para gerar o PDF."); return; } }
+    await ensureLogoEmbed(empresa && empresa.logo_url);
     var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Relatorio Geral</title><style>body{font-family:Arial,sans-serif;max-width:850px;margin:30px auto;font-size:13px}h2{border-bottom:1px solid #ddd;padding-bottom:6px;margin:20px 0 10px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #ddd}th{background:#f5f5f7}.g{color:#34C759;font-weight:800}.r{color:#FF3B30}@media print{body{margin:0}}</style></head><body>';
     h += buildHeader(empresa);
     h += '<h2>Resumo Financeiro</h2><table><tr><th>Indicador</th><th>Valor</th></tr>';
@@ -40133,7 +40201,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     h += '<h2>Contratos (' + contratos.length + ')</h2><table><tr><th>No</th><th>Cliente</th><th>Veiculo</th><th>Inicio</th><th>Fim</th><th>Valor</th><th>Status</th></tr>';
     contratos.forEach(function(c) { var cl = clientes.find(function(x) { return x.id == c.cliente_id; }); var ve = veiculos.find(function(x) { return x.id == c.veiculo_id; }); h += '<tr><td>' + numCt(c.id) + '</td><td>' + (cl && cl.nome || "--") + '</td><td>' + (ve && ve.placa || "--") + '</td><td>' + (c.data_inicio || "--") + '</td><td>' + (c.data_fim || "--") + '</td><td>' + fmtBRL(c.valor_total) + '</td><td>' + c.status + '</td></tr>'; });
     h += '</table><scr' + 'ipt>window.print();</scr' + 'ipt></body></html>';
-    openPdfPage(h);
+    openPdfPage(h, _wrg);
   }
 
   function exportarCSV(nome, linhas) {
@@ -40160,7 +40228,11 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     exportarCSV("faturas", linhas);
   }
   var _SIT_LABEL = { prevista:"Prevista", emitida:"Emitida", paga:"Paga", vencida:"Vencida" };
-  function imprimirFaturas() {
+  async function imprimirFaturas() {
+    var _isPWAfr = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+    var _wfr = null;
+    if (!_isPWAfr) { _wfr = window.open("", "_blank"); if (!_wfr) { alert("Permita popups para gerar o PDF."); return; } }
+    await ensureLogoEmbed(empresa && empresa.logo_url);
     var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Relatorio de Faturas</title><style>body{font-family:Arial,sans-serif;max-width:850px;margin:30px auto;font-size:13px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #ddd}th{background:#f5f5f7}.tot{font-weight:800;font-size:15px;color:#34C759}.paga{color:#34C759}.emitida{color:#007AFF}.vencida{color:#FF3B30}.prevista{color:#888}@media print{body{margin:0}}</style></head><body>';
     h += buildHeader(empresa);
     h += '<div style="margin-bottom:16px"><div style="font-size:18px;font-weight:800">RELATORIO DE FATURAS</div>';
@@ -40176,7 +40248,48 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     h += '<tr><td colspan="6" class="tot">TOTAL (' + faturasFil.length + ')</td><td class="tot">' + fmtBRL(totalFaturas) + '</td></tr></table>';
     h += '<p style="text-align:center;font-size:10px;color:#aaa;margin-top:20px">AutoGest Pro - ' + new Date().toLocaleString("pt-BR") + '</p>';
     h += '<scr' + 'ipt>window.print();</scr' + 'ipt></body></html>';
-    openPdfPage(h);
+    openPdfPage(h, _wfr);
+  }
+  function toggleFatSel(refKey) {
+    setFatSel(function(p) { var n = Object.assign({}, p); if (n[refKey]) delete n[refKey]; else n[refKey] = true; return n; });
+  }
+  var fatEmitiveis = faturasFil.filter(function(f){ return f.sit === "prevista" || f.sit === "vencida"; });
+  var fatSelVisiveis = fatEmitiveis.filter(function(f){ return fatSel[f.refKey]; });
+  async function emitirFaturasSelecionadas() {
+    var alvo = fatSelVisiveis;
+    if (!alvo.length) { toast("Nenhuma fatura prevista/vencida selecionada."); return; }
+    var dtEmissao = _hojeRelat;
+    var maxN = (receitas||[]).filter(function(r){ return r.numero_fatura && r.numero_fatura.startsWith("FAT-"); })
+      .reduce(function(m,r){ var n = parseInt((r.numero_fatura||"FAT-00000").replace("FAT-",""),10); return isNaN(n)?m:Math.max(m,n); }, 0);
+    var novas = [], patches = {}, ok = 0;
+    for (var i = 0; i < alvo.length; i++) {
+      var f = alvo[i]; maxN++; var num = "FAT-" + String(maxN).padStart(5,"0");
+      try {
+        if (f.recId) {
+          await db.patch("receitas", f.recId, { status: "emitida", data_emissao: dtEmissao, numero_fatura: num });
+          patches[f.recId] = { status: "emitida", data_emissao: dtEmissao, numero_fatura: num };
+        } else {
+          var nova = await db.post("receitas", {
+            descricao: "Fatura " + (f.cl.nome||"") + " — " + (f.ve.placa||"") + " (" + (f.dtRef||"").slice(0,7) + ")",
+            valor: f.valor, categoria: "Locacao",
+            data: dtEmissao, data_emissao: dtEmissao,
+            data_vencimento: f.dtRef, numero_fatura: num,
+            ref_fatura: f.refKey, status: "emitida",
+            forma_pagamento: "Pix",
+            cliente_id: f.c.cliente_id, veiculo_id: f.c.veiculo_id,
+            contrato_id: f.c.id
+          });
+          novas.push(nova);
+        }
+        ok++;
+      } catch(e) {}
+    }
+    setReceitas(function(p) {
+      var arr = p.map(function(r){ return patches[r.id] ? Object.assign({}, r, patches[r.id]) : r; });
+      return novas.concat(arr);
+    });
+    toast(ok + " fatura(s) emitida(s)!");
+    setFatSel({}); setFatSelMode(false);
   }
   function toggleFatSel(refKey) {
     setFatSel(function(p) { var n = Object.assign({}, p); if (n[refKey]) delete n[refKey]; else n[refKey] = true; return n; });

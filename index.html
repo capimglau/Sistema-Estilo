@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="859e375"/>
+<meta name="ag-build" content="a29e1f2"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -23704,14 +23704,18 @@ function _sharePdfBlob(blob, filename) {
   return Promise.resolve();
 }
 
-function openPdfPage(html) {
+function openPdfPage(html, preOpenedWin) {
   var isPWA = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
   // Inject viewport meta so the content scales correctly on mobile
   if (html.indexOf('name="viewport"') === -1) {
     html = html.replace('<meta charset="UTF-8">', '<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">');
   }
   if (!isPWA) {
-    var w = window.open("", "_blank");
+    // Usa a janela já aberta (se veio de um fluxo que precisou abri-la ANTES de um
+    // await, dentro do gesto original do clique — ver _onEmitirEAbrirFatura no
+    // dashboard) — abrir só agora, depois do await, faz o Safari tratar como popup
+    // não confiável (aba em branco com título genérico "Safari").
+    var w = preOpenedWin || window.open("", "_blank");
     if (!w) { alert("Permita popups para gerar o PDF."); return; }
     w.document.write(html); w.document.close();
     return;
@@ -26239,13 +26243,20 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         };
         /* clique no boleto "a emitir" já emite a fatura exata (se ainda não emitida)
            e abre o modal de envio com o PDF gerado automaticamente — em vez de só
-           navegar para o contrato, evitando um passo manual extra pro usuário. */
+           navegar para o contrato, evitando um passo manual extra pro usuário.
+           A janela do PDF é aberta AQUI, de forma síncrona dentro do próprio clique
+           — se abrirmos depois do await de emissão (fora do gesto do usuário), o
+           Safari trata como popup não confiável e mostra uma aba em branco com
+           título genérico "Safari" em vez do título real do documento. */
+        var _isPWAStandalone = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
         var _onEmitirEAbrirFatura = function(){
+          var _winPdf = _isPWAStandalone ? null : window.open("", "_blank");
+          if (!_isPWAStandalone && !_winPdf) toast("Permita pop-ups para gerar o PDF.");
           (async function(){
             if (!faturaContratoEmitida(_refKey, receitas)) {
-              try { await _onEmitir(); } catch(e){ return; }
+              try { await _onEmitir(); } catch(e){ if (_winPdf) _winPdf.close(); return; }
             }
-            if (window.__ag_open_enviar) window.__ag_open_enviar({ tipo:'fatura', id:c.id, mes:_mesRef, autoPdf:true });
+            if (window.__ag_open_enviar) window.__ag_open_enviar({ tipo:'fatura', id:c.id, mes:_mesRef, autoPdf:true, autoPdfWin:_winPdf });
           })();
         };
         return { key:'bol-'+c.id, nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), sub:_sub,
@@ -45780,7 +45791,7 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
   React.useEffect(function() {
     if (!open || !preset || !preset.autoPdf || !sel || _autoPdfDone.current) return;
     _autoPdfDone.current = true;
-    try { openPdfPage(getDocHtml()+"<scr"+"ipt>window.print();</"+"script>"); } catch(e) { toast("Erro ao gerar PDF."); }
+    try { openPdfPage(getDocHtml()+"<scr"+"ipt>window.print();</"+"script>", preset.autoPdfWin || null); } catch(e) { toast("Erro ao gerar PDF."); }
   }, [open, sel, preset]);
 
   React.useEffect(function() {

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="3d50476"/>
+<meta name="ag-build" content="859e375"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -26215,7 +26215,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         var _onEmitir = function(){
           var recExist = (receitas||[]).find(function(r){ return r.ref_fatura===_refKey; });
           var dtEmissao = hoje;
-          (async function(){
+          return (async function(){
             try {
               var num = (recExist && recExist.numero_fatura) ? recExist.numero_fatura : proximoNumeroFatura(receitas);
               if (recExist) {
@@ -26234,14 +26234,25 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                 setReceitas(function(p){ return [nova, ...p]; });
               }
               toast(num+" emitida!");
-            } catch(e){ toast("Erro ao emitir."); }
+            } catch(e){ toast("Erro ao emitir."); throw e; }
+          })();
+        };
+        /* clique no boleto "a emitir" já emite a fatura exata (se ainda não emitida)
+           e abre o modal de envio com o PDF gerado automaticamente — em vez de só
+           navegar para o contrato, evitando um passo manual extra pro usuário. */
+        var _onEmitirEAbrirFatura = function(){
+          (async function(){
+            if (!faturaContratoEmitida(_refKey, receitas)) {
+              try { await _onEmitir(); } catch(e){ return; }
+            }
+            if (window.__ag_open_enviar) window.__ag_open_enviar({ tipo:'fatura', id:c.id, mes:_mesRef, autoPdf:true });
           })();
         };
         return { key:'bol-'+c.id, nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), sub:_sub,
           vencTxt: c.previsao_pagamento ? fmtDate(c.previsao_pagamento) : '',
           emissaoAtrasada: !!(isPendente && _dias!==null && _dias<0),
           valor:parseFloat(c.valor_total||0), data:c.previsao_pagamento,
-          onClick:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); },
+          onClick: isPendente ? _onEmitirEAbrirFatura : function(){ onItemNav({type:'contrato',id:c.id},'contratos'); },
           onBaixar: isPendente ? _onEmitir : (c.status_pagamento!=='pago' ? function(){ _agBaixar({type:'ct',id:c.id}); } : null),
           baixarLabel: isPendente ? 'Emitir' : 'Baixar' };
       };
@@ -45752,9 +45763,10 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
   var [enviandoEmail, setEnviandoEmail] = React.useState(false);
   var [multi, setMulti] = React.useState(false);
   var [multiSel, setMultiSel] = React.useState({}); /* mapa id -> true (envio em lote) */
+  var _autoPdfDone = React.useRef(false);
 
   React.useEffect(function() {
-    if (!open) { setItemId(""); setTelefone(""); setEmail(""); setMesRef(""); setCompartilhando(false); setEnviandoEmail(false); setMulti(false); setMultiSel({}); }
+    if (!open) { setItemId(""); setTelefone(""); setEmail(""); setMesRef(""); setCompartilhando(false); setEnviandoEmail(false); setMulti(false); setMultiSel({}); _autoPdfDone.current = false; }
     else if (preset && preset.id) { setTipo(preset.tipo || "fatura"); setItemId(String(preset.id)); if (preset.mes) setMesRef(preset.mes); }
   }, [open]);
 
@@ -45762,6 +45774,14 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
 
   var items = tipo === "multa" ? (multas||[]) : (contratos||[]);
   var sel = items.find(function(x){ return String(x.id)===String(itemId); });
+
+  /* preset.autoPdf: abre direto no PDF da fatura exata, sem exigir o clique manual
+     em "Abrir PDF da Fatura" — usado pelo painel de boletos a emitir do dashboard. */
+  React.useEffect(function() {
+    if (!open || !preset || !preset.autoPdf || !sel || _autoPdfDone.current) return;
+    _autoPdfDone.current = true;
+    try { openPdfPage(getDocHtml()+"<scr"+"ipt>window.print();</"+"script>"); } catch(e) { toast("Erro ao gerar PDF."); }
+  }, [open, sel, preset]);
 
   React.useEffect(function() {
     if (!sel) return;

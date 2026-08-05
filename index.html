@@ -29352,6 +29352,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   const [docsModal, setDocsModal] = useState(false);
   const [docsContrato, setDocsContrato] = useState(null);
   const [filtroMesCt, setFiltroMesCt] = useState(_brNow().toISOString().slice(0, 7));
+  const [kpiMesBar, setKpiMesBar] = useState(_brNow().toISOString().slice(0, 7));
   const [baixarCtModal, setBaixarCtModal] = useState(null);
   const [baixarCtData, setBaixarCtData] = useState("");
   const [parcialCtModal, setParcialCtModal] = useState(null);
@@ -30163,11 +30164,24 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     return map;
   }, [fil2]);
   var fil2Limitado = fil2.slice(0, 150);
-  var totalFil = fil2.reduce((s,c) => s + parseFloat(c.valor_total||0), 0);
-  var kpiPago = fil2.filter(function(c){ return c.status!=="cancelado" && (c.status_pagamento==="pago"||c.status_pagamento==="parcial"); }).reduce(function(s,c){ return s+(c.status_pagamento==="parcial"?parseFloat(c.valor_pago||0):parseFloat(c.valor_total||0)); }, 0);
-  var kpiReceber = fil2.filter(function(c){ return c.status_pagamento!=="pago" && c.status_pagamento!=="isento" && c.status!=="cancelado"; }).reduce(function(s,c){ return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)); }, 0);
-  var kpiAtrasado = fil2.filter(function(c){ return c.status_pagamento!=="pago" && c.status_pagamento!=="isento" && c.status!=="cancelado" && c.previsao_pagamento && c.previsao_pagamento < hoje; }).reduce(function(s,c){ return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)); }, 0);
-  var kpiPct = totalFil > 0 ? Math.round(kpiPago/totalFil*100) : 0;
+  // Barra "Recebimento do mês": independente do filtro/lista abaixo — navega por mês via swipe.
+  function _addMKpiBar(b, n) { var d = new Date(b + "-15"); d.setMonth(d.getMonth() + n); return d.toISOString().slice(0, 7); }
+  function _labelMesKpiBar(ym) { var p = (ym||"").split("-"); if (p.length !== 2) return ym; var idx = parseInt(p[1],10)-1; return (MESES_PT_CT[idx]||"").toUpperCase(); }
+  var ctsMesBar = contratos.filter(function(c){ return c.status !== "cancelado" && c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === kpiMesBar; });
+  var totalMesBar = ctsMesBar.reduce(function(s,c){ return s + parseFloat(c.valor_total||0); }, 0);
+  var kpiPagoMesBar = ctsMesBar.filter(function(c){ return c.status_pagamento==="pago"||c.status_pagamento==="parcial"; }).reduce(function(s,c){ return s+(c.status_pagamento==="parcial"?parseFloat(c.valor_pago||0):parseFloat(c.valor_total||0)); }, 0);
+  var kpiReceberMesBar = ctsMesBar.filter(function(c){ return c.status_pagamento!=="pago" && c.status_pagamento!=="isento"; }).reduce(function(s,c){ return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)); }, 0);
+  var kpiAtrasadoMesBar = ctsMesBar.filter(function(c){ return c.status_pagamento!=="pago" && c.status_pagamento!=="isento" && c.previsao_pagamento < hoje; }).reduce(function(s,c){ return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)); }, 0);
+  var kpiPctMesBar = totalMesBar > 0 ? Math.round(kpiPagoMesBar/totalMesBar*100) : 0;
+  var _kpiBarTouchX = React.useRef(null);
+  function _kpiBarTouchStart(e) { _kpiBarTouchX.current = e.touches[0].clientX; }
+  function _kpiBarTouchEnd(e) {
+    if (_kpiBarTouchX.current === null) return;
+    var dx = e.changedTouches[0].clientX - _kpiBarTouchX.current;
+    _kpiBarTouchX.current = null;
+    if (Math.abs(dx) < 40) return;
+    setKpiMesBar(function(m){ return _addMKpiBar(m, dx < 0 ? 1 : -1); });
+  }
   function execCtAction(c, action) {
     if (!c || !action) return;
     var cl = getCl(c.cliente_id); var ve = getVe(c.veiculo_id);
@@ -30400,20 +30414,20 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       )
     )
     , fil2.length > 0 && React.createElement(React.Fragment, null
-      /* ── Barra de progresso ── */
-      , React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)" } }
+      /* ── Barra de progresso (navega por mês via swipe) ── */
+      , React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" }, onTouchStart: _kpiBarTouchStart, onTouchEnd: _kpiBarTouchEnd }
         , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }
-          , React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub } }, "RECEBIMENTO DO MÊS")
-          , React.createElement('span', { style: { fontSize: 13, fontWeight: 800, color: C.green } }, kpiPct + "%")
+          , React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub, letterSpacing: 0.4 } }, _labelMesKpiBar(kpiMesBar))
+          , React.createElement('span', { style: { fontSize: 13, fontWeight: 800, color: C.green } }, kpiPctMesBar + "%")
         )
         , React.createElement('div', { style: { height: 8, background: "rgba(0,0,0,0.06)", borderRadius: 4, overflow: "hidden" } }
-          , React.createElement('div', { style: { height: "100%", width: kpiPct + "%", background: "linear-gradient(90deg," + C.green + ",#30D158)", borderRadius: 4, transition: "width 0.5s ease" } })
+          , React.createElement('div', { style: { height: "100%", width: kpiPctMesBar + "%", background: "linear-gradient(90deg," + C.green + ",#30D158)", borderRadius: 4, transition: "width 0.5s ease" } })
         )
         , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginTop: 7 } }
-          , React.createElement('span', { style: { fontSize: 11, color: C.green } }, "● Pago: " + fmtBRL(kpiPago))
-          , React.createElement('span', { style: { fontSize: 11, color: C.orange } }, "● A receber: " + fmtBRL(kpiReceber))
-          , kpiAtrasado > 0
-            ? React.createElement('span', { style: { fontSize: 11, color: C.red, fontWeight: 600 } }, "⚠️ Vencidos: " + fmtBRL(kpiAtrasado))
+          , React.createElement('span', { style: { fontSize: 11, color: C.green } }, "● Pago: " + fmtBRL(kpiPagoMesBar))
+          , React.createElement('span', { style: { fontSize: 11, color: C.orange } }, "● A receber: " + fmtBRL(kpiReceberMesBar))
+          , kpiAtrasadoMesBar > 0
+            ? React.createElement('span', { style: { fontSize: 11, color: C.red, fontWeight: 600 } }, "⚠️ Vencidos: " + fmtBRL(kpiAtrasadoMesBar))
             : React.createElement('span', { style: { fontSize: 11, color: C.sub } }, "✓ Vencidos: " + fmtBRL(0))
         )
       )

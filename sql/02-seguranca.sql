@@ -1,4 +1,33 @@
 -- ===================================================================
+-- VERIFICACAO PREVIA - nao altera nada, so impede o tiro no pe.
+-- ===================================================================
+do $chk$
+declare
+  n_admin int;
+  n_login int;
+begin
+  if to_regclass('public.usuarios') is null or to_regclass('public.perfis') is null then
+    raise exception 'ABORTADO: tabelas usuarios/perfis nao existem. Rode o script 1 (schema) primeiro.';
+  end if;
+
+  select count(*) into n_login from usuarios where auth_user_id is not null;
+  select count(*) into n_admin
+    from usuarios u join perfis pf on pf.id = u.perfil_id
+   where u.auth_user_id is not null
+     and pf.nome = 'Administrador'
+     and coalesce((pf.permissoes->>'criar')::boolean, false)
+     and coalesce((pf.permissoes->>'editar')::boolean, false)
+     and coalesce((pf.permissoes->>'excluir')::boolean, false);
+
+  if n_admin = 0 then
+    raise exception 'ABORTADO: nenhum administrador utilizavel (usuarios com login vinculado: %). Nada foi alterado.', n_login
+      using hint = 'Rode esta consulta para ver a situacao: select u.nome, u.email, u.auth_user_id is not null as tem_login, pf.nome as perfil, pf.permissoes from usuarios u left join perfis pf on pf.id = u.perfil_id; -- Corrija em Config > Usuarios: o seu usuario precisa de login (e-mail/senha) E de um perfil chamado exatamente Administrador com criar/editar/excluir = true.';
+  end if;
+
+  raise notice 'OK: % administrador(es) com login vinculado. Seguindo.', n_admin;
+end $chk$;
+
+-- ===================================================================
 -- RLS por PERFIL. As permissões criar/editar/excluir de cada perfil
 -- (Config -> Usuários -> Perfis) passam a valer no banco, não só na
 -- tela. Antes a policy era 'for all using (true)': qualquer usuário

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="0cff0a3"/>
+<meta name="ag-build" content="adccf98"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -42038,62 +42038,90 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
 
             sql += "revoke all on function public.ag_perm(text) from public;\ngrant execute on function public.ag_perm(text) to authenticated;\nrevoke all on function public.ag_is_admin() from public;\ngrant execute on function public.ag_is_admin() to authenticated;\n\n";
 
-            lista.forEach(function(t){ sql += "alter table " + t + " enable row level security;\n"; });
-            sql += "\n";
-
-            lista.forEach(function(t){
-              var adminOnly  = ADMIN_ONLY.indexOf(t) >= 0;
-              var appendOnly = APPEND_ONLY.indexOf(t) >= 0;
-              // Remove a policy permissiva antiga — enquanto ela existir, o Postgres
-              // faz OR entre as policies e as novas regras não restringem nada.
-              sql += "drop policy if exists \"auth_all_" + t + "\" on " + t + ";\n";
-              sql += "drop policy if exists \"ag_sel_" + t + "\" on " + t + ";\n";
-              sql += "drop policy if exists \"ag_ins_" + t + "\" on " + t + ";\n";
-              sql += "drop policy if exists \"ag_upd_" + t + "\" on " + t + ";\n";
-              sql += "drop policy if exists \"ag_del_" + t + "\" on " + t + ";\n";
-              // Leitura liberada para autenticado: o app carrega todas as tabelas no boot
-              // e os perfis se diferenciam por escrita, não por leitura.
-              sql += "create policy \"ag_sel_" + t + "\" on " + t + " for select to authenticated using (true);\n";
-              if (appendOnly) {
-                sql += "create policy \"ag_ins_" + t + "\" on " + t + " for insert to authenticated with check (true);\n";
-                sql += "-- sem policy de update/delete: trilha de auditoria é imutável.\n";
-              } else if (adminOnly) {
-                sql += "create policy \"ag_ins_" + t + "\" on " + t + " for insert to authenticated with check (public.ag_is_admin());\n";
-                sql += "create policy \"ag_upd_" + t + "\" on " + t + " for update to authenticated using (public.ag_is_admin()) with check (public.ag_is_admin());\n";
-                sql += "create policy \"ag_del_" + t + "\" on " + t + " for delete to authenticated using (public.ag_is_admin());\n";
-              } else {
-                sql += "create policy \"ag_ins_" + t + "\" on " + t + " for insert to authenticated with check (public.ag_perm('criar'));\n";
-                sql += "create policy \"ag_upd_" + t + "\" on " + t + " for update to authenticated using (public.ag_perm('editar')) with check (public.ag_perm('editar'));\n";
-                sql += "create policy \"ag_del_" + t + "\" on " + t + " for delete to authenticated using (public.ag_perm('excluir'));\n";
-              }
-              sql += "\n";
-            });
-
-            sql += "revoke all on " + lista.join(", ") + " from anon;\n";
-            sql += "grant select, insert, update, delete on " + lista.join(", ") + " to authenticated;\n";
+            /* Tudo por tabela vai num bloco DO que PULA tabela inexistente.
+               O Supabase roda o script como uma transação só: um `alter table`
+               numa tabela ausente (orcamentos, por exemplo, que nem todo banco
+               tem) aborta o script inteiro e nada é aplicado. Com to_regclass
+               o script vira idempotente e seguro de repetir. */
+            sql += "do $do$\n";
+            sql += "declare\n";
+            sql += "  t text;\n";
+            sql += "  tabelas text[] := array[" + lista.map(function(x){ return "'" + x + "'"; }).join(",") + "];\n";
+            sql += "  admin_only text[] := array[" + ADMIN_ONLY.map(function(x){ return "'" + x + "'"; }).join(",") + "];\n";
+            sql += "  append_only text[] := array[" + APPEND_ONLY.map(function(x){ return "'" + x + "'"; }).join(",") + "];\n";
+            sql += "  cond_ins text; cond_upd text; cond_del text;\n";
+            sql += "begin\n";
+            sql += "  foreach t in array tabelas loop\n";
+            sql += "    if to_regclass('public.' || t) is null then\n";
+            sql += "      raise notice 'tabela % nao existe neste banco - ignorada', t;\n";
+            sql += "      continue;\n";
+            sql += "    end if;\n\n";
+            sql += "    execute format('alter table %I enable row level security', t);\n\n";
+            sql += "    -- A policy permissiva antiga precisa sair: o Postgres faz OR entre\n";
+            sql += "    -- policies, e enquanto ela existir as novas nao restringem nada.\n";
+            sql += "    execute format('drop policy if exists %I on %I', 'auth_all_' || t, t);\n";
+            sql += "    execute format('drop policy if exists %I on %I', 'ag_sel_' || t, t);\n";
+            sql += "    execute format('drop policy if exists %I on %I', 'ag_ins_' || t, t);\n";
+            sql += "    execute format('drop policy if exists %I on %I', 'ag_upd_' || t, t);\n";
+            sql += "    execute format('drop policy if exists %I on %I', 'ag_del_' || t, t);\n\n";
+            sql += "    -- Leitura liberada para autenticado: o app carrega as tabelas no\n";
+            sql += "    -- boot e os perfis se diferenciam por escrita, nao por leitura.\n";
+            sql += "    execute format('create policy %I on %I for select to authenticated using (true)', 'ag_sel_' || t, t);\n\n";
+            sql += "    if t = any(append_only) then\n";
+            sql += "      execute format('create policy %I on %I for insert to authenticated with check (true)', 'ag_ins_' || t, t);\n";
+            sql += "      -- sem update/delete: trilha de auditoria e imutavel.\n";
+            sql += "      continue;\n";
+            sql += "    end if;\n\n";
+            sql += "    if t = any(admin_only) then\n";
+            sql += "      cond_ins := 'public.ag_is_admin()'; cond_upd := 'public.ag_is_admin()'; cond_del := 'public.ag_is_admin()';\n";
+            sql += "    else\n";
+            sql += "      cond_ins := 'public.ag_perm(''criar'')'; cond_upd := 'public.ag_perm(''editar'')'; cond_del := 'public.ag_perm(''excluir'')';\n";
+            sql += "    end if;\n\n";
+            sql += "    execute format('create policy %I on %I for insert to authenticated with check (%s)', 'ag_ins_' || t, t, cond_ins);\n";
+            sql += "    execute format('create policy %I on %I for update to authenticated using (%s) with check (%s)', 'ag_upd_' || t, t, cond_upd, cond_upd);\n";
+            sql += "    execute format('create policy %I on %I for delete to authenticated using (%s)', 'ag_del_' || t, t, cond_del);\n\n";
+            sql += "    execute format('revoke all on %I from anon', t);\n";
+            sql += "    execute format('grant select, insert, update, delete on %I to authenticated', t);\n";
+            sql += "  end loop;\n";
+            sql += "end $do$;\n\n";
             sql += "revoke update, delete on audit_log from authenticated;\n";
             sql += "grant usage on all sequences in schema public to authenticated;\n\n";
 
             sql += "-- ===================================================================\n";
-            sql += "-- updated_at + deleted_at: edição concorrente e exclusão reversível.\n";
-            sql += "-- Sem updated_at, dois usuários editando o mesmo registro faziam o\n";
-            sql += "-- último PATCH apagar o trabalho do primeiro, sem aviso nenhum.\n";
-            sql += "-- Sem deleted_at, excluir era DELETE físico: o 'Desfazer' só existia\n";
-            sql += "-- na memória da aba e fechar a aba perdia o dado para sempre.\n";
+            sql += "-- updated_at + deleted_at: edicao concorrente e exclusao reversivel.\n";
+            sql += "-- Sem updated_at, dois usuarios editando o mesmo registro faziam o\n";
+            sql += "-- ultimo PATCH apagar o trabalho do primeiro, sem aviso nenhum.\n";
+            sql += "-- Sem deleted_at, excluir era DELETE fisico: o 'Desfazer' so existia\n";
+            sql += "-- na memoria da aba e fechar a aba perdia o dado para sempre.\n";
             sql += "-- ===================================================================\n";
             sql += "create or replace function public.ag_touch_updated_at()\nreturns trigger\nlanguage plpgsql\nas $$\nbegin\n  new.updated_at := now();\n  return new;\nend;\n$$;\n\n";
-            lista.forEach(function(t){
-              if (t === "audit_log") return; // trilha imutável: não recebe nem updated_at nem soft delete
-              sql += "alter table " + t + " add column if not exists updated_at timestamptz default now();\n";
-              sql += "alter table " + t + " add column if not exists deleted_at timestamptz;\n";
-              sql += "update " + t + " set updated_at = now() where updated_at is null;\n";
-              sql += "drop trigger if exists ag_touch_" + t + " on " + t + ";\n";
-              sql += "create trigger ag_touch_" + t + " before update on " + t + " for each row execute function public.ag_touch_updated_at();\n";
-              // Índices: o app filtra deleted_at is null em toda leitura e usa
-              // updated_at para buscar só o que mudou desde a última sincronização.
-              sql += "create index if not exists idx_" + t + "_deleted_at on " + t + " (deleted_at);\n";
-              sql += "create index if not exists idx_" + t + "_updated_at on " + t + " (updated_at desc);\n\n";
-            });
+            sql += "create or replace function public.ag_audit()\nreturns trigger\nlanguage plpgsql\nsecurity definer\nset search_path = public\nas $$\ndeclare\n  v_id text;\n  v_dados jsonb;\nbegin\n  if (TG_OP = 'DELETE') then\n    v_id := old.id::text; v_dados := to_jsonb(old);\n  else\n    v_id := new.id::text; v_dados := to_jsonb(new);\n  end if;\n  insert into audit_log (tabela, operacao, registro_id, dados, auth_uid, origem)\n  values (TG_TABLE_NAME, lower(TG_OP), v_id, v_dados, auth.uid(), 'trigger');\n  return coalesce(new, old);\nend;\n$$;\n\n";
+            sql += "alter table audit_log add column if not exists auth_uid uuid;\n";
+            sql += "alter table audit_log add column if not exists origem text default 'app';\n\n";
+            sql += "do $do$\n";
+            sql += "declare\n";
+            sql += "  t text;\n";
+            sql += "  tabelas text[] := array[" + lista.map(function(x){ return "'" + x + "'"; }).join(",") + "];\n";
+            sql += "begin\n";
+            sql += "  foreach t in array tabelas loop\n";
+            sql += "    if to_regclass('public.' || t) is null then continue; end if;\n";
+            sql += "    if t = 'audit_log' then continue; end if;  -- trilha imutavel\n\n";
+            sql += "    execute format('alter table %I add column if not exists updated_at timestamptz default now()', t);\n";
+            sql += "    execute format('alter table %I add column if not exists deleted_at timestamptz', t);\n";
+            sql += "    execute format('update %I set updated_at = now() where updated_at is null', t);\n\n";
+            sql += "    execute format('drop trigger if exists %I on %I', 'ag_touch_' || t, t);\n";
+            sql += "    execute format('create trigger %I before update on %I for each row execute function public.ag_touch_updated_at()', 'ag_touch_' || t, t);\n\n";
+            sql += "    -- Auditoria pelo banco, nao pelo navegador: o app gravava audit_log\n";
+            sql += "    -- por fetch best-effort, que some quando a rede cai e e forjavel por\n";
+            sql += "    -- quem abrir o console.\n";
+            sql += "    execute format('drop trigger if exists %I on %I', 'ag_audit_' || t, t);\n";
+            sql += "    execute format('create trigger %I after insert or update or delete on %I for each row execute function public.ag_audit()', 'ag_audit_' || t, t);\n\n";
+            sql += "    -- Indices: o app filtra deleted_at is null em toda leitura e usa\n";
+            sql += "    -- updated_at para buscar so o que mudou desde a ultima sincronizacao.\n";
+            sql += "    execute format('create index if not exists %I on %I (deleted_at)', 'idx_' || t || '_deleted_at', t);\n";
+            sql += "    execute format('create index if not exists %I on %I (updated_at desc)', 'idx_' || t || '_updated_at', t);\n";
+            sql += "  end loop;\n";
+            sql += "end $do$;\n\n";
 
             sql += "-- ===================================================================\n";
             sql += "-- Remove a chave da Anthropic do banco.\n";
@@ -42104,21 +42132,6 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
             sql += "-- ===================================================================\n";
             sql += "alter table config drop column if exists claude_api_key;\n\n";
 
-            sql += "-- ===================================================================\n";
-            sql += "-- Auditoria pelo banco, não pelo navegador.\n";
-            sql += "-- O app grava audit_log via fetch best-effort: some quando a rede cai\n";
-            sql += "-- e é forjável por quem abrir o console. Com o trigger abaixo, toda\n";
-            sql += "-- escrita fica registrada com o auth.uid() real de quem fez.\n";
-            sql += "-- ===================================================================\n";
-            sql += "alter table audit_log add column if not exists auth_uid uuid;\n";
-            sql += "alter table audit_log add column if not exists origem text default 'app';\n\n";
-            sql += "create or replace function public.ag_audit()\nreturns trigger\nlanguage plpgsql\nsecurity definer\nset search_path = public\nas $$\ndeclare\n  v_id text;\n  v_dados jsonb;\nbegin\n  if (TG_OP = 'DELETE') then\n    v_id := old.id::text; v_dados := to_jsonb(old);\n  else\n    v_id := new.id::text; v_dados := to_jsonb(new);\n  end if;\n  insert into audit_log (tabela, operacao, registro_id, dados, auth_uid, origem)\n  values (TG_TABLE_NAME, lower(TG_OP), v_id, v_dados, auth.uid(), 'trigger');\n  return coalesce(new, old);\nend;\n$$;\n\n";
-            lista.forEach(function(t){
-              if (APPEND_ONLY.indexOf(t) >= 0) return; // não auditar a própria auditoria
-              sql += "drop trigger if exists ag_audit_" + t + " on " + t + ";\n";
-              sql += "create trigger ag_audit_" + t + " after insert or update or delete on " + t + " for each row execute function public.ag_audit();\n";
-            });
-            sql += "\n";
             sql += "-- Função pública (sem login) usada só pelo link de fatura compartilhado (?viewer=fatura).\n-- Roda como SECURITY DEFINER e devolve apenas os registros ligados aos ids pedidos —\n-- diferente do anon aberto de antes, não dá pra usá-la para listar o banco inteiro.\n";
             sql += "create or replace function public.fatura_publica(p_ids bigint[])\nreturns jsonb\nlanguage sql\nsecurity definer\nset search_path = public\nas $$\n  select jsonb_build_object(\n    'contratos', coalesce((select jsonb_agg(c) from contratos c where c.id = any(p_ids)), '[]'::jsonb),\n    'clientes', coalesce((select jsonb_agg(cl) from clientes cl where cl.id in (select cliente_id from contratos where id = any(p_ids))), '[]'::jsonb),\n    'veiculos', coalesce((select jsonb_agg(v) from veiculos v where v.id in (select veiculo_id from contratos where id = any(p_ids))), '[]'::jsonb),\n    'empresa', coalesce((select jsonb_agg(cf) from (select * from config order by id desc limit 1) cf), '[]'::jsonb)\n  );\n$$;\nrevoke all on function public.fatura_publica(bigint[]) from public;\ngrant execute on function public.fatura_publica(bigint[]) to anon;\n";
             if(navigator.clipboard){navigator.clipboard.writeText(sql).then(function(){toast('✅ SQL copiado! Cole no Supabase → SQL Editor','success');}).catch(function(){toast('Erro ao copiar','error');});}

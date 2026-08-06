@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="5793ff5"/>
+<meta name="ag-build" content="e9a8109"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -29259,9 +29259,11 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
   // Cliente já existente encontrado pelo CPF/CNPJ digitado (autopreenchimento).
   const [docAchado, setDocAchado] = useState(null);
   const [docPreencheu, setDocPreencheu] = useState(false);
-  // Zera o aviso a cada abre/fecha do modal. Feito no efeito, e não nos cinco
+  // Resultado da consulta de CNPJ na Receita: {loading} | {ok,razao,situacao,alerta} | {erro}
+  const [cnpjInfo, setCnpjInfo] = useState(null);
+  // Zera os avisos a cada abre/fecha do modal. Feito no efeito, e não nos cinco
   // pontos que chamam setModal(true), para não sobrar um deles esquecido.
-  useEffect(function(){ setDocAchado(null); setDocPreencheu(false); }, [modal]);
+  useEffect(function(){ setDocAchado(null); setDocPreencheu(false); setCnpjInfo(null); }, [modal]);
 
   var _abrirNovoClienteRef = React.useRef(null);
   _abrirNovoClienteRef.current = function() { setForm({}); setEdit(null); setModal(true); };
@@ -29336,13 +29338,21 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
     // Só age com documento completo e válido — a cada tecla o CPF está
     // incompleto, e buscar por prefixo acharia a pessoa errada.
     if ((doc.length !== 11 && doc.length !== 14) || !validarCpfCnpj(doc)) {
-      setDocAchado(null); setDocPreencheu(false);
+      setDocAchado(null); setDocPreencheu(false); setCnpjInfo(null);
       return;
     }
     var achado = (clientes || []).find(function(c){
       return c.id !== edit && _soDig(c.cpf || "") === doc;
     });
-    if (!achado) { setDocAchado(null); setDocPreencheu(false); return; }
+    if (!achado) {
+      setDocAchado(null); setDocPreencheu(false);
+      // Não está na base. Se for CNPJ, os dados da empresa são públicos —
+      // busca na Receita. Para CPF não há equivalente: nome de pessoa física
+      // é dado protegido e não tem API pública.
+      if (doc.length === 14) buscarCNPJ(doc);
+      return;
+    }
+    setCnpjInfo(null);
 
     setDocAchado(achado);
     // Monta o patch a partir do form atual e só então aplica — chamar setState
@@ -29355,6 +29365,93 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
     if (!Object.keys(patch).length) { setDocPreencheu(false); return; }
     setForm(function(p){ return Object.assign({}, p, patch); });
     setDocPreencheu(true);
+  }
+
+  /* Normaliza data para o formato do <input type="date">. As fontes devolvem
+     ora "2013-10-03", ora "03/10/2013" — a segunda o input rejeita em silêncio. */
+  function _dataIso(v) {
+    if (!v) return "";
+    var s = String(v).slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    var br = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    return br ? br[3] + "-" + br[2] + "-" + br[1] : "";
+  }
+
+  /* ── Consulta de CNPJ na Receita (via BrasilAPI) ─────────────────────────
+     Dado de empresa é público, então dá pra puxar razão social, nome fantasia,
+     endereço, telefone e situação cadastral sem contrato nem chave. Mesma
+     lógica do CEP: complementa campo vazio e falha em silêncio, porque uma
+     consulta fora do ar não pode impedir o cadastro manual. */
+  async function buscarCNPJ(docDigitos) {
+    setCnpjInfo({ loading: true });
+    try {
+      var r = await fetchWithTimeout("https://brasilapi.com.br/api/cnpj/v1/" + docDigitos, {}, 12000);
+      if (!r.ok) {
+        // 404 = CNPJ inexistente na Receita; vale avisar, é erro de digitação.
+        setCnpjInfo({ erro: r.status === 404 ? "CNPJ não encontrado na Receita Federal." : "Consulta indisponível agora — preencha manualmente." });
+        return;
+      }
+      var d = await r.json();
+
+      // Nomes de campo variam entre as fontes que servem dados da Receita
+      // (BrasilAPI/Minha Receita usam razao_social; ReceitaWS usa nome). Ler
+      // por lista de candidatos evita que uma troca de provedor — ou uma versão
+      // diferente da mesma API — deixe o formulário vazio sem erro nenhum.
+      function pick() {
+        for (var i = 0; i < arguments.length; i++) {
+          var v = d && d[arguments[i]];
+          if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
+        }
+        return "";
+      }
+
+      // Validação DEPOIS do pick, e usando o pick: checar d.razao_social direto
+      // aqui rejeitaria o formato alternativo antes de o parsing tolerante
+      // sequer rodar — a tolerância abaixo não serviria para nada.
+      if (!pick("razao_social", "nome", "nome_fantasia", "fantasia")) {
+        setCnpjInfo({ erro: "A Receita não retornou dados para este CNPJ." });
+        return;
+      }
+      var tel = _soDig(pick("ddd_telefone_1", "telefone", "ddd_telefone_2"));
+      var vindo = {
+        tipo_pessoa: "juridica",
+        nome: capSentence(pick("razao_social", "nome")),
+        nome_fantasia: capSentence(pick("nome_fantasia", "fantasia")),
+        // O form rotula `nascimento` como "Data de Abertura" quando é PJ.
+        nascimento: _dataIso(pick("data_inicio_atividade", "abertura", "data_abertura")),
+        cep: _soDig(pick("cep")),
+        endereco: capSentence(pick("logradouro", "descricao_tipo_de_logradouro")),
+        numero: pick("numero"),
+        complemento: pick("complemento"),
+        bairro: capSentence(pick("bairro")),
+        municipio: capSentence(pick("municipio", "cidade")),
+        uf_end: pick("uf", "estado").toUpperCase().slice(0, 2),
+        telefone: validarTelefone(tel) ? fmtTelefone(tel) : "",
+        email: pick("email").toLowerCase()
+      };
+
+      var patch = {};
+      Object.keys(vindo).forEach(function(k){
+        var atual = form[k];
+        // tipo_pessoa sempre vai: se o documento tem 14 dígitos é PJ, e deixar
+        // o form em "Pessoa Física" esconderia os campos que acabaram de vir.
+        if (k === "tipo_pessoa") { patch[k] = vindo[k]; return; }
+        if ((atual === undefined || atual === null || atual === "") && vindo[k]) patch[k] = vindo[k];
+      });
+      setForm(function(p){ return Object.assign({}, p, patch); });
+
+      var sit = pick("descricao_situacao_cadastral", "situacao", "situacao_cadastral");
+      setCnpjInfo({
+        ok: true,
+        razao: vindo.nome,
+        situacao: sit,
+        // Empresa baixada/inapta/suspensa é risco real numa locação — não é
+        // papel do sistema barrar, mas é papel dele mostrar.
+        alerta: sit && !/ATIVA/i.test(sit)
+      });
+    } catch (e) {
+      setCnpjInfo({ erro: "Não foi possível consultar a Receita agora — preencha manualmente." });
+    }
   }
 
   /* Abre o cadastro existente em vez de criar um segundo com o mesmo CPF. */
@@ -29522,6 +29619,22 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
               onBlur: function(e){ var v = e.target.value; if (_soDig(v).length === 11 || _soDig(v).length === 14) F("cpf", fmtCpfCnpj(v)); }
             } ))
           , React.createElement(Lbl, { label: (form.tipo_pessoa === "juridica" ? "Data de Abertura" : "Nascimento"), flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 664}}, React.createElement('input', { style: FI, type: "date", value: form.nascimento || "", onChange: e => F("nascimento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 664}} ))
+        )
+        /* Retorno da consulta de CNPJ na Receita. */
+        , cnpjInfo && React.createElement('div', {
+            style: {
+              background: cnpjInfo.erro ? "rgba(255,59,48,0.08)" : cnpjInfo.alerta ? "rgba(255,149,0,0.10)" : "rgba(52,199,89,0.10)",
+              border: "1px solid " + (cnpjInfo.erro ? "rgba(255,59,48,0.30)" : cnpjInfo.alerta ? "rgba(255,149,0,0.35)" : "rgba(52,199,89,0.30)"),
+              borderRadius: 12, padding: "10px 12px", fontSize: 12, lineHeight: 1.5, color: "var(--c-text)"
+            }
+          }
+          , cnpjInfo.loading ? "🔎 Consultando CNPJ na Receita Federal…"
+          : cnpjInfo.erro ? React.createElement('span', { style: { color: C.red } }, "⚠️ " + cnpjInfo.erro)
+          : React.createElement('span', null
+              , React.createElement('b', null, (cnpjInfo.alerta ? "⚠️ " : "✅ ") + (cnpjInfo.razao || "Empresa encontrada"))
+              , cnpjInfo.situacao ? React.createElement('div', { style: { color: cnpjInfo.alerta ? C.orange : C.sub, marginTop: 2, fontWeight: cnpjInfo.alerta ? 700 : 400 } }, "Situação cadastral: " + cnpjInfo.situacao) : null
+              , React.createElement('div', { style: { color: C.sub, marginTop: 2 } }, "Dados da Receita preenchidos nos campos em branco.")
+            )
         )
         /* Documento já cadastrado: avisa e oferece abrir a ficha existente.
            Salvar assim criaria um segundo cliente com o mesmo CPF. */
@@ -47349,7 +47462,10 @@ function App() {
         method: "DELETE", headers: HDR
       }).catch(function(){});
     }
-    db.get("clientes").then(d => setClientes(d || []));
+    // getAll (paginado) e não get: sem paginação o PostgREST corta a lista no
+    // limite de linhas do projeto, e o cliente que ficou de fora some da busca,
+    // do autopreenchimento por CPF e da checagem de duplicata — sem erro nenhum.
+    db.getAll("clientes").then(d => setClientes(d || []));
     // Carrega veículos E contratos juntos — statusEfetivoVeiculo() precisa dos dois
     // para calcular badge correto já no primeiro render
     Promise.all([

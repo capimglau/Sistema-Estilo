@@ -29256,6 +29256,12 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
   const [sortCl, setSortCl] = useState("nome_asc");
   const [loading, setLoading] = useState(false);
   const [cliSheet, setCliSheet] = useState(null); // Effect 12: cliente selecionado para BottomSheet
+  // Cliente já existente encontrado pelo CPF/CNPJ digitado (autopreenchimento).
+  const [docAchado, setDocAchado] = useState(null);
+  const [docPreencheu, setDocPreencheu] = useState(false);
+  // Zera o aviso a cada abre/fecha do modal. Feito no efeito, e não nos cinco
+  // pontos que chamam setModal(true), para não sobrar um deles esquecido.
+  useEffect(function(){ setDocAchado(null); setDocPreencheu(false); }, [modal]);
 
   var _abrirNovoClienteRef = React.useRef(null);
   _abrirNovoClienteRef.current = function() { setForm({}); setEdit(null); setModal(true); };
@@ -29311,6 +29317,54 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
         });
       });
     } catch (e) { /* CEP inválido ou falha de rede — falha silenciosa, não bloqueia o cadastro */ }
+  }
+
+  /* ── Autopreenchimento por CPF/CNPJ ──────────────────────────────────────
+     Ao digitar um documento já cadastrado, puxa o nome e o resto da ficha em
+     vez de obrigar a redigitar tudo — e evita o cliente duplicado que nascia
+     justamente daí (mesma pessoa cadastrada duas vezes com grafias diferentes
+     do nome). Só preenche campo VAZIO: o que o operador já digitou é dele e
+     não é sobrescrito. */
+  var CAMPOS_AUTO = ["nome", "telefone", "email", "nascimento", "rg", "uf_rg", "cnh",
+    "categoria_cnh", "vencimento_cnh", "uf_cnh", "cep", "endereco", "numero", "complemento",
+    "bairro", "municipio", "uf_end", "profissao", "local_trabalho", "referencia_nome",
+    "referencia_telefone", "tipo_pessoa", "nome_fantasia", "inscricao_estadual",
+    "responsavel_legal_nome", "responsavel_legal_cpf", "condutor_nome", "endereco_comercial"];
+
+  function autoPreencherPorDoc(valorDigitado) {
+    var doc = _soDig(valorDigitado);
+    // Só age com documento completo e válido — a cada tecla o CPF está
+    // incompleto, e buscar por prefixo acharia a pessoa errada.
+    if ((doc.length !== 11 && doc.length !== 14) || !validarCpfCnpj(doc)) {
+      setDocAchado(null); setDocPreencheu(false);
+      return;
+    }
+    var achado = (clientes || []).find(function(c){
+      return c.id !== edit && _soDig(c.cpf || "") === doc;
+    });
+    if (!achado) { setDocAchado(null); setDocPreencheu(false); return; }
+
+    setDocAchado(achado);
+    // Monta o patch a partir do form atual e só então aplica — chamar setState
+    // de dentro do updater de outro setState roda duas vezes em StrictMode.
+    var patch = {};
+    CAMPOS_AUTO.forEach(function(k){
+      var atual = form[k];
+      if ((atual === undefined || atual === null || atual === "") && achado[k]) patch[k] = achado[k];
+    });
+    if (!Object.keys(patch).length) { setDocPreencheu(false); return; }
+    setForm(function(p){ return Object.assign({}, p, patch); });
+    setDocPreencheu(true);
+  }
+
+  /* Abre o cadastro existente em vez de criar um segundo com o mesmo CPF. */
+  function editarCadastroExistente() {
+    if (!docAchado) return;
+    setForm(Object.assign({}, docAchado));
+    setEdit(docAchado.id);
+    setDocAchado(null);
+    setDocPreencheu(false);
+    toast("Editando o cadastro existente de " + (docAchado.nome || "cliente") + ".");
   }
   async function save() {
     if (!form.nome) return toast("Nome obrigatorio", "error");
@@ -29459,8 +29513,30 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
           , React.createElement(Lbl, { label: "Responsável Legal — CPF", flex: 1 }, React.createElement('input', { style: FI, value: form.responsavel_legal_cpf || "", onChange: function(e){ F("responsavel_legal_cpf", e.target.value); } }))
         )
         , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 662}}
-          , React.createElement(Lbl, { label: "CPF/CNPJ", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 663}}, React.createElement('input', { style: FI, value: form.cpf || "", onChange: e => F("cpf", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 663}} ))
+          , React.createElement(Lbl, { label: "CPF/CNPJ", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 663}}, React.createElement('input', {
+              style: FI, value: form.cpf || "", inputMode: "numeric",
+              placeholder: "000.000.000-00",
+              onChange: function(e){ var v = e.target.value; F("cpf", v); autoPreencherPorDoc(v); },
+              // Formata ao sair do campo: com a máscara aplicada durante a
+              // digitação, apagar um dígito luta contra o cursor.
+              onBlur: function(e){ var v = e.target.value; if (_soDig(v).length === 11 || _soDig(v).length === 14) F("cpf", fmtCpfCnpj(v)); }
+            } ))
           , React.createElement(Lbl, { label: (form.tipo_pessoa === "juridica" ? "Data de Abertura" : "Nascimento"), flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 664}}, React.createElement('input', { style: FI, type: "date", value: form.nascimento || "", onChange: e => F("nascimento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 664}} ))
+        )
+        /* Documento já cadastrado: avisa e oferece abrir a ficha existente.
+           Salvar assim criaria um segundo cliente com o mesmo CPF. */
+        , docAchado && React.createElement('div', {
+            style: { background: "rgba(255,149,0,0.10)", border: "1px solid rgba(255,149,0,0.35)", borderRadius: 12, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }
+          }
+          , React.createElement('div', { style: { fontSize: 12, color: "var(--c-text)", lineHeight: 1.5 } }
+            , React.createElement('b', null, "⚠️ CPF/CNPJ já cadastrado: " + (docAchado.nome || "sem nome"))
+            , docPreencheu ? " — os campos em branco foram preenchidos com os dados dele." : ""
+            , React.createElement('div', { style: { color: C.sub, marginTop: 2 } }, "Salvar assim cria um segundo cadastro com o mesmo documento.")
+          )
+          , React.createElement('div', { style: { display: "flex", gap: 8, flexWrap: "wrap" } }
+            , React.createElement('button', { onClick: editarCadastroExistente, style: { background: C.orange, color: "#fff", border: "none", borderRadius: 9, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "Editar o cadastro existente")
+            , React.createElement('button', { onClick: function(){ setDocAchado(null); }, style: { background: "transparent", color: C.sub, border: "1px solid " + C.border, borderRadius: 9, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" } }, "Criar mesmo assim")
+          )
         )
         , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, borderBottom: "1px solid " + C.border, paddingBottom: 4 } }, form.tipo_pessoa === "juridica" ? "CNH do Condutor Designado" : "CNH")
         , form.tipo_pessoa === "juridica" && React.createElement(Lbl, { label: "Nome do Condutor" }, React.createElement('input', { style: FI, value: form.condutor_nome || "", onChange: function(e){ F("condutor_nome", capSentence(e.target.value)); }, placeholder: "Funcionário autorizado a dirigir" }))

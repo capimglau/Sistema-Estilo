@@ -16294,12 +16294,154 @@ function agClaudeFetch(payload, timeoutMs) {
   }, timeoutMs || 120000);
 }
 
+/* ── Capacidades do schema ─────────────────────────────────────────────────
+   As colunas updated_at e deleted_at só passam a existir depois que o dono
+   roda o SQL em Config. Filtrar por elas antes disso faz o PostgREST devolver
+   400 e o app inteiro ficar SEM DADO — falha muito pior que a ausência do
+   recurso. Então cada capacidade é detectada na primeira tentativa e
+   desligada sozinha se o banco ainda não tiver a coluna. */
+var _agCap = { softDelete: true, updatedAt: true };
+try {
+  var _capSalvo = JSON.parse(localStorage.getItem("ag_cap_v1") || "null");
+  if (_capSalvo) _agCap = Object.assign(_agCap, _capSalvo);
+} catch(e) {}
+function _agCapOff(nome) {
+  if (!_agCap[nome]) return;
+  _agCap[nome] = false;
+  console.warn("[db] recurso '" + nome + "' indisponível no banco — rode o SQL em Config para habilitar.");
+  try { localStorage.setItem("ag_cap_v1", JSON.stringify(_agCap)); } catch(e) {}
+}
+/* PostgREST responde 42703 (undefined_column) quando a coluna não existe. */
+function _agErroColuna(txt) {
+  return /42703|does not exist|column .* of relation/i.test(txt || "");
+}
+
+/* ── Versões conhecidas de cada linha (trava otimista) ─────────────────────
+   Guarda o updated_at de tudo que o app leu. db.patch usa isso como guarda,
+   então nenhuma das centenas de chamadas existentes precisou mudar: se outro
+   usuário alterou a linha depois que a lemos, o PATCH casa zero linhas e a
+   edição é recusada em vez de sobrescrever o trabalho alheio em silêncio. */
+var _agVer = Object.create(null);
+function _agVerKey(t, id) { return t + ":" + id; }
+function _agVerSet(t, rec) {
+  if (rec && rec.id != null && rec.updated_at) _agVer[_agVerKey(t, rec.id)] = rec.updated_at;
+}
+function _agVerSetMany(t, rows) {
+  if (Array.isArray(rows)) for (var i = 0; i < rows.length; i++) _agVerSet(t, rows[i]);
+}
+
+/* Filtro de linhas vivas, quando o banco suporta soft delete. */
+function _agFiltroVivos() { return _agCap.softDelete ? "&deleted_at=is.null" : ""; }
+
+/* Extrai a mensagem legível de um corpo de erro do PostgREST. */
+function _agMsgHttp(txt) {
+  try { var e = JSON.parse(txt); return e.message || e.details || e.hint || "Erro na gravação."; }
+  catch(_) { return txt ? String(txt).slice(0, 160) : "Erro na gravação."; }
+}
+
+/* ── Carga leve de contratos ───────────────────────────────────────────────
+   Assinaturas são PNG em base64 e os checklists são JSON grandes, gravados na
+   própria linha do contrato. Com algumas centenas de contratos isso vira
+   dezenas de MB baixados a CADA abertura do app, para renderizar uma lista que
+   não mostra nem assinatura nem checklist.
+
+   Estas colunas ficam de fora da carga inicial e são buscadas sob demanda, no
+   momento de gerar o documento. A lista de colunas leves NÃO é chutada: vem do
+   schema real do PostgREST. Se não der para descobrir o schema, cai no `*` de
+   sempre — melhor baixar tudo do que baixar um contrato com campo faltando.
+
+   Só as ASSINATURAS saem da carga inicial. Os checklists também são grandes,
+   mas são copiados de contrato para contrato na renovação e no encerramento —
+   deixá-los de fora faria essas rotinas copiarem `undefined` e apagarem o
+   checklist do contrato novo, sem erro nenhum. Assinatura só é lida na hora de
+   imprimir, que é um ponto único e já assíncrono: dá para garantir. */
+var _AG_CT_PESADAS = ["assinatura_cliente", "assinatura_locadora", "assinatura_dsv"];
+var _agColunasCache = null;
+
+async function _agColunasLeves(tabela) {
+  try {
+    if (_agColunasCache === null) {
+      var salvo = null;
+      try { salvo = JSON.parse(localStorage.getItem("ag_schema_v1") || "null"); } catch(e) {}
+      if (salvo && salvo[tabela]) { _agColunasCache = salvo; }
+      else {
+        var r = await fetchWithTimeout(SB_URL + "/rest/v1/", { headers: HDR }, 15000);
+        if (!r.ok) return null;
+        var spec = await r.json();
+        var defs = (spec && (spec.definitions || (spec.components && spec.components.schemas))) || null;
+        if (!defs) return null;
+        _agColunasCache = {};
+        Object.keys(defs).forEach(function(t){
+          var props = defs[t] && defs[t].properties;
+          if (props) _agColunasCache[t] = Object.keys(props);
+        });
+        try { localStorage.setItem("ag_schema_v1", JSON.stringify(_agColunasCache)); } catch(e) {}
+      }
+    }
+    var todas = _agColunasCache && _agColunasCache[tabela];
+    if (!todas || !todas.length) return null;
+    var leves = todas.filter(function(c){ return _AG_CT_PESADAS.indexOf(c) < 0; });
+    // Nada foi excluído: não vale a pena projetar, usa o caminho normal.
+    return leves.length === todas.length ? null : leves.join(",");
+  } catch(e) { return null; }
+}
+
+/* Marca que o registro veio completo, para quem for gerar documento saber que
+   pode confiar nos campos pesados. */
+function _agContratoCompleto(ct) { return !!(ct && ct.__completo); }
+
+/* Busca as colunas pesadas de UM contrato e devolve o registro inteiro.
+   Se falhar, propaga o erro: é melhor o usuário ver "não foi possível carregar
+   a assinatura" do que receber um contrato impresso com a assinatura em branco. */
+async function hidratarContrato(ct) {
+  if (!ct || ct.id == null) throw new Error("Contrato inválido.");
+  if (_agContratoCompleto(ct)) return ct;
+  var r = await fetchWithTimeout(SB_URL + "/rest/v1/contratos?id=eq." + ct.id + "&limit=1", { headers: HDR }, 20000);
+  if (!r.ok) throw new Error("Não foi possível carregar os dados completos do contrato #" + ct.id + ".");
+  var j = await r.json().catch(function(){ return []; });
+  if (!Array.isArray(j) || !j.length) throw new Error("Contrato #" + ct.id + " não encontrado.");
+  var full = Object.assign({}, ct, j[0], { __completo: true });
+  _agVerSet("contratos", full);
+  return full;
+}
+
+/* Restaura um registro excluído (usado pelos "Desfazer").
+   Com soft delete volta o MESMO id, então contrato, fatura e multa vinculados
+   continuam apontando para o registro certo. O re-insert de antes criava um id
+   novo e deixava os vínculos órfãos sem ninguém perceber. */
+async function _agRestaurarRegistro(t, removido) {
+  if (_agCap.softDelete && removido && removido.id != null) {
+    try { return await db.restaurar(t, removido.id); }
+    catch(e) { console.warn("restaurar por id falhou, reinserindo", e); }
+  }
+  return db.post(t, removido);
+}
+
 const db = {
   async get(t, q) {
+    var tentar = async function(comFiltro) {
+      return fetchWithTimeout(
+        SB_URL + "/rest/v1/" + t + "?order=id.desc" + (comFiltro ? _agFiltroVivos() : "") + (q ? "&" + q : ""),
+        { headers: HDR }, 20000);
+    };
     try {
-      const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?order=id.desc" + (q ? "&" + q : ""), { headers: HDR }, 20000);
-      if (!r.ok) return [];
+      // Se ESTA chamada mandou o filtro, é ela quem decide repetir. Condicionar
+      // ao flag global quebra quando as tabelas carregam em paralelo: a primeira
+      // resposta 42703 desliga o flag e todas as outras, que já tinham saído com
+      // o filtro, cairiam no `else` e devolveriam lista vazia — o app abria sem
+      // dado nenhum num banco que só não tinha rodado o SQL ainda.
+      var enviouFiltro = !!_agFiltroVivos();
+      var r = await tentar(true);
+      if (!r.ok) {
+        var txt = await r.text().catch(function(){ return ""; });
+        if (enviouFiltro && _agErroColuna(txt)) {
+          _agCapOff("softDelete");
+          r = await tentar(false);
+          if (!r.ok) return [];
+        } else return [];
+      }
       var data = await r.json();
+      _agVerSetMany(t, data);
       try { if (!q || /^limit=/.test(q)) cache.set(t, data); } catch(e) {}
       return data;
     } catch(e) {
@@ -16311,24 +16453,41 @@ const db = {
       return [];
     }
   },
-  async getAll(t) {
+  async getAll(t, opts) {
     var PAGE = 1000;
     var all = [];
     var offset = 0;
+    var sel = (opts && opts.select) ? "&select=" + encodeURIComponent(opts.select) : "";
+    var extra = (opts && opts.extra) ? "&" + opts.extra : "";
+    // Backup precisa levar também o que foi excluído — um backup que omite os
+    // registros apagados não serve para recuperar justamente o que se perdeu.
+    var usarFiltro = !(opts && opts.incluirExcluidos);
     try {
       while (true) {
-        var r = await fetchWithTimeout(
-          SB_URL + "/rest/v1/" + t + "?order=id.asc&limit=" + PAGE + "&offset=" + offset,
-          { headers: HDR }, 30000
-        );
-        if (!r.ok) break;
+        var filtro = usarFiltro ? _agFiltroVivos() : "";
+        var url = SB_URL + "/rest/v1/" + t + "?order=id.asc&limit=" + PAGE + "&offset=" + offset +
+                  filtro + sel + extra;
+        var r = await fetchWithTimeout(url, { headers: HDR }, 30000);
+        if (!r.ok) {
+          var txt = await r.text().catch(function(){ return ""; });
+          // Decide pelo que ESTA chamada enviou, não pelo flag global: com as
+          // tabelas carregando em paralelo o flag já pode ter sido desligado por
+          // outra resposta, e aí esta aqui desistiria sem nunca repetir.
+          if (filtro && _agErroColuna(txt)) {
+            _agCapOff("softDelete"); usarFiltro = false; continue; // repete a mesma página
+          }
+          // select= com coluna inexistente (schema antigo): repete com tudo.
+          if (sel && _agErroColuna(txt)) { sel = ""; continue; }
+          break;
+        }
         var batch = await r.json();
         if (!Array.isArray(batch) || batch.length === 0) break;
         all = all.concat(batch);
         if (batch.length < PAGE) break;
         offset += PAGE;
       }
-      if (all.length > 0) cache.set(t, all);
+      _agVerSetMany(t, all);
+      if (all.length > 0 && !sel) cache.set(t, all);
       return all;
     } catch(e) {
       console.warn("db.getAll", t, e);
@@ -16354,31 +16513,112 @@ const db = {
       throw new Error("O banco não confirmou a gravação em " + t + ". Verifique RLS no Supabase (alter table " + t + " disable row level security;).");
     }
     this._audit(t, "insert", rec.id, d);
+    _agVerSet(t, rec);
     return rec;
   },
   async patch(t, id, d) {
     if (!_agPodeEscrever(t, "editar")) throw new Error(_agMsgPermissao("editar registros"));
-    const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
-    if (!r.ok) { const e = await r.json(); throw new Error(e.message || "Erro"); }
+    // Trava otimista: só altera se a linha continuar na versão que lemos.
+    var verConhecida = _agVer[_agVerKey(t, id)];
+    var usarTrava = _agCap.updatedAt && !!verConhecida;
+    var base = SB_URL + "/rest/v1/" + t + "?id=eq." + id;
+    var url = base + (usarTrava ? "&updated_at=eq." + encodeURIComponent(verConhecida) : "");
+    var r = await fetchWithTimeout(url, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
+    if (!r.ok) {
+      var txt = await r.text().catch(function(){ return ""; });
+      // Banco ainda sem updated_at: desliga a trava e repete sem ela.
+      if (usarTrava && _agErroColuna(txt)) {
+        _agCapOff("updatedAt");
+        r = await fetchWithTimeout(base, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
+        if (!r.ok) { var t2 = await r.text().catch(function(){ return ""; }); throw new Error(_agMsgHttp(t2)); }
+      } else throw new Error(_agMsgHttp(txt));
+    }
     const j = await r.json();
     if (Array.isArray(j) && j.length === 0) {
+      if (usarTrava) {
+        // Zero linhas com a trava: ou outro usuário editou, ou a linha sumiu.
+        // Buscar de novo separa os dois casos — e devolve o dado atual, para
+        // o usuário decidir com a informação na mão em vez de perder o texto.
+        var atualR = await fetchWithTimeout(base, { headers: HDR }, 15000).catch(function(){ return null; });
+        var atual = atualR && atualR.ok ? await atualR.json().catch(function(){ return []; }) : [];
+        if (Array.isArray(atual) && atual.length) {
+          _agVerSet(t, atual[0]);
+          var err = new Error("Este registro foi alterado por outro usuário enquanto você editava. Suas mudanças não foram gravadas para não apagar as dele — recarregue e refaça a edição.");
+          err.conflito = true; err.registroAtual = atual[0];
+          throw err;
+        }
+        throw new Error("O registro não existe mais (pode ter sido excluído por outro usuário).");
+      }
       console.error("[db.patch] Supabase retornou array vazio para", t, "id="+id, "dados:", d, "— verifique RLS ou se o registro existe.");
       throw new Error("Falha ao salvar: o banco não confirmou a atualização de " + t + " (id=" + id + "). Verifique RLS no Supabase.");
     }
     const rec = Array.isArray(j) ? (j[0] || d) : (j || d);
     this._audit(t, "update", id, d);
+    _agVerSet(t, rec);
     return rec;
   },
+  /* Exclusão reversível: marca deleted_at em vez de apagar a linha. O DELETE
+     físico não tinha volta — o "Desfazer" dependia do registro estar na
+     memória da aba, então fechar a aba perdia o dado para sempre. Quando o
+     banco ainda não tem a coluna, cai no DELETE de antes. */
   async del(t, id) {
     if (!_agPodeEscrever(t, "excluir")) throw new Error(_agMsgPermissao("excluir registros"));
-    const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "DELETE", headers: Object.assign({}, HDR, { Prefer: "return=representation" }) }, 30000);
-    if (!r.ok) { let msg = "Erro ao excluir"; try { const e = await r.json(); msg = e.message || e.hint || msg; } catch(_){} throw new Error(msg); }
-    const j = await r.json().catch(function(){ return []; });
-    if (Array.isArray(j) && j.length === 0) {
-      throw new Error("Nada foi excluído (RLS bloqueou). Rode em Configurações: alter table " + t + " disable row level security;");
+    if (_agCap.softDelete) {
+      var quando = new Date().toISOString();
+      var r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id,
+        { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify({ deleted_at: quando }) }, 30000);
+      if (r.ok) {
+        var j = await r.json().catch(function(){ return []; });
+        if (Array.isArray(j) && j.length === 0) throw new Error("Nada foi excluído (RLS bloqueou). Verifique as permissões do seu perfil.");
+        this._audit(t, "delete", id, null);
+        var rec = Array.isArray(j) ? j[0] : j;
+        _agVerSet(t, rec);
+        return rec;
+      }
+      var txt = await r.text().catch(function(){ return ""; });
+      if (!_agErroColuna(txt)) throw new Error(_agMsgHttp(txt));
+      _agCapOff("softDelete"); // sem a coluna ainda — segue no DELETE físico
+    }
+    const rd = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "DELETE", headers: Object.assign({}, HDR, { Prefer: "return=representation" }) }, 30000);
+    if (!rd.ok) { let msg = "Erro ao excluir"; try { const e = await rd.json(); msg = e.message || e.hint || msg; } catch(_){} throw new Error(msg); }
+    const jd = await rd.json().catch(function(){ return []; });
+    if (Array.isArray(jd) && jd.length === 0) {
+      throw new Error("Nada foi excluído (RLS bloqueou). Verifique as permissões do seu perfil.");
     }
     this._audit(t, "delete", id, null);
-    return Array.isArray(j) ? j[0] : j; // registro excluído — usado para restaurar via "Desfazer"
+    return Array.isArray(jd) ? jd[0] : jd; // registro excluído — usado para restaurar via "Desfazer"
+  },
+  /* Desfaz uma exclusão reversível limpando deleted_at. Volta o registro com
+     o mesmo id, mantendo os vínculos (contrato, fatura, multa) intactos —
+     coisa que o "restaurar via novo POST" não fazia: ele criava outro id. */
+  async restaurar(t, id) {
+    if (!_agPodeEscrever(t, "editar")) throw new Error(_agMsgPermissao("restaurar registros"));
+    var r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id,
+      { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify({ deleted_at: null }) }, 30000);
+    if (!r.ok) throw new Error(_agMsgHttp(await r.text().catch(function(){ return ""; })));
+    var j = await r.json().catch(function(){ return []; });
+    var rec = Array.isArray(j) ? j[0] : j;
+    this._audit(t, "restore", id, null);
+    _agVerSet(t, rec);
+    return rec;
+  },
+  /* Linhas alteradas desde `desde` (ISO). Propositalmente SEM o filtro de
+     vivos: a linha recém-excluída por outro usuário precisa chegar aqui para
+     poder sumir da tela — filtrando deleted_at ela seria invisível e ficaria
+     na lista para sempre. */
+  async getMudancas(t, desde) {
+    if (!_agCap.updatedAt) return [];
+    var url = SB_URL + "/rest/v1/" + t + "?updated_at=gt." + encodeURIComponent(desde) +
+              "&order=updated_at.asc&limit=500";
+    var r = await fetchWithTimeout(url, { headers: HDR }, 15000);
+    if (!r.ok) {
+      var txt = await r.text().catch(function(){ return ""; });
+      if (_agErroColuna(txt)) _agCapOff("updatedAt");
+      return [];
+    }
+    var rows = await r.json().catch(function(){ return []; });
+    _agVerSetMany(t, rows);
+    return Array.isArray(rows) ? rows : [];
   },
   async upload(path, file) {
     const r = await fetchWithTimeout(SB_URL + "/storage/v1/object/documentos/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: HDR.Authorization, "Content-Type": file.type, "x-upsert": "true", "Content-Disposition": "inline" }, body: file }, 60000);
@@ -16435,7 +16675,16 @@ window.agBar = (function(){
   var _del = db.del.bind(db);
   db.del = async function(t, id) {
     window.agBar.start();
-    try { await _del(t, id); window.agBar.done(); }
+    // O `return r` aqui é essencial e faltava: sem ele db.del devolvia undefined
+    // e todo "Desfazer" de exclusão recebia undefined em vez do registro
+    // apagado — o botão aparecia, o usuário clicava, e nada era restaurado.
+    try { var r = await _del(t, id); window.agBar.done(); return r; }
+    catch(e) { window.agBar.done(); throw e; }
+  };
+  var _restaurar = db.restaurar.bind(db);
+  db.restaurar = async function(t, id) {
+    window.agBar.start();
+    try { var r = await _restaurar(t, id); window.agBar.done(); return r; }
     catch(e) { window.agBar.done(); throw e; }
   };
 })();
@@ -16555,6 +16804,52 @@ function statusRevisaoKm(v) {
     falta: falta,
     vencida: falta <= 0,
     proxima: falta > 0 && falta <= KM_REVISAO_ALERTA
+  };
+}
+
+/* ── Combustível ───────────────────────────────────────────────────────────
+   Os níveis são anotados como fração ("Cheio", "3/4"…). Para cobrar a
+   diferença é preciso compará-los como número. */
+var _NIVEL_COMB = { "Cheio": 1, "3/4": 0.75, "1/2": 0.5, "1/4": 0.25, "Reserva": 0.05 };
+
+/* Quanto de tanque faltou no retorno (0 a 1). null quando falta informação —
+   diferente de 0, que significa "voltou igual ou com mais". */
+function difCombustivel(saida, retorno) {
+  if (!saida || !retorno) return null;
+  var s = _NIVEL_COMB[saida], r = _NIVEL_COMB[retorno];
+  if (s == null || r == null) return null;
+  return s - r;
+}
+
+/* Fração de tanque em texto legível ("1/2 tanque"). */
+function fmtFracao(v) {
+  if (v == null) return "—";
+  var oitavos = Math.round(v * 8);
+  if (oitavos <= 0) return "nada";
+  if (oitavos >= 8) return "1 tanque";
+  var d = 8, n = oitavos;
+  function mdc(a, b){ return b ? mdc(b, a % b) : a; }
+  var g = mdc(n, d);
+  return (n / g) + "/" + (d / g) + " de tanque";
+}
+
+/* Antecedência (em km) para avisar a troca de pneus. */
+var KM_PNEUS_ALERTA = 3000;
+
+/* Situação dos pneus por quilometragem rodada desde a última troca.
+   Pneu gasta por uso, não por calendário — por isso a conta é em km e não em
+   data. Sem km da última troca cadastrado, não há o que calcular. */
+function statusPneus(v) {
+  var troca = parseFloat(v && v.pneus_km_troca);
+  if (!v || v.pneus_km_troca == null || isNaN(troca)) return null;
+  var vida = parseFloat(v.pneus_vida_util_km || 0) || 40000;
+  var atual = parseFloat(v.km_atual || 0);
+  var rodado = atual - troca;
+  var restante = vida - rodado;
+  return {
+    vida: vida, rodado: rodado, restante: restante,
+    vencido: restante <= 0,
+    proximo: restante > 0 && restante <= KM_PNEUS_ALERTA
   };
 }
 
@@ -24102,6 +24397,17 @@ async function printContrato(ct, cl, ve, emp) {
   var _isPWAct = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
   var _wct = null;
   if (!_isPWAct) { _wct = window.open("", "_blank"); if (!_wct) { alert("Permita popups para gerar o PDF."); return; } }
+  // Assinaturas e checklists não vêm na carga inicial (são base64 pesado). Busca
+  // agora, antes de montar o PDF. Se falhar, ABORTA: contrato impresso com o
+  // campo de assinatura em branco parece um contrato não assinado, e esse
+  // documento sai da empresa e vai para o cliente.
+  try {
+    ct = await hidratarContrato(ct);
+  } catch(e) {
+    if (_wct) _wct.close();
+    alert("Não foi possível carregar as assinaturas do contrato. Verifique a conexão e tente de novo.\n\n" + (e.message || ""));
+    return;
+  }
   await ensureLogoEmbed(emp.logo_url);
   var dias = 0;
   if (ct.data_inicio && ct.data_fim) dias = Math.max(1, Math.ceil((new Date(ct.data_fim) - new Date(ct.data_inicio)) / 86400000));
@@ -24715,6 +25021,8 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
   // um carro pode estar com tudo em dia e mesmo assim ter passado da revisão.
   const revisaoKmVencida  = veiculos.filter(function(v){ var s = statusRevisaoKm(v); return s && s.vencida; });
   const revisaoKmProxima  = veiculos.filter(function(v){ var s = statusRevisaoKm(v); return s && s.proxima; });
+  const pneusVencidos     = veiculos.filter(function(v){ var s = statusPneus(v); return s && s.vencido; });
+  const pneusProximos     = veiculos.filter(function(v){ var s = statusPneus(v); return s && s.proximo; });
   const docsVencidos = veiculos.filter(v => [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao].some(d => d && d < hoje));
   const docsCriticos = veiculos.filter(v => { var dts = [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao]; return dts.some(d => d && d >= hoje && d <= str7doc) && !dts.some(d => d && d < hoje); });
   const docsVencendo = veiculos.filter(v => { var dts = [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao]; return dts.some(d => d && d > str7doc && d <= str30doc) && !dts.some(d => d && d < hoje) && !dts.some(d => d && d >= hoje && d <= str7doc); });
@@ -24793,6 +25101,8 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
     { cor: C.orange, icon: "🏛️", titulo: "Prazo de notificação ao órgão vence em 3 dias (" + multasPrazoNotifVencendo.length + ")", items: multasPrazoNotifVencendo.map(function(m){ var ct=m.contrato_id?contratos.find(function(x){return x.id==m.contrato_id;}):null; var cl=ct?clientes.find(function(x){return x.id==ct.cliente_id;}):clientes.find(function(x){return x.id==m.cliente_id;}); return (cl&&cl.nome||"–")+" · "+(m.tipo||"Multa")+" · prazo "+fmtDate(m.prazo_notificacao_orgao||m.vencimento); }), itemRefs: multasPrazoNotifVencendo.map(function(m){ return {id:m.id,type:"multa"}; }), sub: "Indique o condutor ao órgão antes do prazo!", tab: "multas" },
     { cor: C.purple, icon: "🔧", titulo: "Manutenções com prazo vencido (" + manutProlongadas.length + ")",          items: manutProlongadas.map(function(m){ var ve = veiculos.find(function(v){return v.id==m.veiculo_id;}); return (ve&&ve.placa||"--") + " · " + m.tipo + " · " + fmtDate(m.data_saida); }), itemRefs: manutProlongadas.map(function(m){ return {id:m.id,type:"manutencao"}; }), tab: "manutencao" },
     { cor: C.orange, icon: "🔧", titulo: "Manutenções com pagamento em atraso (" + manutPendPagto.length + ")",      items: manutPendPagto.map(function(m){ var ve = veiculos.find(function(v){return v.id==m.veiculo_id;}); return (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção") + " · " + fmtBRL(m.custo) + " · " + fmtDate(m.data_previsao_pagamento||m.data_entrada); }), itemRefs: manutPendPagto.map(function(m){ return {id:m.id,type:"manutencao"}; }), sub: "Total: " + fmtBRL(manutPendPagto.reduce(function(s,m){return s+parseFloat(m.custo||0);},0)), tab: "manutencao" },
+    { cor: C.red,    icon: "🛞", titulo: "Troca de pneus vencida (" + pneusVencidos.length + ")",                     items: pneusVencidos.map(function(v){ var s = statusPneus(v); return v.placa + " · " + s.rodado.toLocaleString("pt-BR") + " km rodados desde a troca (vida útil " + s.vida.toLocaleString("pt-BR") + " km)"; }), itemRefs: pneusVencidos.map(function(v){ return {id:v.id,type:"veiculo"}; }), tab: "frota" },
+    { cor: C.orange, icon: "🛞", titulo: "Troca de pneus próxima (" + pneusProximos.length + ")",                     items: pneusProximos.map(function(v){ var s = statusPneus(v); return v.placa + " · faltam " + s.restante.toLocaleString("pt-BR") + " km"; }), itemRefs: pneusProximos.map(function(v){ return {id:v.id,type:"veiculo"}; }), tab: "frota" },
     { cor: C.red,    icon: "🔧", titulo: "Revisão vencida por KM (" + revisaoKmVencida.length + ")",                 items: revisaoKmVencida.map(function(v){ var s = statusRevisaoKm(v); return v.placa + " · " + s.atual.toLocaleString("pt-BR") + " km · " + Math.abs(s.falta).toLocaleString("pt-BR") + " km além da revisão"; }), itemRefs: revisaoKmVencida.map(function(v){ return {id:v.id,type:"veiculo"}; }), tab: "frota" },
     { cor: C.orange, icon: "🔧", titulo: "Revisão próxima por KM (" + revisaoKmProxima.length + ")",                 items: revisaoKmProxima.map(function(v){ var s = statusRevisaoKm(v); return v.placa + " · faltam " + s.falta.toLocaleString("pt-BR") + " km (revisão em " + s.meta.toLocaleString("pt-BR") + " km)"; }), itemRefs: revisaoKmProxima.map(function(v){ return {id:v.id,type:"veiculo"}; }), tab: "frota" },
     { cor: C.red,    icon: "📄", titulo: "Documentos vencidos (" + docsVencidos.length + ")",                      items: docsVencidos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]<hoje;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), itemRefs: docsVencidos.map(function(v){ return {id:v.id,type:"veiculo"}; }), tab: "frota" },
@@ -28635,7 +28945,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
                   , React.createElement('div', { style:{ fontSize:12,fontWeight:600 } }, fmtDate(u.data_inicio) + " – " + fmtDate(u.data_fim))
                   , kmRod !== null && React.createElement('div', { style:{ fontSize:11,color:C.sub } }, kmRod + " km rodados")
                 )
-                , React.createElement('button', { onClick:async function(){try{var removidoUso=await db.del("usos",u.id);setUsos(function(p){return p.filter(function(x){return x.id!==u.id;});});window._agUndo("Uso excluído.",async function(){var restauradoUso=await db.post("usos",removidoUso);setUsos(function(p){return [restauradoUso].concat(p);});});}catch(e){toast("Erro!");}}, style:{ background:"none",border:"none",color:C.red,cursor:"pointer",fontSize:12 } }, "✕")
+                , React.createElement('button', { onClick:async function(){try{var removidoUso=await db.del("usos",u.id);setUsos(function(p){return p.filter(function(x){return x.id!==u.id;});});window._agUndo("Uso excluído.",async function(){var restauradoUso=await _agRestaurarRegistro("usos", removidoUso);setUsos(function(p){return [restauradoUso].concat(p);});});}catch(e){toast("Erro!");}}, style:{ background:"none",border:"none",color:C.red,cursor:"pointer",fontSize:12 } }, "✕")
               );
             })
         )
@@ -28997,7 +29307,7 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
     var removido = await db.del("veiculos", id);
     setVeiculos(p => p.filter(v => v.id !== id));
     window._agUndo("Veículo excluído.", async function(){
-      var restaurado = await db.post("veiculos", removido);
+      var restaurado = await _agRestaurarRegistro("veiculos", removido);
       setVeiculos(p => [restaurado].concat(p));
     });
   }
@@ -29067,6 +29377,13 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
                 return React.createElement('span', { style: { fontWeight: 700, fontSize: 11, color: s.vencida ? C.red : C.orange, background: (s.vencida ? "rgba(255,59,48,0.12)" : "rgba(255,149,0,0.12)"), borderRadius: 6, padding: "2px 7px" } },
                   s.vencida ? "🔧 Revisão vencida" : "🔧 Revisão em " + s.falta.toLocaleString("pt-BR") + " km");
               })()
+            , (function(){
+                var s = statusPneus(v);
+                if (!s || (!s.vencido && !s.proximo)) return null;
+                return React.createElement('span', { style: { fontWeight: 700, fontSize: 11, color: s.vencido ? C.red : C.orange, background: (s.vencido ? "rgba(255,59,48,0.12)" : "rgba(255,149,0,0.12)"), borderRadius: 6, padding: "2px 7px" } },
+                  s.vencido ? "🛞 Pneus vencidos" : "🛞 Pneus em " + s.restante.toLocaleString("pt-BR") + " km");
+              })()
+            , v.rastreador ? React.createElement('span', { style: { fontSize: 11, color: C.sub, background: "rgba(120,120,128,0.12)", borderRadius: 6, padding: "2px 7px" } }, "📡 Rastreador") : null
           )
           , React.createElement('div', { style: { fontWeight: 600, color: C.green, fontSize: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 525}}, fmtBRL(v.valor_diaria), React.createElement('span', { style: { fontWeight: 400, fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 525}}, "/dia"), v.valor_mensal ? React.createElement('span', { style: { fontWeight: 500, fontSize: 12, color: C.sub, marginLeft: 8 } }, "· " + fmtBRL(v.valor_mensal) + "/mês") : null)
           , (function() {
@@ -29223,6 +29540,41 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
               _falta <= 0 ? ("🔧 Revisão vencida — " + Math.abs(_falta).toLocaleString("pt-BR") + " km além da meta")
                           : ("Faltam " + _falta.toLocaleString("pt-BR") + " km para a revisão"));
           })()
+
+        /* ── Pneus ── controle por km rodado, não por data: pneu gasta por uso.
+           A conta é km_atual − km da última troca contra a vida útil esperada. */
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "KM na última troca de pneus", flex: 1 }, React.createElement('input', { style: FI, type: "number", min: "0", value: form.pneus_km_troca == null ? "" : form.pneus_km_troca, onChange: e => F("pneus_km_troca", e.target.value === "" ? null : parseInt(e.target.value, 10)), placeholder: "ex: 32000" }))
+          , React.createElement(Lbl, { label: "Vida útil do pneu (km)", flex: 1 }, React.createElement('input', { style: FI, type: "number", min: "0", value: form.pneus_vida_util_km == null ? "" : form.pneus_vida_util_km, onChange: e => F("pneus_vida_util_km", e.target.value === "" ? null : parseInt(e.target.value, 10)), placeholder: "40000" }))
+        )
+        , (function(){
+            var s = statusPneus(form);
+            if (!s) return null;
+            var cor = s.vencido ? C.red : s.proximo ? C.orange : C.sub;
+            return React.createElement('div', { style: { fontSize: 12, color: cor, marginTop: -4, fontWeight: (s.vencido || s.proximo) ? 700 : 400 } },
+              s.vencido ? ("🛞 Troca de pneus vencida — " + Math.abs(s.restante).toLocaleString("pt-BR") + " km além da vida útil")
+                        : ("🛞 Faltam " + s.restante.toLocaleString("pt-BR") + " km para a troca de pneus"));
+          })()
+
+        /* ── Seguro ── */
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, borderBottom: "1px solid " + C.border, paddingBottom: 4, marginTop: 6 } }, "Seguro")
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Seguradora", flex: 2 }, React.createElement('input', { style: FI, value: form.seguradora || "", onChange: e => F("seguradora", e.target.value), placeholder: "Porto Seguro, Azul…" }))
+          , React.createElement(Lbl, { label: "Apólice", flex: 2 }, React.createElement('input', { style: FI, value: form.apolice || "", onChange: e => F("apolice", e.target.value), placeholder: "Número da apólice" }))
+        )
+        , React.createElement(Lbl, { label: "Franquia (R$)" }, React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.seguro_franquia == null ? "" : form.seguro_franquia, onChange: e => F("seguro_franquia", e.target.value === "" ? null : parseFloat(e.target.value)), placeholder: "Valor da franquia" }))
+
+        /* ── Rastreador ── custo recorrente que não aparecia em lugar nenhum. */
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, borderBottom: "1px solid " + C.border, paddingBottom: 4, marginTop: 6 } }, "Rastreador")
+        , React.createElement('label', { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 14, cursor: "pointer" } }
+          , React.createElement('input', { type: "checkbox", checked: !!form.rastreador, onChange: e => F("rastreador", e.target.checked) })
+          , "Veículo possui rastreador"
+        )
+        , form.rastreador && React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Fornecedor", flex: 2 }, React.createElement('input', { style: FI, value: form.rastreador_fornecedor || "", onChange: e => F("rastreador_fornecedor", e.target.value) }))
+          , React.createElement(Lbl, { label: "Mensalidade (R$)", flex: 1 }, React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.rastreador_mensalidade == null ? "" : form.rastreador_mensalidade, onChange: e => F("rastreador_mensalidade", e.target.value === "" ? null : parseFloat(e.target.value)) }))
+        )
+
         , React.createElement(Lbl, { label: "Sinistros / Observações"  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 576}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 60, fontSize: 13 }), value: form.sinistros || "", onChange: e => F("sinistros", e.target.value), placeholder: "Histórico de acidentes, danos, observações..."    , __self: this, __source: {fileName: _jsxFileName, lineNumber: 576}} ))
         , React.createElement(UploadField, { label: "CRV/CRLV", value: form.crv_url || "", onChange: v => F("crv_url", v), pasta: "crv", nome: form.placa || "veiculo", __self: this, __source: {fileName: _jsxFileName, lineNumber: 577}} )
         , React.createElement('button', { className: bCls(Btn()), style: bStyle(Btn()), onClick: save, disabled: loading, __self: this, __source: {fileName: _jsxFileName, lineNumber: 578}}, loading ? "Salvando..." : "Salvar")
@@ -29508,7 +29860,7 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
     var removido = await db.del("clientes", id);
     setClientes(p => p.filter(c => c.id !== id));
     window._agUndo("Cliente excluído.", async function(){
-      var restaurado = await db.post("clientes", removido);
+      var restaurado = await _agRestaurarRegistro("clientes", removido);
       setClientes(p => [restaurado].concat(p));
     });
   }
@@ -31306,7 +31658,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                   , React.createElement('div', { style:{ fontSize:12,fontWeight:600 } }, fmtDate(u.data_inicio) + " – " + fmtDate(u.data_fim))
                   , kmRod !== null && React.createElement('div', { style:{ fontSize:11,color:C.sub } }, kmRod + " km rodados")
                 )
-                , React.createElement('button', { onClick:async function(){try{var removidoUso=await db.del("usos",u.id);setUsos(function(p){return p.filter(function(x){return x.id!==u.id;});});window._agUndo("Uso excluído.",async function(){var restauradoUso=await db.post("usos",removidoUso);setUsos(function(p){return [restauradoUso].concat(p);});});}catch(e){toast("Erro!");}}, style:{ background:"none",border:"none",color:C.red,cursor:"pointer",fontSize:12 } }, "✕")
+                , React.createElement('button', { onClick:async function(){try{var removidoUso=await db.del("usos",u.id);setUsos(function(p){return p.filter(function(x){return x.id!==u.id;});});window._agUndo("Uso excluído.",async function(){var restauradoUso=await _agRestaurarRegistro("usos", removidoUso);setUsos(function(p){return [restauradoUso].concat(p);});});}catch(e){toast("Erro!");}}, style:{ background:"none",border:"none",color:C.red,cursor:"pointer",fontSize:12 } }, "✕")
               );
             })
         )
@@ -31397,6 +31749,21 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             )
           )
         )
+        /* Cobranca pela diferenca de combustivel. O nivel de saida e retorno ja
+           era anotado, mas ficava so como registro: se o carro voltava com meio
+           tanque a menos, nao havia onde lancar a cobranca. */
+        , (function(){
+            var _dc = difCombustivel(form.combustivel_saida, form.combustivel_retorno);
+            if (_dc == null || _dc <= 0) return null;
+            return React.createElement('div', { style: { background: "rgba(255,149,0,0.08)", border: "1px solid rgba(255,149,0,0.30)", borderRadius: 12, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 } }
+              , React.createElement('div', { style: { fontSize: 12, color: C.orange, fontWeight: 700 } },
+                  "\u26FD Voltou com " + fmtFracao(_dc) + " a menos que na saida")
+              , React.createElement(Lbl, { label: "Cobrar pela diferenca (R$)" },
+                  React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0",
+                    value: form.combustivel_cobranca == null ? "" : form.combustivel_cobranca,
+                    onChange: function(e){ F("combustivel_cobranca", e.target.value); }, placeholder: "0,00" }))
+            );
+          })()
         , React.createElement(Lbl, { label: "Status", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, React.createElement('select', { style: FI, value: form.status || "ativo", onChange: e => F("status", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, React.createElement('option', { value: "ativo", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, "Ativo"), React.createElement('option', { value: "concluido", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, "Concluido"), React.createElement('option', { value: "cancelado", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1147}}, "Cancelado")))
         , React.createElement('div', { style: { background: "rgba(143,203,163,0.08)", borderRadius: 12, padding: "12px 14px", border: "1px solid rgba(143,203,163,0.3)" } }
           , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: "#8FCBA3", marginBottom: 10 } }, "🛡️ Seguro / Proteção")
@@ -32386,7 +32753,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     var removido = await db.del("multas", id);
     setMultas(p => p.filter(m => m.id !== id));
     window._agUndo("Multa excluída.", async function(){
-      var restaurado = await db.post("multas", removido);
+      var restaurado = await _agRestaurarRegistro("multas", removido);
       setMultas(p => [restaurado].concat(p));
     });
   }
@@ -33402,6 +33769,12 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
 
 // -- MANUTENCAO ------------------------------------------------------------─
 function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despesas, setDespesas, toast }) {
+  // Lista de fornecedores para o seletor. Falha em silêncio: enquanto a tabela
+  // não existir, o campo continua sendo o texto livre de sempre.
+  var [fornecedoresLista, setFornecedoresLista] = React.useState([]);
+  React.useEffect(function(){
+    db.getAll("fornecedores").then(function(d){ setFornecedoresLista(d || []); }).catch(function(){});
+  }, []);
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({});
   const [edit, setEdit] = useState(null);
@@ -33493,6 +33866,9 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
       data_pagamento: form.data_pagamento || null,
       custo: form.custo || null,
       oficina: form.oficina || null,
+      // Grava os dois: o id normaliza o custo por fornecedor, e o texto mantém
+      // legível o histórico e os relatórios que já liam esse campo.
+      fornecedor_id: form.fornecedor_id ? parseInt(form.fornecedor_id, 10) : null,
       descricao: form.descricao || null,
       forma_pagamento: form.forma_pagamento || null,
       recorrente: !!form.recorrente,
@@ -33656,7 +34032,7 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
     for (var dv of despVinc) { despRemovidas.push(await db.del("despesas", dv.id)); }
     setDespesas(p => p.filter(d => d.manutencao_id != id));
     window._agUndo("Manutenção excluída.", async function(){
-      var restaurada = await db.post("manutencao", removida);
+      var restaurada = await _agRestaurarRegistro("manutencao", removida);
       setManutencoes(p => [restaurada].concat(p));
       for (var _di = 0; _di < despRemovidas.length; _di++) {
         try { var rd = await db.post("despesas", despRemovidas[_di]); setDespesas(function(p){ return [rd].concat(p); }); } catch(e){ console.warn(e); }
@@ -33948,7 +34324,21 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
           , React.createElement(Lbl, { label: "Saida Prevista" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1586}}, React.createElement('input', { style: FI, type: "date", value: form.data_saida || "", onChange: e => F("data_saida", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1586}} ))
         )
         , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1588}}
-          , React.createElement(Lbl, { label: "Oficina", flex: 2, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1589}}, React.createElement('input', { style: FI, value: form.oficina || "", onChange: e => F("oficina", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1589}} ))
+          /* Fornecedor cadastrado quando existe; senão continua o texto livre.
+             Trocar direto pelo select apagaria a oficina das manutenções
+             antigas, que nunca foram vinculadas a um cadastro. */
+          , React.createElement(Lbl, { label: "Oficina / Fornecedor", flex: 2 }
+            , fornecedoresLista.length > 0
+              ? React.createElement('select', { style: FI, value: form.fornecedor_id || "", onChange: function(e){
+                    var fid = e.target.value;
+                    var f = fornecedoresLista.find(function(x){ return String(x.id) === String(fid); });
+                    setForm(function(p){ return Object.assign({}, p, { fornecedor_id: fid || null, oficina: f ? f.nome : p.oficina }); });
+                  } }
+                  , React.createElement('option', { value: "" }, form.oficina ? "— " + form.oficina + " (texto antigo) —" : "— selecione —")
+                  , fornecedoresLista.map(function(f){ return React.createElement('option', { key: f.id, value: f.id }, f.nome + (f.tipo ? " · " + f.tipo : "")); })
+                )
+              : React.createElement('input', { style: FI, value: form.oficina || "", onChange: e => F("oficina", e.target.value), placeholder: "Cadastre fornecedores em Cadastro → Fornecedores" })
+          )
           , React.createElement(Lbl, { label: "Custo (R$)" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1590}}, React.createElement('input', { style: FI, type: "number", step: "0.01", value: form.custo || "", onChange: e => F("custo", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1590}} ))
         )
         , React.createElement(Lbl, { label: "Previsão de Pagamento"  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1592}}, React.createElement('input', { style: FI, type: "date", value: form.data_previsao_pagamento || "", onChange: e => F("data_previsao_pagamento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1592}} ))
@@ -35137,7 +35527,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     var removido = await db.del("orcamento_pessoal", id);
     setItens(p => p.filter(it => it.id !== id));
     window._agUndo("Lançamento excluído.", async function(){
-      var restaurado = await db.post("orcamento_pessoal", removido);
+      var restaurado = await _agRestaurarRegistro("orcamento_pessoal", removido);
       setItens(p => [restaurado].concat(p));
     });
   }
@@ -36788,7 +37178,7 @@ function OrcamentosClientes({ veiculos, clientes, empresa, toast }) {
       var removido = await db.del("orcamentos", o.id);
       setLista(function(p) { return p.filter(function(x) { return x.id !== o.id; }); });
       window._agUndo("Orçamento excluído.", async function() {
-        var restaurado = await db.post("orcamentos", removido);
+        var restaurado = await _agRestaurarRegistro("orcamentos", removido);
         setLista(function(p) { return [restaurado].concat(p); });
       });
     } catch (e) { toast("Erro ao excluir: " + e.message, "error"); }
@@ -37667,7 +38057,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       if (orcEntry) { try { await db.del("orcamento_pessoal", orcEntry.id); orcEntryRemovido = orcEntry; if (onOrcItensChange) onOrcItensChange(function(p){ return (p||[]).filter(function(o){ return o.id !== orcEntry.id; }); }); } catch(e){} }
     }
     window._agUndo("Despesa excluída.", async function(){
-      var restaurada = await db.post("despesas", removida);
+      var restaurada = await _agRestaurarRegistro("despesas", removida);
       setDespesas(p => [restaurada].concat(p));
       if (orcEntryRemovido) { try { var r2 = await db.post("orcamento_pessoal", orcEntryRemovido); if (onOrcItensChange) onOrcItensChange(function(p){ return [r2].concat(p||[]); }); } catch(e){} }
     });
@@ -37683,7 +38073,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       if (m) { var ctId = parseInt(m[1]); try { await db.patch("contratos", ctId, { status_pagamento: "pendente", data_pagamento: null }); setContratos(p => p.map(x => x.id===ctId ? Object.assign({},x,{status_pagamento:"pendente",data_pagamento:null}) : x)); ctIdSincronizado = ctId; } catch(e){ console.warn(e); } }
     }
     window._agUndo("Receita excluída.", async function(){
-      var restaurada = await db.post("receitas", removida);
+      var restaurada = await _agRestaurarRegistro("receitas", removida);
       setReceitas(p => [restaurada].concat(p));
       if (ctIdSincronizado != null) { try { await db.patch("contratos", ctIdSincronizado, { status_pagamento: "pago", data_pagamento: rec.data_pagamento || null }); setContratos(p => p.map(x => x.id===ctIdSincronizado ? Object.assign({},x,{status_pagamento:"pago",data_pagamento: rec.data_pagamento || null}) : x)); } catch(e){ console.warn(e); } }
     });
@@ -41308,6 +41698,37 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
   var LS_KEY = "ag_prefs_v1";
   var prefsDefault = { dens: "normal", homeTab: "inicio", alertaDocs: 30, alertaContrato: 3, diasInadim: 1, kmFranquia: "", valorKmExc: "", combRet: "cheio", formaPgto: "pix", juroAtraso: 2, multaAtraso: 10 };
   function loadPrefs() { try { return Object.assign({}, prefsDefault, JSON.parse(localStorage.getItem(LS_KEY) || "{}")); } catch(e) { return Object.assign({}, prefsDefault); } }
+  const [exportando, setExportando] = useState(false);
+  /* Exporta todas as tabelas num único JSON. Complementa o backup agendado:
+     serve para quem quer uma cópia na mão antes de mexer em algo grande, sem
+     depender de acesso ao GitHub. Inclui os registros excluídos (deleted_at),
+     porque um backup que omite o que foi apagado não serve para recuperação. */
+  async function exportarBackup() {
+    var TABELAS = ["clientes","veiculos","contratos","multas","manutencao","despesas","receitas",
+      "contas","orcamento_pessoal","orcamentos","ocupacao_historico","perfis","usuarios",
+      "reservas","usos","fornecedores","sinistros","config"];
+    var dump = { gerado_em: new Date().toISOString(), origem: location.host, tabelas: {} };
+    try {
+      for (var i = 0; i < TABELAS.length; i++) {
+        setExportando((i + 1) + "/" + TABELAS.length);
+        var linhas = await db.getAll(TABELAS[i], { incluirExcluidos: true }).catch(function(){ return []; });
+        dump.tabelas[TABELAS[i]] = linhas;
+      }
+      var total = Object.keys(dump.tabelas).reduce(function(s,k){ return s + dump.tabelas[k].length; }, 0);
+      var blob = new Blob([JSON.stringify(dump, null, 2)], { type: "application/json" });
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "backup_autogest_" + _brNow().toISOString().slice(0,10) + ".json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast("Backup gerado: " + total + " registros.");
+    } catch(e) {
+      toast("Erro ao gerar backup: " + (e.message || ""), "error");
+    }
+    setExportando(false);
+  }
+
+
   const [prefs, setPrefs] = useState(loadPrefs);
   function P(k, v) { setPrefs(function(p){ var np = Object.assign({}, p, { [k]: v }); localStorage.setItem(LS_KEY, JSON.stringify(np)); return np; }); }
   React.useEffect(function() {
@@ -41537,6 +41958,13 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
 
     , React.createElement('div', { className: "lg-card", style: CARD }
       , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 10 } }, "Dados e Armazenamento")
+      , React.createElement('button', {
+          className: "lg-pill lg-ghost", disabled: exportando,
+          style: { fontSize: 13, textAlign: "left", width: "100%", marginBottom: 8, opacity: exportando ? .6 : 1 },
+          onClick: exportarBackup
+        }, exportando ? ("Exportando… " + exportando) : "⬇ Baixar backup completo do banco (JSON)")
+      , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginBottom: 12, lineHeight: 1.6 } },
+          "Backup automático diário roda no GitHub Actions (workflow \"Backup do banco\"), guardado por 90 dias. Exige o secret SUPABASE_SERVICE_KEY configurado no repositório.")
       , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 8 } }
         , React.createElement('button', { className: "lg-pill lg-ghost", style: { fontSize: 13, textAlign: "left" }, onClick: function(){ if (confirm("Restaurar preferências para os valores padrão?")) { localStorage.removeItem(LS_KEY); setPrefs(Object.assign({}, prefsDefault)); toast("Preferências restauradas"); } } }, "↺ Restaurar preferências padrão")
         , React.createElement('button', { className: "lg-pill lg-ghost", style: { fontSize: 13, textAlign: "left" }, onClick: function(){ try { var blob = new Blob([JSON.stringify(loadPrefs(), null, 2)], { type: "application/json" }); var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "preferencias_" + _brNow().toISOString().slice(0,10) + ".json"; a.click(); URL.revokeObjectURL(a.href); } catch(e) { toast("Erro ao exportar", "error"); } } }, "⬇ Exportar preferências (JSON)")
@@ -41564,7 +41992,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
         React.createElement('button', {
           style:{background:C.blue,color:'#fff',border:'none',borderRadius:10,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer'},
           onClick:function(){
-            var sql="alter table usuarios add column if not exists email text unique;\nalter table usuarios add column if not exists auth_user_id uuid references auth.users(id);\ncreate table if not exists despesas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, observacoes text);\ncreate table if not exists receitas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, forma_pagamento text, observacoes text);\ncreate table if not exists contas (id bigserial primary key, descricao text, categoria text, valor numeric, vencimento date, status text default 'pendente', tipo text default 'pagar', observacoes text);\ncreate table if not exists orcamento_pessoal (id bigserial primary key, descricao text, categoria text, valor numeric, tipo text default 'despesa', mes text, data date, data_pagamento date, status text default 'previsto', observacoes text, recorrente boolean default false, prazo_recorrencia integer, recorrencia_origem_id bigint, forma_pagamento text);\nalter table clientes add column if not exists bloqueado boolean default false;\nalter table veiculos add column if not exists venc_ipva date;\nalter table veiculos add column if not exists venc_seguro date;\nalter table reservas add column if not exists veiculo_id bigint references veiculos(id);\nalter table reservas add column if not exists cliente_id bigint references clientes(id);\nalter table reservas add column if not exists contrato_id bigint references contratos(id);\ncreate index if not exists idx_reservas_veiculo on reservas(veiculo_id);\nalter table veiculos add column if not exists km_atual integer;\nalter table veiculos add column if not exists km_revisao_proxima integer;\nalter table contratos add column if not exists km_franquia numeric;\nalter table contratos add column if not exists forma_pagamento text;\nalter table contratos add column if not exists previsao_pagamento date;\nalter table contratos add column if not exists status_pagamento text default 'pendente';\nalter table despesas add column if not exists status text default 'previsto';\nalter table despesas add column if not exists data_pagamento date;\nalter table despesas add column if not exists recorrente boolean default false;\nalter table despesas add column if not exists prazo_recorrencia integer;\nalter table despesas add column if not exists recorrencia_origem_id bigint;\nalter table despesas add column if not exists manutencao_id bigint;\nalter table receitas add column if not exists status text default 'previsto';\nalter table receitas add column if not exists data_pagamento date;\nalter table receitas add column if not exists recorrente boolean default false;\nalter table receitas add column if not exists prazo_recorrencia integer;\nalter table manutencao add column if not exists status_financeiro text default 'pendente';\nalter table manutencao add column if not exists data_pagamento date;\nalter table manutencao add column if not exists data_previsao_pagamento date;\nalter table multas add column if not exists vencimento date;\nalter table multas add column if not exists data_pagamento date;\nalter table multas add column if not exists cobrado_cliente text default 'nao';\nalter table multas add column if not exists valor_cobrado numeric;\ncreate table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());\ncreate table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);";
+            var sql="alter table usuarios add column if not exists email text unique;\nalter table usuarios add column if not exists auth_user_id uuid references auth.users(id);\ncreate table if not exists despesas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, observacoes text);\ncreate table if not exists receitas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, forma_pagamento text, observacoes text);\ncreate table if not exists contas (id bigserial primary key, descricao text, categoria text, valor numeric, vencimento date, status text default 'pendente', tipo text default 'pagar', observacoes text);\ncreate table if not exists orcamento_pessoal (id bigserial primary key, descricao text, categoria text, valor numeric, tipo text default 'despesa', mes text, data date, data_pagamento date, status text default 'previsto', observacoes text, recorrente boolean default false, prazo_recorrencia integer, recorrencia_origem_id bigint, forma_pagamento text);\nalter table clientes add column if not exists bloqueado boolean default false;\nalter table veiculos add column if not exists venc_ipva date;\nalter table veiculos add column if not exists venc_seguro date;\nalter table reservas add column if not exists veiculo_id bigint references veiculos(id);\nalter table reservas add column if not exists cliente_id bigint references clientes(id);\nalter table reservas add column if not exists contrato_id bigint references contratos(id);\ncreate index if not exists idx_reservas_veiculo on reservas(veiculo_id);\nalter table veiculos add column if not exists km_atual integer;\nalter table veiculos add column if not exists km_revisao_proxima integer;\nalter table veiculos add column if not exists seguradora text;\nalter table veiculos add column if not exists apolice text;\nalter table veiculos add column if not exists seguro_franquia numeric;\nalter table veiculos add column if not exists rastreador boolean default false;\nalter table veiculos add column if not exists rastreador_fornecedor text;\nalter table veiculos add column if not exists rastreador_mensalidade numeric;\nalter table veiculos add column if not exists pneus_km_troca integer;\nalter table veiculos add column if not exists pneus_vida_util_km integer default 40000;\nalter table contratos add column if not exists combustivel_saida text;\nalter table contratos add column if not exists combustivel_retorno text;\nalter table contratos add column if not exists combustivel_cobranca numeric;\ncreate table if not exists fornecedores (id bigserial primary key, nome text not null, tipo text default 'oficina', cnpj text, telefone text, email text, endereco text, observacoes text, ativo boolean default true);\nalter table manutencao add column if not exists fornecedor_id bigint references fornecedores(id);\ncreate index if not exists idx_manutencao_fornecedor on manutencao(fornecedor_id);\ncreate table if not exists sinistros (id bigserial primary key, veiculo_id bigint references veiculos(id), contrato_id bigint references contratos(id), cliente_id bigint references clientes(id), data date, tipo text, descricao text, valor_prejuizo numeric, valor_franquia numeric, status text default 'aberto', numero_sinistro text, terceiro_envolvido text, boletim_ocorrencia text, observacoes text);\ncreate index if not exists idx_sinistros_veiculo on sinistros(veiculo_id);\nalter table contratos add column if not exists km_franquia numeric;\nalter table contratos add column if not exists forma_pagamento text;\nalter table contratos add column if not exists previsao_pagamento date;\nalter table contratos add column if not exists status_pagamento text default 'pendente';\nalter table despesas add column if not exists status text default 'previsto';\nalter table despesas add column if not exists data_pagamento date;\nalter table despesas add column if not exists recorrente boolean default false;\nalter table despesas add column if not exists prazo_recorrencia integer;\nalter table despesas add column if not exists recorrencia_origem_id bigint;\nalter table despesas add column if not exists manutencao_id bigint;\nalter table receitas add column if not exists status text default 'previsto';\nalter table receitas add column if not exists data_pagamento date;\nalter table receitas add column if not exists recorrente boolean default false;\nalter table receitas add column if not exists prazo_recorrencia integer;\nalter table manutencao add column if not exists status_financeiro text default 'pendente';\nalter table manutencao add column if not exists data_pagamento date;\nalter table manutencao add column if not exists data_previsao_pagamento date;\nalter table multas add column if not exists vencimento date;\nalter table multas add column if not exists data_pagamento date;\nalter table multas add column if not exists cobrado_cliente text default 'nao';\nalter table multas add column if not exists valor_cobrado numeric;\ncreate table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());\ncreate table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);";
             if(navigator.clipboard){navigator.clipboard.writeText(sql).then(function(){toast('✅ SQL copiado! Cole no Supabase → SQL Editor','success');}).catch(function(){toast('Erro ao copiar','error');});}
             else{var ta=document.createElement('textarea');ta.value=sql;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();toast('✅ SQL copiado!','success');}
           }
@@ -41584,7 +42012,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
         React.createElement('button', {
           style:{background:C.red,color:'#fff',border:'none',borderRadius:10,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer',flexShrink:0},
           onClick:function(){
-            var tabelas = "clientes,veiculos,contratos,multas,manutencao,despesas,receitas,contas,orcamento_pessoal,orcamentos,audit_log,ocupacao_historico,perfis,usuarios,config,reservas,usos";
+            var tabelas = "clientes,veiculos,contratos,multas,manutencao,despesas,receitas,contas,orcamento_pessoal,orcamentos,audit_log,ocupacao_historico,perfis,usuarios,config,reservas,usos,fornecedores,sinistros";
             var lista = tabelas.split(",");
             // Tabelas de governança: só administrador escreve. Se o perfil do próprio
             // usuário fosse editável por ele, qualquer um viraria admin sozinho e o
@@ -41645,6 +42073,27 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
             sql += "grant select, insert, update, delete on " + lista.join(", ") + " to authenticated;\n";
             sql += "revoke update, delete on audit_log from authenticated;\n";
             sql += "grant usage on all sequences in schema public to authenticated;\n\n";
+
+            sql += "-- ===================================================================\n";
+            sql += "-- updated_at + deleted_at: edição concorrente e exclusão reversível.\n";
+            sql += "-- Sem updated_at, dois usuários editando o mesmo registro faziam o\n";
+            sql += "-- último PATCH apagar o trabalho do primeiro, sem aviso nenhum.\n";
+            sql += "-- Sem deleted_at, excluir era DELETE físico: o 'Desfazer' só existia\n";
+            sql += "-- na memória da aba e fechar a aba perdia o dado para sempre.\n";
+            sql += "-- ===================================================================\n";
+            sql += "create or replace function public.ag_touch_updated_at()\nreturns trigger\nlanguage plpgsql\nas $$\nbegin\n  new.updated_at := now();\n  return new;\nend;\n$$;\n\n";
+            lista.forEach(function(t){
+              if (t === "audit_log") return; // trilha imutável: não recebe nem updated_at nem soft delete
+              sql += "alter table " + t + " add column if not exists updated_at timestamptz default now();\n";
+              sql += "alter table " + t + " add column if not exists deleted_at timestamptz;\n";
+              sql += "update " + t + " set updated_at = now() where updated_at is null;\n";
+              sql += "drop trigger if exists ag_touch_" + t + " on " + t + ";\n";
+              sql += "create trigger ag_touch_" + t + " before update on " + t + " for each row execute function public.ag_touch_updated_at();\n";
+              // Índices: o app filtra deleted_at is null em toda leitura e usa
+              // updated_at para buscar só o que mudou desde a última sincronização.
+              sql += "create index if not exists idx_" + t + "_deleted_at on " + t + " (deleted_at);\n";
+              sql += "create index if not exists idx_" + t + "_updated_at on " + t + " (updated_at desc);\n\n";
+            });
 
             sql += "-- ===================================================================\n";
             sql += "-- Remove a chave da Anthropic do banco.\n";
@@ -42935,17 +43384,17 @@ function LinhaDoTempo({ contratos, multas, manutencoes, despesas, receitas, rese
 */
 
 var PERFIS_PADRAO = [
-  { nome: "Administrador", descricao: "Acesso total ao sistema", permissoes: { tabs: ["inicio","reservas","contratos","financeiro","multas","manutencao","cadastro","relatorios","calendario","simulador","linha_do_tempo","config","usuarios"], criar: true, editar: true, excluir: true } },
-  { nome: "Gerente", descricao: "Acesso a todos os módulos exceto configurações", permissoes: { tabs: ["inicio","reservas","contratos","financeiro","multas","manutencao","cadastro","relatorios","calendario","simulador","linha_do_tempo"], criar: true, editar: true, excluir: true } },
-  { nome: "Operador", descricao: "Contratos, reservas e cadastros", permissoes: { tabs: ["inicio","reservas","contratos","multas","cadastro","calendario"], criar: true, editar: true, excluir: false } },
+  { nome: "Administrador", descricao: "Acesso total ao sistema", permissoes: { tabs: ["inicio","reservas","contratos","financeiro","multas","manutencao","sinistros","cadastro","fornecedores","relatorios","calendario","simulador","linha_do_tempo","config","usuarios"], criar: true, editar: true, excluir: true } },
+  { nome: "Gerente", descricao: "Acesso a todos os módulos exceto configurações", permissoes: { tabs: ["inicio","reservas","contratos","financeiro","multas","manutencao","sinistros","cadastro","fornecedores","relatorios","calendario","simulador","linha_do_tempo"], criar: true, editar: true, excluir: true } },
+  { nome: "Operador", descricao: "Contratos, reservas e cadastros", permissoes: { tabs: ["inicio","reservas","contratos","multas","sinistros","cadastro","calendario"], criar: true, editar: true, excluir: false } },
   { nome: "Financeiro", descricao: "Módulo financeiro e relatórios", permissoes: { tabs: ["inicio","financeiro","relatorios","calendario"], criar: true, editar: true, excluir: false } },
-  { nome: "Visualizador", descricao: "Somente leitura", permissoes: { tabs: ["inicio","reservas","contratos","financeiro","multas","manutencao","cadastro","relatorios","calendario","simulador","linha_do_tempo"], criar: false, editar: false, excluir: false } }];
+  { nome: "Visualizador", descricao: "Somente leitura", permissoes: { tabs: ["inicio","reservas","contratos","financeiro","multas","manutencao","sinistros","cadastro","fornecedores","relatorios","calendario","simulador","linha_do_tempo"], criar: false, editar: false, excluir: false } }];
 
 function temAcesso(usuario, tabId) {
   if (!usuario) return false;
   var tabs = (usuario.perfil && usuario.perfil.permissoes && usuario.perfil.permissoes.tabs) || [];
   // Operacional é acessível se o usuário tem acesso a reservas, contratos, multas OU manutencao
-  if (tabId === "operacional") return tabs.indexOf("reservas") >= 0 || tabs.indexOf("contratos") >= 0 || tabs.indexOf("multas") >= 0 || tabs.indexOf("manutencao") >= 0;
+  if (tabId === "operacional") return tabs.indexOf("reservas") >= 0 || tabs.indexOf("contratos") >= 0 || tabs.indexOf("multas") >= 0 || tabs.indexOf("manutencao") >= 0 || tabs.indexOf("sinistros") >= 0;
   // Gestão é acessível se tem relatorios, simulador OU linha_do_tempo
   if (tabId === "gestao") return tabs.indexOf("relatorios") >= 0 || tabs.indexOf("simulador") >= 0 || tabs.indexOf("linha_do_tempo") >= 0;
   // Config é acessível se tem config OU usuarios
@@ -43174,12 +43623,14 @@ const TAB_SUB_TABS = {
     { id: "reservas",   label: "Reservas" },
     { id: "contratos",  label: "Contratos" },
     { id: "multas",     label: "Multas" },
-    { id: "manutencao", label: "Manutenção" }
+    { id: "manutencao", label: "Manutenção" },
+    { id: "sinistros",  label: "Sinistros" }
   ],
   "cadastro": [
-    { id: "frota",    label: "Frota" },
-    { id: "clientes", label: "Clientes" },
-    { id: "tarifas",  label: "Tarifas" }
+    { id: "frota",        label: "Frota" },
+    { id: "clientes",     label: "Clientes" },
+    { id: "tarifas",      label: "Tarifas" },
+    { id: "fornecedores", label: "Fornecedores" }
   ],
   "config": [
     { id: "config_geral", label: "Config" },
@@ -44551,7 +45002,8 @@ function Cadastro(props) {
   return React.createElement('div', { "data-no-cm": "1", style: { display: "flex", flexDirection: "column", gap: 0 } },
     subTab === "frota"    && React.createElement(Frota, props),
     subTab === "clientes" && React.createElement(Clientes, props),
-    subTab === "tarifas"  && React.createElement(Tarifas, { veiculos: props.veiculos, setVeiculos: props.setVeiculos, toast: props.toast })
+    subTab === "tarifas"  && React.createElement(Tarifas, { veiculos: props.veiculos, setVeiculos: props.setVeiculos, toast: props.toast }),
+    subTab === "fornecedores" && React.createElement(Fornecedores, { manutencoes: props.manutencoes, toast: props.toast })
   );
 }
 
@@ -44764,6 +45216,352 @@ function Tarifas({ veiculos, setVeiculos, toast }) {
 }
 
 
+/* ── Fornecedores ──────────────────────────────────────────────────────────
+   A oficina era texto livre dentro da manutenção: "Auto Center Silva",
+   "auto center silva" e "AutoCenter Silva" viravam três fornecedores
+   diferentes, e não havia como somar quanto cada um custou no ano. Aqui vira
+   cadastro de verdade, com o texto antigo preservado como fallback. */
+function Fornecedores({ manutencoes, toast }) {
+  var [lista, setLista] = React.useState([]);
+  var [carregando, setCarregando] = React.useState(true);
+  var [modal, setModal] = React.useState(false);
+  var [form, setForm] = React.useState({});
+  var [edit, setEdit] = React.useState(null);
+  var [busca, setBusca] = React.useState("");
+  var [erro, setErro] = React.useState("");
+
+  async function carregar() {
+    setCarregando(true);
+    try {
+      var d = await db.getAll("fornecedores");
+      setLista(d || []);
+      setErro("");
+    } catch(e) { setErro("Tabela 'fornecedores' não encontrada. Rode o SQL em Config."); }
+    setCarregando(false);
+  }
+  React.useEffect(function(){ carregar(); }, []);
+
+  function F(k, v) { setForm(function(p){ return Object.assign({}, p, { [k]: v }); }); }
+
+  async function salvar() {
+    if (!form.nome) { toast("Informe o nome do fornecedor.", "error"); return; }
+    var err = primeiroErro([
+      [form.cnpj,     validarCpfCnpj,  "CNPJ inválido."],
+      [form.email,    validarEmail,    "E-mail inválido."],
+      [form.telefone, validarTelefone, "Telefone inválido."]
+    ]);
+    if (err) { toast(err, "error"); return; }
+    var dados = Object.assign({}, form);
+    if (dados.cnpj)     dados.cnpj = fmtCpfCnpj(dados.cnpj);
+    if (dados.telefone) dados.telefone = fmtTelefone(dados.telefone);
+    try {
+      if (edit) {
+        var u = await db.patch("fornecedores", edit, dados);
+        setLista(function(p){ return p.map(function(x){ return x.id === edit ? Object.assign({}, x, u) : x; }); });
+        toast("Fornecedor atualizado!");
+      } else {
+        var c = await db.post("fornecedores", dados);
+        setLista(function(p){ return [c].concat(p); });
+        toast("Fornecedor cadastrado!");
+      }
+      setModal(false);
+    } catch(e) { toast("Erro: " + (e.message || ""), "error"); }
+  }
+
+  async function remover(id) {
+    try {
+      var rem = await db.del("fornecedores", id);
+      setLista(function(p){ return p.filter(function(x){ return x.id !== id; }); });
+      window._agUndo("Fornecedor excluído.", async function(){
+        var r = await _agRestaurarRegistro("fornecedores", rem);
+        setLista(function(p){ return [r].concat(p); });
+      });
+    } catch(e) { toast("Erro: " + (e.message || ""), "error"); }
+  }
+
+  /* Custo acumulado por fornecedor — o motivo de existir esta tela. Considera
+     tanto o vínculo novo (fornecedor_id) quanto o texto antigo, senão o
+     histórico anterior à migração apareceria zerado. */
+  function custoDe(f) {
+    var alvo = (f.nome || "").trim().toLowerCase();
+    return (manutencoes || []).reduce(function(s, m) {
+      var casa = (m.fornecedor_id != null && String(m.fornecedor_id) === String(f.id)) ||
+                 (m.fornecedor_id == null && (m.oficina || "").trim().toLowerCase() === alvo && alvo !== "");
+      return casa ? s + parseFloat(m.custo || 0) : s;
+    }, 0);
+  }
+  function qtdDe(f) {
+    var alvo = (f.nome || "").trim().toLowerCase();
+    return (manutencoes || []).filter(function(m) {
+      return (m.fornecedor_id != null && String(m.fornecedor_id) === String(f.id)) ||
+             (m.fornecedor_id == null && (m.oficina || "").trim().toLowerCase() === alvo && alvo !== "");
+    }).length;
+  }
+
+  var vis = lista.filter(function(f){
+    if (!busca) return true;
+    var b = busca.toLowerCase();
+    return (f.nome||"").toLowerCase().includes(b) || (f.cnpj||"").includes(b) || (f.tipo||"").toLowerCase().includes(b);
+  }).slice().sort(function(a,b){ return custoDe(b) - custoDe(a); });
+
+  var TIPOS = ["oficina", "peças", "guincho", "seguradora", "despachante", "rastreamento", "outro"];
+
+  return React.createElement('div', { "data-no-cm": "1", style: { display: "flex", flexDirection: "column", gap: 14 } }
+    , React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 } }
+      , React.createElement('div', { className: "pg-title" }, "Fornecedores")
+      , React.createElement('button', { className: bCls(Btn()), style: bStyle(Btn()), onClick: function(){ setForm({ tipo: "oficina", ativo: true }); setEdit(null); setModal(true); } }, "+ Fornecedor")
+    )
+    , erro && React.createElement('div', { style: Object.assign({}, CARD, { color: C.orange, fontSize: 13 }) }, erro)
+    , React.createElement('input', { className: "lg-input", placeholder: "Buscar nome, CNPJ, tipo…", value: busca, onChange: function(e){ setBusca(e.target.value); } })
+    , carregando && React.createElement('div', { style: { textAlign: "center", color: C.sub, padding: 24 } }, "Carregando…")
+    , !carregando && vis.length === 0 && !erro && React.createElement('div', { style: { textAlign: "center", color: C.sub, padding: 32, fontSize: 14 } }, "Nenhum fornecedor cadastrado.")
+    , vis.map(function(f){
+        var custo = custoDe(f), qtd = qtdDe(f);
+        return React.createElement(SwipeRow, {
+          key: f.id, wrapStyle: { borderRadius: 16 },
+          onEdit: function(){ setForm(Object.assign({}, f)); setEdit(f.id); setModal(true); },
+          onDelete: function(){ remover(f.id); }
+        },
+          React.createElement('div', { className: CARD_CLS, style: Object.assign({}, CARD, { display: "flex", flexDirection: "column", gap: 6 }) }
+            , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } }
+              , React.createElement('div', null
+                , React.createElement('div', { style: { fontWeight: 700, fontSize: 15 } }, f.nome)
+                , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 2 } },
+                    (f.tipo || "—") + (f.telefone ? " · " + f.telefone : "") + (f.cnpj ? " · " + f.cnpj : ""))
+              )
+              , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 } }
+                , React.createElement('div', { style: { fontWeight: 700, fontSize: 15, color: custo > 0 ? C.orange : C.sub } }, fmtBRL(custo))
+                , React.createElement('div', { style: { fontSize: 11, color: C.sub } }, qtd + " manutenção" + (qtd === 1 ? "" : "ões"))
+              )
+            )
+            , f.observacoes && React.createElement('div', { style: { fontSize: 12, color: C.sub } }, f.observacoes)
+          )
+        );
+      })
+    , React.createElement(Modal, { open: modal, onClose: function(){ setModal(false); }, title: edit ? "Editar Fornecedor" : "Novo Fornecedor" }
+      , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 } }
+        , React.createElement(Lbl, { label: "Nome *" }, React.createElement('input', { style: FI, value: form.nome || "", onChange: function(e){ F("nome", e.target.value); } }))
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Tipo", flex: 1 }, React.createElement('select', { style: FI, value: form.tipo || "oficina", onChange: function(e){ F("tipo", e.target.value); } },
+              TIPOS.map(function(t){ return React.createElement('option', { key: t, value: t }, t.charAt(0).toUpperCase() + t.slice(1)); })))
+          , React.createElement(Lbl, { label: "CNPJ", flex: 1 }, React.createElement('input', { style: FI, value: form.cnpj || "", onChange: function(e){ F("cnpj", e.target.value); }, placeholder: "00.000.000/0000-00" }))
+        )
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Telefone", flex: 1 }, React.createElement('input', { style: FI, value: form.telefone || "", onChange: function(e){ F("telefone", e.target.value); } }))
+          , React.createElement(Lbl, { label: "E-mail", flex: 1 }, React.createElement('input', { style: FI, type: "email", value: form.email || "", onChange: function(e){ F("email", e.target.value); } }))
+        )
+        , React.createElement(Lbl, { label: "Endereço" }, React.createElement('input', { style: FI, value: form.endereco || "", onChange: function(e){ F("endereco", e.target.value); } }))
+        , React.createElement(Lbl, { label: "Observações" }, React.createElement('textarea', { style: Object.assign({}, FI, { minHeight: 60, resize: "vertical" }), value: form.observacoes || "", onChange: function(e){ F("observacoes", e.target.value); } }))
+        , React.createElement('button', { className: bCls(Btn()), style: bStyle(Btn()), onClick: salvar }, "Salvar")
+      )
+    )
+  );
+}
+
+/* ── Sinistros ─────────────────────────────────────────────────────────────
+   Antes existia só um textarea "Sinistros / Observações" no veículo: dava
+   para escrever o que aconteceu, mas não para saber quanto custou, se a
+   seguradora pagou, ou qual contrato estava em curso na hora. */
+function Sinistros({ veiculos, clientes, contratos, toast }) {
+  var [lista, setLista] = React.useState([]);
+  var [carregando, setCarregando] = React.useState(true);
+  var [modal, setModal] = React.useState(false);
+  var [form, setForm] = React.useState({});
+  var [edit, setEdit] = React.useState(null);
+  var [filtro, setFiltro] = React.useState("todos");
+  var [erro, setErro] = React.useState("");
+
+  var STATUS = [
+    { id: "aberto",     label: "Aberto",              cor: "#FF9500" },
+    { id: "analise",    label: "Em análise",          cor: "#5AC8FA" },
+    { id: "aprovado",   label: "Aprovado",            cor: "#34C759" },
+    { id: "negado",     label: "Negado",              cor: "#FF3B30" },
+    { id: "encerrado",  label: "Encerrado",           cor: "#8E8E93" }
+  ];
+  var TIPOS = ["Colisão", "Roubo/Furto", "Incêndio", "Alagamento", "Vidros", "Terceiros", "Outro"];
+
+  async function carregar() {
+    setCarregando(true);
+    try { setLista((await db.getAll("sinistros")) || []); setErro(""); }
+    catch(e) { setErro("Tabela 'sinistros' não encontrada. Rode o SQL em Config."); }
+    setCarregando(false);
+  }
+  React.useEffect(function(){ carregar(); }, []);
+
+  function F(k, v) { setForm(function(p){ return Object.assign({}, p, { [k]: v }); }); }
+  function veDe(s){ return (veiculos||[]).find(function(v){ return String(v.id) === String(s.veiculo_id); }); }
+  function clDe(s){ return (clientes||[]).find(function(c){ return String(c.id) === String(s.cliente_id); }); }
+
+  /* Ao escolher o veículo, sugere o contrato que estava ativo na data do
+     sinistro — é o que diz quem estava dirigindo, e quem responde pela
+     franquia. Digitado à mão isso quase nunca era preenchido. */
+  function contratoNaData(veiculoId, data) {
+    if (!veiculoId || !data) return null;
+    return (contratos || []).find(function(c){
+      return String(c.veiculo_id) === String(veiculoId) &&
+             c.data_inicio && c.data_inicio <= data &&
+             (!c.data_fim || c.data_fim >= data);
+    }) || null;
+  }
+
+  async function salvar() {
+    if (!form.veiculo_id) { toast("Selecione o veículo.", "error"); return; }
+    if (!form.data) { toast("Informe a data do sinistro.", "error"); return; }
+    var dados = {
+      veiculo_id: parseInt(form.veiculo_id, 10),
+      contrato_id: form.contrato_id ? parseInt(form.contrato_id, 10) : null,
+      cliente_id: form.cliente_id ? parseInt(form.cliente_id, 10) : null,
+      data: form.data, tipo: form.tipo || null, descricao: form.descricao || null,
+      valor_prejuizo: form.valor_prejuizo === "" || form.valor_prejuizo == null ? null : parseFloat(form.valor_prejuizo),
+      valor_franquia: form.valor_franquia === "" || form.valor_franquia == null ? null : parseFloat(form.valor_franquia),
+      status: form.status || "aberto", numero_sinistro: form.numero_sinistro || null,
+      terceiro_envolvido: form.terceiro_envolvido || null,
+      boletim_ocorrencia: form.boletim_ocorrencia || null,
+      observacoes: form.observacoes || null
+    };
+    try {
+      if (edit) {
+        var u = await db.patch("sinistros", edit, dados);
+        setLista(function(p){ return p.map(function(x){ return x.id === edit ? Object.assign({}, x, u) : x; }); });
+        toast("Sinistro atualizado!");
+      } else {
+        var c = await db.post("sinistros", dados);
+        setLista(function(p){ return [c].concat(p); });
+        toast("Sinistro registrado!");
+      }
+      setModal(false);
+    } catch(e) { toast("Erro: " + (e.message || ""), "error"); }
+  }
+
+  async function remover(id) {
+    try {
+      var rem = await db.del("sinistros", id);
+      setLista(function(p){ return p.filter(function(x){ return x.id !== id; }); });
+      window._agUndo("Sinistro excluído.", async function(){
+        var r = await _agRestaurarRegistro("sinistros", rem);
+        setLista(function(p){ return [r].concat(p); });
+      });
+    } catch(e) { toast("Erro: " + (e.message || ""), "error"); }
+  }
+
+  function abrirNovo() {
+    setForm({ status: "aberto", data: _brNow().toISOString().slice(0,10) });
+    setEdit(null); setModal(true);
+  }
+
+  var vis = filtro === "todos" ? lista : lista.filter(function(s){ return s.status === filtro; });
+  vis = vis.slice().sort(function(a,b){ return (b.data||"").localeCompare(a.data||""); });
+
+  var abertos = lista.filter(function(s){ return s.status !== "encerrado" && s.status !== "negado"; });
+  var prejuizoAberto = abertos.reduce(function(s,x){ return s + parseFloat(x.valor_prejuizo||0); }, 0);
+  var franquiaAberto = abertos.reduce(function(s,x){ return s + parseFloat(x.valor_franquia||0); }, 0);
+
+  return React.createElement('div', { "data-no-cm": "1", style: { display: "flex", flexDirection: "column", gap: 14 } }
+    , React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 } }
+      , React.createElement('div', { className: "pg-title" }, "Sinistros")
+      , React.createElement('button', { className: bCls(Btn()), style: bStyle(Btn()), onClick: abrirNovo }, "+ Sinistro")
+    )
+    , erro && React.createElement('div', { style: Object.assign({}, CARD, { color: C.orange, fontSize: 13 }) }, erro)
+    , React.createElement('div', { style: { display: "flex", gap: 10, flexWrap: "wrap" } }
+      , [{ l: "Em aberto", v: abertos.length, c: C.orange },
+         { l: "Prejuízo em aberto", v: fmtBRL(prejuizoAberto), c: C.red },
+         { l: "Franquias", v: fmtBRL(franquiaAberto), c: C.blue }].map(function(k){
+          return React.createElement('div', { key: k.l, style: { flex: 1, minWidth: 100, background: C.card, borderRadius: 12, padding: "12px 14px", border: "1px solid " + C.border, textAlign: "center" } }
+            , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: k.c } }, k.v)
+            , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, k.l));
+        })
+    )
+    , React.createElement('select', { style: Object.assign({}, FI, { width: "auto", fontWeight: 600, cursor: "pointer" }), value: filtro, onChange: function(e){ setFiltro(e.target.value); } }
+      , React.createElement('option', { value: "todos" }, "Status: Todos")
+      , STATUS.map(function(s){ return React.createElement('option', { key: s.id, value: s.id }, "Status: " + s.label); })
+    )
+    , carregando && React.createElement('div', { style: { textAlign: "center", color: C.sub, padding: 24 } }, "Carregando…")
+    , !carregando && vis.length === 0 && !erro && React.createElement('div', { style: { textAlign: "center", color: C.sub, padding: 32, fontSize: 14 } }, "Nenhum sinistro registrado.")
+    , vis.map(function(s){
+        var st = STATUS.find(function(x){ return x.id === s.status; }) || STATUS[0];
+        var ve = veDe(s), cl = clDe(s);
+        return React.createElement(SwipeRow, {
+          key: s.id, wrapStyle: { borderRadius: 16 },
+          onEdit: function(){ setForm(Object.assign({}, s)); setEdit(s.id); setModal(true); },
+          onDelete: function(){ remover(s.id); }
+        },
+          React.createElement('div', { className: CARD_CLS, style: Object.assign({}, CARD, { display: "flex", flexDirection: "column", gap: 6 }) }
+            , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } }
+              , React.createElement('div', null
+                , React.createElement('div', { style: { fontWeight: 700, fontSize: 15 } }, (ve ? ve.placa : "veículo?") + " · " + (s.tipo || "Sinistro"))
+                , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 2 } },
+                    fmtDate(s.data) + (cl ? " · " + cl.nome : "") + (s.numero_sinistro ? " · nº " + s.numero_sinistro : ""))
+              )
+              , React.createElement('span', { style: { background: st.cor + "22", color: st.cor, borderRadius: 20, padding: "3px 11px", fontSize: 11, fontWeight: 700, flexShrink: 0 } }, st.label)
+            )
+            , s.descricao && React.createElement('div', { style: { fontSize: 13, color: "var(--c-text)" } }, s.descricao)
+            , (s.valor_prejuizo || s.valor_franquia) && React.createElement('div', { style: { display: "flex", gap: 16, fontSize: 12, color: C.sub } }
+                , s.valor_prejuizo ? React.createElement('span', null, "Prejuízo: ", React.createElement('b', { style: { color: C.red } }, fmtBRL(s.valor_prejuizo))) : null
+                , s.valor_franquia ? React.createElement('span', null, "Franquia: ", React.createElement('b', { style: { color: C.blue } }, fmtBRL(s.valor_franquia))) : null
+              )
+          )
+        );
+      })
+    , React.createElement(Modal, { open: modal, onClose: function(){ setModal(false); }, title: edit ? "Editar Sinistro" : "Novo Sinistro", wide: true }
+      , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 } }
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Veículo *", flex: 2 }, React.createElement('select', {
+              style: FI, value: form.veiculo_id || "",
+              onChange: function(e){
+                var vid = e.target.value;
+                F("veiculo_id", vid);
+                // Puxa o contrato vigente na data e, com ele, o cliente e a
+                // franquia da apólice — dados que já existem e ninguém redigita.
+                var ct = contratoNaData(vid, form.data);
+                var ve = (veiculos||[]).find(function(x){ return String(x.id) === String(vid); });
+                setForm(function(p){
+                  return Object.assign({}, p, {
+                    veiculo_id: vid,
+                    contrato_id: ct ? ct.id : p.contrato_id,
+                    cliente_id: ct ? ct.cliente_id : p.cliente_id,
+                    valor_franquia: (p.valor_franquia == null || p.valor_franquia === "") && ve && ve.seguro_franquia != null ? ve.seguro_franquia : p.valor_franquia
+                  });
+                });
+              }
+            }
+            , React.createElement('option', { value: "" }, "— selecione —")
+            , (veiculos||[]).slice().sort(function(a,b){ return (a.placa||"").localeCompare(b.placa||""); }).map(function(v){
+                return React.createElement('option', { key: v.id, value: v.id }, (v.placa||"?") + " · " + ((v.marca||"") + " " + (v.modelo||"")).trim());
+              })
+          ))
+          , React.createElement(Lbl, { label: "Data *", flex: 1 }, React.createElement('input', { style: FI, type: "date", value: form.data || "", onChange: function(e){ F("data", e.target.value); } }))
+        )
+        , (function(){
+            var ct = form.contrato_id ? (contratos||[]).find(function(c){ return String(c.id) === String(form.contrato_id); }) : null;
+            if (!ct) return null;
+            var cl = (clientes||[]).find(function(c){ return String(c.id) === String(ct.cliente_id); });
+            return React.createElement('div', { style: { fontSize: 12, color: C.sub, background: "rgba(120,120,128,0.10)", borderRadius: 10, padding: "8px 12px" } },
+              "Contrato em curso na data: #" + ct.id + (cl ? " · " + cl.nome : "") + " (" + fmtDate(ct.data_inicio) + " → " + fmtDate(ct.data_fim) + ")");
+          })()
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Tipo", flex: 1 }, React.createElement('select', { style: FI, value: form.tipo || "", onChange: function(e){ F("tipo", e.target.value); } }
+              , React.createElement('option', { value: "" }, "—")
+              , TIPOS.map(function(t){ return React.createElement('option', { key: t, value: t }, t); })))
+          , React.createElement(Lbl, { label: "Status", flex: 1 }, React.createElement('select', { style: FI, value: form.status || "aberto", onChange: function(e){ F("status", e.target.value); } }
+              , STATUS.map(function(s){ return React.createElement('option', { key: s.id, value: s.id }, s.label); })))
+        )
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Prejuízo (R$)", flex: 1 }, React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.valor_prejuizo == null ? "" : form.valor_prejuizo, onChange: function(e){ F("valor_prejuizo", e.target.value); } }))
+          , React.createElement(Lbl, { label: "Franquia (R$)", flex: 1 }, React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.valor_franquia == null ? "" : form.valor_franquia, onChange: function(e){ F("valor_franquia", e.target.value); } }))
+        )
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Nº do sinistro", flex: 1 }, React.createElement('input', { style: FI, value: form.numero_sinistro || "", onChange: function(e){ F("numero_sinistro", e.target.value); } }))
+          , React.createElement(Lbl, { label: "Boletim de ocorrência", flex: 1 }, React.createElement('input', { style: FI, value: form.boletim_ocorrencia || "", onChange: function(e){ F("boletim_ocorrencia", e.target.value); } }))
+        )
+        , React.createElement(Lbl, { label: "Terceiro envolvido" }, React.createElement('input', { style: FI, value: form.terceiro_envolvido || "", onChange: function(e){ F("terceiro_envolvido", e.target.value); }, placeholder: "Nome / placa do terceiro" }))
+        , React.createElement(Lbl, { label: "Descrição" }, React.createElement('textarea', { style: Object.assign({}, FI, { minHeight: 70, resize: "vertical" }), value: form.descricao || "", onChange: function(e){ F("descricao", e.target.value); }, placeholder: "O que aconteceu" }))
+        , React.createElement(Lbl, { label: "Observações" }, React.createElement('textarea', { style: Object.assign({}, FI, { minHeight: 50, resize: "vertical" }), value: form.observacoes || "", onChange: function(e){ F("observacoes", e.target.value); } }))
+        , React.createElement('button', { className: bCls(Btn()), style: bStyle(Btn()), onClick: salvar }, "Salvar")
+      )
+    )
+  );
+}
+
 function Reservas({ reservas, setReservas, veiculos, clientes, contratos, setContratos, toast, setTab, setOperacionalSubTab }) {
   var [filtro, setFiltro] = useState("todos");
   var [busca, setBusca] = useState("");
@@ -44877,7 +45675,7 @@ function Reservas({ reservas, setReservas, veiculos, clientes, contratos, setCon
       var removida = await db.del("reservas", id);
       setReservas(function(p){ return p.filter(function(r){ return r.id !== id; }); });
       window._agUndo("Reserva excluída!", async function(){
-        var restaurada = await db.post("reservas", removida);
+        var restaurada = await _agRestaurarRegistro("reservas", removida);
         setReservas(function(p){ return [restaurada].concat(p); });
       });
     } catch(e) { toast("Erro ao excluir: " + (e.message || "verifique permissões no Supabase"), "err"); }
@@ -46375,14 +47173,30 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
   React.useEffect(function() { setMultiSel({}); }, [tipo, mesRef, multi]);
 
   var items = tipo === "multa" ? (multas||[]) : (contratos||[]);
-  var sel = items.find(function(x){ return String(x.id)===String(itemId); });
+  var _selBruto = items.find(function(x){ return String(x.id)===String(itemId); });
+
+  /* Contrato vem da carga inicial sem assinatura nem checklist (base64 pesado).
+     Busca as colunas que faltam assim que um contrato é selecionado, para que
+     o documento gerado logo em seguida saia completo. */
+  var [ctsHidratados, setCtsHidratados] = React.useState({});
+  React.useEffect(function() {
+    if (tipo !== "contrato" || !_selBruto || _selBruto.id == null) return;
+    if (ctsHidratados[_selBruto.id]) return;
+    var cancelado = false;
+    hidratarContrato(_selBruto).then(function(full){
+      if (!cancelado) setCtsHidratados(function(p){ return Object.assign({}, p, { [full.id]: full }); });
+    }).catch(function(){ /* segue com o registro parcial; o aviso vem na geração */ });
+    return function(){ cancelado = true; };
+  }, [tipo, _selBruto && _selBruto.id]);
+
+  var sel = (_selBruto && ctsHidratados[_selBruto.id]) || _selBruto;
 
   /* preset.autoPdf: abre direto no PDF da fatura exata, sem exigir o clique manual
      em "Abrir PDF da Fatura" — usado pelo painel de boletos a emitir do dashboard. */
   React.useEffect(function() {
     if (!open || !preset || !preset.autoPdf || !sel || _autoPdfDone.current) return;
     _autoPdfDone.current = true;
-    try { openPdfPage(getDocHtml()+"<scr"+"ipt>window.print();</"+"script>", preset.autoPdfWin || null); } catch(e) { toast("Erro ao gerar PDF."); }
+    try { openPdfPage(getDocHtml()+"<scr"+"ipt>window.print();</"+"script>", preset.autoPdfWin || null); } catch(e) { toast(e.message || "Erro ao gerar PDF.", "error"); }
   }, [open, sel, preset]);
 
   React.useEffect(function() {
@@ -46590,7 +47404,15 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
 
   function getDocHtml() {
     if (tipo === "fatura") return buildFaturaHtml();
-    if (tipo === "contrato") return buildContratoHtml();
+    if (tipo === "contrato") {
+      // Guarda contra imprimir contrato sem assinatura por a hidratação não ter
+      // terminado (ou ter falhado). Melhor recusar com mensagem do que entregar
+      // ao cliente um documento que parece não assinado.
+      if (sel && !_agContratoCompleto(sel)) {
+        throw new Error("As assinaturas ainda estão carregando. Aguarde um instante e tente de novo.");
+      }
+      return buildContratoHtml();
+    }
     if (tipo === "multa") return buildMultaHtml();
     return "";
   }
@@ -46637,7 +47459,9 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
     if (!emailOk) { alert("Informe o e-mail do destinatário."); return; }
     setEnviandoEmail(true);
     var html = "";
-    try { html = getDocHtml(); } catch(e) {}
+    // A mensagem do erro importa: "assinaturas ainda carregando" é acionável,
+    // "erro ao gerar" faz o usuario achar que o contrato esta corrompido.
+    try { html = getDocHtml(); } catch(e) { alert(e.message || "Erro ao gerar o documento."); setEnviandoEmail(false); return; }
     if (!html || html.length < 100) {
       alert("Erro ao gerar o documento. Verifique os dados selecionados.");
       setEnviandoEmail(false); return;
@@ -47075,7 +47899,7 @@ function App() {
   }, []);
 
   const [tab, setTab] = useState(function(){
-    var TABS_VALIDAS = ["inicio","cadastro","frota","clientes","contratos","reservas","multas","manutencao","operacional","financeiro","relatorios","simulador","config","calendario","linha_do_tempo","usuarios"];
+    var TABS_VALIDAS = ["inicio","cadastro","frota","clientes","contratos","reservas","multas","manutencao","operacional","financeiro","relatorios","simulador","config","calendario","linha_do_tempo","usuarios","sinistros","fornecedores"];
     // Ao atualizar a página (F5), permanece na mesma aba em vez de voltar para a aba
     // inicial configurada — essa só vale para quando o app é aberto do zero (sessão nova).
     try { var last = sessionStorage.getItem("ag_current_tab"); if (last && TABS_VALIDAS.indexOf(last) >= 0) return last; } catch(e) {}
@@ -47470,7 +48294,12 @@ function App() {
     // para calcular badge correto já no primeiro render
     Promise.all([
       db.get("veiculos"),
-      db.getAll("contratos")]).then(function(results) {
+      // Sem as colunas pesadas (assinaturas e checklists): elas não aparecem em
+      // lista nenhuma e respondiam pela maior parte dos MB baixados no boot.
+      // hidratarContrato() as busca na hora de gerar documento.
+      _agColunasLeves("contratos").then(function(sel){
+        return db.getAll("contratos", sel ? { select: sel } : undefined);
+      })]).then(function(results) {
       var veics = results[0] || [];
       var cts = results[1] || [];
       marcarAcordado();
@@ -47531,6 +48360,77 @@ function App() {
     db.getAll("usos").then(d => setUsos(d || []));
     db.get("config", "limit=1").then(d => { if (d && d[0]) { setEmpresa(d[0]); preloadLogoEmbed(d[0].logo_url); } });
   }, [refreshTick]);
+
+  /* ── Sincronização entre usuários ────────────────────────────────────────
+     Antes, o que outro usuário criasse ou apagasse só aparecia depois de um F5:
+     dois atendentes trabalhando juntos viam telas diferentes e fechavam
+     contrato em cima do mesmo carro. Aqui a cada ciclo buscamos só as linhas
+     com updated_at maior que a última vista — payload pequeno, sem WebSocket
+     e sem depender de biblioteca que este app (sem bundler) não tem.
+
+     A marca d'água avança pelo updated_at que o SERVIDOR devolveu, nunca pelo
+     relógio do navegador: se o relógio local estiver adiantado, avançar por ele
+     pularia registros e a tela ficaria desatualizada em silêncio. A largada
+     também recua 2 minutos pelo mesmo motivo. */
+  var _syncMarcaRef = React.useRef(null);
+  React.useEffect(function() {
+    if (!logado) return;
+    var INTERVALO = 25000;
+    var tabelas = [
+      ["veiculos", setVeiculos], ["clientes", setClientes], ["contratos", setContratos],
+      ["reservas", setReservas], ["multas", setMultas], ["manutencao", setManutencoes],
+      ["despesas", setDespesas], ["receitas", setReceitas], ["contas", setContas],
+      ["usos", setUsos]
+    ];
+    if (!_syncMarcaRef.current) _syncMarcaRef.current = new Date(Date.now() - 120000).toISOString();
+    var vivo = true;
+    var timer = null;
+
+    function aplicar(setter, linhas) {
+      setter(function(atual) {
+        var lista = (atual || []).slice();
+        var porId = Object.create(null);
+        lista.forEach(function(x, i){ porId[String(x.id)] = i; });
+        var mudou = false;
+        linhas.forEach(function(row) {
+          var k = String(row.id);
+          var idx = porId[k];
+          if (row.deleted_at) {
+            if (idx !== undefined) { lista[idx] = null; mudou = true; }
+            return;
+          }
+          if (idx === undefined) { lista.unshift(row); mudou = true; }
+          else { lista[idx] = Object.assign({}, lista[idx], row); mudou = true; }
+        });
+        if (!mudou) return atual;
+        return lista.filter(Boolean);
+      });
+    }
+
+    async function ciclo() {
+      // Aba em segundo plano ou offline: não gasta requisição nem bateria.
+      if (!vivo || document.hidden || navigator.onLine === false || !_agCap.updatedAt) return;
+      var maior = _syncMarcaRef.current;
+      for (var i = 0; i < tabelas.length; i++) {
+        if (!vivo) return;
+        try {
+          var linhas = await db.getMudancas(tabelas[i][0], _syncMarcaRef.current);
+          if (linhas.length) {
+            aplicar(tabelas[i][1], linhas);
+            linhas.forEach(function(r){ if (r.updated_at && r.updated_at > maior) maior = r.updated_at; });
+          }
+        } catch(e) { /* falha de rede num ciclo não quebra os próximos */ }
+      }
+      _syncMarcaRef.current = maior;
+    }
+
+    function agendar() { timer = setTimeout(function(){ ciclo().finally(agendar); }, INTERVALO); }
+    agendar();
+    // Voltar para a aba deve atualizar na hora, não esperar o próximo ciclo.
+    function aoVoltar() { if (!document.hidden) ciclo(); }
+    document.addEventListener("visibilitychange", aoVoltar);
+    return function(){ vivo = false; clearTimeout(timer); document.removeEventListener("visibilitychange", aoVoltar); };
+  }, [logado]);
 
   // ── Notificação de nova reserva no WhatsApp do dono (11989990949) ──
   React.useEffect(function() {
@@ -47771,6 +48671,7 @@ function App() {
       if (operacionalSubTab === "reservas") return React.createElement(Reservas, { ...props });
       if (operacionalSubTab === "multas") return React.createElement(Multas, { ...props, veiculos: veiculos });
       if (operacionalSubTab === "manutencao") return React.createElement(Manutencao, { ...props });
+      if (operacionalSubTab === "sinistros") return React.createElement(Sinistros, { veiculos: veiculos, clientes: clientes, contratos: contratos, toast: toast });
       return React.createElement(Contratos, { ...props });
     }
     if (tab === "frota") return React.createElement(Cadastro, { ...props, subTabProp: "frota", setSubTabProp: setCadastroSubTab });
@@ -48916,11 +49817,13 @@ var SUBTABS_MAP = {
   operacional: [
     {id:'contratos',  label:'Contratos'},
     {id:'multas',     label:'Multas'},
-    {id:'manutencao', label:'Manutenção'}],
+    {id:'manutencao', label:'Manutenção'},
+    {id:'sinistros',  label:'Sinistros'}],
   cadastro: [
-    {id:'frota',    label:'Frota'},
-    {id:'clientes', label:'Clientes'},
-    {id:'tarifas',  label:'Tarifas'}],
+    {id:'frota',        label:'Frota'},
+    {id:'clientes',     label:'Clientes'},
+    {id:'tarifas',      label:'Tarifas'},
+    {id:'fornecedores', label:'Fornecedores'}],
   config: [
     {id:'config_geral', label:'Config'},
     {id:'usuarios',     label:'Usuários'},

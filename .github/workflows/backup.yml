@@ -1,0 +1,102 @@
+name: Backup do banco
+
+# Backup automatizado. Antes existia apenas um arquivo solto em backups/,
+# de abril — na prática, nenhum backup. Roda todo dia de madrugada (03:10 UTC
+# = 00:10 em Brasília) e também sob demanda pelo botão "Run workflow".
+#
+# Requer um secret: SUPABASE_SERVICE_KEY (Settings > Secrets > Actions).
+# Use a service_role key, não a anon: a anon é barrada pelo RLS e o backup
+# sairia vazio sem erro nenhum.
+
+on:
+  schedule:
+    - cron: '10 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exportar tabelas
+        env:
+          SB_URL: https://jsyiriqtzpbuqvjrkwin.supabase.co
+          SB_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SB_KEY:-}" ]; then
+            echo "::error::Secret SUPABASE_SERVICE_KEY não configurado."
+            echo "Crie em Settings > Secrets and variables > Actions com a service_role key do Supabase."
+            exit 1
+          fi
+
+          DIA=$(date -u +%Y-%m-%d)
+          DEST="backup/$DIA"
+          mkdir -p "$DEST"
+
+          TABELAS="clientes veiculos contratos multas manutencao despesas receitas contas orcamento_pessoal orcamentos ocupacao_historico perfis usuarios config reservas usos fornecedores sinistros"
+
+          FALHAS=0
+          for T in $TABELAS; do
+            echo "→ $T"
+            # Paginado: PostgREST corta a resposta no max-rows do projeto, e um
+            # backup truncado é pior que nenhum — passa despercebido.
+            OFFSET=0
+            LIMITE=1000
+            echo "[" > "$DEST/$T.json"
+            PRIMEIRO=1
+            while : ; do
+              CORPO=$(curl -sS --fail-with-body \
+                -H "apikey: $SB_KEY" \
+                -H "Authorization: Bearer $SB_KEY" \
+                "$SB_URL/rest/v1/$T?select=*&order=id.asc&limit=$LIMITE&offset=$OFFSET" 2>&1) || {
+                  # Tabela ausente (ex.: fornecedores antes de rodar o SQL) não
+                  # é motivo para falhar o backup inteiro.
+                  echo "  ignorada ($T): $(echo "$CORPO" | head -c 120)"
+                  rm -f "$DEST/$T.json"
+                  CORPO=""
+                  break
+                }
+              N=$(echo "$CORPO" | jq 'length')
+              if [ "$N" -gt 0 ]; then
+                if [ "$PRIMEIRO" -eq 0 ]; then echo "," >> "$DEST/$T.json"; fi
+                echo "$CORPO" | jq -c '.[]' | paste -sd, - >> "$DEST/$T.json"
+                PRIMEIRO=0
+              fi
+              [ "$N" -lt "$LIMITE" ] && break
+              OFFSET=$((OFFSET + LIMITE))
+            done
+            if [ -f "$DEST/$T.json" ]; then
+              echo "]" >> "$DEST/$T.json"
+              # Valida o JSON gerado: arquivo corrompido não serve de backup.
+              jq empty "$DEST/$T.json" || { echo "::error::JSON inválido em $T"; FALHAS=1; }
+              echo "  $(jq 'length' "$DEST/$T.json") registros"
+            fi
+          done
+
+          [ "$FALHAS" -eq 0 ] || exit 1
+
+          # Resumo legível junto do dump, para saber o que tem ali sem abrir tudo.
+          {
+            echo "# Backup $DIA"
+            echo
+            for F in "$DEST"/*.json; do
+              [ -e "$F" ] || continue
+              echo "- $(basename "$F" .json): $(jq 'length' "$F") registros"
+            done
+          } > "$DEST/RESUMO.md"
+          cat "$DEST/RESUMO.md"
+
+      - name: Publicar como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-${{ github.run_id }}
+          path: backup/
+          # 90 dias é o teto do GitHub para retenção de artifact.
+          retention-days: 90

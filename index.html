@@ -42022,6 +42022,35 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
             var APPEND_ONLY = ["audit_log"];
             var sql = "";
 
+            /* Trava de seguranca ANTES de qualquer alteracao. Se nenhum usuario
+               tiver login vinculado (auth_user_id) num perfil Administrador com
+               as tres permissoes, este script trancaria o dono para fora do
+               proprio sistema: ag_perm() e ag_is_admin() responderiam false para
+               todo mundo e ninguem conseguiria mais escrever. O Supabase roda o
+               script numa transacao, entao o raise aqui desfaz tudo. */
+            sql += "-- ===================================================================\n";
+            sql += "-- VERIFICACAO PREVIA - nao altera nada, so impede o tiro no pe.\n";
+            sql += "-- ===================================================================\n";
+            sql += "do $chk$\n";
+            sql += "declare\n  n_admin int;\n  n_login int;\nbegin\n";
+            sql += "  if to_regclass('public.usuarios') is null or to_regclass('public.perfis') is null then\n";
+            sql += "    raise exception 'ABORTADO: tabelas usuarios/perfis nao existem. Rode o script 1 (schema) primeiro.';\n";
+            sql += "  end if;\n\n";
+            sql += "  select count(*) into n_login from usuarios where auth_user_id is not null;\n";
+            sql += "  select count(*) into n_admin\n";
+            sql += "    from usuarios u join perfis pf on pf.id = u.perfil_id\n";
+            sql += "   where u.auth_user_id is not null\n";
+            sql += "     and pf.nome = 'Administrador'\n";
+            sql += "     and coalesce((pf.permissoes->>'criar')::boolean, false)\n";
+            sql += "     and coalesce((pf.permissoes->>'editar')::boolean, false)\n";
+            sql += "     and coalesce((pf.permissoes->>'excluir')::boolean, false);\n\n";
+            sql += "  if n_admin = 0 then\n";
+            sql += "    raise exception 'ABORTADO: nenhum administrador utilizavel (usuarios com login vinculado: %). Nada foi alterado.', n_login\n";
+            sql += "      using hint = 'Rode esta consulta para ver a situacao: select u.nome, u.email, u.auth_user_id is not null as tem_login, pf.nome as perfil, pf.permissoes from usuarios u left join perfis pf on pf.id = u.perfil_id; -- Corrija em Config > Usuarios: o seu usuario precisa de login (e-mail/senha) E de um perfil chamado exatamente Administrador com criar/editar/excluir = true.';\n";
+            sql += "  end if;\n\n";
+            sql += "  raise notice 'OK: % administrador(es) com login vinculado. Seguindo.', n_admin;\n";
+            sql += "end $chk$;\n\n";
+
             sql += "-- ===================================================================\n";
             sql += "-- RLS por PERFIL. As permissões criar/editar/excluir de cada perfil\n";
             sql += "-- (Config -> Usuários -> Perfis) passam a valer no banco, não só na\n";

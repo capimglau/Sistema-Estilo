@@ -9,9 +9,25 @@ Os dois são idempotentes: rodar de novo não duplica nada nem perde dado.
 
 ## Antes de rodar o 02
 
-O `02` fecha o banco por perfil. **Todos os usuários precisam ter e-mail/senha
-cadastrados** em Config → Usuários (e `usuarios.auth_user_id` preenchido).
-Sem isso, ninguém autenticado consegue escrever depois que ele rodar.
+O `02` fecha o banco por perfil. Ele **começa com uma verificação prévia** e
+aborta sem alterar nada se ninguém conseguiria mais escrever depois — ou seja,
+não dá para se trancar para fora com ele.
+
+A condição: existir ao menos um usuário com login vinculado
+(`usuarios.auth_user_id` preenchido) cujo perfil se chame exatamente
+`Administrador` e tenha `criar`, `editar` e `excluir` em `true`.
+
+Para conferir antes (consulta somente leitura):
+
+```sql
+select u.nome, u.email, u.auth_user_id is not null as tem_login,
+       pf.nome as perfil, pf.permissoes
+  from usuarios u
+  left join perfis pf on pf.id = u.perfil_id;
+```
+
+Se você consegue entrar no app com e-mail e senha, `tem_login` já é `true` —
+o próprio login busca o usuário por `auth_user_id` e recusa se não achar.
 
 ## O que o 02 faz
 

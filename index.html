@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="a147b2b"/>
+<meta name="ag-build" content="5191960"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -15997,6 +15997,38 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
     }
   } catch(e){}
 })();
+
+/* ── Service worker ────────────────────────────────────────────────────────
+   O app tinha manifest.json e nenhum SW: não abria offline e rebaixava os
+   ~3 MB do index.html a cada abertura. Registro fora do bundle React de
+   propósito — se o app quebrar no boot, o SW já está instalado e a próxima
+   abertura offline ainda funciona.
+   Só em http(s): via file:// o navegador recusa e joga erro no console. */
+(function(){
+  if (!("serviceWorker" in navigator)) return;
+  if (location.protocol !== "http:" && location.protocol !== "https:") return;
+  window.addEventListener("load", function(){
+    navigator.serviceWorker.register("sw.js").then(function(reg){
+      // Deploy novo detectado enquanto o app está aberto: avisa em vez de
+      // trocar por baixo do usuário no meio de um cadastro.
+      reg.addEventListener("updatefound", function(){
+        var novo = reg.installing;
+        if (!novo) return;
+        novo.addEventListener("statechange", function(){
+          if (novo.state === "installed" && navigator.serviceWorker.controller) {
+            window.__agSwUpdatePronto = function(){
+              novo.postMessage("skipWaiting");
+              novo.addEventListener("statechange", function(){
+                if (novo.state === "activated") location.reload();
+              });
+            };
+            window.dispatchEvent(new CustomEvent("ag-sw-update"));
+          }
+        });
+      });
+    }).catch(function(e){ console.warn("[sw] registro falhou:", e); });
+  });
+})();
 </script>
 <!-- Liquid Glass lens distortion filter — referenced by .dock-distort-halo -->
 <svg id="dock-glass-svg" style="position:absolute;width:0;height:0;overflow:hidden;pointer-events:none" aria-hidden="true">
@@ -16245,6 +16277,23 @@ function fetchWithTimeout(url, opts, ms) {
     .finally(function() { clearTimeout(id); });
 }
 
+/* ── IA via Edge Function ──────────────────────────────────────────────────
+   A chave da Anthropic não existe mais no navegador. Antes ela vinha de
+   config.claude_api_key (lida por qualquer usuário autenticado) e de
+   localStorage, e ia direto pra api.anthropic.com com
+   anthropic-dangerous-direct-browser-access — ou seja, qualquer pessoa com
+   acesso ao app extraía a chave. Agora ela vive só no secret
+   ANTHROPIC_API_KEY da function claude-proxy, que exige sessão válida.
+   Devolve a Response crua: os chamadores já tratam resp.ok e resp.json(). */
+const CLAUDE_PROXY_URL = SB_URL + "/functions/v1/claude-proxy";
+function agClaudeFetch(payload, timeoutMs) {
+  return fetchWithTimeout(CLAUDE_PROXY_URL, {
+    method: "POST",
+    headers: { apikey: SB_KEY, Authorization: HDR.Authorization, "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  }, timeoutMs || 120000);
+}
+
 const db = {
   async get(t, q) {
     try {
@@ -16295,6 +16344,7 @@ const db = {
     } catch(e) { /* best-effort */ }
   },
   async post(t, d) {
+    if (!_agPodeEscrever(t, "criar")) throw new Error(_agMsgPermissao("criar registros"));
     const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t, { method: "POST", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
     if (!r.ok) { let e = {}; try { e = await r.json(); } catch(_){} throw new Error(e.message || e.details || e.hint || ("Erro HTTP " + r.status)); }
     const j = await r.json().catch(function(){ return null; });
@@ -16307,6 +16357,7 @@ const db = {
     return rec;
   },
   async patch(t, id, d) {
+    if (!_agPodeEscrever(t, "editar")) throw new Error(_agMsgPermissao("editar registros"));
     const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
     if (!r.ok) { const e = await r.json(); throw new Error(e.message || "Erro"); }
     const j = await r.json();
@@ -16319,6 +16370,7 @@ const db = {
     return rec;
   },
   async del(t, id) {
+    if (!_agPodeEscrever(t, "excluir")) throw new Error(_agMsgPermissao("excluir registros"));
     const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "DELETE", headers: Object.assign({}, HDR, { Prefer: "return=representation" }) }, 30000);
     if (!r.ok) { let msg = "Erro ao excluir"; try { const e = await r.json(); msg = e.message || e.hint || msg; } catch(_){} throw new Error(msg); }
     const j = await r.json().catch(function(){ return []; });
@@ -16484,6 +16536,198 @@ function maskCNH(v){ if(!v) return "--"; if(!_privOn()) return v; return String(
 function maskTel(v){ if(!v) return "--"; if(!_privOn()) return v; var d=String(v).replace(/\D/g,""); return d.length>=6?"("+d.slice(0,2)+") ****-"+d.slice(-4):"***"; }
 function maskEmail(v){ if(!v) return "--"; if(!_privOn()) return v; var p=v.split("@"); return p[0].slice(0,2)+"***@"+(p[1]||"***"); }
 function lgpdConsentDate(){ try{ return localStorage.getItem("ag_lgpd_consent"); }catch(e){ return null; } }
+// ─────────────────────────────────────────────────────────────────────────
+
+/* Antecedência (em km) com que a revisão preventiva passa a ser avisada. */
+var KM_REVISAO_ALERTA = 1000;
+
+/* Situação da revisão por quilometragem de um veículo.
+   Retorna null quando não há meta cadastrada — veículo sem km_revisao_proxima
+   simplesmente não entra nos alertas por km (continua valendo venc_revisao). */
+function statusRevisaoKm(v) {
+  var meta = parseFloat(v && v.km_revisao_proxima || 0);
+  if (!meta) return null;
+  var atual = parseFloat(v.km_atual || 0);
+  var falta = meta - atual;
+  return {
+    meta: meta,
+    atual: atual,
+    falta: falta,
+    vencida: falta <= 0,
+    proxima: falta > 0 && falta <= KM_REVISAO_ALERTA
+  };
+}
+
+/* ── Reservas × frota ──────────────────────────────────────────────────────
+   A tabela `reservas` guardava o veículo como texto livre (r.veiculo), vindo do
+   formulário público. Sem FK, uma reserva não bloqueava carro nenhum: dava pra
+   confirmar duas reservas do mesmo veículo no mesmo período, e ainda por cima
+   fechar um contrato por cima. Agora existe reservas.veiculo_id; o texto vira
+   só o que o cliente pediu, e estas funções fazem a ponte. */
+
+/* Duas faixas [aIni,aFim] e [bIni,bFim] se sobrepõem? Datas em ISO (YYYY-MM-DD),
+   comparadas como string — formato ISO ordena igual à data. Faixa sem fim é
+   tratada como indeterminada (bloqueia daí em diante). */
+function _periodosSobrepoem(aIni, aFim, bIni, bFim) {
+  if (!aIni || !bIni) return false;
+  var aF = aFim || "9999-12-31";
+  var bF = bFim || "9999-12-31";
+  return aIni <= bF && bIni <= aF;
+}
+
+/* Resolve o veículo de uma reserva: primeiro pela FK; se ainda não houver
+   (reservas antigas, ou vindas do site), tenta casar o texto com placa ou
+   marca/modelo. Devolve null quando não dá pra afirmar qual é. */
+function veiculoDaReserva(r, veiculos) {
+  if (!r) return null;
+  var lista = veiculos || [];
+  if (r.veiculo_id) {
+    return lista.find(function(v){ return String(v.id) === String(r.veiculo_id); }) || null;
+  }
+  var txt = String(r.veiculo || "").trim();
+  if (!txt) return null;
+  var alvo = fmtPlaca(txt);
+  var porPlaca = lista.find(function(v){ return v.placa && fmtPlaca(v.placa) === alvo; });
+  if (porPlaca) return porPlaca;
+  // Casamento por modelo só vale se for único — "Polo" com três Polos na frota
+  // é ambíguo, e chutar um deles produziria bloqueio de agenda errado.
+  var norm = txt.toLowerCase();
+  var candidatos = lista.filter(function(v){
+    var nome = ((v.marca || "") + " " + (v.modelo || "")).trim().toLowerCase();
+    return nome && (norm.indexOf(nome) >= 0 || nome.indexOf(norm) >= 0);
+  });
+  return candidatos.length === 1 ? candidatos[0] : null;
+}
+
+/* Conflitos de agenda de um veículo no período da reserva.
+   Considera contratos ativos e outras reservas confirmadas — reserva
+   pendente não segura carro, e cancelada não conta. */
+function conflitosDaReserva(r, veiculoId, contratos, reservas) {
+  var ini = r && r.data_retirada, fim = r && r.data_devolucao;
+  var out = { contratos: [], reservas: [] };
+  if (!veiculoId || !ini) return out;
+
+  (contratos || []).forEach(function(c){
+    if (String(c.veiculo_id) !== String(veiculoId)) return;
+    if (c.status !== "ativo") return;
+    if (_periodosSobrepoem(ini, fim, c.data_inicio, c.data_fim)) out.contratos.push(c);
+  });
+
+  (reservas || []).forEach(function(o){
+    if (!o || o.id === (r && r.id)) return;
+    if (o.status !== "confirmada") return;
+    if (String(o.veiculo_id || "") !== String(veiculoId)) return;
+    if (_periodosSobrepoem(ini, fim, o.data_retirada, o.data_devolucao)) out.reservas.push(o);
+  });
+
+  return out;
+}
+
+/* Cliente da reserva: pela FK, senão pelo CPF/CNPJ (comparando só dígitos, já
+   que os cadastros antigos gravaram com e sem pontuação). */
+function clienteDaReserva(r, clientes) {
+  if (!r) return null;
+  var lista = clientes || [];
+  if (r.cliente_id) {
+    return lista.find(function(c){ return String(c.id) === String(r.cliente_id); }) || null;
+  }
+  var doc = _soDig(r.cpf || "");
+  if (!doc) return null;
+  return lista.find(function(c){ return _soDig(c.cpf || "") === doc; }) || null;
+}
+
+/* ── Validação de documentos ───────────────────────────────────────────────
+   Campo em branco é sempre válido aqui: só o formulário decide o que é
+   obrigatório. Estas funções respondem "o que foi digitado é um documento
+   possível?", não "o campo foi preenchido?". */
+function _soDig(v){ return String(v == null ? "" : v).replace(/\D/g, ""); }
+
+function validarCPF(v) {
+  var c = _soDig(v);
+  if (!c) return true;
+  if (c.length !== 11) return false;
+  if (/^(\d)\1{10}$/.test(c)) return false; // 111.111.111-11 passa no cálculo
+  for (var t = 9; t < 11; t++) {
+    var s = 0;
+    for (var i = 0; i < t; i++) s += parseInt(c[i], 10) * ((t + 1) - i);
+    var d = (s * 10) % 11; if (d === 10) d = 0;
+    if (d !== parseInt(c[t], 10)) return false;
+  }
+  return true;
+}
+
+function validarCNPJ(v) {
+  var c = _soDig(v);
+  if (!c) return true;
+  if (c.length !== 14) return false;
+  if (/^(\d)\1{13}$/.test(c)) return false;
+  var pesos = [6,5,4,3,2,9,8,7,6,5,4,3,2];
+  for (var t = 12; t < 14; t++) {
+    var p = pesos.slice(13 - t);
+    var s = 0;
+    for (var i = 0; i < t; i++) s += parseInt(c[i], 10) * p[i];
+    var d = s % 11;
+    d = d < 2 ? 0 : 11 - d;
+    if (d !== parseInt(c[t], 10)) return false;
+  }
+  return true;
+}
+
+/* Aceita CPF (11) ou CNPJ (14) — usado nos campos cpf_cnpj, que guardam os dois. */
+function validarCpfCnpj(v) {
+  var c = _soDig(v);
+  if (!c) return true;
+  if (c.length === 11) return validarCPF(c);
+  if (c.length === 14) return validarCNPJ(c);
+  return false;
+}
+
+/* Placa antiga (ABC1234) ou Mercosul (ABC1D23). Aceita com ou sem hífen. */
+function validarPlaca(v) {
+  if (!v) return true;
+  var p = String(v).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return /^[A-Z]{3}\d{4}$/.test(p) || /^[A-Z]{3}\d[A-Z]\d{2}$/.test(p);
+}
+
+function validarEmail(v) {
+  if (!v) return true;
+  return /^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(String(v).trim());
+}
+
+/* Telefone brasileiro: 10 dígitos (fixo) ou 11 (celular com 9). */
+function validarTelefone(v) {
+  var d = _soDig(v);
+  if (!d) return true;
+  return d.length === 10 || d.length === 11;
+}
+
+/* Formatadores — normalizam o que vai pro banco, para que busca e comparação
+   não dependam de o usuário ter digitado com ou sem pontuação. */
+function fmtCpfCnpj(v) {
+  var c = _soDig(v);
+  if (c.length === 11) return c.slice(0,3) + "." + c.slice(3,6) + "." + c.slice(6,9) + "-" + c.slice(9);
+  if (c.length === 14) return c.slice(0,2) + "." + c.slice(2,5) + "." + c.slice(5,8) + "/" + c.slice(8,12) + "-" + c.slice(12);
+  return v == null ? "" : String(v);
+}
+function fmtPlaca(v) {
+  return String(v == null ? "" : v).toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+function fmtTelefone(v) {
+  var d = _soDig(v);
+  if (d.length === 11) return "(" + d.slice(0,2) + ") " + d.slice(2,7) + "-" + d.slice(7);
+  if (d.length === 10) return "(" + d.slice(0,2) + ") " + d.slice(2,6) + "-" + d.slice(6);
+  return v == null ? "" : String(v);
+}
+
+/* Valida um conjunto de campos de uma vez e devolve a primeira mensagem de
+   erro (ou null). Cada regra é [valor, validador, mensagem]. */
+function primeiroErro(regras) {
+  for (var i = 0; i < regras.length; i++) {
+    var r = regras[i];
+    if (!r[1](r[0])) return r[2];
+  }
+  return null;
+}
 // ─────────────────────────────────────────────────────────────────────────
 function AlertBox({ cor, icon, titulo, items, sub, tab, setTab }) {
   if (!items || items.length === 0) return null;
@@ -23018,6 +23262,9 @@ function useMobile() {
 
 /* ── EFFECT 15 · HoldDeleteBtn ── */
 function HoldDeleteBtn({ onDelete, className, style, label, holdMs }) {
+  // Perfil sem permissão de excluir não vê o botão. Gate aqui (componente
+  // compartilhado) cobre todas as telas de uma vez; db.del ainda barra de novo.
+  if (!podeExcluir()) return null;
   var HOLD = holdMs || 1400;
   var _ref = React.useRef({});
   var [pct, setPct] = React.useState(0);
@@ -23127,6 +23374,13 @@ function BottomSheet({ open, onClose, title, children }) {
 function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel, deleteLabel, action2, action2Label, action2Icon, action2Color, wrapStyle, onRight, rightLabel, rightIcon, rightColor, leftActions }) {
   var wrapRef = React.useRef(null);
   var _sw = React.useRef({ on:false, sx:0, sy:0, dx:0, dir:null, moved:false });
+
+  /* Permissões do perfil: as ações que o usuário não pode executar simplesmente
+     não são reveladas no swipe. "Baixar" conta como edição (altera o registro). */
+  var _podeEd = podeEditar();
+  var _podeEx = podeExcluir();
+  if (!_podeEd) { onEdit = null; onBaixar = null; onRight = null; action2 = null; }
+  if (!_podeEx) { onDelete = null; }
 
   /* Lado DIREITO (revelar com swipe ←): Baixar + Editar + (opcional) terceira ação */
   var rightActions = [];
@@ -24457,6 +24711,10 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
   const str60 = new Date(_brNowMs() + 60*864e5).toISOString().split("T")[0];
   const str7doc = new Date(_brNowMs() + 7*864e5).toISOString().split("T")[0];
   const str30doc = new Date(_brNowMs() + 30*864e5).toISOString().split("T")[0];
+  // Revisão preventiva por quilometragem — independente das datas de documento:
+  // um carro pode estar com tudo em dia e mesmo assim ter passado da revisão.
+  const revisaoKmVencida  = veiculos.filter(function(v){ var s = statusRevisaoKm(v); return s && s.vencida; });
+  const revisaoKmProxima  = veiculos.filter(function(v){ var s = statusRevisaoKm(v); return s && s.proxima; });
   const docsVencidos = veiculos.filter(v => [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao].some(d => d && d < hoje));
   const docsCriticos = veiculos.filter(v => { var dts = [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao]; return dts.some(d => d && d >= hoje && d <= str7doc) && !dts.some(d => d && d < hoje); });
   const docsVencendo = veiculos.filter(v => { var dts = [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao]; return dts.some(d => d && d > str7doc && d <= str30doc) && !dts.some(d => d && d < hoje) && !dts.some(d => d && d >= hoje && d <= str7doc); });
@@ -24535,7 +24793,9 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
     { cor: C.orange, icon: "🏛️", titulo: "Prazo de notificação ao órgão vence em 3 dias (" + multasPrazoNotifVencendo.length + ")", items: multasPrazoNotifVencendo.map(function(m){ var ct=m.contrato_id?contratos.find(function(x){return x.id==m.contrato_id;}):null; var cl=ct?clientes.find(function(x){return x.id==ct.cliente_id;}):clientes.find(function(x){return x.id==m.cliente_id;}); return (cl&&cl.nome||"–")+" · "+(m.tipo||"Multa")+" · prazo "+fmtDate(m.prazo_notificacao_orgao||m.vencimento); }), itemRefs: multasPrazoNotifVencendo.map(function(m){ return {id:m.id,type:"multa"}; }), sub: "Indique o condutor ao órgão antes do prazo!", tab: "multas" },
     { cor: C.purple, icon: "🔧", titulo: "Manutenções com prazo vencido (" + manutProlongadas.length + ")",          items: manutProlongadas.map(function(m){ var ve = veiculos.find(function(v){return v.id==m.veiculo_id;}); return (ve&&ve.placa||"--") + " · " + m.tipo + " · " + fmtDate(m.data_saida); }), itemRefs: manutProlongadas.map(function(m){ return {id:m.id,type:"manutencao"}; }), tab: "manutencao" },
     { cor: C.orange, icon: "🔧", titulo: "Manutenções com pagamento em atraso (" + manutPendPagto.length + ")",      items: manutPendPagto.map(function(m){ var ve = veiculos.find(function(v){return v.id==m.veiculo_id;}); return (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção") + " · " + fmtBRL(m.custo) + " · " + fmtDate(m.data_previsao_pagamento||m.data_entrada); }), itemRefs: manutPendPagto.map(function(m){ return {id:m.id,type:"manutencao"}; }), sub: "Total: " + fmtBRL(manutPendPagto.reduce(function(s,m){return s+parseFloat(m.custo||0);},0)), tab: "manutencao" },
-    { cor: C.red,    icon: "📄", titulo: "Documentos vencidos (" + docsVencidos.length + ")",                        items: docsVencidos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]<hoje;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), itemRefs: docsVencidos.map(function(v){ return {id:v.id,type:"veiculo"}; }), tab: "frota" },
+    { cor: C.red,    icon: "🔧", titulo: "Revisão vencida por KM (" + revisaoKmVencida.length + ")",                 items: revisaoKmVencida.map(function(v){ var s = statusRevisaoKm(v); return v.placa + " · " + s.atual.toLocaleString("pt-BR") + " km · " + Math.abs(s.falta).toLocaleString("pt-BR") + " km além da revisão"; }), itemRefs: revisaoKmVencida.map(function(v){ return {id:v.id,type:"veiculo"}; }), tab: "frota" },
+    { cor: C.orange, icon: "🔧", titulo: "Revisão próxima por KM (" + revisaoKmProxima.length + ")",                 items: revisaoKmProxima.map(function(v){ var s = statusRevisaoKm(v); return v.placa + " · faltam " + s.falta.toLocaleString("pt-BR") + " km (revisão em " + s.meta.toLocaleString("pt-BR") + " km)"; }), itemRefs: revisaoKmProxima.map(function(v){ return {id:v.id,type:"veiculo"}; }), tab: "frota" },
+    { cor: C.red,    icon: "📄", titulo: "Documentos vencidos (" + docsVencidos.length + ")",                      items: docsVencidos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]<hoje;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), itemRefs: docsVencidos.map(function(v){ return {id:v.id,type:"veiculo"}; }), tab: "frota" },
     { cor: C.red,    icon: "⚠️", titulo: "Documentos vencendo em 7 dias (" + docsCriticos.length + ")",              items: docsCriticos.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]>=hoje&&p[1]<=str7doc;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), itemRefs: docsCriticos.map(function(v){ return {id:v.id,type:"veiculo"}; }), tab: "frota" },
     { cor: C.orange, icon: "📄", titulo: "Documentos vencendo em 30 dias (" + docsVencendo.length + ")",             items: docsVencendo.map(function(v){ var tipos = [["IPVA",v.venc_ipva],["Seguro",v.venc_seguro],["Licenc.",v.venc_licenciamento],["Revisão",v.venc_revisao]].filter(function(p){return p[1]&&p[1]>str7doc&&p[1]<=str30doc;}).map(function(p){return p[0]+": "+fmtDate(p[1]);}).join(", "); return v.placa + " · " + tipos; }), itemRefs: docsVencendo.map(function(v){ return {id:v.id,type:"veiculo"}; }), tab: "frota" },
     // ── ORÇAMENTO PESSOAL ──────────────────────────────────────────────────
@@ -28695,7 +28955,12 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
   var _abrirNovoVeiculoRef = React.useRef(null);
   _abrirNovoVeiculoRef.current = function() { setForm({ status: "disponivel" }); setEdit(null); setModal(true); };
   React.useEffect(function() {
-    function abrirNovoVeiculo() { if(_abrirNovoVeiculoRef.current) _abrirNovoVeiculoRef.current(); }
+    function abrirNovoVeiculo() {
+      // Atalho de criação também respeita o perfil — senão o painel "Novo"
+      // abre um formulário que o db.post vai recusar no fim.
+      if (!podeCriar()) { toast(_agMsgPermissao("criar veículo"), "error"); return; }
+      if(_abrirNovoVeiculoRef.current) _abrirNovoVeiculoRef.current();
+    }
     document.addEventListener("autoguest:novo-veiculo", abrirNovoVeiculo);
     return function() { document.removeEventListener("autoguest:novo-veiculo", abrirNovoVeiculo); };
   }, []);
@@ -28707,6 +28972,10 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
   function F(k, v) { setForm(p => Object.assign({}, p, { [k]: v })); }
   async function save() {
     if (!form.placa || !form.modelo) return toast("Placa e Modelo obrigatorios", "error");
+    var _err = primeiroErro([
+      [form.placa, validarPlaca, "Placa inválida. Use o formato ABC1234 ou ABC1D23 (Mercosul)."]
+    ]);
+    if (_err) return toast(_err, "error");
     setLoading(true);
     try {
       // Status permitidos via este form: manutencao, inativo, disponivel (para liberar).
@@ -28715,6 +28984,9 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
       if (payload.status === "alugado") {
         delete payload.status;
       }
+      // Placa sem pontuação e em maiúsculas — é a chave que liga veículo a
+      // contrato, multa e manutenção; "ABC-1234" e "abc1234" têm que ser a mesma.
+      if (payload.placa) payload.placa = fmtPlaca(payload.placa);
       if (edit) { const u = await db.patch("veiculos", edit, payload); setVeiculos(p => p.map(v => v.id === edit ? Object.assign({}, v, u) : v)); toast("Atualizado!"); }
       else { const c = await db.post("veiculos", payload); setVeiculos(p => [c].concat(p)); toast("Cadastrado!"); }
       setModal(false);
@@ -28786,7 +29058,15 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
           , React.createElement('div', { style: { fontSize: 12, color: C.sub, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }
             , v.ano && React.createElement('span', { style: { fontWeight: 600, color: "var(--c-text)", fontSize: 12, background: "rgba(120,120,128,0.12)", borderRadius: 6, padding: "2px 7px" } }, v.ano)
             , v.cor && React.createElement('span', null, v.cor)
-            , v.km && React.createElement('span', null, Number(v.km).toLocaleString(), " km")
+            /* Antes lia v.km, campo que nenhum formulário preenchia — a
+               quilometragem nunca aparecia. Agora usa o odômetro real. */
+            , (v.km_atual || v.km) ? React.createElement('span', null, Number(v.km_atual || v.km).toLocaleString("pt-BR"), " km") : null
+            , (function(){
+                var s = statusRevisaoKm(v);
+                if (!s || (!s.vencida && !s.proxima)) return null;
+                return React.createElement('span', { style: { fontWeight: 700, fontSize: 11, color: s.vencida ? C.red : C.orange, background: (s.vencida ? "rgba(255,59,48,0.12)" : "rgba(255,149,0,0.12)"), borderRadius: 6, padding: "2px 7px" } },
+                  s.vencida ? "🔧 Revisão vencida" : "🔧 Revisão em " + s.falta.toLocaleString("pt-BR") + " km");
+              })()
           )
           , React.createElement('div', { style: { fontWeight: 600, color: C.green, fontSize: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 525}}, fmtBRL(v.valor_diaria), React.createElement('span', { style: { fontWeight: 400, fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 525}}, "/dia"), v.valor_mensal ? React.createElement('span', { style: { fontWeight: 500, fontSize: 12, color: C.sub, marginLeft: 8 } }, "· " + fmtBRL(v.valor_mensal) + "/mês") : null)
           , (function() {
@@ -28927,6 +29207,22 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
           , React.createElement(Lbl, { label: "Venc. Licenciamento" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 573}}, React.createElement('input', { style: FI, type: "date", value: form.venc_licenciamento || "", onChange: e => F("venc_licenciamento", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 573}} ))
           , React.createElement(Lbl, { label: "Venc. Revisão" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 574}}, React.createElement('input', { style: FI, type: "date", value: form.venc_revisao || "", onChange: e => F("venc_revisao", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 574}} ))
         )
+        /* Odômetro: km_atual avança sozinho a cada contrato encerrado (km de
+           retorno). km_revisao_proxima é a meta de quilometragem da próxima
+           revisão — o alerta dispara quando km_atual chega perto dela. */
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "KM Atual (odômetro)", flex: 1 }, React.createElement('input', { style: FI, type: "number", min: "0", value: form.km_atual == null ? "" : form.km_atual, onChange: e => F("km_atual", e.target.value === "" ? null : parseInt(e.target.value, 10)), placeholder: "0" }))
+          , React.createElement(Lbl, { label: "KM da próxima revisão", flex: 1 }, React.createElement('input', { style: FI, type: "number", min: "0", value: form.km_revisao_proxima == null ? "" : form.km_revisao_proxima, onChange: e => F("km_revisao_proxima", e.target.value === "" ? null : parseInt(e.target.value, 10)), placeholder: "ex: 60000" }))
+        )
+        , (function(){
+            var _ka = parseFloat(form.km_atual || 0), _kr = parseFloat(form.km_revisao_proxima || 0);
+            if (!_kr) return null;
+            var _falta = _kr - _ka;
+            var _cor = _falta <= 0 ? C.red : _falta <= KM_REVISAO_ALERTA ? C.orange : C.sub;
+            return React.createElement('div', { style: { fontSize: 12, color: _cor, marginTop: -4, fontWeight: _falta <= KM_REVISAO_ALERTA ? 700 : 400 } },
+              _falta <= 0 ? ("🔧 Revisão vencida — " + Math.abs(_falta).toLocaleString("pt-BR") + " km além da meta")
+                          : ("Faltam " + _falta.toLocaleString("pt-BR") + " km para a revisão"));
+          })()
         , React.createElement(Lbl, { label: "Sinistros / Observações"  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 576}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 60, fontSize: 13 }), value: form.sinistros || "", onChange: e => F("sinistros", e.target.value), placeholder: "Histórico de acidentes, danos, observações..."    , __self: this, __source: {fileName: _jsxFileName, lineNumber: 576}} ))
         , React.createElement(UploadField, { label: "CRV/CRLV", value: form.crv_url || "", onChange: v => F("crv_url", v), pasta: "crv", nome: form.placa || "veiculo", __self: this, __source: {fileName: _jsxFileName, lineNumber: 577}} )
         , React.createElement('button', { className: bCls(Btn()), style: bStyle(Btn()), onClick: save, disabled: loading, __self: this, __source: {fileName: _jsxFileName, lineNumber: 578}}, loading ? "Salvando..." : "Salvar")
@@ -28964,7 +29260,12 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
   var _abrirNovoClienteRef = React.useRef(null);
   _abrirNovoClienteRef.current = function() { setForm({}); setEdit(null); setModal(true); };
   useEffect(function() {
-    function abrirNovoCliente() { if(_abrirNovoClienteRef.current) _abrirNovoClienteRef.current(); }
+    function abrirNovoCliente() {
+      // Atalho de criação também respeita o perfil — senão o painel "Novo"
+      // abre um formulário que o db.post vai recusar no fim.
+      if (!podeCriar()) { toast(_agMsgPermissao("criar cliente"), "error"); return; }
+      if(_abrirNovoClienteRef.current) _abrirNovoClienteRef.current();
+    }
     document.addEventListener("autoguest:novo-cliente", abrirNovoCliente);
     return function() { document.removeEventListener("autoguest:novo-cliente", abrirNovoCliente); };
   }, []);
@@ -29013,10 +29314,22 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
   }
   async function save() {
     if (!form.nome) return toast("Nome obrigatorio", "error");
+    var _err = primeiroErro([
+      [form.cpf,      validarCpfCnpj,   "CPF/CNPJ inválido — confira os dígitos."],
+      [form.email,    validarEmail,     "E-mail inválido."],
+      [form.telefone, validarTelefone,  "Telefone inválido — informe DDD + número."],
+      [form.responsavel_legal_cpf, validarCPF, "CPF do responsável legal inválido."]
+    ]);
+    if (_err) return toast(_err, "error");
+    // Normaliza antes de gravar: sem isso, o mesmo CPF entra como "529.982.247-25"
+    // e "52998224725", e a busca por cliente duplicado nunca acha.
+    var dados = Object.assign({}, form);
+    if (dados.cpf)      dados.cpf = fmtCpfCnpj(dados.cpf);
+    if (dados.telefone) dados.telefone = fmtTelefone(dados.telefone);
     setLoading(true);
     try {
-      if (edit) { const u = await db.patch("clientes", edit, form); setClientes(p => p.map(c => c.id === edit ? Object.assign({}, c, u) : c)); toast("Atualizado!"); }
-      else { const c = await db.post("clientes", form); setClientes(p => [c].concat(p)); toast("Cadastrado!"); }
+      if (edit) { const u = await db.patch("clientes", edit, dados); setClientes(p => p.map(c => c.id === edit ? Object.assign({}, c, u) : c)); toast("Atualizado!"); }
+      else { const c = await db.post("clientes", dados); setClientes(p => [c].concat(p)); toast("Cadastrado!"); }
       setModal(false);
     } catch(e) {
       // Fallback: colunas novas (profissão/referência) podem não existir ainda no
@@ -29024,10 +29337,10 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
       var NOVOS = ["profissao", "local_trabalho", "referencia_nome", "referencia_telefone",
         "tipo_pessoa", "nome_fantasia", "inscricao_estadual", "responsavel_legal_nome",
         "responsavel_legal_cpf", "condutor_nome", "endereco_comercial", "observacoes"];
-      var temNovo = NOVOS.some(function(k){ return form[k] !== undefined && form[k] !== ""; });
+      var temNovo = NOVOS.some(function(k){ return dados[k] !== undefined && dados[k] !== ""; });
       if (temNovo) {
         try {
-          var slim = Object.assign({}, form);
+          var slim = Object.assign({}, dados);
           NOVOS.forEach(function(k){ delete slim[k]; });
           if (edit) { const u2 = await db.patch("clientes", edit, slim); setClientes(p => p.map(c => c.id === edit ? Object.assign({}, c, u2) : c)); }
           else { const c2 = await db.post("clientes", slim); setClientes(p => [c2].concat(p)); }
@@ -29474,7 +29787,12 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     setModal(true);
   };
   useEffect(function() {
-    function abrirNovoContrato() { if(_abrirNovoContratoRef.current) _abrirNovoContratoRef.current(); }
+    function abrirNovoContrato() {
+      // Atalho de criação também respeita o perfil — senão o painel "Novo"
+      // abre um formulário que o db.post vai recusar no fim.
+      if (!podeCriar()) { toast(_agMsgPermissao("criar contrato"), "error"); return; }
+      if(_abrirNovoContratoRef.current) _abrirNovoContratoRef.current();
+    }
     document.addEventListener("autoguest:novo-contrato", abrirNovoContrato);
     return function() { document.removeEventListener("autoguest:novo-contrato", abrirNovoContrato); };
   }, []);
@@ -29992,6 +30310,20 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     } catch(e) {
       toast("Erro ao encerrar contrato: " + (e.message || e), "error");
       return;
+    }
+    // Odômetro do veículo: o km de retorno do contrato é a leitura mais recente
+    // que o sistema tem. Sem esta baixa, km_atual nunca avança e a revisão por
+    // quilometragem não tem como ser calculada.
+    if (kmFinalEnc) {
+      var _veEnc = (veiculos || []).find(function(v){ return String(v.id) === String(ct.veiculo_id); });
+      // Só avança: km menor que o registrado é erro de digitação ou troca de
+      // painel, e sobrescrever apagaria o histórico real de rodagem.
+      if (_veEnc && kmFinalEnc > parseFloat(_veEnc.km_atual || 0)) {
+        try {
+          await db.patch("veiculos", _veEnc.id, { km_atual: kmFinalEnc });
+          setVeiculos(function(p){ return p.map(function(v){ return v.id === _veEnc.id ? Object.assign({}, v, { km_atual: kmFinalEnc }) : v; }); });
+        } catch(e) { console.warn("km_atual", e); }
+      }
     }
     // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
     var outroAtivoEncerrar = contratos.some(function(x){
@@ -31571,345 +31903,7 @@ function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSel
   );
 }
 
-
-// -- MULTAS ----------------------------------------------------------------─
-var NOTIF_STATUS = [
-  { id: "enviada",        label: "Notif. Enviada / Aguard. Ass.", cor: "#A8D8F0", emoji: "📤" },
-  { id: "nao_notificado", label: "Cliente Recusou Assinar",  cor: "#E0B898", emoji: "🚫" },
-  { id: "notificado",     label: "Órgão Notificado",         cor: "#A2D4B4", emoji: "🏛️" },
-  { id: "nao_localizou",  label: "Órgão: Não Identificou",  cor: "#EAB0B0", emoji: "❌" }
-];
-
-/* ── Pipeline completo de multas ── */
-var PIPELINE_MULTA = [
-  { id: "recebida",      emoji: "📥", short: "Recebida",    label: "Multa Recebida",      cor: "#A8D8F0" },
-  { id: "dsv_enviado",   emoji: "📤", short: "Notif.Env.", label: "Notificação Enviada ao Cliente", cor: "#C9B8E8" },
-  { id: "dsv_assinado",  emoji: "✍️", short: "Assinado",    label: "Condutor Assinou",    cor: "#C9B8E8" },
-  { id: "orgao_notif",   emoji: "🏛️", short: "Notif.Órgão", label: "Órgão Notificado",    cor: "#A2D4B4" },
-  { id: "boleto_solic",  emoji: "📋", short: "Bol.Solic.",  label: "Boleto Solicitado",   cor: "#F0D0A0" },
-  { id: "boleto_rec",    emoji: "💳", short: "Bol.Receb.",  label: "Boleto Recebido",     cor: "#F0D0A0" },
-  { id: "pago_orgao",    emoji: "💰", short: "Pago Órgão",  label: "Pago ao Órgão",       cor: "#A2D4B4" },
-  { id: "cobrado_cli",   emoji: "📬", short: "Cob.Cliente", label: "Cobrado ao Cliente",  cor: "#B8D8F0" },
-  { id: "encerrada",     emoji: "✅", short: "Encerrada",   label: "Encerrada",           cor: "#8ECBA8" }];
-function getEffectivePipeline(m) {
-  // Quando cliente recusou assinar, a linha do tempo substitui passos 2 e 3
-  // (Assinado e Órgão Notificado) por um único passo de recusa
-  if (m.status_notificacao === "nao_notificado") {
-    return [
-      { id: "recebida",      emoji: "📥", short: "Recebida",    label: "Multa Recebida",                cor: "#A8D8F0" },
-      { id: "dsv_enviado",   emoji: "📤", short: "Notif.Env.",  label: "Notificação Enviada ao Cliente", cor: "#C9B8E8" },
-      { id: "recusou",       emoji: "🚫", short: "Recusou",     label: "Cliente Recusou Assinar",        cor: "#E0B898" },
-      { id: "boleto_solic",  emoji: "📋", short: "Bol.Solic.",  label: "Boleto Solicitado",              cor: "#F0D0A0" },
-      { id: "boleto_rec",    emoji: "💳", short: "Bol.Receb.",  label: "Boleto Recebido",                cor: "#F0D0A0" },
-      { id: "pago_orgao",    emoji: "💰", short: "Pago Órgão", label: "Pago ao Órgão",                  cor: "#A2D4B4" },
-      { id: "cobrado_cli",   emoji: "📬", short: "Cob.Cliente", label: "Cobrado ao Cliente",             cor: "#B8D8F0" },
-      { id: "encerrada",     emoji: "✅", short: "Encerrada",   label: "Encerrada",                     cor: "#8ECBA8" }];
-  }
-  return PIPELINE_MULTA;
-}
-function getEffectivePipelineStep(m) {
-  // Retorna o índice correto no pipeline efetivo
-  if (m.status_notificacao === "nao_notificado") {
-    // Pipeline recusou: 0=recebida,1=enviada,2=recusou,3=boleto_solic,4=boleto_rec,5=pago,6=cobrado,7=encerrada
-    if (m.cobrado_cliente === "pago")    return 7;
-    if (m.cobrado_cliente === "pendente") return 6;
-    if (m.status === "pago")              return 5;
-    if (m.boleto_orgao_recebido)          return 4;
-    if (m.boleto_orgao_solicitado)        return 3;
-    return 2; // recusou — etapa atual é "recusou"
-  }
-  return getPipelineStep(m);
-}
-function getPipelineStep(m) {
-  if (m.cobrado_cliente === "pago")                                                                          return 8;
-  if (m.cobrado_cliente === "pendente")                                                                       return 7;
-  if (m.status === "pago")                                                                                    return 6;
-  if (m.boleto_orgao_recebido)                                                                                return 5;
-  if (m.boleto_orgao_solicitado)                                                                              return 4;
-  if (m.status_notificacao === "notificado" || m.status_notificacao === "nao_localizou" || m.status_notificacao === "nao_notificado")  return 3;
-  if (m.dsv_assinado_em)                                                                                      return 2;
-  // Notificação enviada: qualquer evidência — token, status_notificacao, OU data_notificacao preenchida
-  if (m.token_dsv || m.status_notificacao === "enviada" || m.status_notificacao === "aguardando" || (m.data_notificacao && m.data_notificacao.length > 0)) return 1;
-  return 0;
-}
-function getStepDate(m, idx) {
-  switch(idx) {
-    case 0: return m.data;
-    case 1: return m.data_notificacao;
-    case 2: return m.dsv_assinado_em ? String(m.dsv_assinado_em).slice(0,10) : null;
-    case 3: return m.data_notificacao;
-    case 4: return m.data_solicitacao_boleto;
-    case 5: return m.data_boleto_recebido;
-    case 6: return m.data_pagamento;
-    case 7: return m.data_cobranca_cliente;
-    case 8: return m.data_cobranca_cliente;
-    default: return null;
-  }
-}
-
-var DSV_LOGO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 90 110" width="54" height="66"><defs><clipPath id="shp"><path d="M22,20 H68 V68 Q68,96 45,106 Q22,96 22,68 Z"/></clipPath></defs>'
-/* ramo esquerdo */
-+'<path d="M24,102 C11,83 9,62 17,41" stroke="#2A6D2A" stroke-width="2.8" fill="none" stroke-linecap="round"/>'
-+'<ellipse cx="12" cy="88" rx="10" ry="3.8" transform="rotate(-38 12 88)" fill="#2E8028"/>'
-+'<ellipse cx="10" cy="75" rx="10" ry="3.8" transform="rotate(-50 10 75)" fill="#2E8028"/>'
-+'<ellipse cx="11" cy="63" rx="9" ry="3.5" transform="rotate(-62 11 63)" fill="#2E8028"/>'
-+'<ellipse cx="14" cy="52" rx="8" ry="3" transform="rotate(-70 14 52)" fill="#2E8028"/>'
-+'<ellipse cx="20" cy="42" rx="7" ry="2.8" transform="rotate(-78 20 42)" fill="#2E8028"/>'
-/* ramo direito */
-+'<path d="M66,102 C79,83 81,62 73,41" stroke="#2A6D2A" stroke-width="2.8" fill="none" stroke-linecap="round"/>'
-+'<ellipse cx="78" cy="88" rx="10" ry="3.8" transform="rotate(38 78 88)" fill="#2E8028"/>'
-+'<ellipse cx="80" cy="75" rx="10" ry="3.8" transform="rotate(50 80 75)" fill="#2E8028"/>'
-+'<ellipse cx="79" cy="63" rx="9" ry="3.5" transform="rotate(62 79 63)" fill="#2E8028"/>'
-+'<ellipse cx="76" cy="52" rx="8" ry="3" transform="rotate(70 76 52)" fill="#2E8028"/>'
-+'<ellipse cx="70" cy="42" rx="7" ry="2.8" transform="rotate(78 70 42)" fill="#2E8028"/>'
-/* coroa dourada */
-+'<rect x="28" y="13" width="34" height="8" rx="1" fill="#C8A200"/>'
-+'<rect x="29" y="7" width="5" height="11" rx="1" fill="#C8A200"/>'
-+'<rect x="38" y="5" width="5" height="13" rx="1" fill="#C8A200"/>'
-+'<rect x="46" y="5" width="5" height="13" rx="1" fill="#C8A200"/>'
-+'<rect x="54" y="5" width="5" height="13" rx="1" fill="#C8A200"/>'
-+'<rect x="61" y="7" width="5" height="11" rx="1" fill="#C8A200"/>'
-+'<rect x="29" y="7" width="5" height="3" fill="#B08000"/><rect x="38" y="5" width="5" height="3" fill="#B08000"/><rect x="46" y="5" width="5" height="3" fill="#B08000"/><rect x="54" y="5" width="5" height="3" fill="#B08000"/><rect x="61" y="7" width="5" height="3" fill="#B08000"/>'
-/* escudo vermelho */
-+'<path d="M22,20 H68 V68 Q68,96 45,106 Q22,96 22,68 Z" fill="#C41E3A" stroke="#222" stroke-width="1.5"/>'
-/* Cruz de Cristo: braço branco externo + cruz vermelha interna */
-+'<g clip-path="url(#shp)">'
-+'<rect x="39" y="28" width="12" height="56" fill="#FFFFFF"/>'
-+'<rect x="26" y="43" width="38" height="12" fill="#FFFFFF"/>'
-+'<rect x="41.5" y="30" width="7" height="52" fill="#C41E3A"/>'
-+'<rect x="28" y="45.5" width="34" height="7" fill="#C41E3A"/>'
-+'</g>'
-+'<path d="M22,20 H68 V68 Q68,96 45,106 Q22,96 22,68 Z" fill="none" stroke="#222" stroke-width="1.8"/>'
-/* faixa NON DVCO DVCAR */
-+'<path d="M15,103 Q45,114 75,103 L73,115 Q45,123 17,115 Z" fill="#C41E3A"/>'
-+'<text x="45" y="112.5" text-anchor="middle" font-family="serif" font-size="5.5" fill="#FFD700" font-weight="bold" letter-spacing="0.8">NON DVCO DVCAR</text>'
-+'</svg>';
-
-function buildDSVHtml(m, cl, ve, emp, assSvg) {
-  var _s = function(v){ return (v || '—'); };
-  var _d = function(v){ return v ? new Date(v + (v.length === 10 ? 'T00:00:00' : '')).toLocaleDateString('pt-BR') : '—'; };
-  var nomeVe = ((ve && ve.marca) || '') + ' ' + ((ve && ve.modelo) || '');
-  var logo = DSV_LOGO_SVG;
-  var css = 'body{font-family:Arial,sans-serif;font-size:12px;margin:24px}table.f{width:100%;border-collapse:collapse}table.f td,table.f th{border:1px solid #333;padding:6px 10px;vertical-align:top}td.lab{font-weight:700;text-transform:uppercase;white-space:nowrap;width:130px;background:#f9f9f9}table.i{width:100%;border-collapse:collapse}table.i td{padding:3px 0;border:none;border-bottom:1px solid #e8e8e8;font-size:12px}td.fl{color:#555;text-transform:uppercase;font-size:10px;font-weight:600;width:160px;padding-right:8px}td.fv{font-weight:700}.sub{font-weight:700;font-size:11px;text-transform:uppercase;padding:6px 0 3px;letter-spacing:0.5px}.sig{display:grid;grid-template-columns:1fr 1fr;gap:40px;padding:10px 0}.sl{text-align:center}.sl-title{font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:50px}.sl-line{border-top:1.5px solid #333;padding-top:6px;font-size:12px}.no-print{display:flex;gap:10px;margin-bottom:18px}@media print{.no-print{display:none}body{margin:0}}';
-  var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>DSV_' + _s(ve&&ve.placa) + '_' + _s(m.ait) + '</title><style>' + css + '</style></head><body>';
-  h += '<div class="no-print"><button onclick="try{(window.parent&&window.parent._printPdfOverlay)?window.parent._printPdfOverlay():window.print()}catch(e){window.print()}" style="flex:1;background:#007AFF;color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:700;cursor:pointer">🖨️ Imprimir / Salvar PDF</button><button ' + _PDF_CLOSE_BTN + ' style="background:#f5f5f7;border:none;border-radius:10px;padding:12px 20px;font-size:15px;cursor:pointer">✕ Fechar</button></div>';
-  h += '<table class="f">';
-  /* Header */
-  h += '<tr><td style="border:1px solid #333;padding:10px;width:220px"><div style="display:flex;align-items:center;gap:10px">' + logo + '<div><div style="font-weight:800;font-size:9px;text-transform:uppercase;letter-spacing:0.5px;line-height:1.5">PREFEITURA DE SÃO PAULO</div><div style="font-size:8px;text-transform:uppercase;letter-spacing:0.5px;line-height:1.5">MOBILIDADE E TRANSPORTES</div></div></div></td><td style="border:1px solid #333;text-align:center;font-size:18px;font-weight:800;letter-spacing:2px;text-transform:uppercase;padding:16px">FORMULÁRIO DE INDICAÇÃO DE CONDUTOR</td></tr>';
-  /* Proprietário */
-  h += '<tr><td class="lab">PROPRIETÁRIO:</td><td style="font-weight:700">' + _s(emp && emp.nome) + '</td></tr>';
-  /* Veículo */
-  h += '<tr><td class="lab">VEÍCULO:</td><td><table class="i"><tr><td class="fl">RENAVAM:</td><td class="fv">' + _s(ve&&ve.renavam) + '</td></tr><tr><td class="fl">PLACA:</td><td class="fv">' + _s(ve&&ve.placa) + '</td></tr><tr><td class="fl">MARCA/MODELO:</td><td class="fv">' + nomeVe.trim() + '</td></tr><tr><td class="fl">ANO:</td><td class="fv">' + _s(ve&&ve.ano) + '</td></tr></table></td></tr>';
-  /* Autuação */
-  h += '<tr><td class="lab">AUTUAÇÃO:</td><td><table class="i"><tr><td class="fl">NÚMERO AIT:</td><td class="fv">' + _s(m.ait) + '</td></tr><tr><td class="fl">DATA :</td><td class="fv">' + _d(m.data) + (m.hora_infracao ? ' ' + m.hora_infracao : '') + '</td></tr><tr><td class="fl">LOCAL:</td><td class="fv">' + _s(m.local) + '</td></tr><tr><td class="fl">DESCRIÇÃO:</td><td class="fv">' + _s(m.descricao || m.tipo) + '</td></tr></table></td></tr>';
-  /* Condutor */
-  h += '<tr><td class="lab">CONDUTOR:</td><td>';
-  h += '<div class="sub">DADOS PESSOAIS</div>';
-  h += '<table class="i">';
-  h += '<tr><td class="fl">NOME:</td><td class="fv" style="min-width:180px">' + _s(cl&&cl.nome) + '</td><td class="fl">E-MAIL:</td><td class="fv">' + _s(cl&&cl.email) + '</td></tr>';
-  h += '<tr><td class="fl">NÚMERO CNH:</td><td class="fv">' + _s(cl&&cl.cnh) + '</td><td class="fl">UF CNH:</td><td class="fv">' + _s(cl&&cl.uf_cnh) + '</td></tr>';
-  h += '<tr><td class="fl">VALIDADE CNH:</td><td class="fv">' + _d(cl&&cl.vencimento_cnh) + '</td></tr>';
-  h += '<tr><td class="fl">CPF:</td><td class="fv">' + _s(cl&&cl.cpf) + '</td><td class="fl">RG:</td><td class="fv">' + _s(cl&&cl.rg) + '</td><td class="fl">UF RG:</td><td class="fv">' + _s(cl&&cl.uf_rg) + '</td></tr>';
-  h += '</table>';
-  h += '<div class="sub">ENDEREÇO DO CONDUTOR</div>';
-  h += '<table class="i">';
-  h += '<tr><td class="fl">CEP:</td><td class="fv">' + _s(cl&&cl.cep) + '</td><td class="fl">ENDEREÇO:</td><td class="fv" colspan="3">' + _s(cl&&cl.endereco) + '</td></tr>';
-  h += '<tr><td class="fl">NÚMERO:</td><td class="fv">' + _s(cl&&cl.numero_end) + '</td><td class="fl">COMPLEMENTO:</td><td class="fv">' + _s(cl&&cl.complemento_end) + '</td><td class="fl">BAIRRO:</td><td class="fv">' + _s(cl&&cl.bairro) + '</td></tr>';
-  h += '<tr><td class="fl">MUNICÍPIO:</td><td class="fv">' + _s(cl&&cl.municipio) + '</td><td class="fl">UF:</td><td class="fv">' + _s(cl&&cl.uf_end) + '</td></tr>';
-  h += '</table></td></tr>';
-  /* Assinaturas */
-  var assImg = assSvg ? '<img src="' + assSvg + '" style="max-height:60px;display:block;margin:0 auto 4px"/>' : '<div style="height:60px"></div>';
-  h += '<tr><td colspan="2"><div class="sig">';
-  h += '<div class="sl"><div class="sl-title">ASSINATURA CONDUTOR</div>' + assImg + '<div class="sl-line"><b>' + _s(cl&&cl.nome) + '</b><br>CPF: ' + _s(cl&&cl.cpf) + '</div></div>';
-  h += '<div class="sl"><div class="sl-title">ASSINATURA PROPRIETÁRIO</div><div style="height:60px"></div><div class="sl-line"><b>' + _s(emp&&emp.nome) + '</b><br>CPF/CNPJ: ' + _s(emp&&emp.cnpj) + '</div></div>';
-  h += '</div></td></tr>';
-  h += '</table>';
-  h += '</body></html>';
-  return h;
-}
-
-function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSelectMulta, selectedMultaId }) {
-  var [gmPlaca, setGmPlaca] = React.useState("");
-  var [gmStatus, setGmStatus] = React.useState("nao_encerrada");
-  var [gmAIT, setGmAIT] = React.useState("");
-  var _gmScrollRef = React.useRef(null);
-  React.useEffect(function(){
-    if(!_gmScrollRef.current||!fil||!fil.length) return;
-    var maxSi=0;
-    fil.forEach(function(m){ var s=getEffectivePipelineStep(m); if(s>maxSi)maxSi=s; });
-    _gmScrollRef.current.scrollLeft=Math.max(0,(maxSi-1)*colW);
-  }, []);
-
-  var hojeStr = _brNow().toISOString().split("T")[0];
-  function getMVe(m) {
-    var ct = (contratos||[]).find(function(c){return c.id==m.contrato_id;});
-    return (veiculos||[]).find(function(v){return v.id==(ct?ct.veiculo_id:m.veiculo_id);});
-  }
-  var fil = (allMultas||[]).filter(function(m) {
-    if (gmStatus !== "todos") {
-      var venc = m.status !== "pago" && m.vencimento && m.vencimento < hojeStr;
-      if (gmStatus === "nao_encerrada" && m.cobrado_cliente === "pago") return false;
-      if (gmStatus === "pago"          && m.status !== "pago") return false;
-      if (gmStatus === "pendente"      && m.status !== "pendente") return false;
-      if (gmStatus === "vencida"       && !venc) return false;
-      if (gmStatus === "cob_pendente"  && m.cobrado_cliente !== "pendente") return false;
-      if (gmStatus === "cob_pago"      && m.cobrado_cliente !== "pago") return false;
-      if (gmStatus === "nao_cobrado"   && (m.cobrado_cliente === "pendente" || m.cobrado_cliente === "pago")) return false;
-      if (gmStatus.startsWith("etapa_")) { var _eId = gmStatus.slice(6); var _p = getEffectivePipeline(m); var _si2 = getEffectivePipelineStep(m); if (_p[_si2].id !== _eId) return false; }
-    }
-    if (gmPlaca) { var ve = getMVe(m); if (!ve || String(ve.id) !== gmPlaca) return false; }
-    if (gmAIT && (m.ait||"") !== gmAIT) return false;
-    return true;
-  });
-  var isMob = typeof window!=="undefined"&&window.innerWidth<600;
-  var colW=isMob?110:130, rowH=91, labH=60, yW=isMob?108:134;
-  function getStepPrazo(m,si){ if(si<=2)return m.prazo_notificacao_orgao||m.vencimento||null; if(si<=5)return m.vencimento||null; return null; }
-  function getStepEventDate(m,pipe,idx){ var id=pipe[idx]?pipe[idx].id:""; if(id==="recebida")return m.data||null; if(id==="dsv_enviado")return m.data_notificacao||null; if(id==="dsv_assinado")return m.dsv_assinado_em?String(m.dsv_assinado_em).slice(0,10):null; if(id==="boleto_solic")return m.data_solicitacao_boleto||null; if(id==="boleto_rec")return m.data_boleto_recebido||null; if(id==="pago_orgao")return m.data_pagamento||null; if(id==="cobrado_cli")return m.data_cobranca_cliente||null; if(id==="recusou")return m.data_notificacao||null; return null; }
-  var placasMap={};
-  (allMultas||[]).forEach(function(m){var ve=getMVe(m);if(ve)placasMap[ve.id]=ve;});
-  var placas=Object.values(placasMap);
-  var aitsArr=[...new Set((allMultas||[]).filter(function(m){return m.ait;}).map(function(m){return m.ait;}))].sort();
-
-  var selSt={border:"1px solid "+C.border,borderRadius:8,padding:"4px 7px",fontSize:12,background:C.card,color:"var(--c-text)",cursor:"pointer",flex:1,minWidth:0};
-
-  /* ── valor unificado do seletor ── */
-  var gmSelVal = gmPlaca ? "placa:"+gmPlaca : gmAIT ? "ait:"+gmAIT : gmStatus !== "nao_encerrada" ? "status:"+gmStatus : "status:nao_encerrada";
-  function handleGmSel(e) {
-    var v = e.target.value;
-    setGmPlaca(""); setGmAIT(""); setGmStatus("nao_encerrada");
-    if (v.startsWith("placa:"))  setGmPlaca(v.slice(6));
-    else if (v.startsWith("ait:")) setGmAIT(v.slice(4));
-    else if (v.startsWith("status:")) setGmStatus(v.slice(7));
-  }
-
-  return React.createElement(React.Fragment, null
-    , React.createElement("div",{style:{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginTop:0,marginBottom:8}}
-      , React.createElement("div",{style:{fontSize:12,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:0.5,flexShrink:0,marginRight:2}},"Cronograma")
-      , React.createElement("select",{value:gmSelVal,onChange:handleGmSel,style:selSt}
-        , React.createElement("optgroup",{label:"Status"}
-          , React.createElement("option",{value:"status:nao_encerrada"},"Não encerradas")
-          , React.createElement("option",{value:"status:todos"},"Todos")
-          , React.createElement("option",{value:"status:pendente"},"A pagar órgão")
-          , React.createElement("option",{value:"status:vencida"},"Vencida")
-          , React.createElement("option",{value:"status:pago"},"Pago órgão")
-          , React.createElement("option",{value:"status:nao_cobrado"},"Não cobrado cliente")
-          , React.createElement("option",{value:"status:cob_pendente"},"Aguardando cliente")
-          , React.createElement("option",{value:"status:cob_pago"},"Cliente pagou")
-        )
-        , React.createElement("optgroup",{label:"Etapa do processo"}
-          , PIPELINE_MULTA.map(function(step){
-              return React.createElement("option",{key:step.id,value:"status:etapa_"+step.id},step.label);
-            })
-          , React.createElement("option",{value:"status:etapa_recusou"},"Cliente Recusou Assinar")
-        )
-        , placas.length > 0 && React.createElement("optgroup",{label:"Placa"}
-          , placas.map(function(v){return React.createElement("option",{key:v.id,value:"placa:"+String(v.id)},v.placa+(v.modelo?" · "+v.modelo:""));})
-        )
-        , aitsArr.length > 0 && React.createElement("optgroup",{label:"AIT"}
-          , aitsArr.map(function(a){return React.createElement("option",{key:a,value:"ait:"+a},a);})
-        )
-      )
-    )
-    , fil.length===0
-      ? React.createElement("div",{style:{background:C.card,borderRadius:16,border:"1px solid "+C.border,padding:24,textAlign:"center",color:C.sub,fontSize:13}},"Nenhuma multa encontrada")
-      : React.createElement("div",{style:{background:C.card,borderRadius:16,border:"1px solid "+C.border,overflow:"hidden"}}
-          , React.createElement("div",{style:{display:"flex"}}
-              /* ── Coluna esquerda fixa ── */
-              , React.createElement("div",{style:{width:yW,flexShrink:0,borderRight:"1px solid "+C.border}}
-                  , React.createElement("div",{style:{height:labH,display:"flex",alignItems:"center",padding:"0 10px",background:"rgba(120,120,128,0.06)",borderBottom:"1px solid "+C.border}}
-                      , React.createElement("span",{style:{fontSize:10,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:0.5}},"Multa / Placa")
-                  )
-                  , fil.map(function(m,rowIdx){
-                      var ve=getMVe(m);
-                      var placa=ve?ve.placa:(m.placa||"—");
-                      var isVenc=m.status!=="pago"&&m.vencimento&&m.vencimento<hojeStr;
-                      var _30d=new Date(_brNowMs()-30*86400000).toISOString().split("T")[0];
-                      var cobAtr=(m.cobrado_cliente||"nao")==="pendente"&&((m.vencimento&&m.vencimento<hojeStr)||(m.data_cobranca_cliente&&m.data_cobranca_cliente<_30d));
-                      var temAtraso=isVenc||cobAtr;
-                      var _str2g=new Date(_brNowMs()+2*864e5).toISOString().split("T")[0];
-                      var vence2d=!temAtraso&&m.status!=="pago"&&m.vencimento&&m.vencimento>=hojeStr&&m.vencimento<=_str2g;
-                      var lblCor=m.status==="pago"?"#6B9E7A":temAtraso?"#B07070":"var(--c-text)";
-                      var _isSel=onSelectMulta&&String(m.id)===String(selectedMultaId);
-                      var _ct=(contratos||[]).find(function(c){return c.id==m.contrato_id;});
-                      var _cl=_ct?(clientes||[]).find(function(x){return x.id==_ct.cliente_id;}):(clientes||[]).find(function(x){return x.id==m.cliente_id;});
-                      var primeiroNome=_cl&&_cl.nome?_cl.nome.trim().split(" ")[0]:null;
-                      return React.createElement("div",{key:m.id,onClick:function(){onSelectMulta&&onSelectMulta(String(m.id));},
-                          className: temAtraso?"ag-cron-row-atraso":vence2d?"ag-cron-row-2d":"",
-                          style:{height:rowH,display:"flex",flexDirection:"column",justifyContent:"center",padding:"0 8px 0 10px",borderBottom:rowIdx<fil.length-1?"1px solid "+C.border+"40":"none",background:_isSel?"rgba(0,122,255,0.09)":(temAtraso?"rgba(255,59,48,0.06)":vence2d?"rgba(255,149,0,0.04)":(rowIdx%2===0?"rgba(120,120,128,0.025)":"transparent")),cursor:"pointer",transition:"background .15s"}}
-                          , React.createElement("div",{style:{fontSize:12,fontWeight:700,color:"var(--c-text)",lineHeight:1.2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},m.ait||"AIT —")
-                          , React.createElement("div",{style:{fontSize:11,color:lblCor,marginTop:2,lineHeight:1}},placa)
-                          , primeiroNome&&React.createElement("div",{style:{fontSize:10,color:C.sub,marginTop:2,lineHeight:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},primeiroNome)
-                      );
-                  })
-              )
-              /* ── Lado direito: scroll compartilhado (header + linhas) ── */
-              , React.createElement("div",{style:{flex:1,minWidth:0,overflow:"hidden"}}
-                  , React.createElement("div",{
-                      ref:_gmScrollRef,
-                      style:{overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"thin",msOverflowStyle:"none"}
-                    }
-                      , React.createElement("div",{style:{width:PIPELINE_MULTA.length*colW}}
-                          /* Cabeçalho — rola junto com as linhas */
-                          , React.createElement("div",{style:{display:"flex",height:labH,background:"rgba(120,120,128,0.06)",borderBottom:"1px solid "+C.border}}
-                              , PIPELINE_MULTA.map(function(step,si){
-                                  return React.createElement("div",{key:step.id,style:{width:colW,flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",borderRight:si<PIPELINE_MULTA.length-1?"1px solid "+C.border+"30":"none",padding:"0 2px"}}
-                                      , React.createElement("div",{style:{fontSize:10,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:0.5,lineHeight:1.2,textAlign:"center",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:colW-6}},step.short)
-                                  );
-                              })
-                          )
-                          /* Linhas sem scroll individual — rolam com o container compartilhado */
-                          , fil.map(function(m,rowIdx){
-                              var pipe=getEffectivePipeline(m);
-                              var si=getEffectivePipelineStep(m);
-                              var curStep=si<pipe.length?pipe[si]:pipe[pipe.length-1];
-                              var currId=curStep?curStep.id:null;
-                              var stdSi=PIPELINE_MULTA.findIndex(function(s){return s.id===currId;});
-                              if(stdSi<0)stdSi=Math.min(si,PIPELINE_MULTA.length-1);
-                              var prazo=getStepPrazo(m,stdSi);
-                              var prazoVenc=prazo&&prazo<hojeStr;
-                              var prazoCor=prazoVenc?"#FF3B30":"#FF9500";
-                              var _isSelR=onSelectMulta&&String(m.id)===String(selectedMultaId);
-                              var _isVencR=m.status!=="pago"&&m.vencimento&&m.vencimento<hojeStr;
-                              var _30dR=new Date(_brNowMs()-30*86400000).toISOString().split("T")[0];
-                              var _cobAtrR=(m.cobrado_cliente||"nao")==="pendente"&&((m.vencimento&&m.vencimento<hojeStr)||(m.data_cobranca_cliente&&m.data_cobranca_cliente<_30dR));
-                              var _temAtrasoR=_isVencR||_cobAtrR;
-                              var _str2R=new Date(_brNowMs()+2*864e5).toISOString().split("T")[0];
-                              var _vence2dR=!_temAtrasoR&&m.status!=="pago"&&m.vencimento&&m.vencimento>=hojeStr&&m.vencimento<=_str2R;
-                              return React.createElement("div",{
-                                  key:m.id,
-                                  onClick:function(){onSelectMulta&&onSelectMulta(String(m.id));},
-                                  className: _temAtrasoR?"ag-cron-row-atraso":_vence2dR?"ag-cron-row-2d":"",
-                                  style:{display:"flex",borderBottom:rowIdx<fil.length-1?"1px solid "+C.border+"40":"none",background:_isSelR?"rgba(0,122,255,0.07)":(_temAtrasoR?"rgba(255,59,48,0.06)":_vence2dR?"rgba(255,149,0,0.04)":(rowIdx%2===0?"rgba(120,120,128,0.025)":"transparent")),position:"relative",height:rowH,alignItems:"center",cursor:"pointer",transition:"background .15s"}
-                                }
-                                  /* linha conectora */
-                                  , stdSi>0&&React.createElement("div",{style:{position:"absolute",top:"50%",left:colW/2,width:stdSi*colW,height:2,background:curStep?curStep.cor+"50":"rgba(120,120,128,0.28)",transform:"translateY(-50%)",zIndex:0,pointerEvents:"none"}})
-                                  /* células dos passos — sempre alinhadas ao PIPELINE_MULTA */
-                                  , PIPELINE_MULTA.map(function(step,idx){
-                                      var done=idx<stdSi,curr=step.id===currId;
-                                      var dotSz=curr?22:done?12:8;
-                                      var dotBg=curr?step.cor:done?step.cor+"AA":"rgba(120,120,128,0.16)";
-                                      var evDate=getStepEventDate(m,PIPELINE_MULTA,idx);
-                                      return React.createElement("div",{key:step.id,style:{width:colW,flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",position:"relative",zIndex:1,height:rowH,borderRight:idx<PIPELINE_MULTA.length-1?"1px solid "+C.border+"18":"none"}}
-                                          , React.createElement("div",{style:{width:dotSz,height:dotSz,borderRadius:"50%",background:dotBg,border:curr?"2.5px solid "+step.cor:"none",boxShadow:curr?"0 0 0 5px "+step.cor+"20":"none",flexShrink:0,zIndex:1}})
-                                          , (done||curr)&&React.createElement("div",{style:{marginTop:5,display:"flex",flexDirection:"column",alignItems:"center",gap:1}}
-                                              , done&&evDate?React.createElement("div",{style:{fontSize:10,fontWeight:600,color:step.cor+"CC",textAlign:"center",whiteSpace:"nowrap"}},(evDate.slice(8,10)+"/"+evDate.slice(5,7))):null
-                                              , curr&&evDate?React.createElement("div",{style:{fontSize:10,fontWeight:700,color:step.cor,textAlign:"center",whiteSpace:"nowrap"}},(evDate.slice(8,10)+"/"+evDate.slice(5,7))):null
-                                              , curr&&prazo?React.createElement("div",{style:{fontSize:10,fontWeight:800,color:prazoCor,textAlign:"center",whiteSpace:"nowrap"}},(prazo.slice(8,10)+"/"+prazo.slice(5,7))):null
-                                              , curr&&step.id==="cobrado_cli"&&m.cobrado_cliente==="pendente"?React.createElement("div",{style:{fontSize:9,fontWeight:800,color:"#FF9500",textAlign:"center",whiteSpace:"nowrap"}},"Aguard."):null
-                                          )
-                                      );
-                                  })
-                              );
-                          })
-                      )
-                  )
-              )
-          )
-      )
-  );
-}
-
-function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toast, claudeKey }) {
+function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toast }) {
   var isMobile = typeof window !== "undefined" && window.innerWidth < 768;
   var hoje = _brNow().toISOString().split("T")[0];
   var dashMes = _brNow().toISOString().slice(0,7);
@@ -32006,8 +32000,6 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   }
 
   async function extrairDadosAIT(file) {
-    var key = claudeKey || (function(){ try{ return localStorage.getItem("claude_api_key")||""; }catch(e){ return ""; } })() || (empresa && empresa.claude_api_key) || "";
-    if (!key) { setAitDiag({ ok: false, msg: "Configure a chave da API Claude nas Configurações para ativar a extração automática." }); toast("Configure a chave da API Claude nas Configurações para ativar extração automática.", "error"); return; }
     setAitDiag({ ok: true, msg: "Analisando o Auto de Infração..." });
     toast("🤖 Analisando o Auto de Infração...");
     try {
@@ -32022,10 +32014,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       var contentBlock = isPDF
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
         : { type: "image", source: { type: "base64", media_type: mimeType, data: base64 } };
-      var resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true" },
-        body: JSON.stringify({
+      var resp = await agClaudeFetch({
           model: "claude-sonnet-5",
           max_tokens: 2048,
           system: "Você é um sistema especializado em OCR e extração de dados de autos de infração de trânsito brasileiros. Leia o documento com atenção, identificando todos os campos. Retorne APENAS JSON válido, sem markdown, sem texto adicional.",
@@ -32033,7 +32022,6 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
             contentBlock,
             { type: "text", text: 'Extraia os dados deste Auto de Infração de Trânsito (AIT) brasileiro e retorne APENAS este JSON (sem markdown, sem ```json):\n{"ait":"número do AIT (campo NÚMERO DO AUTO ou AIT)","placa":"placa do veículo autuado — procure nos campos PLACA, VEÍCULO, IDENTIFICAÇÃO DO VEÍCULO, ex: ABC1234 ou ABC1D23 — sem hífens ou espaços","marca_modelo":"marca e/ou modelo do veículo se constar no documento, ex: VW POLO, GM SPIN — ou null","data":"YYYY-MM-DD da data da infração","vencimento":"YYYY-MM-DD do vencimento ou null","prazo_recurso":"YYYY-MM-DD do prazo para apresentação de defesa, interposição de recurso ou indicação de condutor (campos PRAZO, DEFESA, DATA LIMITE) ou null","tipo":"um dos valores EXATOS: Excesso de Velocidade | Estacionamento Irregular | Avanço de Sinal | Uso de Celular ao Volante | Transitar em Local/Horário Não Permitido - Rodízio | Faixa de Pedestre | Documentação | Outro","local":"local da infração","valor":0.00,"pontos":0,"descricao":"descrição da infração (máx 150 caracteres)"}\nIMPORTANTE: o campo tipo DEVE ser um dos valores EXATOS listados. O campo placa é OBRIGATÓRIO — procure cuidadosamente no documento. Responda direto com o JSON, sem raciocínio nem explicação.' }
           ]}]
-        })
       });
       if (!resp.ok) { var errJ = await resp.json().catch(function(){return {};}); throw new Error((errJ.error&&errJ.error.message)||"Erro HTTP "+resp.status); }
       var resData = await resp.json();
@@ -34728,7 +34716,12 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   var _abrirNovoLancamentoRef = React.useRef(null);
   _abrirNovoLancamentoRef.current = function() { setForm({tipo:'despesa',categoria:'Moradia'}); setEdit(null); setModal(true); };
   React.useEffect(function() {
-    function abrirNovoLancamento() { if(_abrirNovoLancamentoRef.current) _abrirNovoLancamentoRef.current(); }
+    function abrirNovoLancamento() {
+      // Atalho de criação também respeita o perfil — senão o painel "Novo"
+      // abre um formulário que o db.post vai recusar no fim.
+      if (!podeCriar()) { toast(_agMsgPermissao("criar lançamento"), "error"); return; }
+      if(_abrirNovoLancamentoRef.current) _abrirNovoLancamentoRef.current();
+    }
     document.addEventListener("autoguest:novo-lancamento", abrirNovoLancamento);
     return function() { document.removeEventListener("autoguest:novo-lancamento", abrirNovoLancamento); };
   }, []);
@@ -37204,6 +37197,9 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   }
 
   async function autoReconcile() {
+    // A conciliação grava via fetch cru (fora do db.patch), então a permissão
+    // é checada aqui — é uma edição em lote de registros financeiros.
+    if (!podeEditar()) { toast(_agMsgPermissao("conciliar lançamentos"), "error"); return; }
     var unmatched = bankTxs.filter(function(t){ return t.status === "unmatched"; });
     var matched = 0;
     for (var tx of unmatched) {
@@ -41113,7 +41109,7 @@ function LGPDConsentBanner({ onAceitar, onRecusar, empresa }) {
   );
 }
 
-function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDirect, temaList, temaKeys, setClaudeKey: setClaudeKeyApp, lgpdConsent, setLgpdConsent, modPrivacidade, setModPrivacidade }) {
+function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDirect, temaList, temaKeys, lgpdConsent, setLgpdConsent, modPrivacidade, setModPrivacidade }) {
   const [form, setForm] = useState(Object.assign({}, empresa));
   const [loading, setLoading] = useState(false);
   const [configId, setConfigId] = useState(empresa && empresa.id ? empresa.id : null);
@@ -41124,8 +41120,6 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
   var prefsDefault = { dens: "normal", homeTab: "inicio", alertaDocs: 30, alertaContrato: 3, diasInadim: 1, kmFranquia: "", valorKmExc: "", combRet: "cheio", formaPgto: "pix", juroAtraso: 2, multaAtraso: 10 };
   function loadPrefs() { try { return Object.assign({}, prefsDefault, JSON.parse(localStorage.getItem(LS_KEY) || "{}")); } catch(e) { return Object.assign({}, prefsDefault); } }
   const [prefs, setPrefs] = useState(loadPrefs);
-  var _ck = React.useState(function(){ try{return localStorage.getItem("claude_api_key")||"";}catch(e){return "";} });
-  var claudeKey = _ck[0], setClaudeKey = _ck[1];
   function P(k, v) { setPrefs(function(p){ var np = Object.assign({}, p, { [k]: v }); localStorage.setItem(LS_KEY, JSON.stringify(np)); return np; }); }
   React.useEffect(function() {
     document.body.setAttribute("data-dens", prefs.dens);
@@ -41135,11 +41129,6 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
     const d = await db.get("config", "limit=1");
     if (d && d[0] && !dirtyRef.current) {
       setForm(d[0]); setConfigId(d[0].id); setEmpresa(d[0]); preloadLogoEmbed(d[0].logo_url);
-      if (d[0].claude_api_key) {
-        setClaudeKey(d[0].claude_api_key);
-        if (setClaudeKeyApp) setClaudeKeyApp(d[0].claude_api_key);
-        try { localStorage.setItem("claude_api_key", d[0].claude_api_key); } catch(e) {}
-      }
     }
   }
   useEffect(() => { carregar(); }, []);
@@ -41152,9 +41141,15 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
   }, [empresa && empresa.id]);
   function F(k, v) { dirtyRef.current = true; setForm(p => Object.assign({}, p, { [k]: v })); }
   async function save() {
+    var _err = primeiroErro([
+      [form.cnpj,     validarCpfCnpj,  "CNPJ da empresa inválido — confira os dígitos."],
+      [form.email,    validarEmail,    "E-mail da empresa inválido."],
+      [form.telefone, validarTelefone, "Telefone da empresa inválido — informe DDD + número."]
+    ]);
+    if (_err) return toast(_err, "error");
     setLoading(true); setOk(false);
     try {
-      var p = { nome: form.nome || "", cnpj: form.cnpj || "", endereco: form.endereco || "", telefone: form.telefone || "", email: form.email || "", cidade: form.cidade || "", estado: form.estado || "", logo_url: form.logo_url || "", pwa_icon_url: form.pwa_icon_url || "", pwa_icon_dark_url: form.pwa_icon_dark_url || "", clausulas: form.clausulas || "", claude_api_key: claudeKey || "" };
+      var p = { nome: form.nome || "", cnpj: form.cnpj ? fmtCpfCnpj(form.cnpj) : "", endereco: form.endereco || "", telefone: form.telefone ? fmtTelefone(form.telefone) : "", email: form.email || "", cidade: form.cidade || "", estado: form.estado || "", logo_url: form.logo_url || "", pwa_icon_url: form.pwa_icon_url || "", pwa_icon_dark_url: form.pwa_icon_dark_url || "", clausulas: form.clausulas || "" };
       if (configId) { await db.patch("config", configId, p); } else { var c = await db.post("config", p); if (c && c.id) setConfigId(c.id); }
       dirtyRef.current = false;
       await carregar(); setOk(true); toast("Salvo com sucesso!");
@@ -41362,13 +41357,13 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
 
     , React.createElement('div', { className: "lg-card", style: CARD }
       , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 14 } }, "Claude IA — Assistente Pessoal")
-      , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginBottom: 14, lineHeight: 1.65 } }, "Configure sua chave da API para ativar o botão roxo flutuante de IA. Obtenha em console.anthropic.com → API Keys. A chave é salva no banco de dados e sincronizada entre dispositivos automaticamente.")
-      , React.createElement(Lbl, { label: "Chave da API Claude (sk-ant-…)" }
-        , React.createElement('input', { style: FI, type: "password", value: claudeKey, onChange: function(e){ var v=e.target.value; setClaudeKey(v); localStorage.setItem("claude_api_key", v); if (setClaudeKeyApp) setClaudeKeyApp(v); }, placeholder: "sk-ant-api03-…", autoComplete: "off", spellCheck: false })
+      , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginBottom: 12, lineHeight: 1.65 } }, "A chave da API não fica mais no app. Ela vive só no servidor, como secret da Edge Function claude-proxy — antes ficava salva no banco e no navegador, e qualquer usuário do sistema conseguia copiá-la e gastar a conta.")
+      , React.createElement('div', { style: { fontSize: 12, color: C.sub, background: C.bg, borderRadius: 10, padding: "12px 14px", lineHeight: 1.8, fontFamily: "monospace" } }
+        , React.createElement('div', { style: { fontWeight: 700, marginBottom: 6, fontFamily: "inherit" } }, "Para configurar (uma vez, no terminal):")
+        , React.createElement('div', null, "supabase secrets set ANTHROPIC_API_KEY=sk-ant-…")
+        , React.createElement('div', null, "supabase functions deploy claude-proxy")
       )
-      , claudeKey
-        ? React.createElement('div', { style: { fontSize: 12, color: C.green, marginTop: 10, fontWeight: 600 } }, "✓ Chave configurada — assistente ativo")
-        : React.createElement('div', { style: { fontSize: 12, color: C.orange, marginTop: 10 } }, "Sem chave configurada — o botão de IA estará visível mas não funcionará.")
+      , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 10 } }, "Se a IA responder “Faça login” ou “ANTHROPIC_API_KEY não configurada”, é porque esse passo ainda não foi feito.")
     )
 
     , React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, {padding:0,overflow:'hidden'}) }
@@ -41380,7 +41375,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
         React.createElement('button', {
           style:{background:C.blue,color:'#fff',border:'none',borderRadius:10,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer'},
           onClick:function(){
-            var sql="alter table usuarios add column if not exists email text unique;\nalter table usuarios add column if not exists auth_user_id uuid references auth.users(id);\ncreate table if not exists despesas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, observacoes text);\ncreate table if not exists receitas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, forma_pagamento text, observacoes text);\ncreate table if not exists contas (id bigserial primary key, descricao text, categoria text, valor numeric, vencimento date, status text default 'pendente', tipo text default 'pagar', observacoes text);\ncreate table if not exists orcamento_pessoal (id bigserial primary key, descricao text, categoria text, valor numeric, tipo text default 'despesa', mes text, data date, data_pagamento date, status text default 'previsto', observacoes text, recorrente boolean default false, prazo_recorrencia integer, recorrencia_origem_id bigint, forma_pagamento text);\nalter table clientes add column if not exists bloqueado boolean default false;\nalter table veiculos add column if not exists venc_ipva date;\nalter table veiculos add column if not exists venc_seguro date;\nalter table contratos add column if not exists km_franquia numeric;\nalter table contratos add column if not exists forma_pagamento text;\nalter table contratos add column if not exists previsao_pagamento date;\nalter table contratos add column if not exists status_pagamento text default 'pendente';\nalter table despesas add column if not exists status text default 'previsto';\nalter table despesas add column if not exists data_pagamento date;\nalter table despesas add column if not exists recorrente boolean default false;\nalter table despesas add column if not exists prazo_recorrencia integer;\nalter table despesas add column if not exists recorrencia_origem_id bigint;\nalter table despesas add column if not exists manutencao_id bigint;\nalter table receitas add column if not exists status text default 'previsto';\nalter table receitas add column if not exists data_pagamento date;\nalter table receitas add column if not exists recorrente boolean default false;\nalter table receitas add column if not exists prazo_recorrencia integer;\nalter table manutencao add column if not exists status_financeiro text default 'pendente';\nalter table manutencao add column if not exists data_pagamento date;\nalter table manutencao add column if not exists data_previsao_pagamento date;\nalter table multas add column if not exists vencimento date;\nalter table multas add column if not exists data_pagamento date;\nalter table multas add column if not exists cobrado_cliente text default 'nao';\nalter table multas add column if not exists valor_cobrado numeric;\nalter table config add column if not exists claude_api_key text;\ncreate table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());\ncreate table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);";
+            var sql="alter table usuarios add column if not exists email text unique;\nalter table usuarios add column if not exists auth_user_id uuid references auth.users(id);\ncreate table if not exists despesas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, observacoes text);\ncreate table if not exists receitas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, forma_pagamento text, observacoes text);\ncreate table if not exists contas (id bigserial primary key, descricao text, categoria text, valor numeric, vencimento date, status text default 'pendente', tipo text default 'pagar', observacoes text);\ncreate table if not exists orcamento_pessoal (id bigserial primary key, descricao text, categoria text, valor numeric, tipo text default 'despesa', mes text, data date, data_pagamento date, status text default 'previsto', observacoes text, recorrente boolean default false, prazo_recorrencia integer, recorrencia_origem_id bigint, forma_pagamento text);\nalter table clientes add column if not exists bloqueado boolean default false;\nalter table veiculos add column if not exists venc_ipva date;\nalter table veiculos add column if not exists venc_seguro date;\nalter table reservas add column if not exists veiculo_id bigint references veiculos(id);\nalter table reservas add column if not exists cliente_id bigint references clientes(id);\nalter table reservas add column if not exists contrato_id bigint references contratos(id);\ncreate index if not exists idx_reservas_veiculo on reservas(veiculo_id);\nalter table veiculos add column if not exists km_atual integer;\nalter table veiculos add column if not exists km_revisao_proxima integer;\nalter table contratos add column if not exists km_franquia numeric;\nalter table contratos add column if not exists forma_pagamento text;\nalter table contratos add column if not exists previsao_pagamento date;\nalter table contratos add column if not exists status_pagamento text default 'pendente';\nalter table despesas add column if not exists status text default 'previsto';\nalter table despesas add column if not exists data_pagamento date;\nalter table despesas add column if not exists recorrente boolean default false;\nalter table despesas add column if not exists prazo_recorrencia integer;\nalter table despesas add column if not exists recorrencia_origem_id bigint;\nalter table despesas add column if not exists manutencao_id bigint;\nalter table receitas add column if not exists status text default 'previsto';\nalter table receitas add column if not exists data_pagamento date;\nalter table receitas add column if not exists recorrente boolean default false;\nalter table receitas add column if not exists prazo_recorrencia integer;\nalter table manutencao add column if not exists status_financeiro text default 'pendente';\nalter table manutencao add column if not exists data_pagamento date;\nalter table manutencao add column if not exists data_previsao_pagamento date;\nalter table multas add column if not exists vencimento date;\nalter table multas add column if not exists data_pagamento date;\nalter table multas add column if not exists cobrado_cliente text default 'nao';\nalter table multas add column if not exists valor_cobrado numeric;\ncreate table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());\ncreate table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);";
             if(navigator.clipboard){navigator.clipboard.writeText(sql).then(function(){toast('✅ SQL copiado! Cole no Supabase → SQL Editor','success');}).catch(function(){toast('Erro ao copiar','error');});}
             else{var ta=document.createElement('textarea');ta.value=sql;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();toast('✅ SQL copiado!','success');}
           }
@@ -41402,13 +41397,90 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
           onClick:function(){
             var tabelas = "clientes,veiculos,contratos,multas,manutencao,despesas,receitas,contas,orcamento_pessoal,orcamentos,audit_log,ocupacao_historico,perfis,usuarios,config,reservas,usos";
             var lista = tabelas.split(",");
+            // Tabelas de governança: só administrador escreve. Se o perfil do próprio
+            // usuário fosse editável por ele, qualquer um viraria admin sozinho e o
+            // controle de permissão inteiro deixaria de valer.
+            var ADMIN_ONLY = ["usuarios", "perfis", "config"];
+            // audit_log é append-only: todo mundo insere, ninguém altera nem apaga.
+            var APPEND_ONLY = ["audit_log"];
             var sql = "";
+
+            sql += "-- ===================================================================\n";
+            sql += "-- RLS por PERFIL. As permissões criar/editar/excluir de cada perfil\n";
+            sql += "-- (Config -> Usuários -> Perfis) passam a valer no banco, não só na\n";
+            sql += "-- tela. Antes a policy era 'for all using (true)': qualquer usuário\n";
+            sql += "-- logado apagava qualquer tabela, inclusive um perfil Visualizador.\n";
+            sql += "-- ===================================================================\n\n";
+
+            sql += "-- Lê a permissão do usuário autenticado a partir do perfil dele.\n";
+            sql += "-- SECURITY DEFINER porque precisa ler usuarios/perfis mesmo quando o\n";
+            sql += "-- usuário não tem SELECT direto nelas (senão a policy se auto-bloqueia).\n";
+            sql += "create or replace function public.ag_perm(p_acao text)\nreturns boolean\nlanguage sql\nstable\nsecurity definer\nset search_path = public\nas $$\n  select coalesce(\n    (select (pf.permissoes ->> p_acao)::boolean\n       from usuarios u\n       join perfis pf on pf.id = u.perfil_id\n      where u.auth_user_id = auth.uid()\n      limit 1),\n    false);\n$$;\n\n";
+
+            sql += "create or replace function public.ag_is_admin()\nreturns boolean\nlanguage sql\nstable\nsecurity definer\nset search_path = public\nas $$\n  select coalesce(\n    (select pf.nome = 'Administrador'\n       from usuarios u\n       join perfis pf on pf.id = u.perfil_id\n      where u.auth_user_id = auth.uid()\n      limit 1),\n    false);\n$$;\n\n";
+
+            sql += "revoke all on function public.ag_perm(text) from public;\ngrant execute on function public.ag_perm(text) to authenticated;\nrevoke all on function public.ag_is_admin() from public;\ngrant execute on function public.ag_is_admin() to authenticated;\n\n";
+
             lista.forEach(function(t){ sql += "alter table " + t + " enable row level security;\n"; });
             sql += "\n";
-            lista.forEach(function(t){ sql += "drop policy if exists \"auth_all_" + t + "\" on " + t + ";\ncreate policy \"auth_all_" + t + "\" on " + t + " for all to authenticated using (true) with check (true);\n"; });
-            sql += "\nrevoke all on " + lista.join(", ") + " from anon;\n";
+
+            lista.forEach(function(t){
+              var adminOnly  = ADMIN_ONLY.indexOf(t) >= 0;
+              var appendOnly = APPEND_ONLY.indexOf(t) >= 0;
+              // Remove a policy permissiva antiga — enquanto ela existir, o Postgres
+              // faz OR entre as policies e as novas regras não restringem nada.
+              sql += "drop policy if exists \"auth_all_" + t + "\" on " + t + ";\n";
+              sql += "drop policy if exists \"ag_sel_" + t + "\" on " + t + ";\n";
+              sql += "drop policy if exists \"ag_ins_" + t + "\" on " + t + ";\n";
+              sql += "drop policy if exists \"ag_upd_" + t + "\" on " + t + ";\n";
+              sql += "drop policy if exists \"ag_del_" + t + "\" on " + t + ";\n";
+              // Leitura liberada para autenticado: o app carrega todas as tabelas no boot
+              // e os perfis se diferenciam por escrita, não por leitura.
+              sql += "create policy \"ag_sel_" + t + "\" on " + t + " for select to authenticated using (true);\n";
+              if (appendOnly) {
+                sql += "create policy \"ag_ins_" + t + "\" on " + t + " for insert to authenticated with check (true);\n";
+                sql += "-- sem policy de update/delete: trilha de auditoria é imutável.\n";
+              } else if (adminOnly) {
+                sql += "create policy \"ag_ins_" + t + "\" on " + t + " for insert to authenticated with check (public.ag_is_admin());\n";
+                sql += "create policy \"ag_upd_" + t + "\" on " + t + " for update to authenticated using (public.ag_is_admin()) with check (public.ag_is_admin());\n";
+                sql += "create policy \"ag_del_" + t + "\" on " + t + " for delete to authenticated using (public.ag_is_admin());\n";
+              } else {
+                sql += "create policy \"ag_ins_" + t + "\" on " + t + " for insert to authenticated with check (public.ag_perm('criar'));\n";
+                sql += "create policy \"ag_upd_" + t + "\" on " + t + " for update to authenticated using (public.ag_perm('editar')) with check (public.ag_perm('editar'));\n";
+                sql += "create policy \"ag_del_" + t + "\" on " + t + " for delete to authenticated using (public.ag_perm('excluir'));\n";
+              }
+              sql += "\n";
+            });
+
+            sql += "revoke all on " + lista.join(", ") + " from anon;\n";
             sql += "grant select, insert, update, delete on " + lista.join(", ") + " to authenticated;\n";
+            sql += "revoke update, delete on audit_log from authenticated;\n";
             sql += "grant usage on all sequences in schema public to authenticated;\n\n";
+
+            sql += "-- ===================================================================\n";
+            sql += "-- Remove a chave da Anthropic do banco.\n";
+            sql += "-- Ela ficava em config.claude_api_key, que todo usuário autenticado\n";
+            sql += "-- lê. A chave agora é secret da Edge Function claude-proxy.\n";
+            sql += "-- REVOGUE a chave antiga em console.anthropic.com -> API Keys: ela já\n";
+            sql += "-- foi exposta a todos os usuários e a qualquer cache do navegador.\n";
+            sql += "-- ===================================================================\n";
+            sql += "alter table config drop column if exists claude_api_key;\n\n";
+
+            sql += "-- ===================================================================\n";
+            sql += "-- Auditoria pelo banco, não pelo navegador.\n";
+            sql += "-- O app grava audit_log via fetch best-effort: some quando a rede cai\n";
+            sql += "-- e é forjável por quem abrir o console. Com o trigger abaixo, toda\n";
+            sql += "-- escrita fica registrada com o auth.uid() real de quem fez.\n";
+            sql += "-- ===================================================================\n";
+            sql += "alter table audit_log add column if not exists auth_uid uuid;\n";
+            sql += "alter table audit_log add column if not exists origem text default 'app';\n\n";
+            sql += "create or replace function public.ag_audit()\nreturns trigger\nlanguage plpgsql\nsecurity definer\nset search_path = public\nas $$\ndeclare\n  v_id text;\n  v_dados jsonb;\nbegin\n  if (TG_OP = 'DELETE') then\n    v_id := old.id::text; v_dados := to_jsonb(old);\n  else\n    v_id := new.id::text; v_dados := to_jsonb(new);\n  end if;\n  insert into audit_log (tabela, operacao, registro_id, dados, auth_uid, origem)\n  values (TG_TABLE_NAME, lower(TG_OP), v_id, v_dados, auth.uid(), 'trigger');\n  return coalesce(new, old);\nend;\n$$;\n\n";
+            lista.forEach(function(t){
+              if (APPEND_ONLY.indexOf(t) >= 0) return; // não auditar a própria auditoria
+              sql += "drop trigger if exists ag_audit_" + t + " on " + t + ";\n";
+              sql += "create trigger ag_audit_" + t + " after insert or update or delete on " + t + " for each row execute function public.ag_audit();\n";
+            });
+            sql += "\n";
             sql += "-- Função pública (sem login) usada só pelo link de fatura compartilhado (?viewer=fatura).\n-- Roda como SECURITY DEFINER e devolve apenas os registros ligados aos ids pedidos —\n-- diferente do anon aberto de antes, não dá pra usá-la para listar o banco inteiro.\n";
             sql += "create or replace function public.fatura_publica(p_ids bigint[])\nreturns jsonb\nlanguage sql\nsecurity definer\nset search_path = public\nas $$\n  select jsonb_build_object(\n    'contratos', coalesce((select jsonb_agg(c) from contratos c where c.id = any(p_ids)), '[]'::jsonb),\n    'clientes', coalesce((select jsonb_agg(cl) from clientes cl where cl.id in (select cliente_id from contratos where id = any(p_ids))), '[]'::jsonb),\n    'veiculos', coalesce((select jsonb_agg(v) from veiculos v where v.id in (select veiculo_id from contratos where id = any(p_ids))), '[]'::jsonb),\n    'empresa', coalesce((select jsonb_agg(cf) from (select * from config order by id desc limit 1) cf), '[]'::jsonb)\n  );\n$$;\nrevoke all on function public.fatura_publica(bigint[]) from public;\ngrant execute on function public.fatura_publica(bigint[]) to anon;\n";
             if(navigator.clipboard){navigator.clipboard.writeText(sql).then(function(){toast('✅ SQL copiado! Cole no Supabase → SQL Editor','success');}).catch(function(){toast('Erro ao copiar','error');});}
@@ -41626,9 +41698,13 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
         if (entidade === "clientes") {
           var nome = getVal("nome");
           if (!nome) { erros.push("Linha "+(i+2)+": Nome obrigatório"); continue; }
+          // Rejeita a linha em vez de gravar documento inválido: lixo importado em
+          // massa é muito mais caro de limpar depois do que de barrar aqui.
+          if (!validarCpfCnpj(getVal("cpf"))) { erros.push("Linha "+(i+2)+": CPF/CNPJ inválido ('"+getVal("cpf")+"')"); continue; }
+          if (!validarEmail(getVal("email"))) { erros.push("Linha "+(i+2)+": E-mail inválido ('"+getVal("email")+"')"); continue; }
           var p = { nome:nome };
-          if (getVal("cpf")) p.cpf = getVal("cpf");
-          if (getVal("telefone")) p.telefone = getVal("telefone");
+          if (getVal("cpf")) p.cpf = fmtCpfCnpj(getVal("cpf"));
+          if (getVal("telefone")) p.telefone = validarTelefone(getVal("telefone")) ? fmtTelefone(getVal("telefone")) : getVal("telefone");
           if (getVal("email")) p.email = getVal("email");
           if (getVal("rg")) p.rg = getVal("rg");
           if (getVal("cnh")) p.cnh = getVal("cnh");
@@ -41644,6 +41720,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
         } else if (entidade === "veiculos") {
           var placa = getVal("placa").toUpperCase().replace(/[^A-Z0-9]/g,"");
           if (!placa) { erros.push("Linha "+(i+2)+": Placa obrigatória"); continue; }
+          if (!validarPlaca(placa)) { erros.push("Linha "+(i+2)+": Placa inválida ('"+placa+"') — use ABC1234 ou ABC1D23"); continue; }
           var p = { placa:placa, status:"disponivel" };
           if (getVal("marca")) p.marca = getVal("marca");
           if (getVal("modelo")) p.modelo = getVal("modelo");
@@ -42686,9 +42763,47 @@ function temAcesso(usuario, tabId) {
   if (tabId === "config") return tabs.indexOf("config") >= 0 || tabs.indexOf("usuarios") >= 0;
   return tabs.indexOf(tabId) >= 0;
 }
-function podeCriar(usuario) { return usuario && usuario.perfil && usuario.perfil.permissoes && usuario.perfil.permissoes.criar !== false; }
-function podeEditar(usuario) { return usuario && usuario.perfil && usuario.perfil.permissoes && usuario.perfil.permissoes.editar !== false; }
-function podeExcluir(usuario) { return usuario && usuario.perfil && usuario.perfil.permissoes && usuario.perfil.permissoes.excluir !== false; }
+/* ── Permissões ────────────────────────────────────────────────────────────
+   Estas funções eram declaradas e nunca chamadas: o perfil "Visualizador"
+   (excluir: false) via e usava todos os botões de excluir normalmente.
+   Agora são a fonte única de verdade no cliente, e são aplicadas no ponto por
+   onde toda mutação passa (db.post/patch/del) — não botão a botão, que deixa
+   brecha em qualquer tela nova.
+
+   `usuario` é opcional: sem argumento, lê o usuário logado que App publica em
+   __agSetUsuario(). Isso evita passar usuarioAtual como prop por dezenas de
+   componentes só para checar permissão. */
+var __agUsuarioAtual = null;
+function __agSetUsuario(u) { __agUsuarioAtual = u || null; }
+function _agUser(usuario) { return usuario === undefined ? __agUsuarioAtual : usuario; }
+function _agPerm(usuario, acao) {
+  var u = _agUser(usuario);
+  // Sem usuário resolvido (boot, viewer público de fatura) não bloqueia: quem
+  // barra nesse caso é o RLS, e travar aqui quebraria o link público.
+  if (!u) return true;
+  if (!u.perfil || !u.perfil.permissoes) return true;
+  return u.perfil.permissoes[acao] !== false;
+}
+function podeCriar(usuario)   { return _agPerm(usuario, "criar"); }
+function podeEditar(usuario)  { return _agPerm(usuario, "editar"); }
+function podeExcluir(usuario) { return _agPerm(usuario, "excluir"); }
+function ehAdmin(usuario) {
+  var u = _agUser(usuario);
+  return !!(u && u.perfil && u.perfil.nome === "Administrador");
+}
+/* Tabelas de governança: mexer nelas é privilégio de administrador. */
+var _AG_TABELAS_ADMIN = ["usuarios", "perfis", "config"];
+function _agPodeEscrever(tabela, acao) {
+  if (_AG_TABELAS_ADMIN.indexOf(tabela) >= 0) return __agUsuarioAtual ? ehAdmin() : true;
+  if (acao === "criar")   return podeCriar();
+  if (acao === "editar")  return podeEditar();
+  if (acao === "excluir") return podeExcluir();
+  return false;
+}
+function _agMsgPermissao(acao) {
+  var perfil = (__agUsuarioAtual && __agUsuarioAtual.perfil && __agUsuarioAtual.perfil.nome) || "seu perfil";
+  return "Sem permissão para " + acao + ". O perfil \"" + perfil + "\" não tem essa autorização.";
+}
 
 const TABS = [
   { id: "inicio",      label: "Início" },
@@ -44460,17 +44575,112 @@ function Tarifas({ veiculos, setVeiculos, toast }) {
 }
 
 
-function Reservas({ reservas, setReservas, toast }) {
+function Reservas({ reservas, setReservas, veiculos, clientes, contratos, setContratos, toast, setTab, setOperacionalSubTab }) {
   var [filtro, setFiltro] = useState("todos");
   var [busca, setBusca] = useState("");
+  var [gerando, setGerando] = useState(null);
+
+  /* Vincula a reserva a um veículo da frota. Enquanto isso não acontece, a
+     reserva não segura o carro — é o vínculo que a faz existir na agenda. */
+  async function vincularVeiculo(r, veiculoId) {
+    var patch = { veiculo_id: veiculoId ? parseInt(veiculoId, 10) : null };
+    try {
+      await db.patch("reservas", r.id, patch);
+      setReservas(function(p){ return p.map(function(x){ return x.id === r.id ? Object.assign({}, x, patch) : x; }); });
+      toast(veiculoId ? "Veículo vinculado à reserva." : "Vínculo removido.");
+    } catch(e) { toast("Erro ao vincular: " + (e.message || ""), "error"); }
+  }
 
   async function atualizarStatus(id, novoStatus) {
+    var r = (reservas || []).find(function(x){ return x.id === id; });
+    // Confirmar é o que passa a bloquear o veículo — é aqui que a checagem tem
+    // que acontecer, não na criação (reserva pendente não segura nada).
+    if (r && novoStatus === "confirmada") {
+      var ve = veiculoDaReserva(r, veiculos);
+      if (!ve) {
+        toast("Vincule um veículo da frota antes de confirmar — sem isso a reserva não bloqueia a agenda.", "error");
+        return;
+      }
+      var cf = conflitosDaReserva(r, ve.id, contratos, reservas);
+      if (cf.contratos.length || cf.reservas.length) {
+        var det = [];
+        cf.contratos.forEach(function(c){ det.push("contrato #" + c.id + " (" + fmtDate(c.data_inicio) + " → " + fmtDate(c.data_fim) + ")"); });
+        cf.reservas.forEach(function(o){ det.push("reserva de " + (o.nome || "?") + " (" + fmtDate(o.data_retirada) + " → " + fmtDate(o.data_devolucao) + ")"); });
+        var segue = await window.__agConfirm({
+          title: "Conflito de agenda", icon: "⚠️", danger: true,
+          message: ve.placa + " já está comprometido no período: " + det.join("; ") + ". Confirmar mesmo assim?",
+          okLabel: "Confirmar assim mesmo"
+        });
+        if (!segue || !segue.ok) return;
+      }
+      // Grava a FK junto: se o vínculo veio de casamento por texto, ele precisa
+      // virar dado, senão a próxima checagem tem que adivinhar de novo.
+      if (!r.veiculo_id) {
+        try {
+          await db.patch("reservas", r.id, { veiculo_id: ve.id });
+          setReservas(function(p){ return p.map(function(x){ return x.id === r.id ? Object.assign({}, x, { veiculo_id: ve.id }) : x; }); });
+        } catch(e) { console.warn("fixar veiculo_id", e); }
+      }
+    }
     try {
       await db.patch("reservas", id, { status: novoStatus });
       setReservas(function(p){ return p.map(function(r){ return r.id === id ? Object.assign({}, r, { status: novoStatus }) : r; }); });
       toast(novoStatus === "confirmada" ? "Reserva confirmada!" : novoStatus === "cancelada" ? "Reserva cancelada!" : "Reserva reativada!");
       try { var fresh = await db.get("reservas"); setReservas(fresh || []); } catch(_){}
     } catch(e) { toast("Erro ao atualizar: " + (e.message || ""), "err"); }
+  }
+
+  /* Converte a reserva confirmada em contrato. Sem isto, os dados da reserva
+     eram redigitados à mão na tela de Contratos. */
+  async function gerarContrato(r) {
+    var ve = veiculoDaReserva(r, veiculos);
+    if (!ve) { toast("Vincule um veículo antes de gerar o contrato.", "error"); return; }
+
+    var cl = clienteDaReserva(r, clientes);
+    setGerando(r.id);
+    try {
+      // Cliente novo: cadastra a partir dos dados que a reserva já traz, em vez
+      // de obrigar o operador a redigitar tudo.
+      if (!cl) {
+        if (!r.nome) { toast("Reserva sem nome do cliente — cadastre o cliente manualmente.", "error"); setGerando(null); return; }
+        cl = await db.post("clientes", {
+          nome: r.nome,
+          cpf: r.cpf ? fmtCpfCnpj(r.cpf) : null,
+          telefone: r.telefone ? fmtTelefone(r.telefone) : null,
+          email: r.email || null
+        });
+        toast("Cliente " + cl.nome + " cadastrado.");
+      }
+
+      var novo = await db.post("contratos", {
+        cliente_id: cl.id,
+        veiculo_id: ve.id,
+        data_inicio: r.data_retirada,
+        data_fim: r.data_devolucao,
+        hora_retirada: r.hora_retirada || null,
+        hora_devolucao: r.hora_devolucao || null,
+        valor_total: r.valor_estimado || null,
+        km_inicial: ve.km_atual || null,
+        status: "ativo",
+        status_pagamento: "pendente",
+        observacoes: "Gerado a partir da reserva #" + r.id + (r.loja_retirada ? " · Retirada: " + r.loja_retirada : "")
+      });
+      setContratos(function(p){ return [novo].concat(p); });
+
+      var patch = { status: "convertida", contrato_id: novo.id };
+      try {
+        await db.patch("reservas", r.id, patch);
+        setReservas(function(p){ return p.map(function(x){ return x.id === r.id ? Object.assign({}, x, patch) : x; }); });
+      } catch(e) {
+        // Coluna contrato_id pode não existir ainda — não desfaz o contrato por isso.
+        console.warn("marcar reserva convertida", e);
+      }
+      toast("Contrato criado a partir da reserva!");
+      if (setTab) { if (setOperacionalSubTab) setOperacionalSubTab("contratos"); setTab("operacional"); }
+    } catch(e) {
+      toast("Erro ao gerar contrato: " + (e.message || ""), "error");
+    }
+    setGerando(null);
   }
 
   async function excluir(id) {
@@ -44499,7 +44709,10 @@ function Reservas({ reservas, setReservas, toast }) {
     var ok = filtro === "todos" || r.status === filtro;
     if (busca) {
       var b = busca.toLowerCase();
-      ok = ok && ((r.nome||"").toLowerCase().includes(b) || (r.veiculo||"").toLowerCase().includes(b) || (r.cpf||"").includes(b) || (r.telefone||"").includes(b));
+      // Busca também pela placa do veículo vinculado — depois do vínculo, o
+      // texto livre r.veiculo deixa de ser o que o operador tem na cabeça.
+      var _vb = veiculoDaReserva(r, veiculos);
+      ok = ok && ((r.nome||"").toLowerCase().includes(b) || (r.veiculo||"").toLowerCase().includes(b) || (_vb && (_vb.placa||"").toLowerCase().includes(b)) || (r.cpf||"").includes(b) || (r.telefone||"").includes(b));
     }
     return ok;
   });
@@ -44534,16 +44747,21 @@ function Reservas({ reservas, setReservas, toast }) {
       React.createElement('input', { placeholder: "Buscar nome, veículo, CPF, telefone...", value: busca, onChange: function(e){ setBusca(e.target.value); }, className: "lg-input", style: { flex: 1, minWidth: 200 } }),
       React.createElement('select', { value: filtro, onChange: function(e){ setFiltro(e.target.value); },
           style: Object.assign({}, FI, { width: "auto", fontSize: 13, padding: "8px 10px", cursor: "pointer", fontWeight: 600 }) },
-        ["todos", "pendente", "confirmada", "cancelada"].map(function(f){
-          return React.createElement('option', { key: f, value: f }, "Status: " + (f === "todos" ? "Todos" : f.charAt(0).toUpperCase() + f.slice(1)));
+        ["todos", "pendente", "confirmada", "convertida", "cancelada"].map(function(f){
+          return React.createElement('option', { key: f, value: f }, "Status: " + (f === "todos" ? "Todos" : f === "convertida" ? "Virou contrato" : f.charAt(0).toUpperCase() + f.slice(1)));
         })
       )
     ),
     lista.length === 0
       ? React.createElement('div', { style: { textAlign: "center", padding: "40px 0", color: C.sub, fontSize: 14 } }, "Nenhuma reserva encontrada.")
       : lista.map(function(r) {
-          var stCor = r.status === "confirmada" ? "#34C759" : r.status === "cancelada" ? "#FF3B30" : "#FF9500";
-          var stLabel = r.status === "confirmada" ? "Confirmada" : r.status === "cancelada" ? "Cancelada" : "Pendente";
+          var stCor = r.status === "convertida" ? "#5856D6" : r.status === "confirmada" ? "#34C759" : r.status === "cancelada" ? "#FF3B30" : "#FF9500";
+          var stLabel = r.status === "convertida" ? "Virou contrato" : r.status === "confirmada" ? "Confirmada" : r.status === "cancelada" ? "Cancelada" : "Pendente";
+          var veR = veiculoDaReserva(r, veiculos);
+          var clR = clienteDaReserva(r, clientes);
+          var cfR = veR && r.status !== "cancelada" && r.status !== "convertida"
+            ? conflitosDaReserva(r, veR.id, contratos, reservas) : { contratos: [], reservas: [] };
+          var temConflito = cfR.contratos.length > 0 || cfR.reservas.length > 0;
           return React.createElement(SwipeRow, {
             key: r.id,
             action2: function(){ contatarWhatsApp(r); },
@@ -44559,14 +44777,37 @@ function Reservas({ reservas, setReservas, toast }) {
                 React.createElement('span', { style: { background: stCor + "22", color: stCor, borderRadius: 20, padding: "3px 11px", fontSize: 11, fontWeight: 700, flexShrink: 0 } }, stLabel)
               ),
               React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px 14px", fontSize: 13, color: C.sub, marginBottom: 12 } },
-                React.createElement('div', null, React.createElement('b', { style: { color: "var(--c-text)", fontWeight: 600 } }, "Veículo: "), r.veiculo||"--"),
+                React.createElement('div', null, React.createElement('b', { style: { color: "var(--c-text)", fontWeight: 600 } }, "Veículo: "), veR ? (veR.placa + " · " + ((veR.marca||"") + " " + (veR.modelo||"")).trim()) : (r.veiculo || "--")),
                 React.createElement('div', null, React.createElement('b', { style: { color: "var(--c-text)", fontWeight: 600 } }, "Loja: "), r.loja_retirada||"--"),
                 React.createElement('div', null, React.createElement('b', { style: { color: "var(--c-text)", fontWeight: 600 } }, "Retirada: "), fmtDate(r.data_retirada) + (r.hora_retirada ? " " + r.hora_retirada : "")),
                 React.createElement('div', null, React.createElement('b', { style: { color: "var(--c-text)", fontWeight: 600 } }, "Devolução: "), fmtDate(r.data_devolucao) + (r.hora_devolucao ? " " + r.hora_devolucao : "")),
                 React.createElement('div', null, React.createElement('b', { style: { color: "var(--c-text)", fontWeight: 600 } }, "Dias: "), (r.dias||"--") + (r.pacote_mensal ? " (Mensal)" : "")),
                 React.createElement('div', null, React.createElement('b', { style: { color: "var(--c-text)", fontWeight: 600 } }, "Valor: "), r.valor_estimado ? fmtBRL(r.valor_estimado) : "A consultar")
               ),
+              /* Vínculo com a frota. Sem veículo resolvido a reserva não entra
+                 na agenda de ninguém, então isso fica visível e pendente. */
+              r.status !== "cancelada" && r.status !== "convertida" && React.createElement('div', { style: { marginBottom: 10 } },
+                React.createElement('div', { style: { fontSize: 11, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: .4, marginBottom: 4 } }, "Veículo da frota"),
+                React.createElement('select', {
+                  value: r.veiculo_id || (veR ? veR.id : ""),
+                  onChange: function(e){ vincularVeiculo(r, e.target.value); },
+                  style: Object.assign({}, FI, { fontSize: 13, padding: "7px 9px", cursor: "pointer", borderColor: veR ? C.border : C.orange })
+                },
+                  React.createElement('option', { value: "" }, r.veiculo ? "— não vinculado (pedido: " + r.veiculo + ") —" : "— não vinculado —"),
+                  (veiculos || []).slice().sort(function(a,b){ return (a.placa||"").localeCompare(b.placa||""); }).map(function(v){
+                    return React.createElement('option', { key: v.id, value: v.id }, (v.placa||"?") + " · " + ((v.marca||"") + " " + (v.modelo||"")).trim());
+                  })
+                ),
+                !veR && React.createElement('div', { style: { fontSize: 11, color: C.orange, marginTop: 4 } }, "⚠️ Sem vínculo, esta reserva não bloqueia nenhum carro."),
+                temConflito && React.createElement('div', { style: { fontSize: 11, color: C.red, marginTop: 4, fontWeight: 600 } },
+                  "⚠️ Conflito: " + veR.placa + " já comprometido no período (" +
+                  (cfR.contratos.length ? cfR.contratos.length + " contrato(s)" : "") +
+                  (cfR.contratos.length && cfR.reservas.length ? " e " : "") +
+                  (cfR.reservas.length ? cfR.reservas.length + " reserva(s)" : "") + ")."),
+                clR && React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 4 } }, "Cliente cadastrado: " + clR.nome)
+              ),
               React.createElement('div', { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+                r.status === "confirmada" && React.createElement('button', { onClick: function(){ gerarContrato(r); }, disabled: gerando === r.id, style: { background: "#5856D6", color: "#fff", borderRadius: 10, padding: "8px 16px", fontSize: 12, fontWeight: 700, border: "none", cursor: gerando === r.id ? "default" : "pointer", opacity: gerando === r.id ? .6 : 1 } }, gerando === r.id ? "Gerando..." : "📄 Gerar contrato"),
                 r.status === "pendente" && React.createElement('button', { onClick: function(){ atualizarStatus(r.id, "confirmada"); }, style: { background: "#34C759", color: "#fff", borderRadius: 10, padding: "8px 16px", fontSize: 12, fontWeight: 700, border: "none", cursor: "pointer" } }, "✓ Confirmar"),
                 r.status === "pendente" && React.createElement('button', { onClick: function(){ if(confirm("Cancelar esta reserva?")) atualizarStatus(r.id, "cancelada"); }, style: { background: "#FF3B3015", color: "#FF3B30", borderRadius: 10, padding: "8px 16px", fontSize: 12, fontWeight: 600, border: "1px solid #FF3B3030", cursor: "pointer" } }, "Cancelar"),
                 r.status === "confirmada" && React.createElement('button', { onClick: function(){ if(confirm("Cancelar esta reserva?")) atualizarStatus(r.id, "cancelada"); }, style: { background: "#FF3B3015", color: "#FF3B30", borderRadius: 10, padding: "8px 16px", fontSize: 12, fontWeight: 600, border: "1px solid #FF3B3030", cursor: "pointer" } }, "Cancelar"),
@@ -45069,12 +45310,6 @@ function ClaudeAssistant(props) {
     }
   }
 
-  function getApiKey() {
-    if (props.claudeKey) return props.claudeKey;
-    try { var k = localStorage.getItem("claude_api_key"); if (k) return k; } catch(e) {}
-    return (empresa && empresa.claude_api_key) || "";
-  }
-
   function buildSystemPrompt() {
     var hoje = _brNow().toISOString().split("T")[0];
     var d = dataRef.current;
@@ -45288,14 +45523,6 @@ function ClaudeAssistant(props) {
     setSpeaking(false);
     setVoiceStatusMsg("");
     setLoading(true);
-    var key = getApiKey();
-    if (!key) {
-      var warnMsg = "Configure sua chave da API Claude em Config para ativar o assistente.";
-      setMsgs(function(p){return [...p, { role:"user", content:txt }, { role:"assistant", content:"⚠️ " + warnMsg }];});
-      setLoading(false);
-      speak(warnMsg, function(){ if (voiceModeRef.current) startListening(); });
-      return;
-    }
     setMsgs(function(p){return [...p, { role:"user", content:txt }];});
     apiHistoryRef.current = [...apiHistoryRef.current, { role:"user", content:txt }];
     var finalText = "";
@@ -45304,21 +45531,12 @@ function ClaudeAssistant(props) {
       if (history.length > 40) history = history.slice(history.length - 40);
       var loop = true;
       while (loop) {
-        var resp = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: {
-            "x-api-key": key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-            "anthropic-dangerous-direct-browser-access": "true"
-          },
-          body: JSON.stringify({
+        var resp = await agClaudeFetch({
             model: "claude-haiku-4-5-20251001",
             max_tokens: 1500,
             system: buildSystemPrompt(),
             tools: TOOLS,
             messages: history
-          })
         });
         if (!resp.ok) {
           var errJson = await resp.json().catch(function(){return {};});
@@ -46581,6 +46799,34 @@ var _agStandalone = (function(){
   try { return window.navigator.standalone === true || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches); } catch(e){ return false; }
 })();
 
+/* Aviso de versão nova instalada pelo service worker. Recarregar é escolha do
+   usuário: trocar a página sozinho no meio de um cadastro perderia o que ele
+   estava digitando. */
+function SwUpdateBanner() {
+  var [pronto, setPronto] = React.useState(false);
+  React.useEffect(function(){
+    function onUpd(){ setPronto(true); }
+    window.addEventListener("ag-sw-update", onUpd);
+    return function(){ window.removeEventListener("ag-sw-update", onUpd); };
+  }, []);
+  if (!pronto) return null;
+  return React.createElement('div', {
+    style: { position: "fixed", left: 16, right: 16, bottom: "calc(16px + env(safe-area-inset-bottom))", zIndex: 99999,
+             background: "rgba(0,122,255,0.97)", color: "#fff", borderRadius: 14, padding: "12px 16px",
+             display: "flex", alignItems: "center", gap: 12, boxShadow: "0 8px 28px rgba(0,0,0,0.28)", maxWidth: 520, margin: "0 auto" }
+  },
+    React.createElement('div', { style: { fontSize: 13, fontWeight: 600, flex: 1 } }, "Nova versão disponível."),
+    React.createElement('button', {
+      onClick: function(){ if (window.__agSwUpdatePronto) window.__agSwUpdatePronto(); else location.reload(); },
+      style: { background: "#fff", color: "#007AFF", border: "none", borderRadius: 10, padding: "7px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", flexShrink: 0 }
+    }, "Atualizar"),
+    React.createElement('button', {
+      onClick: function(){ setPronto(false); },
+      style: { background: "transparent", color: "#fff", border: "none", fontSize: 16, cursor: "pointer", flexShrink: 0, opacity: .8 }
+    }, "✕")
+  );
+}
+
 function App() {
   // ── Sessão sem expiração: o app fica sempre desbloqueado até logout manual ──
   // (sem TTL de 15min em background e sem auto-bloqueio por inatividade —
@@ -46588,6 +46834,9 @@ function App() {
   var _AG_SESS_KEY = "ag_session_v1";
   function _readSess() { try { var s = JSON.parse(localStorage.getItem(_AG_SESS_KEY) || "null"); if (!s || !s.usuario) return null; return s; } catch(e) { return null; } }
   var _sessInicial = React.useRef(_readSess()).current;
+  // Sessão restaurada do localStorage não passa por handleLogin — sem isto, quem
+  // dá F5 volta sem perfil resolvido e as checagens de permissão liberam tudo.
+  if (_sessInicial && _sessInicial.usuario && !__agUsuarioAtual) __agSetUsuario(_sessInicial.usuario);
   const [logado, setLogado] = useState(function() { return _sessInicial !== null; });
   const [usuarioAtual, setUsuarioAtual] = useState(function() { return _sessInicial ? _sessInicial.usuario : null; });
   function _persistSess(usuario, tok) {
@@ -46596,6 +46845,7 @@ function App() {
   }
   function handleLogin(usuario, tok) {
     setUsuarioAtual(usuario); setLogado(true); document.body.classList.add('ag-logado');
+    __agSetUsuario(usuario); // habilita a checagem de permissão em db.post/patch/del
     if (tok && tok.access_token) {
       _sbSetToken(tok.access_token);
       _persistSess(usuario, tok);
@@ -46609,6 +46859,7 @@ function App() {
   function handleLogout() {
     var s = _readSess();
     setLogado(false); setUsuarioAtual(null);
+    __agSetUsuario(null);
     document.body.classList.remove('ag-logado');
     try { localStorage.removeItem(_AG_SESS_KEY); } catch(e) {}
     if (_sbRefreshTimer) clearTimeout(_sbRefreshTimer);
@@ -46899,7 +47150,9 @@ function App() {
     db.get("orcamento_pessoal").then(function(d) { setOrcItens(d || []); }).catch(function() {});
   }, []);
   const [empresa, setEmpresa] = useState(() => { var c = cache.get("config"); return (c && c[0]) || {}; });
-  const [claudeKey, setClaudeKey] = useState(function() { try { return localStorage.getItem("claude_api_key") || ""; } catch(e) { return ""; } });
+  // Chave da IA removida do cliente: agora vive só no secret da Edge Function
+  // claude-proxy. Apaga resquício de instalações anteriores deste navegador.
+  React.useEffect(function(){ try { localStorage.removeItem("claude_api_key"); } catch(e) {} }, []);
   const [bancoAcordando, setBancoAcordando] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [pullRefreshing, setPullRefreshing] = useState(false);
@@ -47011,10 +47264,15 @@ function App() {
     var coldTimer = setTimeout(function(){ setBancoAcordando(true); }, 3000);
     var coldDone = false;
     function marcarAcordado() { if (!coldDone) { coldDone = true; clearTimeout(coldTimer); setBancoAcordando(false); } }
-    // Deleta contratos duplicados de renovação automática DIRETO no banco (sem carregar na memória)
-    fetch(SB_URL + "/rest/v1/contratos?status=eq.concluido&observacoes=like.Renova%C3%A7%C3%A3o%20autom%C3%A1tica%20contrato%20%23*", {
-      method: "DELETE", headers: HDR
-    }).catch(function(){});
+    // Deleta contratos duplicados de renovação automática DIRETO no banco (sem carregar na memória).
+    // Vai por fetch cru, fora do db.del — então a checagem de permissão precisa
+    // ser explícita aqui: é um DELETE em massa, e sem isto um perfil somente
+    // leitura o dispararia só por abrir o app.
+    if (podeExcluir()) {
+      fetch(SB_URL + "/rest/v1/contratos?status=eq.concluido&observacoes=like.Renova%C3%A7%C3%A3o%20autom%C3%A1tica%20contrato%20%23*", {
+        method: "DELETE", headers: HDR
+      }).catch(function(){});
+    }
     db.get("clientes").then(d => setClientes(d || []));
     // Carrega veículos E contratos juntos — statusEfetivoVeiculo() precisa dos dois
     // para calcular badge correto já no primeiro render
@@ -47056,7 +47314,9 @@ function App() {
       try {
         var hojeIso = _brNow().toISOString().slice(0, 10);
         var lastSnap = localStorage.getItem("ocup_last");
-        if (lastSnap !== hojeIso && veics.length) {
+        // Também é fetch cru: sem o guard, perfil sem permissão de criar tenta
+        // gravar o snapshot a cada carregamento e leva 403 do RLS toda vez.
+        if (lastSnap !== hojeIso && veics.length && podeCriar()) {
           var total = veics.filter(function(v){ return v.status !== "inativo"; }).length;
           var alug = veics.filter(function(v){ return statusEfetivoVeiculo(v, cts) === "alugado"; }).length;
           var man  = veics.filter(function(v){ return statusEfetivoVeiculo(v, cts) === "manutencao"; }).length;
@@ -47077,7 +47337,7 @@ function App() {
     db.getAll("receitas").then(d => setReceitas(d || []));
     db.getAll("contas").then(d => setContas(d || []));
     db.getAll("usos").then(d => setUsos(d || []));
-    db.get("config", "limit=1").then(d => { if (d && d[0]) { setEmpresa(d[0]); preloadLogoEmbed(d[0].logo_url); if (d[0].claude_api_key) { setClaudeKey(d[0].claude_api_key); try { localStorage.setItem("claude_api_key", d[0].claude_api_key); } catch(e) {} } } });
+    db.get("config", "limit=1").then(d => { if (d && d[0]) { setEmpresa(d[0]); preloadLogoEmbed(d[0].logo_url); } });
   }, [refreshTick]);
 
   // ── Notificação de nova reserva no WhatsApp do dono (11989990949) ──
@@ -47303,7 +47563,7 @@ function App() {
     }
   }, [contratos.length, despesas.length]);
 
-  var props = { veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, reservas, setReservas, multas, setMultas, manutencoes, setManutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, usos, setUsos, empresa, toast, setTab: navTab, finDeepLink, setFinDeepLink, claudeKey, setClaudeKey, usuarioAtual, setOperacionalSubTab };
+  var props = { veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, reservas, setReservas, multas, setMultas, manutencoes, setManutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, usos, setUsos, empresa, toast, setTab: navTab, finDeepLink, setFinDeepLink, usuarioAtual, setOperacionalSubTab };
 
   var semPermissao = React.createElement('div', { style: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 300, color: "var(--c-sub)", gap: 12 } },
     React.createElement('div', { style: { fontSize: 48 } }, "🔒"),
@@ -47350,7 +47610,7 @@ function App() {
       if (configSubTab === "simulador") return React.createElement(Simulador, { veiculos: veiculos, contratos: contratos, despesas: despesas, manutencoes: manutencoes, multas: multas, receitas: receitas, toast: toast });
       if (configSubTab === "usuarios") return React.createElement(Usuarios, { usuarioAtual: usuarioAtual, toast: toast });
       if (configSubTab === "importar") return React.createElement(ImportarDados, { veiculos: veiculos, setVeiculos: setVeiculos, clientes: clientes, setClientes: setClientes, contratos: contratos, setContratos: setContratos, toast: toast });
-      return React.createElement(Config, { empresa: empresa, setEmpresa: setEmpresa, toast: toast, darkMode: darkMode, toggleDark: toggleDark, setThemeDirect: setThemeDirect, temaList: TEMA_LIST, temaKeys: TEMA_KEYS, setClaudeKey: setClaudeKey, usuarioAtual: usuarioAtual, lgpdConsent: lgpdConsent, setLgpdConsent: setLgpdConsent, modPrivacidade: modPrivacidade, setModPrivacidade: setModPrivacidade, onLogout: handleLogout });
+      return React.createElement(Config, { empresa: empresa, setEmpresa: setEmpresa, toast: toast, darkMode: darkMode, toggleDark: toggleDark, setThemeDirect: setThemeDirect, temaList: TEMA_LIST, temaKeys: TEMA_KEYS, usuarioAtual: usuarioAtual, lgpdConsent: lgpdConsent, setLgpdConsent: setLgpdConsent, modPrivacidade: modPrivacidade, setModPrivacidade: setModPrivacidade, onLogout: handleLogout });
     }
     if (tab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens });
     if (tab === "linha_do_tempo") return React.createElement(LinhaDoTempo, { contratos: contratos, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, reservas: reservas, veiculos: veiculos, clientes: clientes, setTab: navTab });
@@ -47627,6 +47887,7 @@ function App() {
   )
     , React.createElement(ClaudeAssistant, Object.assign({}, props, { mobile: true }))
     , React.createElement(AgConfirmModal, { dlg: _agDlg, onResult: _agHandleResult })
+      , React.createElement(SwUpdateBanner, null)
   );
 
   return (
@@ -47756,6 +48017,7 @@ function App() {
       , React.createElement(EnviarModal, { open: enviarOpen, onClose: function(){ setEnviarOpen(false); setEnviarPreset(null); }, contratos: contratos, clientes: clientes, veiculos: veiculos, multas: multas, empresa: empresa, C: C, preset: enviarPreset })
       , React.createElement(ClaudeAssistant, Object.assign({}, props, { mobile: false }))
       , React.createElement(AgConfirmModal, { dlg: _agDlg, onResult: _agHandleResult })
+      , React.createElement(SwUpdateBanner, null)
       /* ── Painel de Atalhos (pull-tab) — desktop ── */
       , React.createElement('div', { className: "ag-side-panel-overlay" + (shortcutsOpen ? " open" : ""), onClick: function(){ shortcutsOpenRef.current = false; setShortcutsOpen(false); } })
       , React.createElement('div', { className: "ag-side-panel" + (shortcutsOpen ? " open" : ""), onClick: function(e){ e.stopPropagation(); } }

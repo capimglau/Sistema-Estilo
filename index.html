@@ -15456,6 +15456,26 @@ body.dark .sb3d-cards { z-index: 1; }
 
 .sb3d-halo { fill: none; opacity: 0; transition: opacity .32s ease; pointer-events: none; }
 .sb3d-halo.on { opacity: .55; }
+
+/* Pulso lento da fatia selecionada.
+   Ao escolher uma categoria (ex.: Seguros), o resto do anel apenas esmaecia —
+   funciona, mas o olho não sabe para onde ir quando a fatia é fina. O halo da
+   selecionada passa a "respirar" devagar, chamando a atenção sem piscar.
+
+   O pulso vai no HALO, não na fatia: a fatia usa `transform` inline para o
+   efeito de destacar do anel (explode/scale), e animar transform ali brigaria
+   com esse estilo. Aqui só variam opacidade e espessura do traço, que ninguém
+   mais toca.
+
+   3,2s por ciclo é propositalmente lento — rápido demais vira pisca-pisca e
+   cansa em tela que fica aberta o dia todo. Sem `alternate` abrupto: a curva
+   ease-in-out faz a ida e a volta serem suaves. */
+@keyframes sb3d-pulso-selecao {
+  0%,
+  100% { opacity: .38; stroke-width: 3; }
+  50%  { opacity: .85; stroke-width: 5; }
+}
+.sb3d-halo.on { animation: sb3d-pulso-selecao 3.2s ease-in-out infinite; }
 .sb3d-icon { pointer-events: none; color: #fff; opacity: .98; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.3)); transition: transform .25s cubic-bezier(.2,.85,.3,1); }
 /* font-size vem inline por fatia (Sunburst3D.fitLabel) — o valor aqui é
    só um teto de segurança caso algum consumidor não passe a fonte. */
@@ -15841,12 +15861,13 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
       hit.addEventListener('pointerenter', () => this._hoverTag(cfg, s.key, true));
       hit.addEventListener('pointerleave', () => this._hoverTag(cfg, s.key, false));
 
-      let halo = null;
-      if (cfg.mode === 'avatar') {
-        halo = el('path', 'sb3d-halo'); halo.dataset.ring = cfg.id; halo.dataset.key = s.key;
-        halo.setAttribute('stroke-width', 3);
-        this._haloG.appendChild(halo);
-      }
+      /* Halo em TODOS os anéis. Antes só o de receita (modo avatar) tinha —
+         então selecionar uma despesa como "Seguros" não ganhava realce nenhum
+         além de esmaecer o resto, que é justamente o caso mais comum. */
+      let halo = el('path', 'sb3d-halo');
+      halo.dataset.ring = cfg.id; halo.dataset.key = s.key;
+      halo.setAttribute('stroke-width', 3);
+      this._haloG.appendChild(halo);
       const line = el('line', 'sb3d-connector'); line.dataset.ring = cfg.id; line.dataset.key = s.key;
       this._connG.appendChild(line);
 
@@ -15947,6 +15968,11 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
         const scale = (s.selected ? 2.15 : 1.6) * (cfg.iconScale || 1);
         rec.markG.setAttribute('transform', `translate(${ip.x - 12 * scale} ${ip.y - 12 * scale}) scale(${scale})`);
         rec.g.style.transform = s.selected ? `translate(${s.dir.x * (cfg.explode || 18)}px, ${s.dir.y * (cfg.explode || 18)}px)` : '';
+        // A fatia selecionada se afasta do centro; sem repetir aqui o mesmo
+        // deslocamento, o halo ficaria para trás e o realce sairia torto.
+        // (translate não depende de transform-origin, então copiar direto
+        // funciona mesmo o halo vivendo fora do grupo da fatia.)
+        if (rec.halo) rec.halo.style.transform = rec.g.style.transform;
       } else {
         // Nome completo do proprietário direto na fatia, numa fonte que
         // encolhe pra caber na corda da fatia (2·R·sen(ângulo/2)) — fatia
@@ -15962,13 +15988,17 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
         const op = this.polar((cfg.rOut + cfg.rIn) / 2, s.mid);
         rec.g.style.transformOrigin = `${op.x}px ${op.y}px`;
         rec.g.style.transform = s.selected ? 'scale(1.045)' : '';
-        if (rec.halo) {
-          const grow = cfg.grow || 14;
-          rec.halo.setAttribute('d', this.ringPath(cfg.rOut + grow, Math.max(cfg.rIn - grow * 0.4, 0), s.startA, s.endA));
-          rec.halo.setAttribute('stroke', s.color);
-          rec.halo.setAttribute('fill', s.color);
-          rec.halo.classList.toggle('on', !!s.selected);
-        }
+      }
+
+      // Halo dos DOIS anéis. Antes este bloco vivia dentro do ramo `avatar`,
+      // então só receita ganhava realce — clicar numa despesa como "Seguros"
+      // apenas esmaecia o resto, sem marcar a fatia escolhida.
+      if (rec.halo) {
+        const grow = cfg.grow || 14;
+        rec.halo.setAttribute('d', this.ringPath(cfg.rOut + grow, Math.max(cfg.rIn - grow * 0.4, 0), s.startA, s.endA));
+        rec.halo.setAttribute('stroke', s.color);
+        rec.halo.setAttribute('fill', s.color);
+        rec.halo.classList.toggle('on', !!s.selected);
       }
 
       this._positionTag(cfg, rec, s);
@@ -37644,7 +37674,12 @@ function RdSunburstCard({ receitaRows, despesaRows, C, CARD_CLS }) {
       onOpen: function (ringId, key) { abrirDetalhe(ringId, key); },
     });
     chartRef.current.onHubClick(limpar);
-  }, []);
+  // Sem lista de dependências de propósito: quando o painel monta antes de os
+  // dados chegarem, `semDados` é true e o <div> do palco nem existe — com
+  // `[]` o efeito rodava uma única vez, no vazio, e o gráfico nunca era
+  // criado (ficava só a moldura, sem fatias nem legenda). A guarda
+  // `chartRef.current` acima já garante uma única construção.
+  });
 
   var receitaItems = rdGroupBy(receitaRows, selReceita, RD_PALETTE_CLIENTE);
   var despesaItems = rdGroupBy(despesaRows, selDespesa, RD_COR_CATEGORIA);

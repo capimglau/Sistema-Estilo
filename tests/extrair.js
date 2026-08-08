@@ -56,7 +56,8 @@ function extrair(marcadores) {
       validarTelefone, fmtCpfCnpj, fmtPlaca, fmtTelefone, primeiroErro,
       difCombustivel, fmtFracao, KM_PNEUS_ALERTA, statusPneus,
       KM_REVISAO_ALERTA, statusRevisaoKm,
-      _periodosSobrepoem, veiculoDaReserva, conflitosDaReserva, clienteDaReserva
+      _periodosSobrepoem, veiculoDaReserva, conflitosDaReserva, clienteDaReserva,
+      rdNomeNoGrafico, rdVoltaVitrine, rdSum
     };
   `);
   return Object.assign(escopo, fn());
@@ -75,6 +76,13 @@ const MARCADORES = [
     nome: "helpers de regra de negócio",
     de: "var KM_REVISAO_ALERTA =",
     ate: "// ─────────────────────────────────────────────────────────────────────────",
+  },
+  {
+    // Monta a volta da vitrine do miolo do gráfico circular. Fica noutra
+    // parte do arquivo, junto do componente, então é um recorte separado.
+    nome: "vitrine do gráfico circular",
+    de: "function rdNomeNoGrafico(",
+    ate: "function rdGroupBy(",
   },
 ];
 

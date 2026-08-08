@@ -57,7 +57,9 @@ function extrair(marcadores) {
       difCombustivel, fmtFracao, KM_PNEUS_ALERTA, statusPneus,
       KM_REVISAO_ALERTA, statusRevisaoKm,
       _periodosSobrepoem, veiculoDaReserva, conflitosDaReserva, clienteDaReserva,
-      rdNomeNoGrafico, rdVoltaVitrine, rdSum
+      rdNomeNoGrafico, rdVoltaVitrine, rdSum,
+      lerMarcaManutencao, contratoTemManutencaoPendente, alternarMarcaManutencao,
+      manutencaoAindaPendente, painelManutencoesPendentes
     };
   `);
   return Object.assign(escopo, fn());
@@ -76,6 +78,11 @@ const MARCADORES = [
     nome: "helpers de regra de negócio",
     de: "var KM_REVISAO_ALERTA =",
     ate: "// ─────────────────────────────────────────────────────────────────────────",
+  },
+  {
+    nome: "manutenção pendente",
+    de: "var MARCA_MANUT =",
+    ate: "function AlertBox(",
   },
   {
     // Monta a volta da vitrine do miolo do gráfico circular. Fica noutra

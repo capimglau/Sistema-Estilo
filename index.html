@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="d3c9781"/>
+<meta name="ag-build" content="e83fd13"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -17098,6 +17098,116 @@ function primeiroErro(regras) {
   }
   return null;
 }
+
+/* ═══ Manutenção pendente ═══════════════════════════════════════════════
+   Nem toda manutenção pendente chega cadastrada em Manutenções — muitas
+   vezes o aviso vem antes do orçamento, na conversa com o cliente. Pra o
+   veículo não sumir do radar nesse meio-tempo, o contrato carrega um tique.
+
+   O tique mora na PRIMEIRA linha das observações do contrato, campo que já
+   existe ali. Um campo novo no banco exigiria migração; a linha marcadora
+   funciona hoje, some inteira quando o tique é desmarcado, e ainda aceita
+   um detalhe depois de ":" que o painel mostra como descrição. */
+var MARCA_MANUT = "\u26A0\uFE0F Manutenção pendente";
+var _RE_MARCA_MANUT = /^\s*(?:\u26A0\uFE0F?\s*)?manuten[çc][ãa]o pendente\s*(?::\s*(.*))?$/i;
+
+/* Lê o tique da primeira linha das observações. Devolve null quando não há
+   tique, ou { nota, resto } — a nota é o texto depois de ":" e o resto são
+   as demais linhas, que continuam sendo observações comuns. */
+function lerMarcaManutencao(obs) {
+  var linhas = String(obs == null ? "" : obs).split("\n");
+  var m = _RE_MARCA_MANUT.exec(linhas[0] || "");
+  if (!m) return null;
+  return { nota: (m[1] || "").trim(), resto: linhas.slice(1).join("\n") };
+}
+function contratoTemManutencaoPendente(ct) {
+  return !!lerMarcaManutencao(ct && ct.observacoes);
+}
+/* Liga/desliga o tique preservando o que o usuário escreveu. */
+function alternarMarcaManutencao(obs, ligado) {
+  var m = lerMarcaManutencao(obs);
+  var resto = m ? m.resto : String(obs == null ? "" : obs);
+  if (!ligado) return resto;
+  return MARCA_MANUT + (m && m.nota ? ": " + m.nota : "") + (resto ? "\n" + resto : "");
+}
+
+/* Uma manutenção só sai do painel quando é paga ou cancelada — "em
+   andamento" continua sendo dinheiro a pagar. */
+function manutencaoAindaPendente(m) {
+  var st = String((m && m.status) || "").toLowerCase();
+  return st !== "pago" && st !== "paga" && st !== "cancelada" && st !== "cancelado";
+}
+
+/* Monta as linhas do painel de manutenções pendentes.
+
+   Duas fontes: os registros de Manutenções ainda não pagos, e os contratos
+   marcados com o tique cujo veículo não tem nenhum registro pendente — se
+   já tem, o registro real manda, senão o mesmo carro apareceria duas vezes.
+
+   Cada linha carrega o veículo, o cliente e o contrato de onde ele saiu,
+   porque o painel serve pra saber a quem cobrar ou avisar. */
+function painelManutencoesPendentes(manutencoes, contratos, veiculos, clientes) {
+  var _ve = function (id) { return (veiculos || []).find(function (v) { return String(v.id) === String(id); }); };
+  var _cl = function (id) { return (clientes || []).find(function (c) { return String(c.id) === String(id); }); };
+  /* Contrato vigente do veículo: o não cancelado/concluído mais recente.
+     É dele que saem o nome do cliente e o número do contrato. */
+  var _ctDoVeiculo = function (veiculoId) {
+    return (contratos || [])
+      .filter(function (c) {
+        return String(c.veiculo_id) === String(veiculoId) &&
+          c.status !== "cancelado" && c.status !== "concluido" && !c.renovado_para;
+      })
+      .sort(function (a, b) { return String(b.data_inicio || "").localeCompare(String(a.data_inicio || "")); })[0];
+  };
+  var _linha = function (o) {
+    var ve = _ve(o.veiculo_id), ct = o.contrato || _ctDoVeiculo(o.veiculo_id);
+    var cl = ct ? _cl(ct.cliente_id) : null;
+    return {
+      origem: o.origem, id: o.id, veiculo_id: o.veiculo_id,
+      placa: (ve && ve.placa) || "--",
+      modelo: ve ? ((ve.marca || "") + " " + (ve.modelo || "")).trim() : "",
+      cliente: (cl && cl.nome) || "Sem contrato ativo",
+      contrato_id: ct ? ct.id : null,
+      descricao: o.descricao, valor: o.valor, data: o.data,
+    };
+  };
+
+  var doRegistro = (manutencoes || []).filter(manutencaoAindaPendente).map(function (m) {
+    return _linha({
+      origem: "manutencao", id: m.id, veiculo_id: m.veiculo_id,
+      descricao: m.descricao || m.tipo || "Manutenção",
+      valor: parseFloat(m.custo || 0),
+      data: m.data_previsao_pagamento || m.data_entrada || null,
+    });
+  });
+
+  var comRegistro = Object.create(null);
+  doRegistro.forEach(function (l) { comRegistro[String(l.veiculo_id)] = true; });
+
+  var doTique = (contratos || [])
+    .filter(function (c) {
+      return contratoTemManutencaoPendente(c) &&
+        c.status !== "cancelado" && c.status !== "concluido" &&
+        !comRegistro[String(c.veiculo_id)];
+    })
+    .map(function (c) {
+      var marca = lerMarcaManutencao(c.observacoes);
+      return _linha({
+        origem: "contrato", id: c.id, veiculo_id: c.veiculo_id, contrato: c,
+        descricao: (marca && marca.nota) || "Marcada no contrato, sem orçamento",
+        valor: 0, data: null,
+      });
+    });
+
+  // Com data primeiro, da mais antiga pra mais nova — é o mesmo critério de
+  // urgência dos outros painéis. As sem data (só o tique) vão pro fim.
+  return doRegistro.concat(doTique).sort(function (a, b) {
+    if (!a.data && !b.data) return 0;
+    if (!a.data) return 1;
+    if (!b.data) return -1;
+    return String(a.data).localeCompare(String(b.data));
+  });
+}
 // ─────────────────────────────────────────────────────────────────────────
 function AlertBox({ cor, icon, titulo, items, sub, tab, setTab }) {
   if (!items || items.length === 0) return null;
@@ -24783,6 +24893,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
   const [renDashExp, setRenDashExp] = React.useState(false);
   const [despDashExp, setDespDashExp] = React.useState(false);
   const [recDashExp, setRecDashExp] = React.useState(false);
+  const [manDashExp, setManDashExp] = React.useState(false);
   const [recVencExp, setRecVencExp] = React.useState(false);
   const [recHojeExp, setRecHojeExp] = React.useState(false);
   const [boletosExp, setBoletosExp] = React.useState('emitir'); /* null | 'emitir' | 'emitidos' | 'all' — inicia expandido nos boletos a emitir dentro do prazo de 20 dias */
@@ -27329,6 +27440,64 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         }, _inner);
       };
 
+      /* ── MANUTENÇÕES PENDENTES ── */
+      var _manList = painelManutencoesPendentes(manutencoes, contratos, veiculos, clientes);
+      var _manShow = manDashExp ? _manList : _manList.slice(0, 4);
+      var _manMore = _manList.length - 4;
+
+      var _manCard = function(l) {
+        var venceu  = l.data && l.data < hoje;
+        var venceHj = l.data === hoje;
+        var diasAt  = venceu ? Math.round((new Date(hoje+'T00:00:00') - new Date(l.data+'T00:00:00'))/864e5) : 0;
+        // Sem data é o caso do tique no contrato: ainda não há orçamento nem
+        // vencimento, então nunca é "atrasado" — é "a orçar", em laranja.
+        var cor = !l.data ? C.orange : (venceu || venceHj) ? C.red : C.purple;
+        var statusTxt = !l.data ? 'a orçar' : venceu ? diasAt+'d atraso' : venceHj ? 'vence hoje' : '';
+        var urgente = venceu || venceHj;
+        // Toca e vai direto pra origem da linha: o registro de manutenção,
+        // ou o contrato onde o tique foi marcado.
+        var _navAlvo = l.origem === 'manutencao'
+          ? { alvo:{ type:'manutencao', id:l.id }, tab:'manutencao' }
+          : { alvo:{ type:'contrato', id:l.id }, tab:'contratos' };
+
+        var _inner = React.createElement('div', {
+          style:{ display:'flex', alignItems:'stretch', minHeight:78, cursor:'pointer' },
+          onClick:function(){ onItemNav(_navAlvo.alvo, _navAlvo.tab); }
+        }
+          , React.createElement('div', { style:{ width:44, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center' } }
+            , l.data
+              ? _dateBadge(l.data, cor, urgente)
+              : React.createElement('div', { style:{ width:38, height:38, borderRadius:'50%', flexShrink:0,
+                    border:'2px solid '+cor, background:cor+'18', display:'flex', alignItems:'center',
+                    justifyContent:'center', fontSize:17, lineHeight:1 } }, '\u{1F527}')
+          )
+          , React.createElement('div', { style:{ flex:1, minWidth:0, padding:'13px 8px' } }
+            , React.createElement('div', { style:{ fontSize:14, fontWeight:700, color:'var(--c-text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', lineHeight:1.25 } }, l.cliente)
+            , React.createElement('div', { style:{ display:'flex', alignItems:'center', gap:5, marginTop:5, minWidth:0 } }
+              , React.createElement('span', { style:{ background:C.border, borderRadius:5, padding:'1px 6px', fontWeight:700, letterSpacing:'0.5px', fontSize:11, color:C.sub, flexShrink:0 } }, l.placa)
+              , l.modelo ? React.createElement('span', { style:{ fontSize:12, color:C.sub, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', minWidth:0 } }, '\u00B7 '+l.modelo) : null
+            )
+            , React.createElement('div', { style:{ display:'flex', alignItems:'center', gap:6, marginTop:5, minWidth:0 } }
+              , React.createElement('span', { style:{ fontSize:12, color:C.sub, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', minWidth:0 } }, l.descricao)
+              , statusTxt ? React.createElement('span', { style:{ fontSize:11, fontWeight:600, color:cor, whiteSpace:'nowrap', flexShrink:0 } }, statusTxt) : null
+            )
+            , l.contrato_id ? React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:4 } }, 'Contrato '+numCt(l.contrato_id)) : null
+          )
+          , React.createElement('div', { style:{ flexShrink:0, display:'flex', alignItems:'center', padding:'0 14px 0 8px' } }
+            , React.createElement('span', { style:{ fontSize:14, fontWeight:800, color:cor } }, l.valor > 0 ? fmtBRL(l.valor) : '\u2014')
+          )
+        );
+
+        return React.createElement(SwipeRow, {
+          key:'man-'+l.origem+'-'+l.id,
+          onBaixar:null,
+          action2:function(){ onItemNav(_navAlvo.alvo, _navAlvo.tab); },
+          action2Label:'Ver', action2Icon:'\u{1F441}', action2Color:'rgba(0,122,255,0.92)',
+          onDelete:null,
+          wrapStyle: urgente ? Object.assign({ borderBottom:'1px solid '+C.border+'66' }, _hojeRowGlow) : { borderBottom:'1px solid '+C.border+'66' }
+        }, _inner);
+      };
+
       /* ── container ── */
       var _panBase = { background:C.card, borderRadius:18, border:'1px solid '+C.border, overflow:'hidden', boxShadow:'0 1px 12px rgba(0,0,0,0.05)' };
 
@@ -27369,6 +27538,19 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
               : React.createElement(React.Fragment, null
                   , _recShow.map(_recCard)
                   , _moreBtn(_recMore, recDashExp, setRecDashExp, C.green)
+                )
+          )
+        )
+
+        /* ── MANUTENÇÕES PENDENTES ── */
+        , React.createElement('div', { style:_panBase }
+          , _panHdr('Manutenções pendentes', _manList.length, C.purple, 'a pagar ou a orçar')
+          , React.createElement('div', { style:{ borderTop:'1px solid '+C.border } }
+            , _manList.length===0
+              ? _empty('Nenhuma manutenção pendente')
+              : React.createElement(React.Fragment, null
+                  , _manShow.map(_manCard)
+                  , _moreBtn(_manMore, manDashExp, setManDashExp, C.purple)
                 )
           )
         )
@@ -31975,6 +32157,30 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         )
         , React.createElement(Lbl, { label: "Checklist Vistoria Retirada"  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1178}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 60, fontSize: 13 }), value: form.checklist_retirada || "", onChange: e => F("checklist_retirada", capSentence(e.target.value)), placeholder: "Ex: Sem arranhoes, tanque cheio, pneus ok..."      , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1178}} ))
         , React.createElement(Lbl, { label: "Checklist Vistoria Devolucao"  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1179}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 60, fontSize: 13 }), value: form.checklist_devolucao || "", onChange: e => F("checklist_devolucao", capSentence(e.target.value)), placeholder: "Ex: Arranhao no para-choque traseiro..."    , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1179}} ))
+        , (function(){
+            /* Tique de manutenção pendente. Marca o veículo deste contrato pra
+               ele aparecer no painel do início mesmo sem nada cadastrado em
+               Manutenções — que é o caso comum quando o aviso chega antes do
+               orçamento. O tique vive na primeira linha das observações; o que
+               o usuário escrever depois de ":" vira a descrição no painel. */
+            var _marcado = contratoTemManutencaoPendente(form);
+            return React.createElement('label', {
+              style: { display:'flex', alignItems:'center', gap:10, minHeight:44, cursor:'pointer',
+                       padding:'8px 12px', borderRadius:12, marginBottom:2,
+                       background: _marcado ? C.orange+'14' : 'transparent',
+                       border: '1px solid ' + (_marcado ? C.orange+'55' : C.border) }
+            }
+              , React.createElement('input', {
+                  type:"checkbox", checked:_marcado,
+                  onChange:function(e){ F("observacoes", alternarMarcaManutencao(form.observacoes, e.target.checked)); },
+                  style:{ width:20, height:20, accentColor:C.orange, flexShrink:0, cursor:'pointer' }
+                })
+              , React.createElement('span', { style:{ display:'flex', flexDirection:'column', minWidth:0 } }
+                , React.createElement('span', { style:{ fontSize:14, fontWeight:600, color: _marcado ? C.orange : 'var(--c-text)' } }, "\u26A0\uFE0F Manutenção pendente")
+                , React.createElement('span', { style:{ fontSize:11, color:C.sub } }, "Mostra este veículo no painel do início, mesmo sem orçamento")
+              )
+            );
+          })()
         , React.createElement(Lbl, { label: "Observacoes", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1180}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 50 }), value: form.observacoes || "", onChange: e => F("observacoes", capSentence(e.target.value)), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1180}} ))
         , form.veiculo_id && form.data_inicio && form.data_fim && (
           React.createElement('div', { style: { background: C.bg, borderRadius: 12, padding: "12px 16px" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1182}}

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="932ae49"/>
+<meta name="ag-build" content="8acadf9"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -17099,47 +17099,47 @@ function primeiroErro(regras) {
   return null;
 }
 
-/* ═══ Manutenção pendente ═══════════════════════════════════════════════
-   Nem toda manutenção pendente chega cadastrada em Manutenções — muitas
-   vezes o aviso vem antes do orçamento, na conversa com o cliente. Pra o
-   veículo não sumir do radar nesse meio-tempo, o contrato carrega um tique.
+/* ═══ Anotação do contrato ═══════════════════════════════════════════════
+   As observações do contrato guardam coisas muito diferentes: "pagamento
+   via Pix" e "farol direito trincado" moram no mesmo campo. Só a segunda
+   precisa aparecer no painel do início — por isso a anotação tem tipo, e
+   quem escolhe é o usuário.
 
-   O tique mora na PRIMEIRA linha das observações do contrato, campo que já
-   existe ali. Um campo novo no banco exigiria migração; a linha marcadora
-   funciona hoje, some inteira quando o tique é desmarcado, e ainda aceita
-   um detalhe depois de ":" que o painel mostra como descrição. */
-var MARCA_MANUT = "\u26A0\uFE0F Manutenção pendente";
-var _RE_MARCA_MANUT = /^\s*(?:\u26A0\uFE0F?\s*)?manuten[çc][ãa]o pendente\s*(?::\s*(.*))?$/i;
+   O tipo mora na primeira linha das observações, no formato "Rótulo: texto".
+   Um campo novo no banco exigiria migração; a linha marcadora funciona hoje,
+   troca de tipo sem perder o texto e some inteira ao voltar pra comentário. */
+var TIPOS_ANOTACAO = [
+  { id: "comentario", rotulo: "Comentário",          emoji: "\u{1F4AC}", noPainel: false },
+  { id: "avaria",     rotulo: "Avaria",              emoji: "\u26A0\uFE0F", noPainel: true },
+  { id: "manutencao", rotulo: "Manutenção pendente", emoji: "\u{1F527}", noPainel: true },
+];
+function tipoAnotacao(id) {
+  return TIPOS_ANOTACAO.find(function (t) { return t.id === id; }) || TIPOS_ANOTACAO[0];
+}
+var _RE_ANOTACAO = /^\s*(?:[^\w\s:]+\s*)?(avaria|manuten[çc][ãa]o pendente)\s*(?::\s*(.*))?$/i;
 
-/* Lê o tique da primeira linha das observações. Devolve null quando não há
-   tique, ou { nota, resto } — a nota é o texto depois de ":" e o resto são
-   as demais linhas, que continuam sendo observações comuns. */
-function lerMarcaManutencao(obs) {
+/* Lê o tipo da primeira linha. Sem marcador é comentário — o padrão, que
+   não vai pro painel. */
+function lerAnotacaoContrato(obs) {
   var linhas = String(obs == null ? "" : obs).split("\n");
-  var m = _RE_MARCA_MANUT.exec(linhas[0] || "");
-  if (!m) return null;
-  return { nota: (m[1] || "").trim(), resto: linhas.slice(1).join("\n") };
+  var m = _RE_ANOTACAO.exec(linhas[0] || "");
+  if (!m) return { tipo: "comentario", nota: "", texto: _primeiraLinha(obs), resto: String(obs == null ? "" : obs) };
+  var tipo = /avaria/i.test(m[1]) ? "avaria" : "manutencao";
+  var resto = linhas.slice(1).join("\n");
+  // `nota` é só o que está escrito NA linha da marca; `texto` é o que o
+  // painel mostra, e cai pra primeira linha de baixo quando a marca vem
+  // sozinha. Misturar os dois fazia a marca reescrever a linha de baixo
+  // dentro dela mesma e duplicar o texto a cada troca de tipo.
+  var nota = (m[2] || "").trim();
+  return { tipo: tipo, nota: nota, texto: nota || _primeiraLinha(resto), resto: resto };
 }
-function contratoTemManutencaoPendente(ct) {
-  return !!lerMarcaManutencao(ct && ct.observacoes);
-}
-
-/* O que o contrato tem a dizer pro painel de avarias.
-
-   Qualquer coisa escrita nas observações conta: é ali que a avaria é
-   anotada na hora da vistoria, muitas vezes antes de virar orçamento. O
-   tique não é mais requisito pra aparecer — ele só marca a anotação como
-   avaria confirmada, e essas vêm primeiro na lista.
-
-   Devolve null quando não há nada escrito. */
-function avariaDoContrato(ct) {
-  var marca = lerMarcaManutencao(ct && ct.observacoes);
-  if (marca) {
-    var texto = marca.nota || _primeiraLinha(marca.resto);
-    return { confirmada: true, texto: texto || "Marcada no contrato, sem orçamento" };
-  }
-  var livre = _primeiraLinha((ct && ct.observacoes) || "");
-  return livre ? { confirmada: false, texto: livre } : null;
+/* Troca o tipo preservando o texto que o usuário escreveu. */
+function definirTipoAnotacao(obs, tipoId) {
+  var a = lerAnotacaoContrato(obs);
+  var t = tipoAnotacao(tipoId);
+  if (!t.noPainel) return a.resto;
+  var corpo = a.tipo === "comentario" ? "" : a.nota;
+  return t.emoji + " " + t.rotulo + (corpo ? ": " + corpo : "") + (a.resto ? "\n" + a.resto : "");
 }
 function _primeiraLinha(txt) {
   var linhas = String(txt == null ? "" : txt).split("\n");
@@ -17148,12 +17148,12 @@ function _primeiraLinha(txt) {
   }
   return "";
 }
-/* Liga/desliga o tique preservando o que o usuário escreveu. */
-function alternarMarcaManutencao(obs, ligado) {
-  var m = lerMarcaManutencao(obs);
-  var resto = m ? m.resto : String(obs == null ? "" : obs);
-  if (!ligado) return resto;
-  return MARCA_MANUT + (m && m.nota ? ": " + m.nota : "") + (resto ? "\n" + resto : "");
+
+/* O que o contrato manda pro painel — null quando é só comentário. */
+function avariaDoContrato(ct) {
+  var a = lerAnotacaoContrato(ct && ct.observacoes);
+  if (!tipoAnotacao(a.tipo).noPainel) return null;
+  return { tipo: a.tipo, texto: a.texto || tipoAnotacao(a.tipo).rotulo };
 }
 
 /* Uma manutenção só sai do painel quando é paga ou cancelada — "em
@@ -17194,7 +17194,7 @@ function painelManutencoesPendentes(manutencoes, contratos, veiculos, clientes) 
       cliente: (cl && cl.nome) || "Sem contrato ativo",
       contrato_id: ct ? ct.id : null,
       descricao: o.descricao, valor: o.valor, data: o.data,
-      confirmada: !!o.confirmada,
+      tipo: o.tipo || null,
     };
   };
 
@@ -17217,12 +17217,13 @@ function painelManutencoesPendentes(manutencoes, contratos, veiculos, clientes) 
         o.ct.status !== "cancelado" && o.ct.status !== "concluido" &&
         !comRegistro[String(o.ct.veiculo_id)];
     })
-    // Avaria confirmada (com o tique) antes da anotação solta.
-    .sort(function (a, b) { return (b.avaria.confirmada ? 1 : 0) - (a.avaria.confirmada ? 1 : 0); })
+    // Avaria antes de manutenção pendente: dano no carro é o que costuma
+    // exigir decisão hoje; o orçamento pode esperar.
+    .sort(function (a, b) { return (b.avaria.tipo === "avaria" ? 1 : 0) - (a.avaria.tipo === "avaria" ? 1 : 0); })
     .map(function (o) {
       return _linha({
         origem: "contrato", id: o.ct.id, veiculo_id: o.ct.veiculo_id, contrato: o.ct,
-        descricao: o.avaria.texto, confirmada: o.avaria.confirmada,
+        descricao: o.avaria.texto, tipo: o.avaria.tipo,
         valor: 0, data: null,
       });
     });
@@ -27478,10 +27479,11 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         var venceHj = l.data === hoje;
         var diasAt  = venceu ? Math.round((new Date(hoje+'T00:00:00') - new Date(l.data+'T00:00:00'))/864e5) : 0;
         // Sem data vem do contrato: ainda não há orçamento nem vencimento,
-        // então nunca é "atrasado". Com o tique é avaria confirmada (laranja);
-        // sem ele é só uma anotação da vistoria, que pesa menos (cinza).
-        var cor = !l.data ? (l.confirmada ? C.orange : C.sub) : (venceu || venceHj) ? C.red : C.purple;
-        var statusTxt = !l.data ? (l.confirmada ? 'a orçar' : 'anotado no contrato')
+        // então nunca é "atrasado" — o tipo escolhido no contrato é que dá
+        // a cor e o rótulo.
+        var cor = !l.data ? (l.tipo === 'avaria' ? C.orange : C.purple)
+                : (venceu || venceHj) ? C.red : C.purple;
+        var statusTxt = !l.data ? (l.tipo === 'avaria' ? 'avaria' : 'a orçar')
                       : venceu ? diasAt+'d atraso' : venceHj ? 'vence hoje' : '';
         var urgente = venceu || venceHj;
         // Toca e vai direto pra origem da linha: o registro de manutenção,
@@ -27499,7 +27501,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
               ? _dateBadge(l.data, cor, urgente)
               : React.createElement('div', { style:{ width:38, height:38, borderRadius:'50%', flexShrink:0,
                     border:'2px solid '+cor, background:cor+'18', display:'flex', alignItems:'center',
-                    justifyContent:'center', fontSize:17, lineHeight:1 } }, l.confirmada ? '\u{1F527}' : '\u{1F4DD}')
+                    justifyContent:'center', fontSize:17, lineHeight:1 } }, l.tipo === 'avaria' ? '\u26A0\uFE0F' : '\u{1F527}')
           )
           , React.createElement('div', { style:{ flex:1, minWidth:0, padding:'13px 8px' } }
             , React.createElement('div', { style:{ fontSize:14, fontWeight:700, color:'var(--c-text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', lineHeight:1.25 } }, l.cliente)
@@ -32188,27 +32190,31 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         , React.createElement(Lbl, { label: "Checklist Vistoria Retirada"  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1178}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 60, fontSize: 13 }), value: form.checklist_retirada || "", onChange: e => F("checklist_retirada", capSentence(e.target.value)), placeholder: "Ex: Sem arranhoes, tanque cheio, pneus ok..."      , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1178}} ))
         , React.createElement(Lbl, { label: "Checklist Vistoria Devolucao"  , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1179}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 60, fontSize: 13 }), value: form.checklist_devolucao || "", onChange: e => F("checklist_devolucao", capSentence(e.target.value)), placeholder: "Ex: Arranhao no para-choque traseiro..."    , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1179}} ))
         , (function(){
-            /* Tique de manutenção pendente. Marca o veículo deste contrato pra
-               ele aparecer no painel do início mesmo sem nada cadastrado em
-               Manutenções — que é o caso comum quando o aviso chega antes do
-               orçamento. O tique vive na primeira linha das observações; o que
-               o usuário escrever depois de ":" vira a descrição no painel. */
-            var _marcado = contratoTemManutencaoPendente(form);
-            return React.createElement('label', {
-              style: { display:'flex', alignItems:'center', gap:10, minHeight:44, cursor:'pointer',
-                       padding:'8px 12px', borderRadius:12, marginBottom:2,
-                       background: _marcado ? C.orange+'14' : 'transparent',
-                       border: '1px solid ' + (_marcado ? C.orange+'55' : C.border) }
-            }
-              , React.createElement('input', {
-                  type:"checkbox", checked:_marcado,
-                  onChange:function(e){ F("observacoes", alternarMarcaManutencao(form.observacoes, e.target.checked)); },
-                  style:{ width:20, height:20, accentColor:C.orange, flexShrink:0, cursor:'pointer' }
-                })
-              , React.createElement('span', { style:{ display:'flex', flexDirection:'column', minWidth:0 } }
-                , React.createElement('span', { style:{ fontSize:14, fontWeight:600, color: _marcado ? C.orange : 'var(--c-text)' } }, "\u26A0\uFE0F Manutenção pendente")
-                , React.createElement('span', { style:{ fontSize:11, color:C.sub } }, "Marca a anotação abaixo como avaria confirmada no painel do início")
+            /* Tipo da anotação. As observações do contrato guardam de tudo —
+               "pagamento via Pix" e "farol trincado" no mesmo campo — então
+               quem decide o que vai pro painel do início é o usuário, aqui.
+               Comentário é o padrão e não aparece em lugar nenhum. */
+            var _tipo = lerAnotacaoContrato(form.observacoes).tipo;
+            return React.createElement('div', { style:{ marginBottom:2 } }
+              , React.createElement('div', { style:{ fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.5px', color:C.sub, marginBottom:6 } }, "Tipo da anotação")
+              , React.createElement('div', { style:{ display:'flex', gap:6, flexWrap:'wrap' } }
+                , TIPOS_ANOTACAO.map(function(t){
+                    var ativo = t.id === _tipo;
+                    var cor = t.id === 'avaria' ? C.orange : t.id === 'manutencao' ? C.purple : C.sub;
+                    return React.createElement('button', {
+                      key:t.id, type:"button",
+                      onClick:function(){ F("observacoes", definirTipoAnotacao(form.observacoes, t.id)); },
+                      style:{ flex:'1 1 auto', minHeight:44, padding:'8px 12px', borderRadius:12,
+                              border:'1px solid '+(ativo ? cor : C.border),
+                              background: ativo ? cor+'18' : 'transparent',
+                              color: ativo ? cor : 'var(--c-text)',
+                              fontSize:13, fontWeight: ativo ? 700 : 500, fontFamily:'inherit',
+                              cursor:'pointer', whiteSpace:'nowrap' }
+                    }, t.emoji + ' ' + t.rotulo);
+                  })
               )
+              , _tipo !== 'comentario' ? React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:6 } },
+                  "Aparece no painel \u201CManuten\u00E7\u00F5es e avarias\u201D do in\u00EDcio, com o texto abaixo.") : null
             );
           })()
         , React.createElement(Lbl, { label: "Observacoes", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1180}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 50 }), value: form.observacoes || "", onChange: e => F("observacoes", capSentence(e.target.value)), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1180}} ))

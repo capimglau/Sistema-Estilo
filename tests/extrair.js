@@ -58,9 +58,8 @@ function extrair(marcadores) {
       KM_REVISAO_ALERTA, statusRevisaoKm,
       _periodosSobrepoem, veiculoDaReserva, conflitosDaReserva, clienteDaReserva,
       rdNomeNoGrafico, rdVoltaVitrine, rdSum,
-      lerMarcaManutencao, contratoTemManutencaoPendente, alternarMarcaManutencao,
-      manutencaoAindaPendente, painelManutencoesPendentes,
-      avariaDoContrato
+      TIPOS_ANOTACAO, tipoAnotacao, lerAnotacaoContrato, definirTipoAnotacao,
+      manutencaoAindaPendente, painelManutencoesPendentes, avariaDoContrato
     };
   `);
   return Object.assign(escopo, fn());
@@ -82,7 +81,7 @@ const MARCADORES = [
   },
   {
     nome: "manutenção pendente",
-    de: "var MARCA_MANUT =",
+    de: "var TIPOS_ANOTACAO =",
     ate: "function AlertBox(",
   },
   {

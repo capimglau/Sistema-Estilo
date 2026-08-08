@@ -224,6 +224,68 @@ eq("nenhum header x-api-key no cliente",
 eq("chave da IA não é lida do banco nem do localStorage",
   (semComentarios.match(/getItem\(\s*["']claude_api_key["']\s*\)|empresa\.claude_api_key/g) || []).length, 0);
 
+grupo("Manutenção pendente — tique no contrato");
+eq("reconhece o tique", F.contratoTemManutencaoPendente({ observacoes: "⚠️ Manutenção pendente" }), true);
+eq("reconhece sem o emoji", F.contratoTemManutencaoPendente({ observacoes: "Manutenção pendente" }), true);
+eq("reconhece sem cedilha/til", F.contratoTemManutencaoPendente({ observacoes: "manutencao pendente" }), true);
+eq("observação comum não vira tique",
+  F.contratoTemManutencaoPendente({ observacoes: "Cliente pediu manutenção pendente de aprovação" }), false);
+eq("só a primeira linha conta",
+  F.contratoTemManutencaoPendente({ observacoes: "Pagamento via Pix\n⚠️ Manutenção pendente" }), false);
+eq("contrato sem observações", F.contratoTemManutencaoPendente({}), false);
+eq("lê a nota depois dos dois pontos",
+  F.lerMarcaManutencao("⚠️ Manutenção pendente: trocar os 4 pneus").nota, "trocar os 4 pneus");
+eq("desligar devolve o resto intacto",
+  F.alternarMarcaManutencao("⚠️ Manutenção pendente: x\nPagamento via Pix", false), "Pagamento via Pix");
+eq("ligar preserva o que já estava escrito",
+  F.alternarMarcaManutencao("Pagamento via Pix", true), "⚠️ Manutenção pendente\nPagamento via Pix");
+eq("ligar duas vezes não duplica o tique",
+  F.alternarMarcaManutencao(F.alternarMarcaManutencao("Obs", true), true),
+  "⚠️ Manutenção pendente\nObs");
+eq("ligar preserva a nota que já existia",
+  F.alternarMarcaManutencao("⚠️ Manutenção pendente: freio\nObs", true),
+  "⚠️ Manutenção pendente: freio\nObs");
+
+grupo("Manutenção pendente — painel");
+{
+  const veiculos = [{ id: 1, placa: "ABC1D23", marca: "VW", modelo: "Saveiro" },
+                    { id: 2, placa: "XYZ4E56", marca: "Fiat", modelo: "Strada" }];
+  const clientes = [{ id: 7, nome: "Kablan Engenharia Ltda" }, { id: 8, nome: "SP9 Ltda" }];
+  const contratos = [
+    { id: 11, veiculo_id: 1, cliente_id: 7, status: "ativo", data_inicio: "2026-08-01" },
+    { id: 12, veiculo_id: 2, cliente_id: 8, status: "ativo", data_inicio: "2026-08-01",
+      observacoes: "⚠️ Manutenção pendente: revisão dos 20 mil" },
+  ];
+  const mans = [
+    { id: 91, veiculo_id: 1, descricao: "Troca de embreagem", custo: 2400,
+      status: "pendente", data_previsao_pagamento: "2026-08-20" },
+    { id: 92, veiculo_id: 1, descricao: "Alinhamento", custo: 180, status: "pago",
+      data_previsao_pagamento: "2026-08-02" },
+  ];
+  const p = F.painelManutencoesPendentes(mans, contratos, veiculos, clientes);
+
+  eq("manutenção paga sai do painel", p.filter((l) => l.id === 92).length, 0);
+  eq("pendente e tique aparecem juntos", p.length, 2);
+  eq("linha do registro traz o cliente do contrato do veículo", p[0].cliente, "Kablan Engenharia Ltda");
+  eq("linha do registro traz o contrato", p[0].contrato_id, 11);
+  eq("linha do registro traz a placa", p[0].placa, "ABC1D23");
+  eq("linha do tique usa a nota como descrição",
+    p.find((l) => l.origem === "contrato").descricao, "revisão dos 20 mil");
+  eq("linha com data vem antes da linha sem data", p[0].origem, "manutencao");
+
+  // Um veículo que já tem manutenção cadastrada não deve aparecer duas vezes
+  // só porque o contrato também está marcado.
+  const ct2 = contratos.concat([{ id: 13, veiculo_id: 1, cliente_id: 7, status: "ativo",
+    data_inicio: "2026-08-05", observacoes: "⚠️ Manutenção pendente" }]);
+  eq("tique não duplica veículo que já tem registro pendente",
+    F.painelManutencoesPendentes(mans, ct2, veiculos, clientes).length, 2);
+
+  eq("em andamento continua pendente", F.manutencaoAindaPendente({ status: "em_andamento" }), true);
+  eq("cancelada sai", F.manutencaoAindaPendente({ status: "cancelada" }), false);
+  eq("sem nada pendente devolve lista vazia",
+    F.painelManutencoesPendentes([], [contratos[0]], veiculos, clientes).length, 0);
+}
+
 grupo("Vitrine do miolo — volta representativa");
 {
   // O caso que quebrou de verdade: o seguro lançado veículo a veículo dá

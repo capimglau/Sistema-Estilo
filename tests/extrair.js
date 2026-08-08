@@ -59,7 +59,8 @@ function extrair(marcadores) {
       _periodosSobrepoem, veiculoDaReserva, conflitosDaReserva, clienteDaReserva,
       rdNomeNoGrafico, rdVoltaVitrine, rdSum,
       lerMarcaManutencao, contratoTemManutencaoPendente, alternarMarcaManutencao,
-      manutencaoAindaPendente, painelManutencoesPendentes
+      manutencaoAindaPendente, painelManutencoesPendentes,
+      avariaDoContrato
     };
   `);
   return Object.assign(escopo, fn());

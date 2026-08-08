@@ -265,12 +265,12 @@ grupo("Manutenção pendente — painel");
   const mans = [
     { id: 91, veiculo_id: 1, descricao: "Troca de embreagem", custo: 2400,
       status: "pendente", data_previsao_pagamento: "2026-08-20" },
-    { id: 92, veiculo_id: 1, descricao: "Alinhamento", custo: 180, status: "pago",
-      data_previsao_pagamento: "2026-08-02" },
+    { id: 92, veiculo_id: 1, descricao: "Alinhamento", custo: 180, status: "concluida",
+      data_saida: "2026-08-02", data_previsao_pagamento: "2026-08-02" },
   ];
   const p = F.painelManutencoesPendentes(mans, contratos, veiculos, clientes);
 
-  eq("manutenção paga sai do painel", p.filter((l) => l.id === 92).length, 0);
+  eq("serviço concluído sai do painel", p.filter((l) => l.id === 92).length, 0);
   eq("pendente e tique aparecem juntos", p.length, 2);
   eq("linha do registro traz o cliente do contrato do veículo", p[0].cliente, "Kablan Engenharia Ltda");
   eq("linha do registro traz o contrato", p[0].contrato_id, 11);
@@ -279,6 +279,12 @@ grupo("Manutenção pendente — painel");
     p.find((l) => l.origem === "contrato").descricao, "revisão dos 20 mil");
   eq("linha do contrato carrega o tipo escolhido",
     p.find((l) => l.origem === "contrato").tipo, "manutencao");
+  // Observação de contrato não guarda dinheiro — sem valor, o painel não
+  // desenha coluna de preço nenhuma.
+  eq("linha do contrato não tem valor",
+    p.find((l) => l.origem === "contrato").valor, null);
+  eq("linha de manutenção tem valor",
+    p.find((l) => l.origem === "manutencao").valor, 2400);
   eq("linha com data vem antes da linha sem data", p[0].origem, "manutencao");
 
   // Um veículo que já tem manutenção cadastrada não deve aparecer duas vezes
@@ -289,7 +295,13 @@ grupo("Manutenção pendente — painel");
     F.painelManutencoesPendentes(mans, ct2, veiculos, clientes).length, 2);
 
   eq("em andamento continua pendente", F.manutencaoAindaPendente({ status: "em_andamento" }), true);
+  eq("aguardando continua pendente", F.manutencaoAindaPendente({ status: "aguardando" }), true);
+  eq("concluída sai", F.manutencaoAindaPendente({ status: "concluida" }), false);
   eq("cancelada sai", F.manutencaoAindaPendente({ status: "cancelada" }), false);
+  // O pagamento mora em status_financeiro; testar status === "pago" nunca
+  // funcionou, porque não é valor de status de manutenção.
+  eq("paga sai mesmo em andamento",
+    F.manutencaoAindaPendente({ status: "em_andamento", status_financeiro: "pago" }), false);
   eq("sem nada pendente devolve lista vazia",
     F.painelManutencoesPendentes([], [contratos[0]], veiculos, clientes).length, 0);
 

@@ -317,6 +317,79 @@ grupo("Manutenção pendente — painel");
     F.painelManutencoesPendentes([], ctMix, veiculos, clientes)[0].descricao, "farol");
 }
 
+grupo("Multas — de quem é a bola");
+{
+  const etapa = (m) => { const s = F.situacaoMulta(m); return s ? s.resp + "/" + s.acao : null; };
+  eq("multa recém-recebida é minha",
+    etapa({}), "voce/Enviar notificação ao condutor");
+  // O caso que motivou o painel: enviei pro cliente assinar e ele não devolveu.
+  eq("notificação enviada fica com o cliente",
+    etapa({ data_notificacao: "2026-08-02" }), "cliente/Aguardando o cliente assinar");
+  eq("assinou, volta pra mim notificar o órgão",
+    etapa({ data_notificacao: "2026-08-02", dsv_assinado_em: "2026-08-04" }), "voce/Notificar o órgão");
+  eq("órgão notificado, falta eu pedir o boleto",
+    etapa({ status_notificacao: "notificado" }), "voce/Solicitar o boleto");
+  eq("boleto pedido fica com o órgão",
+    etapa({ status_notificacao: "notificado", boleto_orgao_solicitado: true }), "orgao/Aguardando o boleto do órgão");
+  eq("boleto na mão, falta pagar",
+    etapa({ status_notificacao: "notificado", boleto_orgao_solicitado: true, boleto_orgao_recebido: true }),
+    "voce/Pagar o órgão");
+  eq("pago ao órgão, falta cobrar",
+    etapa({ status_notificacao: "notificado", boleto_orgao_recebido: true, status: "pago" }), "voce/Cobrar do cliente");
+  eq("cobrado, aguarda o cliente pagar",
+    etapa({ status: "pago", cobrado_cliente: "pendente" }), "cliente/Aguardando o cliente pagar");
+  eq("recusa de assinatura volta pra mim",
+    etapa({ status_notificacao: "nao_notificado", data_notificacao: "2026-08-02" }),
+    "voce/Recusou assinar — solicitar boleto");
+
+  eq("multa quitada pelo cliente sai do painel", F.situacaoMulta({ cobrado_cliente: "pago" }), null);
+  eq("multa cancelada sai do painel", F.situacaoMulta({ status: "cancelada" }), null);
+  eq("encerrada é reconhecida", F.multaEncerrada({ cobrado_cliente: "pago" }), true);
+
+  // O prazo depende da etapa: antes de notificar o órgão vale o prazo legal
+  // de indicação do condutor; depois, o vencimento do boleto.
+  eq("antes do órgão, vale o prazo de indicação",
+    F.situacaoMulta({ prazo_notificacao_orgao: "2026-08-15", vencimento: "2026-09-10" }).prazo, "2026-08-15");
+  eq("depois do órgão, vale o vencimento",
+    F.situacaoMulta({ status_notificacao: "notificado", prazo_notificacao_orgao: "2026-08-15", vencimento: "2026-09-10" }).prazo,
+    "2026-09-10");
+  eq("sem prazo de indicação, cai no vencimento",
+    F.situacaoMulta({ vencimento: "2026-09-10" }).prazo, "2026-09-10");
+}
+
+grupo("Multas — painel agrupado");
+{
+  const veiculos = [{ id: 1, placa: "ABC1D23", marca: "VW", modelo: "Saveiro" }];
+  const clientes = [{ id: 7, nome: "Kablan Engenharia Ltda" }, { id: 8, nome: "SP9 Ltda" }];
+  const contratos = [{ id: 11, veiculo_id: 1, cliente_id: 8, status: "ativo" }];
+  const multas = [
+    { id: 1, veiculo_id: 1, cliente_id: 7, valor: 130, ait: "A1", prazo_notificacao_orgao: "2026-08-30" },
+    { id: 2, veiculo_id: 1, cliente_id: 7, valor: 293, ait: "A2", data_notificacao: "2026-08-02",
+      prazo_notificacao_orgao: "2026-08-12" },
+    { id: 3, veiculo_id: 1, cliente_id: 7, valor: 88, ait: "A3", prazo_notificacao_orgao: "2026-08-09" },
+    { id: 4, veiculo_id: 1, cliente_id: 7, valor: 500, ait: "A4", cobrado_cliente: "pago" },
+    { id: 5, veiculo_id: 1, contrato_id: 11, valor: 195, ait: "A5",
+      status_notificacao: "notificado", boleto_orgao_solicitado: true, vencimento: "2026-08-25" },
+  ];
+  const g = F.painelMultasPendentes(multas, contratos, veiculos, clientes);
+
+  eq("grupos vazios não aparecem", g.length, 3);
+  eq("aguardando você vem primeiro", g[0].id, "voce");
+  eq("depois o cliente", g[1].id, "cliente");
+  eq("por último o órgão", g[2].id, "orgao");
+  eq("multa quitada não entra em grupo nenhum",
+    g.reduce((t, x) => t + x.itens.length, 0), 4);
+  eq("prazo mais apertado primeiro dentro do grupo", g[0].itens[0].ait, "A3");
+  eq("o grupo soma os valores", g[0].total, 218);
+  eq("cliente vem do contrato quando a multa não tem",
+    g[2].itens[0].cliente, "SP9 Ltda");
+  eq("linha carrega a placa", g[0].itens[0].placa, "ABC1D23");
+  eq("sem multa nenhuma, nenhum grupo",
+    F.painelMultasPendentes([], contratos, veiculos, clientes).length, 0);
+  eq("todas quitadas, nenhum grupo",
+    F.painelMultasPendentes([multas[3]], contratos, veiculos, clientes).length, 0);
+}
+
 grupo("Vitrine do miolo — volta representativa");
 {
   // O caso que quebrou de verdade: o seguro lançado veículo a veículo dá

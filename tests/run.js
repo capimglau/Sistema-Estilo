@@ -224,42 +224,33 @@ eq("nenhum header x-api-key no cliente",
 eq("chave da IA não é lida do banco nem do localStorage",
   (semComentarios.match(/getItem\(\s*["']claude_api_key["']\s*\)|empresa\.claude_api_key/g) || []).length, 0);
 
-grupo("Manutenção pendente — tique no contrato");
-eq("reconhece o tique", F.contratoTemManutencaoPendente({ observacoes: "⚠️ Manutenção pendente" }), true);
-eq("reconhece sem o emoji", F.contratoTemManutencaoPendente({ observacoes: "Manutenção pendente" }), true);
-eq("reconhece sem cedilha/til", F.contratoTemManutencaoPendente({ observacoes: "manutencao pendente" }), true);
-eq("observação comum não vira tique",
-  F.contratoTemManutencaoPendente({ observacoes: "Cliente pediu manutenção pendente de aprovação" }), false);
-eq("só a primeira linha conta",
-  F.contratoTemManutencaoPendente({ observacoes: "Pagamento via Pix\n⚠️ Manutenção pendente" }), false);
-eq("contrato sem observações", F.contratoTemManutencaoPendente({}), false);
-eq("lê a nota depois dos dois pontos",
-  F.lerMarcaManutencao("⚠️ Manutenção pendente: trocar os 4 pneus").nota, "trocar os 4 pneus");
-eq("desligar devolve o resto intacto",
-  F.alternarMarcaManutencao("⚠️ Manutenção pendente: x\nPagamento via Pix", false), "Pagamento via Pix");
-eq("ligar preserva o que já estava escrito",
-  F.alternarMarcaManutencao("Pagamento via Pix", true), "⚠️ Manutenção pendente\nPagamento via Pix");
-eq("ligar duas vezes não duplica o tique",
-  F.alternarMarcaManutencao(F.alternarMarcaManutencao("Obs", true), true),
-  "⚠️ Manutenção pendente\nObs");
-eq("qualquer anotação no contrato entra no painel",
-  !!F.avariaDoContrato({ observacoes: "Risco na porta traseira" }), true);
-eq("a anotação vira a descrição",
-  F.avariaDoContrato({ observacoes: "Risco na porta traseira" }).texto, "Risco na porta traseira");
-eq("anotação solta não conta como confirmada",
-  F.avariaDoContrato({ observacoes: "Risco na porta traseira" }).confirmada, false);
-eq("com o tique, é confirmada",
-  F.avariaDoContrato({ observacoes: "⚠️ Manutenção pendente: freio" }).confirmada, true);
-eq("com o tique sem nota, usa a linha de baixo",
-  F.avariaDoContrato({ observacoes: "⚠️ Manutenção pendente\nPastilha gastando" }).texto, "Pastilha gastando");
-eq("pula linha em branco antes do texto",
-  F.avariaDoContrato({ observacoes: "\n\n  Amassado no capô  " }).texto, "Amassado no capô");
-eq("observações vazias não entram", F.avariaDoContrato({ observacoes: "   \n  " }), null);
-eq("contrato sem observações não entra", F.avariaDoContrato({}), null);
+grupo("Anotação do contrato — tipo escolhido");
+eq("sem marcador é comentário", F.lerAnotacaoContrato("Pagamento via Pix").tipo, "comentario");
+eq("comentário não vai pro painel", F.avariaDoContrato({ observacoes: "Pagamento via Pix" }), null);
+eq("contrato sem observações não vai pro painel", F.avariaDoContrato({}), null);
+eq("reconhece avaria", F.lerAnotacaoContrato("⚠️ Avaria: farol trincado").tipo, "avaria");
+eq("reconhece manutenção", F.lerAnotacaoContrato("🔧 Manutenção pendente: freio").tipo, "manutencao");
+eq("reconhece sem emoji", F.lerAnotacaoContrato("Avaria: risco na porta").tipo, "avaria");
+eq("reconhece sem acento", F.lerAnotacaoContrato("manutencao pendente").tipo, "manutencao");
+eq("só a primeira linha define o tipo",
+  F.lerAnotacaoContrato("Pagamento via Pix\n⚠️ Avaria: farol").tipo, "comentario");
+eq("frase que menciona avaria no meio não vira tipo",
+  F.lerAnotacaoContrato("Cliente relatou avaria no retrovisor").tipo, "comentario");
+eq("lê o texto depois dos dois pontos",
+  F.lerAnotacaoContrato("⚠️ Avaria: farol trincado").texto, "farol trincado");
+eq("sem texto na marca, usa a linha de baixo",
+  F.lerAnotacaoContrato("⚠️ Avaria\nFarol trincado").texto, "Farol trincado");
 
-eq("ligar preserva a nota que já existia",
-  F.alternarMarcaManutencao("⚠️ Manutenção pendente: freio\nObs", true),
-  "⚠️ Manutenção pendente: freio\nObs");
+eq("marcar como avaria leva o comentário junto",
+  F.definirTipoAnotacao("Farol trincado", "avaria"), "⚠️ Avaria\nFarol trincado");
+eq("trocar de tipo preserva o texto",
+  F.definirTipoAnotacao("⚠️ Avaria: farol trincado", "manutencao"),
+  "🔧 Manutenção pendente: farol trincado");
+eq("voltar pra comentário tira só o marcador",
+  F.definirTipoAnotacao("⚠️ Avaria: farol\nPagamento via Pix", "comentario"), "Pagamento via Pix");
+eq("marcar duas vezes não duplica",
+  F.definirTipoAnotacao(F.definirTipoAnotacao("Obs", "avaria"), "avaria"), "⚠️ Avaria\nObs");
+eq("tipo desconhecido cai em comentário", F.tipoAnotacao("xpto").id, "comentario");
 
 grupo("Manutenção pendente — painel");
 {
@@ -269,7 +260,7 @@ grupo("Manutenção pendente — painel");
   const contratos = [
     { id: 11, veiculo_id: 1, cliente_id: 7, status: "ativo", data_inicio: "2026-08-01" },
     { id: 12, veiculo_id: 2, cliente_id: 8, status: "ativo", data_inicio: "2026-08-01",
-      observacoes: "⚠️ Manutenção pendente: revisão dos 20 mil" },
+      observacoes: "🔧 Manutenção pendente: revisão dos 20 mil" },
   ];
   const mans = [
     { id: 91, veiculo_id: 1, descricao: "Troca de embreagem", custo: 2400,
@@ -284,16 +275,17 @@ grupo("Manutenção pendente — painel");
   eq("linha do registro traz o cliente do contrato do veículo", p[0].cliente, "Kablan Engenharia Ltda");
   eq("linha do registro traz o contrato", p[0].contrato_id, 11);
   eq("linha do registro traz a placa", p[0].placa, "ABC1D23");
-  eq("linha do tique usa a nota como descrição",
+  eq("linha do contrato usa o texto da anotação como descrição",
     p.find((l) => l.origem === "contrato").descricao, "revisão dos 20 mil");
-  eq("linha do tique é confirmada", p.find((l) => l.origem === "contrato").confirmada, true);
+  eq("linha do contrato carrega o tipo escolhido",
+    p.find((l) => l.origem === "contrato").tipo, "manutencao");
   eq("linha com data vem antes da linha sem data", p[0].origem, "manutencao");
 
   // Um veículo que já tem manutenção cadastrada não deve aparecer duas vezes
   // só porque o contrato também está marcado.
   const ct2 = contratos.concat([{ id: 13, veiculo_id: 1, cliente_id: 7, status: "ativo",
-    data_inicio: "2026-08-05", observacoes: "⚠️ Manutenção pendente" }]);
-  eq("tique não duplica veículo que já tem registro pendente",
+    data_inicio: "2026-08-05", observacoes: "🔧 Manutenção pendente" }]);
+  eq("anotação não duplica veículo que já tem registro pendente",
     F.painelManutencoesPendentes(mans, ct2, veiculos, clientes).length, 2);
 
   eq("em andamento continua pendente", F.manutencaoAindaPendente({ status: "em_andamento" }), true);
@@ -301,23 +293,28 @@ grupo("Manutenção pendente — painel");
   eq("sem nada pendente devolve lista vazia",
     F.painelManutencoesPendentes([], [contratos[0]], veiculos, clientes).length, 0);
 
-  // Observação livre no contrato, sem tique nenhum, também puxa o veículo.
+  // Comentário solto NÃO puxa o veículo — é o ponto do seletor.
   const ctObs = [{ id: 14, veiculo_id: 2, cliente_id: 8, status: "ativo",
-    data_inicio: "2026-08-01", observacoes: "Farol direito trincado" }];
-  const pObs = F.painelManutencoesPendentes([], ctObs, veiculos, clientes);
-  eq("observação livre puxa o veículo pro painel", pObs.length, 1);
-  eq("e entra com a anotação como descrição", pObs[0].descricao, "Farol direito trincado");
-  eq("mas não como avaria confirmada", pObs[0].confirmada, false);
+    data_inicio: "2026-08-01", observacoes: "Pagamento via Pix, km livre" }];
+  eq("comentário solto fica fora do painel",
+    F.painelManutencoesPendentes([], ctObs, veiculos, clientes).length, 0);
 
-  // Confirmada vem antes de anotação solta entre as linhas sem data.
+  const ctAvaria = [{ id: 14, veiculo_id: 2, cliente_id: 8, status: "ativo",
+    data_inicio: "2026-08-01", observacoes: "⚠️ Avaria: farol direito trincado" }];
+  const pAv = F.painelManutencoesPendentes([], ctAvaria, veiculos, clientes);
+  eq("avaria marcada entra no painel", pAv.length, 1);
+  eq("com o texto da anotação", pAv[0].descricao, "farol direito trincado");
+  eq("e com o tipo avaria", pAv[0].tipo, "avaria");
+
+  // Avaria antes de manutenção pendente entre as linhas sem data.
   const ctMix = [
-    { id: 15, veiculo_id: 2, cliente_id: 8, status: "ativo", data_inicio: "2026-08-01",
-      observacoes: "Farol trincado" },
-    { id: 16, veiculo_id: 1, cliente_id: 7, status: "ativo", data_inicio: "2026-08-01",
-      observacoes: "⚠️ Manutenção pendente: embreagem" },
+    { id: 15, veiculo_id: 1, cliente_id: 7, status: "ativo", data_inicio: "2026-08-01",
+      observacoes: "🔧 Manutenção pendente: embreagem" },
+    { id: 16, veiculo_id: 2, cliente_id: 8, status: "ativo", data_inicio: "2026-08-01",
+      observacoes: "⚠️ Avaria: farol" },
   ];
-  const pMix = F.painelManutencoesPendentes([], ctMix, veiculos, clientes);
-  eq("avaria confirmada vem antes da anotação solta", pMix[0].descricao, "embreagem");
+  eq("avaria vem antes de manutenção pendente",
+    F.painelManutencoesPendentes([], ctMix, veiculos, clientes)[0].descricao, "farol");
 }
 
 grupo("Vitrine do miolo — volta representativa");

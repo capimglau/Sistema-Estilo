@@ -17165,6 +17165,21 @@ function definirValorAnotacao(obs, valor) {
   var n = typeof valor === "number" ? (valor > 0 ? valor : null) : _valorAnotacaoNum(valor);
   return _montarAnotacao(t, a.nota, n, a.resto);
 }
+/* Cobrada, a anotação vira histórico: sai do painel mas continua registrada
+   no contrato, com data e valor. Voltar pra "comentário" puro apagaria o
+   texto — ele mora justamente na linha da marca, e tirar a marca levava o
+   texto junto. A linha resultante não casa com o padrão de anotação, então
+   não volta a ser pendência. */
+function encerrarAnotacaoCobrada(obs, dataISO) {
+  var a = lerAnotacaoContrato(obs);
+  var t = tipoAnotacao(a.tipo);
+  if (!t.noPainel) return String(obs == null ? "" : obs);
+  var linha = "\u2714\uFE0F " + t.rotulo + " cobrada"
+    + (dataISO ? " em " + fmtDate(dataISO) : "")
+    + (a.valor ? " \u2014 R$ " + _valorAnotacaoTxt(a.valor) : "")
+    + (a.texto ? ": " + a.texto : "");
+  return linha + (a.resto ? "\n" + a.resto : "");
+}
 function _montarAnotacao(t, nota, valor, resto) {
   return t.emoji + " " + t.rotulo
     + (valor ? " [R$ " + _valorAnotacaoTxt(valor) + "]" : "")
@@ -25413,6 +25428,45 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
     }
   }
 
+  /* Cobrar do cliente uma avaria anotada no contrato.
+
+     Fecha o ciclo que faltava: a anotação vira receita de verdade, com
+     cliente, veículo e contrato amarrados, e a linha some do painel porque
+     a pendência deixou de existir. O texto da anotação não se perde — ele
+     volta a ser comentário comum no contrato, que é o histórico do que
+     aconteceu com aquele carro. */
+  async function _agCobrarAvaria(l) {
+    var ct = (contratos || []).find(function (c) { return String(c.id) === String(l.id); });
+    if (!ct) { toast("Contrato não encontrado."); return; }
+    var anot = lerAnotacaoContrato(ct.observacoes);
+    var dtHoje = _brNow().toISOString().split("T")[0];
+    var _r = await window.__agPrompt2({
+      title: "Cobrar do cliente", icon: "\u{1F4B0}",
+      label1: "Valor a cobrar (R$)", type1: "text",
+      default1: anot.valor ? anot.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "",
+      label2: "Data", type2: "date", default2: dtHoje,
+    });
+    if (!_r || !_r.ok) return;
+    var valor = parseFloat(String(_r.v1 || "").replace(/\./g, "").replace(",", "."));
+    if (!isFinite(valor) || valor <= 0) { toast("Informe um valor."); return; }
+    var dt = _r.v2 || dtHoje;
+    var rotulo = anot.tipo === "avaria" ? "Avaria" : "Manutenção";
+    try {
+      var nova = await db.post("receitas", {
+        descricao: rotulo + " — " + (anot.texto || l.descricao || "") + (l.placa && l.placa !== "--" ? " (" + l.placa + ")" : ""),
+        valor: valor, categoria: "Servico",
+        data: dt, data_vencimento: dt, status: "previsto", forma_pagamento: "Pix",
+        cliente_id: ct.cliente_id, veiculo_id: ct.veiculo_id, contrato_id: ct.id,
+      });
+      setReceitas(function (p) { return [nova].concat(p); });
+      // Anotação cumpriu o papel: vira histórico e a linha sai do painel.
+      var obsLimpa = encerrarAnotacaoCobrada(ct.observacoes, dt);
+      var up = await db.patch("contratos", ct.id, { observacoes: obsLimpa });
+      setContratos(function (p) { return p.map(function (c) { return c.id === ct.id ? Object.assign({}, c, up || { observacoes: obsLimpa }) : c; }); });
+      toast("Receita de " + fmtBRL(valor) + " lançada.");
+    } catch (e) { toast("Erro ao lançar a cobrança."); throw e; }
+  }
+
   async function _agBaixar(ev) {
     var dtHoje = _brNow().toISOString().split("T")[0];
     var _r;
@@ -27572,7 +27626,11 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
 
         return React.createElement(SwipeRow, {
           key:'man-'+l.origem+'-'+l.id,
-          onBaixar:null,
+          // Só a anotação do contrato se cobra por aqui. O custo de uma
+          // manutenção cadastrada é o que se paga à oficina — repassar ao
+          // cliente é outra decisão, e não sai deste painel.
+          onBaixar: l.origem === 'contrato' ? function(){ _agCobrarAvaria(l); } : null,
+          baixarLabel:'Cobrar',
           action2:function(){ onItemNav(_navAlvo.alvo, _navAlvo.tab); },
           action2Label:'Ver', action2Icon:'\u{1F441}', action2Color:'rgba(0,122,255,0.92)',
           onDelete:null,

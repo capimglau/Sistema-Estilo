@@ -277,6 +277,23 @@ eq("valor em comentário não faz nada",
 eq("colchete no texto livre não vira valor",
   F.lerAnotacaoContrato("⚠️ Avaria: farol [conforme foto]").valor, null);
 
+grupo("Anotação cobrada vira histórico");
+{
+  const o = "⚠️ Avaria [R$ 1.450,00]: farol trincado\nPagamento via Pix";
+  const h = F.encerrarAnotacaoCobrada(o, "2026-08-08");
+  eq("registra data e valor na linha",
+    h, "✔️ Avaria cobrada em 08/08/2026 — R$ 1.450,00: farol trincado\nPagamento via Pix");
+  // O texto mora na linha da marca: voltar pra "comentário" puro o apagava.
+  eq("o texto da avaria não se perde", /farol trincado/.test(h), true);
+  eq("o resto das observações continua lá", /Pagamento via Pix/.test(h), true);
+  eq("não volta a ser pendência", F.avariaDoContrato({ observacoes: h }), null);
+  eq("sem valor, não inventa preço",
+    F.encerrarAnotacaoCobrada("🔧 Manutenção pendente: revisão", "2026-08-08"),
+    "✔️ Manutenção pendente cobrada em 08/08/2026: revisão");
+  eq("comentário comum não é tocado",
+    F.encerrarAnotacaoCobrada("Pagamento via Pix", "2026-08-08"), "Pagamento via Pix");
+}
+
 grupo("Manutenção pendente — painel");
 {
   const veiculos = [{ id: 1, placa: "ABC1D23", marca: "VW", modelo: "Saveiro" },

@@ -45,6 +45,7 @@ function extrair(marcadores) {
   const preludio = `
     var capSentence = function (s) { return String(s == null ? "" : s); };
     var _brNow = function () { return new Date("2026-08-06T12:00:00Z"); };
+    var fmtDate = function (d) { if (!d) return "--"; var p = String(d).split("-"); return p.length !== 3 ? d : p[2] + "/" + p[1] + "/" + p[0]; };
   `;
 
   const escopo = {};
@@ -60,6 +61,7 @@ function extrair(marcadores) {
       rdNomeNoGrafico, rdVoltaVitrine, rdSum,
       TIPOS_ANOTACAO, tipoAnotacao, lerAnotacaoContrato, definirTipoAnotacao,
       definirValorAnotacao,
+      encerrarAnotacaoCobrada,
       manutencaoAindaPendente, painelManutencoesPendentes, avariaDoContrato,
       situacaoMulta, multaEncerrada, painelMultasPendentes, GRUPOS_MULTA
     };

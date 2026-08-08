@@ -242,6 +242,21 @@ eq("ligar preserva o que já estava escrito",
 eq("ligar duas vezes não duplica o tique",
   F.alternarMarcaManutencao(F.alternarMarcaManutencao("Obs", true), true),
   "⚠️ Manutenção pendente\nObs");
+eq("qualquer anotação no contrato entra no painel",
+  !!F.avariaDoContrato({ observacoes: "Risco na porta traseira" }), true);
+eq("a anotação vira a descrição",
+  F.avariaDoContrato({ observacoes: "Risco na porta traseira" }).texto, "Risco na porta traseira");
+eq("anotação solta não conta como confirmada",
+  F.avariaDoContrato({ observacoes: "Risco na porta traseira" }).confirmada, false);
+eq("com o tique, é confirmada",
+  F.avariaDoContrato({ observacoes: "⚠️ Manutenção pendente: freio" }).confirmada, true);
+eq("com o tique sem nota, usa a linha de baixo",
+  F.avariaDoContrato({ observacoes: "⚠️ Manutenção pendente\nPastilha gastando" }).texto, "Pastilha gastando");
+eq("pula linha em branco antes do texto",
+  F.avariaDoContrato({ observacoes: "\n\n  Amassado no capô  " }).texto, "Amassado no capô");
+eq("observações vazias não entram", F.avariaDoContrato({ observacoes: "   \n  " }), null);
+eq("contrato sem observações não entra", F.avariaDoContrato({}), null);
+
 eq("ligar preserva a nota que já existia",
   F.alternarMarcaManutencao("⚠️ Manutenção pendente: freio\nObs", true),
   "⚠️ Manutenção pendente: freio\nObs");
@@ -271,6 +286,7 @@ grupo("Manutenção pendente — painel");
   eq("linha do registro traz a placa", p[0].placa, "ABC1D23");
   eq("linha do tique usa a nota como descrição",
     p.find((l) => l.origem === "contrato").descricao, "revisão dos 20 mil");
+  eq("linha do tique é confirmada", p.find((l) => l.origem === "contrato").confirmada, true);
   eq("linha com data vem antes da linha sem data", p[0].origem, "manutencao");
 
   // Um veículo que já tem manutenção cadastrada não deve aparecer duas vezes
@@ -284,6 +300,24 @@ grupo("Manutenção pendente — painel");
   eq("cancelada sai", F.manutencaoAindaPendente({ status: "cancelada" }), false);
   eq("sem nada pendente devolve lista vazia",
     F.painelManutencoesPendentes([], [contratos[0]], veiculos, clientes).length, 0);
+
+  // Observação livre no contrato, sem tique nenhum, também puxa o veículo.
+  const ctObs = [{ id: 14, veiculo_id: 2, cliente_id: 8, status: "ativo",
+    data_inicio: "2026-08-01", observacoes: "Farol direito trincado" }];
+  const pObs = F.painelManutencoesPendentes([], ctObs, veiculos, clientes);
+  eq("observação livre puxa o veículo pro painel", pObs.length, 1);
+  eq("e entra com a anotação como descrição", pObs[0].descricao, "Farol direito trincado");
+  eq("mas não como avaria confirmada", pObs[0].confirmada, false);
+
+  // Confirmada vem antes de anotação solta entre as linhas sem data.
+  const ctMix = [
+    { id: 15, veiculo_id: 2, cliente_id: 8, status: "ativo", data_inicio: "2026-08-01",
+      observacoes: "Farol trincado" },
+    { id: 16, veiculo_id: 1, cliente_id: 7, status: "ativo", data_inicio: "2026-08-01",
+      observacoes: "⚠️ Manutenção pendente: embreagem" },
+  ];
+  const pMix = F.painelManutencoesPendentes([], ctMix, veiculos, clientes);
+  eq("avaria confirmada vem antes da anotação solta", pMix[0].descricao, "embreagem");
 }
 
 grupo("Vitrine do miolo — volta representativa");

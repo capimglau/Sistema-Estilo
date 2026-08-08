@@ -224,6 +224,50 @@ eq("nenhum header x-api-key no cliente",
 eq("chave da IA não é lida do banco nem do localStorage",
   (semComentarios.match(/getItem\(\s*["']claude_api_key["']\s*\)|empresa\.claude_api_key/g) || []).length, 0);
 
+grupo("Vitrine do miolo — volta representativa");
+{
+  // O caso que quebrou de verdade: o seguro lançado veículo a veículo dá
+  // vários lançamentos com a MESMA data e a MESMA categoria. Ordenando por
+  // data, esse lote tomava a volta inteira e o miolo parecia travado em
+  // "Seguros" — como se fosse a única despesa do mês.
+  const rec = [
+    { chave: "Kablan Engenharia Ltda", valor: 8223, data: "2026-08-10" },
+    { chave: "SP9 Incorpor. Ltda", valor: 2700, data: "2026-08-16" },
+  ];
+  const desp = [
+    { chave: "Seguros", valor: 307, data: "2026-08-25" },
+    { chave: "Seguros", valor: 412, data: "2026-08-25" },
+    { chave: "Seguros", valor: 298, data: "2026-08-25" },
+    { chave: "Seguros", valor: 255, data: "2026-08-25" },
+    { chave: "Impostos", valor: 1220, data: "2026-08-06" },
+    { chave: "Manutenção", valor: 310, data: "2026-08-07" },
+  ];
+  const volta = F.rdVoltaVitrine(rec, desp, 16);
+
+  // 2 clientes + 3 categorias = 5 grupos, então a primeira rodada tem 5
+  // cartões e passa uma vez por cada um.
+  const primeiraRodada = volta.slice(0, 5).map((c) => c.nome);
+  eq("a primeira rodada passa por todos os grupos, sem repetir",
+    new Set(primeiraRodada).size, 5);
+  eq("nenhum grupo aparece duas vezes antes de todos aparecerem uma",
+    primeiraRodada.filter((n) => n === "Seguros").length, 1);
+  // Enquanto houver dos dois lados, alterna; quando um acaba, o outro segue.
+  eq("entrada e saída se intercalam enquanto há dos dois",
+    volta.slice(0, 4).map((c) => c.tipo).join(","),
+    "receita,despesa,receita,despesa");
+  eq("o lote repetido só volta depois que todo mundo apareceu",
+    volta[5].nome, "Seguros");
+  eq("dentro do grupo, o maior lançamento vem primeiro",
+    volta.find((c) => c.nome === "Seguros").valor, 412);
+  eq("a volta cobre todos os lançamentos", volta.length, rec.length + desp.length);
+  eq("cliente entra com o nome curto, igual ao rótulo da fatia",
+    volta[0].nome, "Kablan");
+  eq("categoria de despesa entra com o nome inteiro",
+    F.rdNomeNoGrafico("despesa", "Contabilidade"), "Contabilidade");
+  eq("o teto corta a volta", F.rdVoltaVitrine(rec, desp, 3).length, 3);
+  eq("mês sem lançamento devolve volta vazia", F.rdVoltaVitrine([], [], 16).length, 0);
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 console.log("\n" + "─".repeat(60));
 if (falhas.length) {

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="eef32f0"/>
+<meta name="ag-build" content="d3c9781"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -37465,6 +37465,47 @@ function rdAbbrev(v) {
    que é exatamente o que está escrito na fatia, então o miolo e o anel
    falam a mesma língua. Nome completo continua na legenda abaixo. */
 function rdNomeNoGrafico(ringId, key) { return ringId === "receita" ? String(key).split(" ")[0] : key; }
+/* Monta a volta da vitrine do miolo.
+   Ordenar tudo por data parece o óbvio e está errado: quando uma categoria é
+   lançada item a item no mesmo dia — o seguro cobrado veículo a veículo, por
+   exemplo — esse lote sozinho toma os primeiros lugares e a volta inteira
+   vira "Seguros, 25/08" repetido, como se fosse a única despesa do mês.
+   Aqui a volta passa de grupo em grupo: um lançamento de cada cliente e de
+   cada categoria por rodada, alternando entrada e saída, e só então volta
+   pro segundo lançamento de cada um. Dentro do grupo, o maior primeiro. */
+function rdVoltaVitrine(receitaRows, despesaRows, teto) {
+  function agrupar(rows, tipo) {
+    var porChave = Object.create(null), ordem = [];
+    (rows || []).forEach(function (r) {
+      if (!porChave[r.chave]) { porChave[r.chave] = { tipo: tipo, chave: r.chave, itens: [] }; ordem.push(porChave[r.chave]); }
+      porChave[r.chave].itens.push(r);
+    });
+    ordem.forEach(function (g) { g.itens.sort(function (a, b) { return (b.valor || 0) - (a.valor || 0); }); });
+    return ordem.sort(function (a, b) { return rdSum(b.itens) - rdSum(a.itens); });
+  }
+  var rec = agrupar(receitaRows, "receita"), desp = agrupar(despesaRows, "despesa");
+  // Intercala entrada e saída pra a cor do valor não ficar cinco cartões
+  // seguidos no verde e depois cinco no vermelho.
+  var grupos = [];
+  for (var i = 0; i < Math.max(rec.length, desp.length); i++) {
+    if (rec[i]) grupos.push(rec[i]);
+    if (desp[i]) grupos.push(desp[i]);
+  }
+  var volta = [], rodada = 0;
+  while (volta.length < teto) {
+    var achouAlgum = false;
+    for (var g = 0; g < grupos.length && volta.length < teto; g++) {
+      var item = grupos[g].itens[rodada];
+      if (!item) continue;
+      achouAlgum = true;
+      volta.push({ tipo: grupos[g].tipo, nome: rdNomeNoGrafico(grupos[g].tipo, grupos[g].chave),
+                   valor: item.valor, data: item.data });
+    }
+    if (!achouAlgum) break;
+    rodada++;
+  }
+  return volta;
+}
 function rdSum(list) { return list.reduce(function (s, r) { return s + r.valor; }, 0); }
 // Agrupa {chave,valor}[] em itens {key,value,color,selected} pro componente —
 // mesma agregação nos dois anéis, só muda a paleta de cor.
@@ -37555,10 +37596,7 @@ function RdSunburstCard({ receitaRows, despesaRows, C, CARD_CLS }) {
   // o centro precisa mostrar justamente o que foi escolhido.
   var _vit = React.useState(0); var vitrine = _vit[0], setVitrine = _vit[1];
   var temSelecao = selReceita.size > 0 || selDespesa.size > 0;
-  var lancVitrine = receitaRows.map(function (r) { return { tipo: "receita", nome: rdNomeNoGrafico("receita", r.chave), valor: r.valor, data: r.data }; })
-    .concat(despesaRows.map(function (r) { return { tipo: "despesa", nome: r.chave, valor: r.valor, data: r.data }; }))
-    .sort(function (a, b) { return String(b.data || "").localeCompare(String(a.data || "")); })
-    .slice(0, 16); // teto pra a volta não passar de ~1 minuto
+  var lancVitrine = rdVoltaVitrine(receitaRows, despesaRows, 16); // ~1 minuto de volta
   var _nVit = lancVitrine.length;
 
   React.useEffect(function () {

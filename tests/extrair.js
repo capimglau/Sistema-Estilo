@@ -59,7 +59,8 @@ function extrair(marcadores) {
       _periodosSobrepoem, veiculoDaReserva, conflitosDaReserva, clienteDaReserva,
       rdNomeNoGrafico, rdVoltaVitrine, rdSum,
       TIPOS_ANOTACAO, tipoAnotacao, lerAnotacaoContrato, definirTipoAnotacao,
-      manutencaoAindaPendente, painelManutencoesPendentes, avariaDoContrato
+      manutencaoAindaPendente, painelManutencoesPendentes, avariaDoContrato,
+      situacaoMulta, multaEncerrada, painelMultasPendentes, GRUPOS_MULTA
     };
   `);
   return Object.assign(escopo, fn());
@@ -83,6 +84,13 @@ const MARCADORES = [
     nome: "manutenção pendente",
     de: "var TIPOS_ANOTACAO =",
     ate: "function AlertBox(",
+  },
+  {
+    // O pipeline de multas e o mapa de responsável por etapa — fica junto
+    // do módulo de Multas, então é um recorte à parte.
+    nome: "multas — pipeline e responsável",
+    de: "var PIPELINE_MULTA = [",
+    ate: "var DSV_LOGO_SVG =",
   },
   {
     // Monta a volta da vitrine do miolo do gráfico circular. Fica noutra

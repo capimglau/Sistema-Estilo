@@ -252,6 +252,31 @@ eq("marcar duas vezes não duplica",
   F.definirTipoAnotacao(F.definirTipoAnotacao("Obs", "avaria"), "avaria"), "⚠️ Avaria\nObs");
 eq("tipo desconhecido cai em comentário", F.tipoAnotacao("xpto").id, "comentario");
 
+// Valor a cobrar: só existe depois de orçado, então é opcional e sobrevive
+// à troca de tipo.
+eq("sem orçamento, sem valor", F.lerAnotacaoContrato("⚠️ Avaria: farol").valor, null);
+eq("grava o valor entre colchetes",
+  F.definirValorAnotacao("⚠️ Avaria: farol", "450,00"), "⚠️ Avaria [R$ 450,00]: farol");
+eq("lê o valor de volta",
+  F.lerAnotacaoContrato("⚠️ Avaria [R$ 450,00]: farol").valor, 450);
+eq("lê valor com milhar",
+  F.lerAnotacaoContrato("⚠️ Avaria [R$ 1.234,56]: farol").valor, 1234.56);
+eq("o texto não engole os colchetes",
+  F.lerAnotacaoContrato("⚠️ Avaria [R$ 450,00]: farol").texto, "farol");
+eq("trocar de tipo preserva o valor",
+  F.definirTipoAnotacao("⚠️ Avaria [R$ 450,00]: farol", "manutencao"),
+  "🔧 Manutenção pendente [R$ 450,00]: farol");
+eq("apagar o campo tira o valor",
+  F.definirValorAnotacao("⚠️ Avaria [R$ 450,00]: farol", ""), "⚠️ Avaria: farol");
+eq("zero não vira valor",
+  F.definirValorAnotacao("⚠️ Avaria: farol", "0"), "⚠️ Avaria: farol");
+eq("texto no campo de valor é ignorado",
+  F.definirValorAnotacao("⚠️ Avaria: farol", "abc"), "⚠️ Avaria: farol");
+eq("valor em comentário não faz nada",
+  F.definirValorAnotacao("Pagamento via Pix", "450"), "Pagamento via Pix");
+eq("colchete no texto livre não vira valor",
+  F.lerAnotacaoContrato("⚠️ Avaria: farol [conforme foto]").valor, null);
+
 grupo("Manutenção pendente — painel");
 {
   const veiculos = [{ id: 1, placa: "ABC1D23", marca: "VW", modelo: "Saveiro" },
@@ -281,7 +306,7 @@ grupo("Manutenção pendente — painel");
     p.find((l) => l.origem === "contrato").tipo, "manutencao");
   // Observação de contrato não guarda dinheiro — sem valor, o painel não
   // desenha coluna de preço nenhuma.
-  eq("linha do contrato não tem valor",
+  eq("linha do contrato sem orçamento não tem valor",
     p.find((l) => l.origem === "contrato").valor, null);
   eq("linha de manutenção tem valor",
     p.find((l) => l.origem === "manutencao").valor, 2400);
@@ -317,6 +342,12 @@ grupo("Manutenção pendente — painel");
   eq("avaria marcada entra no painel", pAv.length, 1);
   eq("com o texto da anotação", pAv[0].descricao, "farol direito trincado");
   eq("e com o tipo avaria", pAv[0].tipo, "avaria");
+
+  const ctOrcada = [{ id: 14, veiculo_id: 2, cliente_id: 8, status: "ativo",
+    data_inicio: "2026-08-01", observacoes: "⚠️ Avaria [R$ 450,00]: farol trincado" }];
+  const pOrc = F.painelMultasPendentes ? F.painelManutencoesPendentes([], ctOrcada, veiculos, clientes) : [];
+  eq("avaria orçada leva o valor a cobrar pro painel", pOrc[0].valor, 450);
+  eq("e o texto continua limpo", pOrc[0].descricao, "farol trincado");
 
   // Avaria antes de manutenção pendente entre as linhas sem data.
   const ctMix = [

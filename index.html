@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="d433c91"/>
+<meta name="ag-build" content="c237595"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -17116,30 +17116,60 @@ var TIPOS_ANOTACAO = [
 function tipoAnotacao(id) {
   return TIPOS_ANOTACAO.find(function (t) { return t.id === id; }) || TIPOS_ANOTACAO[0];
 }
-var _RE_ANOTACAO = /^\s*(?:[^\w\s:]+\s*)?(avaria|manuten[çc][ãa]o pendente)\s*(?::\s*(.*))?$/i;
+/* "⚠️ Avaria [R$ 450,00]: farol trincado" — o valor entre colchetes é
+   opcional e só existe depois de orçado. Os colchetes são o delimitador
+   porque não aparecem em texto corrido escrito à mão, então o que vier
+   depois dos dois pontos continua sendo texto livre de verdade. */
+var _RE_ANOTACAO = /^\s*(?:[^\w\s:[\]]+\s*)?(avaria|manuten[çc][ãa]o pendente)\s*(?:\[\s*R\$\s*([\d.,]+)\s*\])?\s*(?::\s*(.*))?$/i;
+
+/* "1.234,56" (como o usuário digita) -> 1234.56 */
+function _valorAnotacaoNum(txt) {
+  if (txt == null || txt === "") return null;
+  var n = parseFloat(String(txt).replace(/\./g, "").replace(",", "."));
+  return isFinite(n) && n > 0 ? n : null;
+}
+function _valorAnotacaoTxt(v) {
+  return (parseFloat(v) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
 /* Lê o tipo da primeira linha. Sem marcador é comentário — o padrão, que
    não vai pro painel. */
 function lerAnotacaoContrato(obs) {
   var linhas = String(obs == null ? "" : obs).split("\n");
   var m = _RE_ANOTACAO.exec(linhas[0] || "");
-  if (!m) return { tipo: "comentario", nota: "", texto: _primeiraLinha(obs), resto: String(obs == null ? "" : obs) };
+  if (!m) return { tipo: "comentario", nota: "", valor: null, texto: _primeiraLinha(obs), resto: String(obs == null ? "" : obs) };
   var tipo = /avaria/i.test(m[1]) ? "avaria" : "manutencao";
   var resto = linhas.slice(1).join("\n");
   // `nota` é só o que está escrito NA linha da marca; `texto` é o que o
   // painel mostra, e cai pra primeira linha de baixo quando a marca vem
   // sozinha. Misturar os dois fazia a marca reescrever a linha de baixo
   // dentro dela mesma e duplicar o texto a cada troca de tipo.
-  var nota = (m[2] || "").trim();
-  return { tipo: tipo, nota: nota, texto: nota || _primeiraLinha(resto), resto: resto };
+  var nota = (m[3] || "").trim();
+  return { tipo: tipo, nota: nota, valor: _valorAnotacaoNum(m[2]),
+           texto: nota || _primeiraLinha(resto), resto: resto };
 }
 /* Troca o tipo preservando o texto que o usuário escreveu. */
 function definirTipoAnotacao(obs, tipoId) {
   var a = lerAnotacaoContrato(obs);
   var t = tipoAnotacao(tipoId);
   if (!t.noPainel) return a.resto;
-  var corpo = a.tipo === "comentario" ? "" : a.nota;
-  return t.emoji + " " + t.rotulo + (corpo ? ": " + corpo : "") + (a.resto ? "\n" + a.resto : "");
+  var novo = a.tipo === "comentario" ? { nota: "", valor: null } : a;
+  return _montarAnotacao(t, novo.nota, novo.valor, a.resto);
+}
+/* Valor a cobrar do cliente — só faz sentido depois de orçado, então é
+   opcional. Passar null ou 0 tira o valor da linha. */
+function definirValorAnotacao(obs, valor) {
+  var a = lerAnotacaoContrato(obs);
+  var t = tipoAnotacao(a.tipo);
+  if (!t.noPainel) return String(obs == null ? "" : obs);
+  var n = typeof valor === "number" ? (valor > 0 ? valor : null) : _valorAnotacaoNum(valor);
+  return _montarAnotacao(t, a.nota, n, a.resto);
+}
+function _montarAnotacao(t, nota, valor, resto) {
+  return t.emoji + " " + t.rotulo
+    + (valor ? " [R$ " + _valorAnotacaoTxt(valor) + "]" : "")
+    + (nota ? ": " + nota : "")
+    + (resto ? "\n" + resto : "");
 }
 function _primeiraLinha(txt) {
   var linhas = String(txt == null ? "" : txt).split("\n");
@@ -17153,7 +17183,7 @@ function _primeiraLinha(txt) {
 function avariaDoContrato(ct) {
   var a = lerAnotacaoContrato(ct && ct.observacoes);
   if (!tipoAnotacao(a.tipo).noPainel) return null;
-  return { tipo: a.tipo, texto: a.texto || tipoAnotacao(a.tipo).rotulo };
+  return { tipo: a.tipo, texto: a.texto || tipoAnotacao(a.tipo).rotulo, valor: a.valor };
 }
 
 /* Fica no painel só o que ainda há pra resolver com o cliente.
@@ -17230,7 +17260,7 @@ function painelManutencoesPendentes(manutencoes, contratos, veiculos, clientes) 
       return _linha({
         origem: "contrato", id: o.ct.id, veiculo_id: o.ct.veiculo_id, contrato: o.ct,
         descricao: o.avaria.texto, tipo: o.avaria.tipo,
-        valor: null, data: null,
+        valor: o.avaria.valor, data: null,
       });
     });
 
@@ -27522,7 +27552,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
               // de manutenção continua em uma linha — ali o título é curto e
               // o valor ao lado é que carrega a informação.
               , React.createElement('span', { style: Object.assign({ fontSize:12, color:C.sub, minWidth:0, overflow:'hidden' },
-                    l.valor == null
+                    l.origem === 'contrato'
                       ? { display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', lineHeight:1.35 }
                       : { textOverflow:'ellipsis', whiteSpace:'nowrap' }) }, l.descricao)
               , statusTxt ? React.createElement('span', { style:{ fontSize:11, fontWeight:600, color:cor, whiteSpace:'nowrap', flexShrink:0 } }, statusTxt) : null
@@ -27531,8 +27561,12 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           )
           // Sem valor não desenha coluna nenhuma: travessão no lugar do preço
           // sugere "custa zero", quando o que há é "ainda não tem orçamento".
-          , l.valor == null ? null : React.createElement('div', { style:{ flexShrink:0, display:'flex', alignItems:'center', padding:'0 14px 0 8px' } }
+          , l.valor == null ? null : React.createElement('div', { style:{ flexShrink:0, display:'flex', flexDirection:'column', alignItems:'flex-end', justifyContent:'center', padding:'0 14px 0 8px' } }
             , React.createElement('span', { style:{ fontSize:14, fontWeight:800, color:cor } }, fmtBRL(l.valor))
+            // Linha do contrato: o valor é o que se cobra do cliente, não o
+            // que se paga à oficina. Sem o rótulo, os dois se confundem na
+            // mesma coluna.
+            , l.origem === 'contrato' ? React.createElement('span', { style:{ fontSize:10, fontWeight:600, color:C.sub, marginTop:2, whiteSpace:'nowrap' } }, 'a cobrar') : null
           )
         );
 
@@ -32316,8 +32350,18 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                     }, t.emoji + ' ' + t.rotulo);
                   })
               )
-              , _tipo !== 'comentario' ? React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:6 } },
-                  "Aparece no painel \u201CManuten\u00E7\u00F5es e avarias\u201D do in\u00EDcio, com o texto abaixo.") : null
+              , _tipo !== 'comentario' ? React.createElement('div', { style:{ marginTop:8 } }
+                  , React.createElement(Lbl, { label: "Valor a cobrar do cliente (opcional)" }
+                    , React.createElement('input', {
+                        style: FI, type:"text", inputMode:"decimal",
+                        placeholder:"Deixe em branco enquanto não houver orçamento",
+                        value: (function(){ var v = lerAnotacaoContrato(form.observacoes).valor; return v ? v.toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}) : ""; })(),
+                        onChange:function(e){ F("observacoes", definirValorAnotacao(form.observacoes, e.target.value)); }
+                      })
+                  )
+                  , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:2 } },
+                      "Aparece no painel \u201CManuten\u00E7\u00F5es e avarias\u201D do in\u00EDcio, com o texto abaixo.")
+                ) : null
             );
           })()
         , React.createElement(Lbl, { label: "Observacoes", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1180}}, React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 50 }), value: form.observacoes || "", onChange: e => F("observacoes", capSentence(e.target.value)), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1180}} ))

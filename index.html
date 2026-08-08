@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="39e538f"/>
+<meta name="ag-build" content="eef32f0"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -15456,6 +15456,14 @@ body.dark .sb3d-cards { z-index: 1; }
   transition: transform .18s cubic-bezier(.2,.85,.3,1);
   overflow: hidden; padding: 6%; box-sizing: border-box;
 }
+/* Troca de cartão da vitrine: um fade curto pra o texto não "pular" de um
+   lançamento pro outro sem aviso. A classe é reposta pelo JS a cada troca —
+   trocar só o textContent não reinicia animação nenhuma. */
+@keyframes sb3d-hub-troca { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.sb3d-hub.trocou .sb3d-hub-label,
+.sb3d-hub.trocou .sb3d-hub-value,
+.sb3d-hub.trocou .sb3d-hub-sub,
+.sb3d-hub.trocou .sb3d-hub-sub2 { animation: sb3d-hub-troca .32s ease-out; }
 .sb3d-hub:hover { transform: translate(-50%,-50%) scale(1.03); }
 .sb3d-hub:active { transform: translate(-50%,-50%) scale(.98); }
 /* Fonte reduzida junto com o gráfico (3x -10% no tamanho do stage,
@@ -15519,7 +15527,8 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
 
 @media (max-width: 760px) { .sb3d-legends { flex-direction: column; gap: 8px; } }
 @media (prefers-reduced-motion: reduce) {
-  .sb3d-slice, .sb3d-tag, .sb3d-connector, .sb3d-halo, .sb3d-legend-bar { transition: none !important; animation: none !important; }
+  .sb3d-slice, .sb3d-tag, .sb3d-connector, .sb3d-halo, .sb3d-legend-bar,
+  .sb3d-hub-label, .sb3d-hub-value, .sb3d-hub-sub, .sb3d-hub-sub2 { transition: none !important; animation: none !important; }
 }
 
 </style>
@@ -15673,9 +15682,24 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
 
     onHubClick(fn) { this._hubClick = fn; }
 
-    setHub({ label, value, sub, sub2 }) {
+    setHub({ label, value, sub, sub2, cor }) {
       this._hub.querySelector('.sb3d-hub-label').textContent = label || '';
-      this._hub.querySelector('.sb3d-hub-value').textContent = value || '';
+      // O efeito que alimenta o miolo roda a cada render, então quase toda
+      // chamada repete o conteúdo. Só quando muda de verdade vale reiniciar
+      // a animação — senão o texto ficaria piscando sem parar.
+      const assinatura = [label, value, sub, sub2].join('\u0000');
+      if (this._hubSig !== assinatura) {
+        this._hubSig = assinatura;
+        this._hub.classList.remove('trocou');
+        void this._hub.offsetWidth; // força o reflow que rearma a animação
+        this._hub.classList.add('trocou');
+      }
+      const elValor = this._hub.querySelector('.sb3d-hub-value');
+      elValor.textContent = value || '';
+      // Verde entrou, vermelho saiu: com receita e despesa passando pelo
+      // mesmo lugar, a cor do valor é o que diz de qual das duas se trata —
+      // sem custar largura, que é o que falta dentro de um círculo.
+      elValor.style.color = cor || '';
       const subEl = this._hub.querySelector('.sb3d-hub-sub');
       if (sub) { subEl.style.display = ''; subEl.textContent = sub; } else subEl.style.display = 'none';
       const sub2El = this._hub.querySelector('.sb3d-hub-sub2');
@@ -37436,6 +37460,11 @@ function rdAbbrev(v) {
   var txt = abs >= 1000 ? (v / 1000).toFixed(1).replace(".0", "") + "k" : v.toFixed(0);
   return "R$ " + txt;
 }
+/* Como um cliente é chamado DENTRO do gráfico. Razão social inteira não
+   cabe na fatia nem no miolo, então vale a primeira palavra ("Kablan") —
+   que é exatamente o que está escrito na fatia, então o miolo e o anel
+   falam a mesma língua. Nome completo continua na legenda abaixo. */
+function rdNomeNoGrafico(ringId, key) { return ringId === "receita" ? String(key).split(" ")[0] : key; }
 function rdSum(list) { return list.reduce(function (s, r) { return s + r.valor; }, 0); }
 // Agrupa {chave,valor}[] em itens {key,value,color,selected} pro componente —
 // mesma agregação nos dois anéis, só muda a paleta de cor.
@@ -37520,23 +37549,24 @@ function RdSunburstCard({ receitaRows, despesaRows, C, CARD_CLS }) {
 
   // ── Vitrine do miolo ──
   // Sem nada selecionado, o centro não fica parado no saldo: ele passeia
-  // pelos lançamentos de despesa do mês, um a um, mostrando categoria,
-  // valor e data — e volta pro saldo no fim da volta. Assim que algo é
-  // selecionado a vitrine para, porque aí o centro precisa mostrar
-  // justamente o que foi escolhido.
+  // por TODO o movimento do mês — receitas e despesas na mesma volta, do
+  // mais recente para o mais antigo — mostrando nome, valor e data, e
+  // fecha no saldo. Assim que algo é selecionado a vitrine para, porque aí
+  // o centro precisa mostrar justamente o que foi escolhido.
   var _vit = React.useState(0); var vitrine = _vit[0], setVitrine = _vit[1];
   var temSelecao = selReceita.size > 0 || selDespesa.size > 0;
-  // Mais recentes primeiro, teto de 12 pra a volta não virar eterna.
-  var lancDespesa = despesaRows.slice()
+  var lancVitrine = receitaRows.map(function (r) { return { tipo: "receita", nome: rdNomeNoGrafico("receita", r.chave), valor: r.valor, data: r.data }; })
+    .concat(despesaRows.map(function (r) { return { tipo: "despesa", nome: r.chave, valor: r.valor, data: r.data }; }))
     .sort(function (a, b) { return String(b.data || "").localeCompare(String(a.data || "")); })
-    .slice(0, 12);
-  var _nVit = lancDespesa.length;
+    .slice(0, 16); // teto pra a volta não passar de ~1 minuto
+  var _nVit = lancVitrine.length;
 
   React.useEffect(function () {
     if (temSelecao || _nVit === 0) { setVitrine(0); return; }
-    // Quem pediu menos movimento no sistema vê só o saldo, parado.
-    var mm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)");
-    if (mm && mm.matches) { setVitrine(0); return; }
+    // Sem trava de "reduzir movimento" aqui: o que muda é o TEXTO, não uma
+    // animação decorativa — e desligar a vitrine em silêncio fazia o
+    // recurso simplesmente não funcionar em quem tem a opção ligada no
+    // celular. Quem respeita a preferência é o fade da troca, na CSS.
     var id = setInterval(function () {
       setVitrine(function (v) { return (v + 1) % (_nVit + 1); });
     }, 4000);
@@ -37566,7 +37596,7 @@ function RdSunburstCard({ receitaRows, despesaRows, C, CARD_CLS }) {
       // de Couro Ltda") — não cabe na fatia de jeito nenhum, então usa só a
       // primeira palavra ("Conforto"); nome completo fica só na legenda
       // embaixo.
-      getLabel: function (ringId, key) { return ringId === "receita" ? key.split(" ")[0] : key; },
+      getLabel: function (ringId, key) { return rdNomeNoGrafico(ringId, key); },
       getShortLabel: function (ringId, key) { return ringId === "receita" ? key.split(" ")[0].slice(0, 3).toUpperCase() : key.slice(0, 3).toUpperCase(); },
       // Ícone (traço/minimalista) da fatia de despesa — só usado quando
       // ringId === "despesa" (receita continua com avatar/texto).
@@ -37602,20 +37632,16 @@ function RdSunburstCard({ receitaRows, despesaRows, C, CARD_CLS }) {
     // empilhar receita+despesa+resultado no centro quando só um dos dois
     // foi selecionado (poluía e estourava a borda do círculo).
     var hub;
-    var emVitrine = !recSelArr.length && !despSelArr.length && vitrine > 0 && lancDespesa[vitrine - 1];
+    var emVitrine = !recSelArr.length && !despSelArr.length && vitrine > 0 && lancVitrine[vitrine - 1];
     if (emVitrine) {
-      var lanc = lancDespesa[vitrine - 1];
+      var lanc = lancVitrine[vitrine - 1];
       // Só dia/mês: o gráfico inteiro é de um mês só, então o ano não
-      // informa nada e era justamente o que empurrava a descrição pra fora.
-      // Só dia/mês: o gráfico inteiro é de um mês só, então o ano não
-      // informa nada. A descrição fica de fora — em círculo ela nunca cabia
-      // e era ela que empurrava o resto do texto pra baixo; quem quiser o
-      // detalhe toca na legenda e abre a lista dos lançamentos.
+      // informa nada e era justamente o que empurrava o resto do texto pra
+      // fora. A descrição também fica de fora — em círculo ela nunca coube;
+      // quem quiser o detalhe toca na legenda e abre a lista completa.
       var _dia = String(lanc.data || "").split("-").reverse().slice(0, 2).join("/");
-      // Sem o 💸 na frente: na vitrine TODO cartão é despesa, então o ícone
-      // é constante — não informa nada e era ele que estourava a largura em
-      // categorias longas ("Contabilidade", "Manutenção").
-      hub = { label: lanc.chave, value: fmtBRLint(lanc.valor), sub2: _dia };
+      hub = { label: lanc.nome, value: fmtBRLint(lanc.valor), sub2: _dia,
+        cor: lanc.tipo === "receita" ? C.green : C.red };
     } else if (!recSelArr.length && !despSelArr.length) {
       hub = { label: "Saldo do mês", value: rdAbbrev(totalReceita - totalDespesa),
         sub: "💰 " + abrevCurta(totalReceita), sub2: "💸 " + abrevCurta(totalDespesa) };

@@ -74,13 +74,30 @@ grant execute on function public.ag_perm(text) to authenticated;
 revoke all on function public.ag_is_admin() from public;
 grant execute on function public.ag_is_admin() to authenticated;
 
+-- A lista das tabelas do app vivia escrita a mao em DOIS blocos DO deste
+-- arquivo, que precisavam ser editados juntos - e um dia nao seriam. Aqui
+-- ela existe uma vez so.
+create or replace function public.ag_tabelas_app()
+returns text[]
+language sql
+immutable
+as $$
+  select array[
+    'clientes','veiculos','contratos','multas','manutencao','despesas',
+    'receitas','contas','orcamento_pessoal','orcamentos','audit_log',
+    'ocupacao_historico','perfis','usuarios','config','reservas','usos',
+    'fornecedores','sinistros'
+  ]::text[];
+$$;
+
 do $do$
 declare
   t text;
-  tabelas text[] := array['clientes','veiculos','contratos','multas','manutencao','despesas','receitas','contas','orcamento_pessoal','orcamentos','audit_log','ocupacao_historico','perfis','usuarios','config','reservas','usos','fornecedores','sinistros'];
+  tabelas text[] := public.ag_tabelas_app();
   admin_only text[] := array['usuarios','perfis','config'];
   append_only text[] := array['audit_log'];
   cond_ins text; cond_upd text; cond_del text;
+  n_fora int := 0;
 begin
   foreach t in array tabelas loop
     if to_regclass('public.' || t) is null then
@@ -121,6 +138,36 @@ begin
     execute format('revoke all on %I from anon', t);
     execute format('grant select, insert, update, delete on %I to authenticated', t);
   end loop;
+
+  -- Tudo que NAO esta na lista do app tambem precisa ser trancado. A lista
+  -- acima protegia por memoria: quatro tabelas de uma versao antiga
+  -- (clients, contracts, fines, vehicles) ficaram meses sem RLS porque
+  -- ninguem lembrou de acrescenta-las. Aqui a varredura pega o schema
+  -- inteiro, entao tabela nova nasce fechada em vez de nascer aberta.
+  --
+  -- De proposito nenhuma policy e criada para elas: policy e permissao, e
+  -- nao da para presumir quem pode ler uma tabela que o app nem conhece.
+  -- Sem policy, RLS nega tudo - inclusive para authenticated. Se alguma
+  -- delas passar a ser usada pelo app, o caminho e acrescenta-la em
+  -- ag_tabelas_app() e rodar este script de novo.
+  for t in
+    select c.relname
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'public'
+       and c.relkind in ('r', 'p')
+       and not (c.relname = any(tabelas))
+     order by c.relname
+  loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('revoke all on public.%I from anon, authenticated', t);
+    n_fora := n_fora + 1;
+    raise notice 'fora da lista do app - trancada sem policy: %', t;
+  end loop;
+
+  if n_fora > 0 then
+    raise notice '% tabela(s) desconhecida(s) trancada(s). Se o app usar alguma, inclua em ag_tabelas_app() e rode de novo.', n_fora;
+  end if;
 end $do$;
 
 revoke update, delete on audit_log from authenticated;
@@ -170,7 +217,7 @@ alter table audit_log add column if not exists origem text default 'app';
 do $do$
 declare
   t text;
-  tabelas text[] := array['clientes','veiculos','contratos','multas','manutencao','despesas','receitas','contas','orcamento_pessoal','orcamentos','audit_log','ocupacao_historico','perfis','usuarios','config','reservas','usos','fornecedores','sinistros'];
+  tabelas text[] := public.ag_tabelas_app();
 begin
   foreach t in array tabelas loop
     if to_regclass('public.' || t) is null then continue; end if;

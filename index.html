@@ -1398,6 +1398,11 @@ body.dim nav.lg-sidebar button[data-tab-id]:not(.lg-tab-active) svg,body.dim nav
 body.dim nav.lg-sidebar button[data-tab-id]:not(.lg-tab-active),body.dim nav.lg-sidebar button[data-subtab-id]:not(.lg-tab-active){color:rgba(192,202,216,0.9) !important;}
 body.dim .lg-modal{background:#1e2738;border-color:#2c3850;}
 /* ── ag-kpi-card: cards KPI estilo AGI ── */
+/* Troca de face do KPI "A Receber" (a receber <-> atrasado). A regra global de
+   prefers-reduced-motion no topo do arquivo ja neutraliza a animacao; a troca
+   do texto continua acontecendo, porque ela e informacao e nao enfeite. */
+@keyframes ag-kpi-troca{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+.ag-kpi-face{animation:ag-kpi-troca .32s ease-out}
 .ag-kpi-card{border-radius:18px;padding:16px 18px;border:1px solid rgba(255,255,255,.07);-webkit-backdrop-filter:blur(20px) saturate(160%);backdrop-filter:blur(20px) saturate(160%);box-shadow:0 2px 14px rgba(0,0,0,.10);transition:box-shadow .2s,transform .2s;}
 .ag-kpi-card:hover{box-shadow:0 4px 22px rgba(0,0,0,.16);transform:translateY(-1px);}
 /* light (pearl/default) */
@@ -25162,6 +25167,38 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
   const prevMes = ctsMes.reduce((s,c) => s+parseFloat(c.valor_total||0),0)
     + recAvDash.reduce((s,r)=>s+parseFloat(r.valor||0),0);
   const pendMes = ctsMes.filter(c => c.status_pagamento !== "pago" && c.status_pagamento !== "isento").length;
+
+  /* Parte de "A Receber" que já venceu. Sai da MESMA base do prevMes/recMes
+     — contratos do mês mais receitas avulsas do mês — para o atraso ser
+     sempre um pedaço do que o cartão mostra, e não outro número solto.
+     Contrato parcial entra pelo que falta (valor_total − valor_pago), como
+     manda a regra de contrato parcial. */
+  const _ctsAtraso = ctsMes.filter(function(c){
+    return c.status !== "cancelado" && c.status_pagamento !== "pago" && c.status_pagamento !== "isento"
+        && c.previsao_pagamento && c.previsao_pagamento < hoje;
+  });
+  const _recAvAtraso = recAvDash.filter(function(r){
+    return r.status !== "recebido" && r.status !== "isento" && r.data && r.data < hoje;
+  });
+  const atrasadoMes =
+      _ctsAtraso.reduce(function(s,c){
+        return s + Math.max(0, parseFloat(c.valor_total||0)
+          - (c.status_pagamento === "parcial" ? parseFloat(c.valor_pago||0) : 0)); }, 0)
+    + _recAvAtraso.reduce(function(s,r){
+        return s + Math.max(0, parseFloat(r.valor||0)
+          - (r.status === "parcial" && r._valorPago != null ? parseFloat(r._valorPago) : 0)); }, 0);
+  const atrasadoQtd = _ctsAtraso.length + _recAvAtraso.length;
+
+  // Alterna a face do cartão. Quem respeita "reduzir movimento" é só o fade
+  // (regra no CSS) — a troca em si é informação, e desligá-la esconderia o
+  // atraso de quem usa a preferência.
+  const [faceAtraso, setFaceAtraso] = useState(false);
+  const _temAtraso = atrasadoMes > 0;
+  useEffect(function() {
+    if (!_temAtraso) { setFaceAtraso(false); return; }
+    var t = setInterval(function(){ setFaceAtraso(function(v){ return !v; }); }, 4000);
+    return function(){ clearInterval(t); };
+  }, [_temAtraso]);
   const pagosMes = ctsMes.filter(c => c.status_pagamento === "pago").length;
   /* Total despesas banner = mesma lógica das barras:
      resolverDespesasDoMes de TODAS despesas (exceto manutencao_id vinculada)
@@ -25595,7 +25632,12 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
               }
             })
         )
-      , React.createElement('div', { style: { display: modoDash === 'pessoal' ? 'none' : 'flex', flexDirection: 'column', gap: 14 } }
+      // Vão-base entre os blocos da dashboard. No desktop sobe de 14 para 24:
+      // com 14, o banner de KPIs encostava na linha do gráfico e o gráfico
+      // encostava em "Visão do mês" — os dois pontos onde nenhum bloco
+      // acrescenta margem própria. Os blocos que já somam margem crescem
+      // junto, e nenhum vão diminui. No celular fica como estava.
+      , React.createElement('div', { style: { display: modoDash === 'pessoal' ? 'none' : 'flex', flexDirection: 'column', gap: desktop ? 24 : 14 } }
 /* Espaçador removido — banner agora flui com a página */
 
     /* ── Alerta Saldo Negativo ── */
@@ -25633,10 +25675,18 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
             , React.createElement('div', { style: { fontSize: 11, color: "var(--c-sub)", marginTop: 5 } }, "recebido no m\xeas")
           )
           /* A Receber */
-          , React.createElement('div', { className: "ag-kpi-card ag-kpi-amber", onClick: function(){ if (setCtDeepLink) setCtDeepLink({ filter:'a_receber', mes:dashMes }); setTab("contratos"); }, style: { cursor: "pointer" } }
-            , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.7, color: "var(--c-sub)", marginBottom: 6 } }, "A Receber")
-            , React.createElement('div', { style: { fontSize: 18, fontWeight: 700, letterSpacing: -0.5, lineHeight: 1, fontVariantNumeric: "tabular-nums", color: C.orange } }, fmtBRL(Math.max(0,prevMes-recMes)))
-            , React.createElement('div', { style: { fontSize: 11, color: "var(--c-sub)", marginTop: 5 } }, "pendente no m\xeas")
+          // Havendo vencido, o cartão alterna entre "A Receber" e "Atrasado".
+          // O clique acompanha a face: leva ao filtro do que está sendo
+          // mostrado, senão o número visto e a lista aberta não batem.
+          , React.createElement('div', { className: "ag-kpi-card " + (faceAtraso ? "ag-kpi-red" : "ag-kpi-amber"),
+              onClick: function(){ if (setCtDeepLink) setCtDeepLink({ filter: faceAtraso ? 'atrasados_mes' : 'a_receber', mes:dashMes }); setTab("contratos"); },
+              style: { cursor: "pointer" } }
+            , React.createElement('div', { key: faceAtraso ? 'atr' : 'rec', className: "ag-kpi-face" }
+              , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.7, color: faceAtraso ? C.red : "var(--c-sub)", marginBottom: 6 } }, faceAtraso ? "⚠️ Atrasado" : "A Receber")
+              , React.createElement('div', { style: { fontSize: 18, fontWeight: 700, letterSpacing: -0.5, lineHeight: 1, fontVariantNumeric: "tabular-nums", color: faceAtraso ? C.red : C.orange } }, fmtBRL(faceAtraso ? atrasadoMes : Math.max(0,prevMes-recMes)))
+              , React.createElement('div', { style: { fontSize: 11, color: "var(--c-sub)", marginTop: 5 } },
+                  faceAtraso ? (atrasadoQtd + (atrasadoQtd === 1 ? " vencido" : " vencidos")) : "pendente no m\xeas")
+            )
           )
           /* Resultado */
           , React.createElement('div', { className: "ag-kpi-card "+(resultPrevBanner>=0?"ag-kpi-green":"ag-kpi-red"), onClick: function(e){ e.stopPropagation(); setShowSimulacao(function(v){return !v;}); }, style: { cursor: "pointer" } }
@@ -31567,6 +31617,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       else if (filter === "a_receber") { if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false; if (!c.previsao_pagamento || c.previsao_pagamento.slice(0,7) !== filtroMesCt) return false; }
       else if (filter === "parcial") { if (c.status_pagamento !== "parcial") return false; }
       else if (filter === "atrasados") { if (c.status !== "ativo") return false; if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false; if (!c.previsao_pagamento || c.previsao_pagamento >= hoje) return false; }
+      else if (filter === "atrasados_mes") { if (c.status === "cancelado") return false; if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false; if (!c.previsao_pagamento || c.previsao_pagamento >= hoje) return false; if (c.previsao_pagamento.slice(0,7) !== filtroMesCt) return false; }
       else if (filter === "recebidos_mes") { if (c.status_pagamento !== "pago") return false; var mesRecRef = c.data_pagamento ? c.data_pagamento.slice(0,7) : (c.previsao_pagamento || "").slice(0,7); if (mesRecRef !== filtroMesCt) return false; }
       if (filDe && c.data_fim && c.data_fim < filDe) return false;
       if (filAte && c.data_inicio && c.data_inicio > filAte) return false;
@@ -31892,10 +31943,11 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 962}}, "Filtrar contratos" )
       , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } }
         , React.createElement(MesPicker, { value: filtroMesCt, onChange: function(m) { setFiltroMesCt(m); setFilter("mes"); } })
-        , React.createElement('select', { style: Object.assign({}, FI, { width: "auto", fontSize: 13, padding: "6px 8px", flexShrink: 0, cursor: "pointer", color: filter === "atrasados" ? C.red : "var(--c-text)", fontWeight: 600 }), value: filter, onChange: function(e){ setFilter(e.target.value); } }
+        , React.createElement('select', { style: Object.assign({}, FI, { width: "auto", fontSize: 13, padding: "6px 8px", flexShrink: 0, cursor: "pointer", color: (filter === "atrasados" || filter === "atrasados_mes") ? C.red : "var(--c-text)", fontWeight: 600 }), value: filter, onChange: function(e){ setFilter(e.target.value); } }
           , React.createElement('option', { value: "proximos_vencimentos" }, "📅 Próximos Vencimentos")
           , React.createElement('option', { value: "mes" }, "Mês Vigente")
           , React.createElement('option', { value: "atrasados" }, "🚨 Atrasados")
+          , React.createElement('option', { value: "atrasados_mes" }, "🚨 Atrasados do Mês")
           , React.createElement('option', { value: "a_receber" }, "A Receber")
           , React.createElement('option', { value: "recebidos_mes" }, "Recebidos")
           , React.createElement('option', { value: "parcial" }, "Parcial")

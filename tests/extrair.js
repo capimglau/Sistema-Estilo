@@ -60,7 +60,7 @@ function extrair(marcadores) {
       _periodosSobrepoem, veiculoDaReserva, conflitosDaReserva, clienteDaReserva,
       rdNomeNoGrafico, rdVoltaVitrine, rdSum,
       TIPOS_ANOTACAO, tipoAnotacao, lerAnotacaoContrato, definirTipoAnotacao,
-      definirValorAnotacao,
+      definirValorAnotacao, definirAnotacaoContrato,
       encerrarAnotacaoCobrada,
       manutencaoAindaPendente, painelManutencoesPendentes, avariaDoContrato,
       situacaoMulta, multaEncerrada, painelMultasPendentes, GRUPOS_MULTA

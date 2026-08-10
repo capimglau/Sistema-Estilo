@@ -17170,6 +17170,19 @@ function definirValorAnotacao(obs, valor) {
   var n = typeof valor === "number" ? (valor > 0 ? valor : null) : _valorAnotacaoNum(valor);
   return _montarAnotacao(t, a.nota, n, a.resto);
 }
+/* Grava tipo, texto e valor de uma vez.
+
+   O encerramento do contrato descreve a avaria na hora da devolução — é ali
+   que ela aparece — então não dá pra montar a anotação em dois passos como o
+   formulário faz (escolhe o tipo, depois digita). Passar "comentario" tira a
+   marca e devolve o texto ao corpo das observações. */
+function definirAnotacaoContrato(obs, tipoId, nota, valor) {
+  var a = lerAnotacaoContrato(obs);
+  var t = tipoAnotacao(tipoId);
+  if (!t.noPainel) return a.resto;
+  var n = typeof valor === "number" ? (valor > 0 ? valor : null) : _valorAnotacaoNum(valor);
+  return _montarAnotacao(t, String(nota == null ? "" : nota).trim(), n, a.resto);
+}
 /* Cobrada, a anotação vira histórico: sai do painel mas continua registrada
    no contrato, com data e valor. Voltar pra "comentário" puro apagaria o
    texto — ele mora justamente na linha da marca, e tirar a marca levava o
@@ -17266,12 +17279,33 @@ function painelManutencoesPendentes(manutencoes, contratos, veiculos, clientes) 
   var comRegistro = Object.create(null);
   doRegistro.forEach(function (l) { comRegistro[String(l.veiculo_id)] = true; });
 
+  /* Contrato encerrado continua no painel.
+
+     A avaria quase sempre aparece na devolução — é ali que se olha o carro —
+     e encerrar o contrato era o que fazia a pendência sumir do painel no
+     mesmo instante em que ela nascia. O que decide a saída é a cobrança
+     (`encerrarAnotacaoCobrada`), não o fim da locação: enquanto houver o que
+     acertar com o cliente, a linha fica. Cancelado continua fora — locação
+     que não aconteceu não deixa dano. */
+  var vistasCt = Object.create(null);
   var doContrato = (contratos || [])
     .map(function (c) { return { ct: c, avaria: avariaDoContrato(c) }; })
     .filter(function (o) {
       return o.avaria &&
-        o.ct.status !== "cancelado" && o.ct.status !== "concluido" &&
+        o.ct.status !== "cancelado" &&
         !comRegistro[String(o.ct.veiculo_id)];
+    })
+    // Mais recente primeiro: a renovação não carrega o marcador pro contrato
+    // filho (o texto entra depois do "Renovação contrato #N"), então é comum
+    // o usuário remarcar a mesma avaria no contrato novo. Fica a linha do
+    // contrato vivo, que é onde a cobrança tem que ser lançada.
+    .sort(function (a, b) { return String(b.ct.data_inicio || "").localeCompare(String(a.ct.data_inicio || "")); })
+    .filter(function (o) {
+      var k = String(o.ct.veiculo_id) + "|" + o.avaria.tipo + "|" +
+        String(o.avaria.texto || "").trim().toLowerCase();
+      if (vistasCt[k]) return false;
+      vistasCt[k] = true;
+      return true;
     })
     // Avaria antes de manutenção pendente: dano no carro é o que costuma
     // exigir decisão hoje; o orçamento pode esperar.
@@ -31370,13 +31404,21 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     } catch(e) { toast("Erro ao renovar: " + e.message, "error"); }
   }
   function abrirEncerrarCt(ct) {
+    // A anotação já existente vem preenchida: encerrar não pode apagar uma
+    // avaria que já estava marcada no contrato.
+    var _anotEnc = lerAnotacaoContrato(ct.observacoes);
     setEncerrarCtForm({
       data_fim: ct.data_fim || hoje,
       hora_devolucao: ct.hora_devolucao || "",
       km_final: ct.km_final || "",
       combustivel_retorno: ct.combustivel_retorno || "",
       checklist_devolucao: ct.checklist_devolucao || "",
-      observacoes: ""
+      observacoes: "",
+      anot_tipo: _anotEnc.tipo,
+      anot_texto: _anotEnc.tipo === "comentario" ? "" : _anotEnc.texto,
+      anot_valor: _anotEnc.valor
+        ? _anotEnc.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : ""
     });
     setEncerrarCtModal(ct);
   }
@@ -31428,6 +31470,10 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     var snapEnc = { data_fim: ct.data_fim, hora_devolucao: ct.hora_devolucao, km_final: ct.km_final,
       combustivel_retorno: ct.combustivel_retorno, checklist_devolucao: ct.checklist_devolucao, valor_total: ct.valor_total };
     var obsBase = _stripSnapEnc(patchData.observacoes != null ? patchData.observacoes : (ct.observacoes || ""));
+    // Avaria/manutenção anotada na devolução: a marca tem que ser a primeira
+    // linha das observações — é assim que o painel do início lê a pendência —
+    // então ela é aplicada depois do texto do encerramento e antes do snapshot.
+    obsBase = definirAnotacaoContrato(obsBase, f.anot_tipo || "comentario", f.anot_texto, f.anot_valor);
     patchData.observacoes = (obsBase ? obsBase + "\n" : "") + _encodeSnapEnc(snapEnc);
     // Sem try/catch aqui o patch podia falhar (rede/RLS) sem nenhum aviso: o
     // contrato ficava "ativo" e o modal fechava como se tivesse dado certo,
@@ -32633,6 +32679,55 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Checklist / avarias na devolu\u00e7\u00e3o')
       , React.createElement('textarea', { value:encerrarCtForm.checklist_devolucao||'', placeholder:'Ex: Arranh\u00e3o no para-choque traseiro...', onChange:function(e){ setEncerrarCtForm(function(p){ return Object.assign({},p,{checklist_devolucao:e.target.value}); }); },
           style: { display:'block',width:'100%',marginTop:7,marginBottom:16,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:14,color:'var(--c-text)',boxSizing:'border-box',outline:'none',resize:'vertical',minHeight:60 } })
+      , (function(){
+          /* Pend\u00eancia a resolver com o cliente.
+
+             O checklist acima \u00e9 laudo: fica no contrato e n\u00e3o cobra ningu\u00e9m.
+             A avaria s\u00f3 vira pend\u00eancia quando \u00e9 marcada \u2014 e ela nasce
+             justamente aqui, na devolu\u00e7\u00e3o, olhando o carro. Sem este campo o
+             \u00fanico caminho era encerrar, entrar de novo no contrato e editar,
+             e at\u00e9 l\u00e1 a avaria n\u00e3o existia pro sistema. */
+          var _tEnc = encerrarCtForm.anot_tipo || 'comentario';
+          var _setEnc = function(patch){ setEncerrarCtForm(function(p){ return Object.assign({},p,patch); }); };
+          var _inpEnc = { display:'block',width:'100%',marginTop:7,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:14,color:'var(--c-text)',boxSizing:'border-box',outline:'none' };
+          return React.createElement('div', { style: { marginBottom:16 } }
+            , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Pend\u00eancia a cobrar do cliente')
+            , React.createElement('div', { style: { display:'flex',gap:6,flexWrap:'wrap',marginTop:7 } }
+              , TIPOS_ANOTACAO.map(function(t){
+                  var ativo = t.id === _tEnc;
+                  var cor = t.id === 'avaria' ? C.orange : t.id === 'manutencao' ? C.purple : C.sub;
+                  var rotulo = t.id === 'comentario' ? 'Nenhuma' : t.rotulo;
+                  return React.createElement('button', {
+                    key:t.id, type:'button',
+                    onClick:function(){
+                      // Marcou a avaria com o campo vazio: o checklist da
+                      // devolu\u00e7\u00e3o j\u00e1 descreve o dano, ent\u00e3o ele entra como
+                      // ponto de partida \u2014 edit\u00e1vel, n\u00e3o imposto.
+                      var txt = encerrarCtForm.anot_texto;
+                      if (t.id !== 'comentario' && !String(txt||'').trim()) txt = _primeiraLinha(encerrarCtForm.checklist_devolucao);
+                      _setEnc({ anot_tipo:t.id, anot_texto:txt });
+                    },
+                    style:{ flex:'1 1 auto', minHeight:44, padding:'8px 12px', borderRadius:12,
+                            border:'1px solid '+(ativo ? cor : 'var(--c-border)'),
+                            background: ativo ? cor+'18' : 'transparent',
+                            color: ativo ? cor : 'var(--c-text)',
+                            fontSize:13, fontWeight: ativo ? 700 : 500, fontFamily:'inherit',
+                            cursor:'pointer', whiteSpace:'nowrap' }
+                  }, (t.id === 'comentario' ? '' : t.emoji + ' ') + rotulo);
+                })
+            )
+            , _tEnc !== 'comentario' && React.createElement('div', null
+              , React.createElement('input', { type:'text', value:encerrarCtForm.anot_texto||'',
+                  placeholder: _tEnc === 'avaria' ? 'O que foi danificado. Ex: farol direito trincado' : 'O que precisa ser feito. Ex: revis\u00e3o dos 20 mil',
+                  onChange:function(e){ _setEnc({ anot_texto:e.target.value }); }, style: _inpEnc })
+              , React.createElement('input', { type:'text', inputMode:'decimal', value:encerrarCtForm.anot_valor||'',
+                  placeholder:'Valor a cobrar (R$) \u2014 deixe em branco enquanto n\u00e3o houver or\u00e7amento',
+                  onChange:function(e){ _setEnc({ anot_valor:e.target.value }); }, style: _inpEnc })
+              , React.createElement('div', { style: { fontSize:11,color:'var(--c-sub)',marginTop:6 } },
+                  'Fica no painel \u201cManuten\u00e7\u00f5es e avarias\u201d do in\u00edcio, com cliente e placa, at\u00e9 voc\u00ea cobrar.')
+            )
+          );
+        })()
       , React.createElement('label', { style: { fontSize:11,fontWeight:700,color:'var(--c-sub)',letterSpacing:.6,textTransform:'uppercase' } }, 'Observa\u00e7\u00f5es do encerramento')
       , React.createElement('textarea', { value:encerrarCtForm.observacoes||'', placeholder:'Opcional', onChange:function(e){ setEncerrarCtForm(function(p){ return Object.assign({},p,{observacoes:e.target.value}); }); },
           style: { display:'block',width:'100%',marginTop:7,marginBottom:22,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:14,color:'var(--c-text)',boxSizing:'border-box',outline:'none',resize:'vertical',minHeight:50 } })

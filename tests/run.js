@@ -277,6 +277,24 @@ eq("valor em comentário não faz nada",
 eq("colchete no texto livre não vira valor",
   F.lerAnotacaoContrato("⚠️ Avaria: farol [conforme foto]").valor, null);
 
+// O encerramento descreve a avaria de uma vez só — tipo, texto e valor no
+// mesmo passo, porque é ali que ela aparece.
+eq("grava tipo, texto e valor de uma vez",
+  F.definirAnotacaoContrato("Pagamento via Pix", "avaria", "farol trincado", "450,00"),
+  "⚠️ Avaria [R$ 450,00]: farol trincado\nPagamento via Pix");
+eq("sem valor, só o texto",
+  F.definirAnotacaoContrato("", "avaria", "farol trincado", ""),
+  "⚠️ Avaria: farol trincado");
+eq("sobrescreve a anotação anterior sem duplicar",
+  F.definirAnotacaoContrato("⚠️ Avaria: farol\nPagamento via Pix", "manutencao", "embreagem", ""),
+  "🔧 Manutenção pendente: embreagem\nPagamento via Pix");
+eq("comentário tira a marca e devolve o resto",
+  F.definirAnotacaoContrato("⚠️ Avaria: farol\nPagamento via Pix", "comentario", "farol", ""),
+  "Pagamento via Pix");
+eq("texto vazio não deixa lixo na linha",
+  F.definirAnotacaoContrato("Pagamento via Pix", "avaria", "", ""),
+  "⚠️ Avaria\nPagamento via Pix");
+
 grupo("Anotação cobrada vira histórico");
 {
   const o = "⚠️ Avaria [R$ 1.450,00]: farol trincado\nPagamento via Pix";
@@ -365,6 +383,41 @@ grupo("Manutenção pendente — painel");
   const pOrc = F.painelMultasPendentes ? F.painelManutencoesPendentes([], ctOrcada, veiculos, clientes) : [];
   eq("avaria orçada leva o valor a cobrar pro painel", pOrc[0].valor, 450);
   eq("e o texto continua limpo", pOrc[0].descricao, "farol trincado");
+
+  // A avaria aparece na devolução — encerrar o contrato não pode ser o que
+  // faz a pendência sumir do painel. Quem tira é a cobrança.
+  const ctEncerrado = [{ id: 17, veiculo_id: 2, cliente_id: 8, status: "concluido",
+    data_inicio: "2026-08-01", observacoes: "⚠️ Avaria: farol direito trincado" }];
+  const pEnc = F.painelManutencoesPendentes([], ctEncerrado, veiculos, clientes);
+  eq("contrato encerrado com avaria continua no painel", pEnc.length, 1);
+  eq("e ainda diz de quem cobrar", pEnc[0].cliente, "SP9 Ltda");
+  eq("e aponta pro contrato certo", pEnc[0].contrato_id, 17);
+  eq("cobrada, sai do painel mesmo encerrado",
+    F.painelManutencoesPendentes([], [Object.assign({}, ctEncerrado[0], {
+      observacoes: F.encerrarAnotacaoCobrada(ctEncerrado[0].observacoes, "2026-08-08") })],
+      veiculos, clientes).length, 0);
+  // Locação que não aconteceu não deixa dano.
+  eq("contrato cancelado continua fora",
+    F.painelManutencoesPendentes([], [Object.assign({}, ctEncerrado[0], { status: "cancelado" })],
+      veiculos, clientes).length, 0);
+
+  // Renovar não carrega o marcador pro contrato filho, então o usuário
+  // remarca a mesma avaria no contrato novo — e o pai encerrado continua com
+  // ela. Uma pendência, uma linha, apontando pro contrato vivo.
+  const ctRemarcada = [
+    { id: 18, veiculo_id: 2, cliente_id: 8, status: "concluido", data_inicio: "2026-07-01",
+      renovado_para: 19, observacoes: "⚠️ Avaria: farol direito trincado" },
+    { id: 19, veiculo_id: 2, cliente_id: 8, status: "ativo", data_inicio: "2026-08-01",
+      observacoes: "⚠️ Avaria: Farol direito trincado" },
+  ];
+  const pRem = F.painelManutencoesPendentes([], ctRemarcada, veiculos, clientes);
+  eq("mesma avaria remarcada não vira duas linhas", pRem.length, 1);
+  eq("fica a do contrato vivo", pRem[0].contrato_id, 19);
+  // Duas avarias diferentes no mesmo carro são duas pendências de verdade.
+  eq("avarias diferentes no mesmo veículo não se escondem",
+    F.painelManutencoesPendentes([], [ctRemarcada[0],
+      Object.assign({}, ctRemarcada[1], { observacoes: "⚠️ Avaria: para-choque amassado" })],
+      veiculos, clientes).length, 2);
 
   // Avaria antes de manutenção pendente entre as linhas sem data.
   const ctMix = [

@@ -548,10 +548,21 @@ grupo("Vitrine do miolo — volta representativa");
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-console.log("\n" + "─".repeat(60));
-if (falhas.length) {
-  console.log(`\x1b[31m${falhas.length} falha(s)\x1b[0m de ${passou + falhas.length} verificações`);
-  for (const f of falhas) console.log(`  • [${f.grupo}] ${f.descricao}`);
+// Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam
+// promessas de refresh e mensagens de WebSocket dublado. Por isso rodam por
+// último e o resumo final vira uma continuação deles.
+require("./sessao").rodar({ grupo, eq, ok }).then(resumo, (e) => {
+  console.error("\n\x1b[31mErro ao rodar os testes de sessão/tempo real:\x1b[0m");
+  console.error(e);
   process.exit(1);
+});
+
+function resumo() {
+  console.log("\n" + "─".repeat(60));
+  if (falhas.length) {
+    console.log(`\x1b[31m${falhas.length} falha(s)\x1b[0m de ${passou + falhas.length} verificações`);
+    for (const f of falhas) console.log(`  • [${f.grupo}] ${f.descricao}`);
+    process.exit(1);
+  }
+  console.log(`\x1b[32mTodas as ${passou} verificações passaram.\x1b[0m`);
 }
-console.log(`\x1b[32mTodas as ${passou} verificações passaram.\x1b[0m`);

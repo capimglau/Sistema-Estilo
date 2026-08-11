@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="74c9686"/>
+<meta name="ag-build" content="28969ab"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -16268,6 +16268,290 @@ function fetchWithTimeout(url, opts, ms) {
     .finally(function() { clearTimeout(id); });
 }
 
+/* ── Sessão pronta ANTES da primeira leitura ───────────────────────────────
+   O carregamento inicial dispara no mount do App, mas a restauração do token
+   salvo era um efeito assíncrono. Quando o access_token do localStorage já
+   tinha vencido (o do Supabase dura 1h — ou seja, praticamente toda vez que o
+   PWA é reaberto depois de um tempo fechado), as leituras saíam com o token
+   velho, o PostgREST devolvia 401 e db.get/db.getAll engoliam o erro
+   devolvendo []. Resultado exato do que o usuário via: o app abria com todos
+   os painéis zerados e os dados só apareciam depois de um F5 — que já pegava
+   no localStorage o token renovado pela tentativa anterior.
+
+   Agora a restauração acontece no boot (antes do React montar) e, enquanto o
+   refresh está em voo, um "portão" segura as leituras em vez de deixá-las
+   falhar em silêncio. */
+var _AG_SESS_STORE = "ag_session_v1";
+var _agPortao = null, _agPortaoAbrir = null;
+function _agPortaoFechar() {
+  if (_agPortao) return;
+  _agPortao = new Promise(function(res){ _agPortaoAbrir = res; });
+}
+function _agPortaoLiberar() {
+  var abrir = _agPortaoAbrir;
+  _agPortao = null; _agPortaoAbrir = null;
+  if (abrir) abrir();
+}
+/* Promessa pendente (ou null) — quem lê o banco espera por ela antes do fetch. */
+function _agSessaoAguardar() { return _agPortao; }
+
+function _agSessLer() {
+  try { var s = JSON.parse(localStorage.getItem(_AG_SESS_STORE) || "null"); return (s && s.usuario) ? s : null; }
+  catch(e) { return null; }
+}
+function _agSessPersistir(usuario, tok) {
+  try {
+    localStorage.setItem(_AG_SESS_STORE, JSON.stringify({
+      usuario: usuario,
+      access_token: tok.access_token,
+      refresh_token: tok.refresh_token,
+      expires_at: Date.now() + (tok.expires_in || 3600) * 1000
+    }));
+  } catch(e) {}
+}
+function _agTokenAtual() { return String(HDR.Authorization || "").replace(/^Bearer\s+/, ""); }
+function _agLogado() { var t = _agTokenAtual(); return !!t && t !== SB_KEY; }
+
+/* Renova o access_token uma vez por vez — chamadas concorrentes esperam a
+   mesma promessa — e avisa o WebSocket do tempo real do token novo. */
+var _agRenovando = null;
+function _agRenovarSessao() {
+  if (_agRenovando) return _agRenovando;
+  var s = _agSessLer();
+  if (!s || !s.refresh_token) return Promise.resolve(false);
+  _agPortaoFechar();
+  _agRenovando = sbRefreshToken(s.refresh_token).then(function(j) {
+    _sbSetToken(j.access_token);
+    _agSessPersistir(s.usuario, j);
+    _sbScheduleRefresh(j.refresh_token, j.expires_in, function(j2){ _agSessPersistir(s.usuario, j2); _agRtAtualizarToken(); });
+    _agRtAtualizarToken();
+    return true;
+  }).catch(function() {
+    // Refresh token morto de vez: o App escuta e derruba para a tela de login.
+    try { window.dispatchEvent(new CustomEvent("ag-sessao-expirada")); } catch(e) {}
+    return false;
+  }).then(function(ok) {
+    _agRenovando = null;
+    _agPortaoLiberar();
+    return ok;
+  });
+  return _agRenovando;
+}
+
+/* Restauração no boot. Com o token ainda válido é síncrona — a primeira
+   leitura já sai autenticada. Vencido, o portão segura até o refresh voltar. */
+(function _agRestaurarSessao() {
+  if (__viewerMode) return;
+  var s = _agSessLer();
+  if (!s || !s.access_token) return;
+  var restanteMs = (s.expires_at || 0) - Date.now();
+  if (restanteMs < 60000) { _agRenovarSessao(); return; }
+  _sbSetToken(s.access_token);
+  _sbScheduleRefresh(s.refresh_token, restanteMs / 1000, function(j){ _agSessPersistir(s.usuario, j); _agRtAtualizarToken(); });
+})();
+
+/* fetch autenticado: espera a sessão ficar pronta e, se ainda assim vier 401
+   (token que venceu com a aba dormindo), renova e repete UMA vez. Sem isto o
+   401 virava lista vazia silenciosa — a tela em branco de sempre. */
+function _agHeadersComTokenAtual(h) {
+  if (!h || h === HDR) return HDR;
+  return Object.assign({}, h, { Authorization: HDR.Authorization });
+}
+async function _agFetchAuth(url, opts, ms) {
+  var esperar = _agSessaoAguardar();
+  if (esperar) await esperar;
+  var r = await fetchWithTimeout(url, opts, ms);
+  if (r.status !== 401) return r;
+  var ok = await _agRenovarSessao();
+  if (!ok) return r;
+  return fetchWithTimeout(url, Object.assign({}, opts, { headers: _agHeadersComTokenAtual(opts && opts.headers) }), ms);
+}
+
+/* ── Tempo real (WebSocket do Supabase Realtime) ───────────────────────────
+   Antes a única sincronização era o polling de updated_at a cada 25s: o que
+   outro usuário (ou outro aparelho do mesmo usuário) alterava demorava até
+   meio minuto para aparecer na tela. Aqui abrimos o WebSocket do Realtime e
+   aplicamos INSERT/UPDATE/DELETE no instante em que o banco confirma.
+
+   O protocolo Phoenix é falado na mão de propósito: este app não tem bundler
+   e não pode importar @supabase/realtime-js. São quatro mensagens (phx_join,
+   heartbeat, access_token, postgres_changes) — cabe em poucas dezenas de
+   linhas e não acrescenta dependência nenhuma.
+
+   O polling continua ligado como rede de segurança: as tabelas só emitem
+   evento depois que o dono roda o SQL que as adiciona à publication
+   supabase_realtime. Com o WebSocket inscrito o polling fica lento; sem ele,
+   fica rápido. Assim o app atualiza sozinho nos dois cenários. */
+/* Tabelas que a tela sincroniza sozinha. É a mesma lista usada pelo WebSocket,
+   pelo polling e pelo SQL que popula a publication — deixá-las divergindo faria
+   uma tabela atualizar sozinha em um caminho e não no outro. */
+var AG_RT_TABELAS = ["veiculos", "clientes", "contratos", "reservas", "multas",
+                     "manutencao", "despesas", "receitas", "contas", "usos"];
+var _AG_RT_TOPICO = "realtime:autogest";
+var _agRtEstado = {
+  ws: null, ref: 0, hb: null, tentativa: 0, reconn: null, prazo: null,
+  inscrito: false, respondeu: false, semPublicacao: false, ligado: false,
+  tabelas: [], onChange: null, onStatus: null
+};
+
+function _agRtNotificar(ok) {
+  var e = _agRtEstado;
+  if (e.inscrito === ok) return;
+  e.inscrito = ok;
+  if (e.onStatus) { try { e.onStatus(ok); } catch(_) {} }
+}
+
+function _agRtEnviar(msg) {
+  var ws = _agRtEstado.ws;
+  if (!ws || ws.readyState !== 1) return;
+  try { ws.send(JSON.stringify(msg)); } catch(_) {}
+}
+
+/* Depois de renovar o JWT o canal precisa do token novo, senão o servidor
+   derruba a inscrição quando o antigo expira. */
+function _agRtAtualizarToken() {
+  if (!_agRtEstado.ws) return;
+  _agRtEnviar({ topic: _AG_RT_TOPICO, event: "access_token",
+                payload: { access_token: _agTokenAtual() }, ref: String(++_agRtEstado.ref) });
+}
+
+function _agRtFechar() {
+  var e = _agRtEstado;
+  if (e.hb) { clearInterval(e.hb); e.hb = null; }
+  if (e.prazo) { clearTimeout(e.prazo); e.prazo = null; }
+  if (e.ws) { var w = e.ws; e.ws = null; try { w.onclose = null; w.onmessage = null; w.close(); } catch(_) {} }
+  _agRtNotificar(false);
+}
+
+function _agRtAgendarReconexao() {
+  var e = _agRtEstado;
+  if (!e.ligado || e.reconn) return;
+  var espera = [1000, 2000, 5000, 10000, 30000][Math.min(e.tentativa, 4)];
+  e.tentativa++;
+  e.reconn = setTimeout(function(){ e.reconn = null; _agRtConectar(); }, espera);
+}
+
+function _agRtConectar() {
+  var e = _agRtEstado;
+  if (!e.ligado || !window.WebSocket) return;
+  if (e.ws && (e.ws.readyState === 0 || e.ws.readyState === 1)) return;
+  // Sem JWT ainda (refresh em voo no boot): tenta de novo em instantes.
+  if (!_agLogado()) { _agRtAgendarReconexao(); return; }
+  var url = SB_URL.replace(/^http/, "ws") + "/realtime/v1/websocket?apikey=" +
+            encodeURIComponent(SB_KEY) + "&vsn=1.0.0";
+  var ws;
+  try { ws = new WebSocket(url); } catch(_) { _agRtAgendarReconexao(); return; }
+  e.ws = ws;
+
+  ws.onopen = function() {
+    if (e.ws !== ws) { try { ws.close(); } catch(_) {} return; }
+    e.ref = 0;
+    e.respondeu = false;
+    var ref = String(++e.ref);
+    _agRtEnviar({
+      topic: _AG_RT_TOPICO, event: "phx_join", ref: ref, join_ref: ref,
+      payload: {
+        config: {
+          broadcast: { self: false },
+          presence: { key: "" },
+          postgres_changes: e.tabelas.map(function(t){ return { event: "*", schema: "public", table: t }; }),
+          private: false
+        },
+        /* Lido aqui, não na hora de abrir o socket: entre o connect e o open
+           pode ter entrado um refresh, e entrar no canal com o token anterior
+           faria o servidor recusar a inscrição. */
+        access_token: _agTokenAtual()
+      }
+    });
+    e.hb = setInterval(function() {
+      _agRtEnviar({ topic: "phoenix", event: "heartbeat", payload: {}, ref: String(++e.ref) });
+    }, 25000);
+    /* Join sem NENHUMA resposta: o socket está de pé mas não vai entregar
+       nada. Fecha para o backoff tentar de novo em vez de ficar mudo.
+       A condição olha `respondeu`, não `inscrito`: quando o servidor responde
+       que a tabela não está na publication, ele respondeu — fechar aí criaria
+       um laço de reconexão a cada 12s que nunca teria como dar certo. */
+    if (e.prazo) clearTimeout(e.prazo);
+    e.prazo = setTimeout(function(){ if (!e.respondeu) { try { ws.close(); } catch(_) {} } }, 12000);
+  };
+
+  ws.onmessage = function(ev) {
+    var m; try { m = JSON.parse(ev.data); } catch(_) { return; }
+    if (m.event === "postgres_changes") {
+      var d = (m.payload && m.payload.data) || {};
+      var tipo = d.type || d.eventType;
+      var linha = d.record || d.new || d.old_record || d.old;
+      if (!d.table || !linha) return;
+      if (e.onChange) { try { e.onChange(d.table, tipo, linha); } catch(_) {} }
+      return;
+    }
+    if (m.event === "phx_reply" && m.topic === _AG_RT_TOPICO) {
+      e.respondeu = true;
+      if (m.payload && m.payload.status === "ok") { e.tentativa = 0; _agRtNotificar(true); }
+      else { _agRtNotificar(false); try { ws.close(); } catch(_) {} }
+      return;
+    }
+    if (m.event === "system") {
+      e.respondeu = true;
+      var p = m.payload || {};
+      if (p.extension === "postgres_changes" && p.status === "error") {
+        /* Alguma tabela não está na publication supabase_realtime. Não adianta
+           reconectar em laço: registra e deixa o polling rápido cobrir. */
+        e.semPublicacao = true;
+        _agRtNotificar(false);
+        console.warn("[realtime] " + (p.message || "sem inscrição em postgres_changes") +
+                     " — rode o SQL de segurança em Config para publicar as tabelas.");
+      } else if (p.status === "ok") {
+        e.tentativa = 0; e.semPublicacao = false; _agRtNotificar(true);
+      }
+      return;
+    }
+    if (m.event === "phx_error" || m.event === "phx_close") _agRtNotificar(false);
+  };
+
+  ws.onclose = function() {
+    if (e.ws !== ws) return;
+    _agRtFechar();
+    _agRtAgendarReconexao();
+  };
+  ws.onerror = function() { /* o onclose logo em seguida cuida da reconexão */ };
+}
+
+function _agRtIniciar(cfg) {
+  var e = _agRtEstado;
+  e.tabelas = (cfg && cfg.tabelas) || [];
+  e.onChange = (cfg && cfg.onChange) || null;
+  e.onStatus = (cfg && cfg.onStatus) || null;
+  e.ligado = true;
+  e.tentativa = 0;
+  e.semPublicacao = false;
+  _agRtConectar();
+}
+function _agRtParar() {
+  var e = _agRtEstado;
+  e.ligado = false;
+  if (e.reconn) { clearTimeout(e.reconn); e.reconn = null; }
+  _agRtFechar();
+  e.onChange = null; e.onStatus = null;
+}
+/* Volta do background / rede de volta: reconecta na hora em vez de esperar o
+   backoff — no iOS o WebSocket morre calado quando o PWA vai para trás. */
+(function() {
+  function acordar() {
+    if (!_agRtEstado.ligado || document.hidden) return;
+    var ws = _agRtEstado.ws;
+    if (!ws || ws.readyState > 1) {
+      if (_agRtEstado.reconn) { clearTimeout(_agRtEstado.reconn); _agRtEstado.reconn = null; }
+      _agRtEstado.tentativa = 0;
+      _agRtConectar();
+    }
+  }
+  document.addEventListener("visibilitychange", acordar);
+  window.addEventListener("focus", acordar);
+  window.addEventListener("online", acordar);
+  window.addEventListener("pageshow", acordar);
+})();
+
 /* ── IA via Edge Function ──────────────────────────────────────────────────
    A chave da Anthropic não existe mais no navegador. Antes ela vinha de
    config.claude_api_key (lida por qualquer usuário autenticado) e de
@@ -16356,7 +16640,7 @@ async function _agColunasLeves(tabela) {
       try { salvo = JSON.parse(localStorage.getItem("ag_schema_v1") || "null"); } catch(e) {}
       if (salvo && salvo[tabela]) { _agColunasCache = salvo; }
       else {
-        var r = await fetchWithTimeout(SB_URL + "/rest/v1/", { headers: HDR }, 15000);
+        var r = await _agFetchAuth(SB_URL + "/rest/v1/", { headers: HDR }, 15000);
         if (!r.ok) return null;
         var spec = await r.json();
         var defs = (spec && (spec.definitions || (spec.components && spec.components.schemas))) || null;
@@ -16387,7 +16671,7 @@ function _agContratoCompleto(ct) { return !!(ct && ct.__completo); }
 async function hidratarContrato(ct) {
   if (!ct || ct.id == null) throw new Error("Contrato inválido.");
   if (_agContratoCompleto(ct)) return ct;
-  var r = await fetchWithTimeout(SB_URL + "/rest/v1/contratos?id=eq." + ct.id + "&limit=1", { headers: HDR }, 20000);
+  var r = await _agFetchAuth(SB_URL + "/rest/v1/contratos?id=eq." + ct.id + "&limit=1", { headers: HDR }, 20000);
   if (!r.ok) throw new Error("Não foi possível carregar os dados completos do contrato #" + ct.id + ".");
   var j = await r.json().catch(function(){ return []; });
   if (!Array.isArray(j) || !j.length) throw new Error("Contrato #" + ct.id + " não encontrado.");
@@ -16411,7 +16695,7 @@ async function _agRestaurarRegistro(t, removido) {
 const db = {
   async get(t, q) {
     var tentar = async function(comFiltro) {
-      return fetchWithTimeout(
+      return _agFetchAuth(
         SB_URL + "/rest/v1/" + t + "?order=id.desc" + (comFiltro ? _agFiltroVivos() : "") + (q ? "&" + q : ""),
         { headers: HDR }, 20000);
     };
@@ -16458,7 +16742,7 @@ const db = {
         var filtro = usarFiltro ? _agFiltroVivos() : "";
         var url = SB_URL + "/rest/v1/" + t + "?order=id.asc&limit=" + PAGE + "&offset=" + offset +
                   filtro + sel + extra;
-        var r = await fetchWithTimeout(url, { headers: HDR }, 30000);
+        var r = await _agFetchAuth(url, { headers: HDR }, 30000);
         if (!r.ok) {
           var txt = await r.text().catch(function(){ return ""; });
           // Decide pelo que ESTA chamada enviou, não pelo flag global: com as
@@ -16495,7 +16779,7 @@ const db = {
   },
   async post(t, d) {
     if (!_agPodeEscrever(t, "criar")) throw new Error(_agMsgPermissao("criar registros"));
-    const r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t, { method: "POST", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
+    const r = await _agFetchAuth(SB_URL + "/rest/v1/" + t, { method: "POST", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
     if (!r.ok) { let e = {}; try { e = await r.json(); } catch(_){} throw new Error(e.message || e.details || e.hint || ("Erro HTTP " + r.status)); }
     const j = await r.json().catch(function(){ return null; });
     const rec = Array.isArray(j) ? j[0] : j;
@@ -16514,13 +16798,13 @@ const db = {
     var usarTrava = _agCap.updatedAt && !!verConhecida;
     var base = SB_URL + "/rest/v1/" + t + "?id=eq." + id;
     var url = base + (usarTrava ? "&updated_at=eq." + encodeURIComponent(verConhecida) : "");
-    var r = await fetchWithTimeout(url, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
+    var r = await _agFetchAuth(url, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
     if (!r.ok) {
       var txt = await r.text().catch(function(){ return ""; });
       // Banco ainda sem updated_at: desliga a trava e repete sem ela.
       if (usarTrava && _agErroColuna(txt)) {
         _agCapOff("updatedAt");
-        r = await fetchWithTimeout(base, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
+        r = await _agFetchAuth(base, { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(d) }, 30000);
         if (!r.ok) { var t2 = await r.text().catch(function(){ return ""; }); throw new Error(_agMsgHttp(t2)); }
       } else throw new Error(_agMsgHttp(txt));
     }
@@ -16530,7 +16814,7 @@ const db = {
         // Zero linhas com a trava: ou outro usuário editou, ou a linha sumiu.
         // Buscar de novo separa os dois casos — e devolve o dado atual, para
         // o usuário decidir com a informação na mão em vez de perder o texto.
-        var atualR = await fetchWithTimeout(base, { headers: HDR }, 15000).catch(function(){ return null; });
+        var atualR = await _agFetchAuth(base, { headers: HDR }, 15000).catch(function(){ return null; });
         var atual = atualR && atualR.ok ? await atualR.json().catch(function(){ return []; }) : [];
         if (Array.isArray(atual) && atual.length) {
           _agVerSet(t, atual[0]);
@@ -16556,7 +16840,7 @@ const db = {
     if (!_agPodeEscrever(t, "excluir")) throw new Error(_agMsgPermissao("excluir registros"));
     if (_agCap.softDelete) {
       var quando = new Date().toISOString();
-      var r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id,
+      var r = await _agFetchAuth(SB_URL + "/rest/v1/" + t + "?id=eq." + id,
         { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify({ deleted_at: quando }) }, 30000);
       if (r.ok) {
         var j = await r.json().catch(function(){ return []; });
@@ -16570,7 +16854,7 @@ const db = {
       if (!_agErroColuna(txt)) throw new Error(_agMsgHttp(txt));
       _agCapOff("softDelete"); // sem a coluna ainda — segue no DELETE físico
     }
-    const rd = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "DELETE", headers: Object.assign({}, HDR, { Prefer: "return=representation" }) }, 30000);
+    const rd = await _agFetchAuth(SB_URL + "/rest/v1/" + t + "?id=eq." + id, { method: "DELETE", headers: Object.assign({}, HDR, { Prefer: "return=representation" }) }, 30000);
     if (!rd.ok) { let msg = "Erro ao excluir"; try { const e = await rd.json(); msg = e.message || e.hint || msg; } catch(_){} throw new Error(msg); }
     const jd = await rd.json().catch(function(){ return []; });
     if (Array.isArray(jd) && jd.length === 0) {
@@ -16584,7 +16868,7 @@ const db = {
      coisa que o "restaurar via novo POST" não fazia: ele criava outro id. */
   async restaurar(t, id) {
     if (!_agPodeEscrever(t, "editar")) throw new Error(_agMsgPermissao("restaurar registros"));
-    var r = await fetchWithTimeout(SB_URL + "/rest/v1/" + t + "?id=eq." + id,
+    var r = await _agFetchAuth(SB_URL + "/rest/v1/" + t + "?id=eq." + id,
       { method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify({ deleted_at: null }) }, 30000);
     if (!r.ok) throw new Error(_agMsgHttp(await r.text().catch(function(){ return ""; })));
     var j = await r.json().catch(function(){ return []; });
@@ -16601,7 +16885,7 @@ const db = {
     if (!_agCap.updatedAt) return [];
     var url = SB_URL + "/rest/v1/" + t + "?updated_at=gt." + encodeURIComponent(desde) +
               "&order=updated_at.asc&limit=500";
-    var r = await fetchWithTimeout(url, { headers: HDR }, 15000);
+    var r = await _agFetchAuth(url, { headers: HDR }, 15000);
     if (!r.ok) {
       var txt = await r.text().catch(function(){ return ""; });
       if (_agErroColuna(txt)) _agCapOff("updatedAt");
@@ -16612,7 +16896,7 @@ const db = {
     return Array.isArray(rows) ? rows : [];
   },
   async upload(path, file) {
-    const r = await fetchWithTimeout(SB_URL + "/storage/v1/object/documentos/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: HDR.Authorization, "Content-Type": file.type, "x-upsert": "true", "Content-Disposition": "inline" }, body: file }, 60000);
+    const r = await _agFetchAuth(SB_URL + "/storage/v1/object/documentos/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: HDR.Authorization, "Content-Type": file.type, "x-upsert": "true", "Content-Disposition": "inline" }, body: file }, 60000);
     if (!r.ok) throw new Error("Upload falhou. Verifique o bucket 'documentos' no Supabase Storage.");
     return SB_URL + "/storage/v1/object/public/documentos/" + path;
   }
@@ -43045,6 +43329,32 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
             sql += "end $do$;\n\n";
 
             sql += "-- ===================================================================\n";
+            sql += "-- TEMPO REAL: publica as tabelas do app na publication supabase_realtime.\n";
+            sql += "-- Sem isto o WebSocket ate conecta, mas o banco nao empurra evento\n";
+            sql += "-- nenhum: o app cai no polling e a alteracao do colega leva alguns\n";
+            sql += "-- segundos para aparecer em vez de aparecer na hora.\n";
+            sql += "-- Sao publicadas so as tabelas que a tela sincroniza (audit_log,\n";
+            sql += "-- config e afins ficam de fora para nao gerar WAL a toa).\n";
+            sql += "-- ===================================================================\n";
+            sql += "do $do$\n";
+            sql += "declare\n";
+            sql += "  t text;\n";
+            sql += "  tabelas text[] := array[" + AG_RT_TABELAS.map(function(x){ return "'" + x + "'"; }).join(",") + "];\n";
+            sql += "begin\n";
+            sql += "  if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then\n";
+            sql += "    create publication supabase_realtime;\n";
+            sql += "  end if;\n";
+            sql += "  foreach t in array tabelas loop\n";
+            sql += "    if to_regclass('public.' || t) is null then continue; end if;\n";
+            sql += "    if exists (select 1 from pg_publication_tables\n";
+            sql += "               where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t) then\n";
+            sql += "      continue;\n";
+            sql += "    end if;\n";
+            sql += "    execute format('alter publication supabase_realtime add table public.%I', t);\n";
+            sql += "  end loop;\n";
+            sql += "end $do$;\n\n";
+
+            sql += "-- ===================================================================\n";
             sql += "-- Remove a chave da Anthropic do banco.\n";
             sql += "-- Ela ficava em config.claude_api_key, que todo usuário autenticado\n";
             sql += "-- lê. A chave agora é secret da Edge Function claude-proxy.\n";
@@ -43065,7 +43375,8 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
         React.createElement('ul', {style:{margin:'0 0 8px 18px',padding:0}},
           React.createElement('li', null, "Ativa Row Level Security em todas as tabelas — só usuários autenticados (com login real) leem/gravam."),
           React.createElement('li', null, "Remove o acesso anônimo que ficava liberado por padrão em todo o banco."),
-          React.createElement('li', null, "Cria uma função segura só para o link público de fatura, sem reabrir as tabelas para o anon.")
+          React.createElement('li', null, "Cria uma função segura só para o link público de fatura, sem reabrir as tabelas para o anon."),
+          React.createElement('li', null, "Liga o tempo real: publica as tabelas do app, e aí toda alteração aparece na tela na hora, em todos os aparelhos abertos. Sem isto o app ainda atualiza sozinho, mas com alguns segundos de atraso.")
         ),
         React.createElement('div', {style:{color:C.orange,fontWeight:600}}, "Antes de rodar: em Authentication → Providers → Email no Supabase, desative \"Confirm email\" (é um app interno de equipe — sem isso, cada novo login precisa confirmar por e-mail antes do primeiro acesso).")
       )
@@ -48778,25 +49089,21 @@ function App() {
   // ── Sessão sem expiração: o app fica sempre desbloqueado até logout manual ──
   // (sem TTL de 15min em background e sem auto-bloqueio por inatividade —
   // necessário para a notificação de reserva funcionar mesmo com o app em segundo plano)
-  var _AG_SESS_KEY = "ag_session_v1";
-  function _readSess() { try { var s = JSON.parse(localStorage.getItem(_AG_SESS_KEY) || "null"); if (!s || !s.usuario) return null; return s; } catch(e) { return null; } }
+  function _readSess() { return _agSessLer(); }
   var _sessInicial = React.useRef(_readSess()).current;
   // Sessão restaurada do localStorage não passa por handleLogin — sem isto, quem
   // dá F5 volta sem perfil resolvido e as checagens de permissão liberam tudo.
   if (_sessInicial && _sessInicial.usuario && !__agUsuarioAtual) __agSetUsuario(_sessInicial.usuario);
   const [logado, setLogado] = useState(function() { return _sessInicial !== null; });
   const [usuarioAtual, setUsuarioAtual] = useState(function() { return _sessInicial ? _sessInicial.usuario : null; });
-  function _persistSess(usuario, tok) {
-    var sess = { usuario: usuario, access_token: tok.access_token, refresh_token: tok.refresh_token, expires_at: Date.now() + (tok.expires_in || 3600) * 1000 };
-    try { localStorage.setItem(_AG_SESS_KEY, JSON.stringify(sess)); } catch(e) {}
-  }
+  function _persistSess(usuario, tok) { _agSessPersistir(usuario, tok); }
   function handleLogin(usuario, tok) {
     setUsuarioAtual(usuario); setLogado(true); document.body.classList.add('ag-logado');
     __agSetUsuario(usuario); // habilita a checagem de permissão em db.post/patch/del
     if (tok && tok.access_token) {
       _sbSetToken(tok.access_token);
       _persistSess(usuario, tok);
-      _sbScheduleRefresh(tok.refresh_token, tok.expires_in, function(j){ _persistSess(usuario, j); });
+      _sbScheduleRefresh(tok.refresh_token, tok.expires_in, function(j){ _persistSess(usuario, j); _agRtAtualizarToken(); });
     }
     // Com RLS ativo, o carregamento inicial (que roda no mount, antes do login)
     // não retorna dados — a Authorization ainda era a anon key. Sem isso, o app só
@@ -48808,28 +49115,22 @@ function App() {
     setLogado(false); setUsuarioAtual(null);
     __agSetUsuario(null);
     document.body.classList.remove('ag-logado');
-    try { localStorage.removeItem(_AG_SESS_KEY); } catch(e) {}
+    try { localStorage.removeItem(_AG_SESS_STORE); } catch(e) {}
     if (_sbRefreshTimer) clearTimeout(_sbRefreshTimer);
+    _agRtParar();
     sbSignOut(s && s.access_token);
     _sbSetToken(null);
   }
   React.useEffect(function() {
     if (logado) document.body.classList.add('ag-logado');
-    // Restaura o token de acesso salvo (a Authorization enviada ao Supabase precisa
-    // ser o JWT do usuário — sem isso, toda chamada volta a usar a anon key e o RLS bloqueia).
-    if (_sessInicial && _sessInicial.access_token) {
-      var restanteMs = (_sessInicial.expires_at || 0) - Date.now();
-      if (restanteMs < 60000 && _sessInicial.refresh_token) {
-        sbRefreshToken(_sessInicial.refresh_token).then(function(j) {
-          _sbSetToken(j.access_token);
-          _persistSess(_sessInicial.usuario, j);
-          _sbScheduleRefresh(j.refresh_token, j.expires_in, function(j2){ _persistSess(_sessInicial.usuario, j2); });
-        }).catch(function(){ handleLogout(); });
-      } else {
-        _sbSetToken(_sessInicial.access_token);
-        _sbScheduleRefresh(_sessInicial.refresh_token, restanteMs / 1000, function(j){ _persistSess(_sessInicial.usuario, j); });
-      }
-    }
+    /* A restauração do token NÃO mora mais aqui: ela roda no boot, antes do
+       React montar (ver _agRestaurarSessao). Era justamente esta assincronia
+       que deixava o app abrir vazio — o carregamento inicial saía com o token
+       vencido, tomava 401 e db.get devolvia lista vazia sem avisar ninguém.
+       Aqui só reagimos ao refresh token que morreu de vez. */
+    function expirou() { handleLogout(); }
+    window.addEventListener("ag-sessao-expirada", expirou);
+    return function(){ window.removeEventListener("ag-sessao-expirada", expirou); };
   }, []);
 
   const [tab, setTab] = useState(function(){
@@ -49299,12 +49600,21 @@ function App() {
     db.get("config", "limit=1").then(d => { if (d && d[0]) { setEmpresa(d[0]); preloadLogoEmbed(d[0].logo_url); } });
   }, [refreshTick]);
 
-  /* ── Sincronização entre usuários ────────────────────────────────────────
+  /* ── Sincronização entre usuários (tempo real + rede de segurança) ───────
      Antes, o que outro usuário criasse ou apagasse só aparecia depois de um F5:
      dois atendentes trabalhando juntos viam telas diferentes e fechavam
-     contrato em cima do mesmo carro. Aqui a cada ciclo buscamos só as linhas
-     com updated_at maior que a última vista — payload pequeno, sem WebSocket
-     e sem depender de biblioteca que este app (sem bundler) não tem.
+     contrato em cima do mesmo carro. Depois passou a haver um polling de 25s —
+     melhor, mas ainda meio minuto de atraso para ver a alteração do colega.
+
+     Agora são dois caminhos, e a tela é a mesma nos dois:
+
+     1. WebSocket do Realtime (`_agRtIniciar`): o banco empurra
+        INSERT/UPDATE/DELETE e a tela muda no mesmo instante.
+     2. Polling de updated_at, que continua existindo porque o Realtime só
+        entrega evento das tabelas publicadas em `supabase_realtime` (o SQL de
+        Config faz isso) e porque WebSocket cai — em rede móvel, cai bastante.
+        Com o canal inscrito ele fica lento (só confere se nada escapou); sem
+        o canal, fica rápido e sustenta sozinho o "atualiza sozinho".
 
      A marca d'água avança pelo updated_at que o SERVIDOR devolveu, nunca pelo
      relógio do navegador: se o relógio local estiver adiantado, avançar por ele
@@ -49313,16 +49623,41 @@ function App() {
   var _syncMarcaRef = React.useRef(null);
   React.useEffect(function() {
     if (!logado) return;
-    var INTERVALO = 25000;
-    var tabelas = [
-      ["veiculos", setVeiculos], ["clientes", setClientes], ["contratos", setContratos],
-      ["reservas", setReservas], ["multas", setMultas], ["manutencao", setManutencoes],
-      ["despesas", setDespesas], ["receitas", setReceitas], ["contas", setContas],
-      ["usos", setUsos]
-    ];
+    var LENTO  = 30000; // WebSocket inscrito: só confere o que escapou
+    var RAPIDO = 6000;  // sem tempo real: é o polling que segura a atualização
+    /* Derivado de AG_RT_TABELAS de propósito: WebSocket, polling e o SQL da
+       publication passam a ler da mesma lista, então não dá para uma tabela
+       entrar em um caminho e ficar de fora do outro. */
+    var setterPor = {
+      veiculos: setVeiculos, clientes: setClientes, contratos: setContratos,
+      reservas: setReservas, multas: setMultas, manutencao: setManutencoes,
+      despesas: setDespesas, receitas: setReceitas, contas: setContas,
+      usos: setUsos
+    };
+    var tabelas = AG_RT_TABELAS.filter(function(n){ return !!setterPor[n]; })
+                               .map(function(n){ return [n, setterPor[n]]; });
     if (!_syncMarcaRef.current) _syncMarcaRef.current = new Date(Date.now() - 120000).toISOString();
     var vivo = true;
     var timer = null;
+    var rodando = false;
+    var ultimoCiclo = 0;
+    var tempoReal = false;
+    var geracao = 0;
+
+    /* Contrato carrega assinatura em base64 — centenas de KB por linha. A carga
+       inicial já as deixa de fora (hidratarContrato busca na hora de imprimir);
+       o que chega por sincronização também não pode entrar no state, ou uma
+       tarde de baixas infla a memória da aba sem nada aparecer na tela. */
+    function enxugar(tabela, row) {
+      if (tabela !== "contratos" || !row) return row;
+      var limpo = null;
+      _AG_CT_PESADAS.forEach(function(col) {
+        if (!(col in row)) return;
+        if (!limpo) limpo = Object.assign({}, row);
+        delete limpo[col];
+      });
+      return limpo || row;
+    }
 
     function aplicar(setter, linhas) {
       setter(function(atual) {
@@ -49337,7 +49672,7 @@ function App() {
             if (idx !== undefined) { lista[idx] = null; mudou = true; }
             return;
           }
-          if (idx === undefined) { lista.unshift(row); mudou = true; }
+          if (idx === undefined) { lista.unshift(row); porId[k] = lista.length - 1; mudou = true; }
           else { lista[idx] = Object.assign({}, lista[idx], row); mudou = true; }
         });
         if (!mudou) return atual;
@@ -49345,29 +49680,99 @@ function App() {
       });
     }
 
-    async function ciclo() {
-      // Aba em segundo plano ou offline: não gasta requisição nem bateria.
-      if (!vivo || document.hidden || navigator.onLine === false || !_agCap.updatedAt) return;
+    /* A marca d'água tem que andar junto com o que o WebSocket já aplicou —
+       senão o próximo ciclo de polling rebusca as mesmas linhas para sempre. */
+    function avancarMarca(linhas) {
       var maior = _syncMarcaRef.current;
-      for (var i = 0; i < tabelas.length; i++) {
-        if (!vivo) return;
-        try {
-          var linhas = await db.getMudancas(tabelas[i][0], _syncMarcaRef.current);
-          if (linhas.length) {
-            aplicar(tabelas[i][1], linhas);
-            linhas.forEach(function(r){ if (r.updated_at && r.updated_at > maior) maior = r.updated_at; });
-          }
-        } catch(e) { /* falha de rede num ciclo não quebra os próximos */ }
-      }
+      linhas.forEach(function(r){ if (r && r.updated_at && r.updated_at > maior) maior = r.updated_at; });
       _syncMarcaRef.current = maior;
     }
 
-    function agendar() { timer = setTimeout(function(){ ciclo().finally(agendar); }, INTERVALO); }
+    async function ciclo() {
+      // Aba em segundo plano ou offline: não gasta requisição nem bateria.
+      if (!vivo || rodando || document.hidden || navigator.onLine === false || !_agCap.updatedAt) return;
+      rodando = true;
+      ultimoCiclo = Date.now();
+      try {
+        var maior = _syncMarcaRef.current;
+        for (var i = 0; i < tabelas.length; i++) {
+          if (!vivo) return;
+          try {
+            var nome = tabelas[i][0];
+            var linhas = await db.getMudancas(nome, _syncMarcaRef.current);
+            if (linhas.length) {
+              aplicar(tabelas[i][1], linhas.map(function(r){ return enxugar(nome, r); }));
+              linhas.forEach(function(r){ if (r.updated_at && r.updated_at > maior) maior = r.updated_at; });
+            }
+          } catch(e) { /* falha de rede num ciclo não quebra os próximos */ }
+        }
+        _syncMarcaRef.current = maior;
+      } finally { rodando = false; }
+    }
+
+    /* Ciclo imediato, com trava curta para os quatro gatilhos (voltar à aba,
+       foco, rede de volta, pageshow) não dispararem quatro varreduras juntas. */
+    function cicloAgora() {
+      if (Date.now() - ultimoCiclo < 1500) return;
+      ciclo();
+    }
+
+    // ── 1. Tempo real ──
+    _agRtIniciar({
+      tabelas: tabelas.map(function(par){ return par[0]; }),
+      onChange: function(tabela, tipo, linha) {
+        if (!vivo) return;
+        var setter = setterPor[tabela];
+        if (!setter || !linha || linha.id == null) return;
+        /* DELETE físico não traz deleted_at; `aplicar` remove pela marca, então
+           é ela que sintetizamos aqui — a linha some da tela do mesmo jeito. */
+        var row = (tipo === "DELETE")
+          ? Object.assign({}, linha, { deleted_at: linha.deleted_at || new Date().toISOString() })
+          : enxugar(tabela, linha);
+        aplicar(setter, [row]);
+        avancarMarca([row]);
+      },
+      onStatus: function(inscrito) {
+        tempoReal = inscrito;
+        // Reconectou depois de uma queda: pode ter perdido evento no meio.
+        if (inscrito) cicloAgora();
+        // Troca de ritmo na hora — perder o tempo real e só reagir daqui a
+        // meio minuto é exatamente o atraso que se quer evitar.
+        agendar();
+      }
+    });
+
+    /* ── 2. Polling (rede de segurança / substituto quando não há WebSocket) ──
+       `geracao` existe porque agendar() é chamado de dois lugares (o próprio
+       encadeamento e a troca de status do WebSocket). Sem ela, agendar durante
+       um ciclo em voo deixaria dois encadeamentos vivos ao mesmo tempo, e cada
+       troca de status dobraria de novo o número de varreduras. */
+    function agendar() {
+      clearTimeout(timer);
+      var g = ++geracao;
+      timer = setTimeout(function() {
+        if (!vivo || g !== geracao) return;
+        ciclo().finally(function(){ if (vivo && g === geracao) agendar(); });
+      }, tempoReal ? LENTO : RAPIDO);
+    }
     agendar();
-    // Voltar para a aba deve atualizar na hora, não esperar o próximo ciclo.
-    function aoVoltar() { if (!document.hidden) ciclo(); }
+
+    /* Voltar para o app deve atualizar na hora, não esperar o próximo ciclo.
+       pageshow cobre o bfcache do iOS, onde o timer volta congelado. */
+    function aoVoltar() { if (!document.hidden) cicloAgora(); }
     document.addEventListener("visibilitychange", aoVoltar);
-    return function(){ vivo = false; clearTimeout(timer); document.removeEventListener("visibilitychange", aoVoltar); };
+    window.addEventListener("focus", aoVoltar);
+    window.addEventListener("online", aoVoltar);
+    window.addEventListener("pageshow", aoVoltar);
+    return function() {
+      vivo = false;
+      clearTimeout(timer);
+      _agRtParar();
+      document.removeEventListener("visibilitychange", aoVoltar);
+      window.removeEventListener("focus", aoVoltar);
+      window.removeEventListener("online", aoVoltar);
+      window.removeEventListener("pageshow", aoVoltar);
+    };
   }, [logado]);
 
   // ── Notificação de nova reserva no WhatsApp do dono (11989990949) ──
@@ -49676,7 +50081,7 @@ function App() {
       setLogado(false);
       setUsuarioAtual(null);
       document.body.classList.remove('ag-logado');
-      try{ localStorage.removeItem(_AG_SESS_KEY); }catch(_){}
+      try{ localStorage.removeItem(_AG_SESS_STORE); }catch(_){}
     }
   });
 

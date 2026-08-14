@@ -25166,8 +25166,30 @@ window._agPdfDireto = function(html, titulo) {
     return _sharePdfBlob(blob, nome);
   }).catch(function(e) {
     alert("Não foi possível gerar o PDF: " + (e && e.message ? e.message : e));
+  }).then(function() {
+    /* Sempre destrava, inclusive quando a geração falha: sem isto o webview do
+       app ficava irresponsivo depois de um erro, e a tela de onde o documento
+       saiu (Contratos, por exemplo) parecia congelada. */
+    try { _pdfResumeRecover(); } catch(e2) {}
   });
 };
+
+/* O documento abre numa aba nova e o app fica em segundo plano. Ao voltar para
+   ele, o webview do iOS às vezes não repinta sozinho — a tela anterior fica
+   parada e sem responder ao toque. Um reflow no retorno resolve. */
+(function() {
+  var pendente = false;
+  function marcar() { pendente = true; }
+  function destravar() {
+    if (!pendente || document.hidden) return;
+    pendente = false;
+    try { _pdfResumeRecover(); } catch(e) {}
+  }
+  window._agMarcarPdfAberto = marcar;
+  document.addEventListener("visibilitychange", destravar);
+  window.addEventListener("pageshow", destravar);
+  window.addEventListener("focus", destravar);
+})();
 
 function openPdfPage(html, preOpenedWin) {
   var isPWA = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
@@ -25186,6 +25208,7 @@ function openPdfPage(html, preOpenedWin) {
     // Sem isto o botão depende de window.opener, que o Safari do iOS costuma
     // entregar nulo — e aí o documento cairia no window.print() do navegador.
     try { w._agPdfDireto = window._agPdfDireto; } catch(e) {}
+    try { window._agMarcarPdfAberto && window._agMarcarPdfAberto(); } catch(e) {}
     // Reforço: alguns engines de impressão do iOS capturam o título da aba (usado
     // como nome sugerido ao salvar o PDF) num momento anterior ao parse completo
     // do <title> vindo do document.write — setar explicitamente garante o nome
@@ -43378,10 +43401,23 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
     setLoading(true); setOk(false);
     try {
       var p = { nome: form.nome || "", cnpj: form.cnpj ? fmtCpfCnpj(form.cnpj) : "", endereco: form.endereco || "", telefone: form.telefone ? fmtTelefone(form.telefone) : "", email: form.email || "", cidade: form.cidade || "", estado: form.estado || "", logo_url: form.logo_url || "", pwa_icon_url: form.pwa_icon_url || "", pwa_icon_dark_url: form.pwa_icon_dark_url || "", clausulas: form.clausulas || "", taxa_admin_multa: form.taxa_admin_multa === "" || form.taxa_admin_multa == null ? null : parseFloat(form.taxa_admin_multa) };
-      if (configId) { await db.patch("config", configId, p); } else { var c = await db.post("config", p); if (c && c.id) setConfigId(c.id); }
+      if (configId) {
+        /* Relê a linha imediatamente antes de gravar. A trava otimista do
+           db.patch compara o updated_at que o cliente conhece com o do banco, e
+           com a tela de Configurações aberta há um tempo esse carimbo envelhece
+           — a gravação era recusada com "recarregue e refaça a edição" como se
+           outro usuário tivesse editado. A configuração é uma linha só, editada
+           aqui, então carimbo velho é tempo de tela aberta, não concorrência. */
+        try { await db.get("config", "id=eq." + configId + "&limit=1"); } catch(eVer) {}
+        await db.patch("config", configId, p);
+      } else { var c = await db.post("config", p); if (c && c.id) setConfigId(c.id); }
       dirtyRef.current = false;
-      await carregar(); setOk(true); toast("Salvo com sucesso!");
-    } catch(e) { toast("Erro: " + e.message, "error"); }
+      setOk(true); toast("Salvo com sucesso!");
+      /* A releitura serve só para refletir o que o banco devolveu. Falhar aqui
+         não desfaz a gravação — reportar como erro de salvamento fazia o usuário
+         salvar de novo achando que tinha perdido o que já estava gravado. */
+      try { await carregar(); } catch(eLer) { console.warn("Releitura da configuração falhou:", eLer); }
+    } catch(e) { toast("Erro ao salvar: " + e.message, "error"); }
     setLoading(false);
   }
   var CLAUSULAS_PADRAO = "1. O locatario e responsavel por danos ao veiculo durante a locacao.\n2. O veiculo deve ser devolvido com o mesmo nivel de combustivel.\n3. E proibido o uso do veiculo para praticas ilegais.\n4. Multas ocorridas durante o periodo sao de responsabilidade do locatario.\n5. Em caso de sinistro, comunicar imediatamente a locadora.\n6. O nao cumprimento do prazo implica cobranca de diaria adicional.";

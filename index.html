@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="32cba9f"/>
+<meta name="ag-build" content="5f56f69"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -24744,8 +24744,22 @@ function _mesesExtenso(n) {
   return n + (e ? " (" + e + ")" : "") + (n === 1 ? " mensalidade" : " mensalidades");
 }
 
-function _vlrOuFranquia(v, franquia) {
-  return (v != null && v !== "") ? fmtBRL(v) : franquia;
+/* Franquia e participações em sinistro são um percentual sobre a Tabela FIPE
+   do veículo, não um valor fixo — o bem se deprecia e um R$ fixo cadastrado
+   hoje perde relação com o carro em um contrato daqui a um ano. Quando o FIPE
+   do veículo já foi consultado (window.__ag_fipeMap, populado pela Frota),
+   mostra também o valor em R$ correspondente na data; sem ele, sai só o %. */
+function _franquiaTxt(pct, fipeValor) {
+  if (pct == null || pct === "") return "";
+  var p = parseFloat(pct);
+  if (!(p > 0)) return "";
+  var txt = p + "% da Tabela FIPE do veículo";
+  if (fipeValor > 0) txt += " (" + fmtBRL(fipeValor * p / 100) + " na data da vistoria)";
+  return txt;
+}
+
+function _vlrOuFranquia(v, franquiaTxt, fipeValor) {
+  return (v != null && v !== "") ? _franquiaTxt(v, fipeValor) : franquiaTxt;
 }
 
 function _rotuloProtecao(tipo) {
@@ -24896,9 +24910,12 @@ function aplicarVarsTexto(txt, ct, cl, ve, emp, dias) {
     telefone: ct.condutor_adicional_telefone || (_herdaCl ? cl.telefone : "") || ""
   };
   var protecaoLabel = _rotuloProtecao(ct.seguro_tipo);
-  // Participação = franquia do sinistro contratada neste contrato. É um valor só
-  // no cadastro, então serve de base para danos, roubo/furto e perda total.
-  var participacao = ct.seguro_franquia_valor != null && ct.seguro_franquia_valor !== "" ? fmtBRL(ct.seguro_franquia_valor) : "";
+  // Participação = franquia do sinistro contratada neste contrato, em % da
+  // Tabela FIPE do veículo. É um percentual só no cadastro, que serve de base
+  // para danos, roubo/furto e perda total quando eles não têm % próprio.
+  var _fipeInfo = (window.__ag_fipeMap && ve.id != null) ? window.__ag_fipeMap[ve.id] : null;
+  var _fipeValor = _fipeInfo && _fipeInfo.valor > 0 ? _fipeInfo.valor : null;
+  var participacao = _franquiaTxt(ct.seguro_franquia_valor, _fipeValor);
   /* Contrato anual. O valor mensal vem do campo próprio; sem ele, é deduzido do
      período (um contrato de 30 dias tem o valor_total como mensalidade). */
   var _anual = !!ct.contrato_anual;
@@ -24942,9 +24959,9 @@ function aplicarVarsTexto(txt, ct, cl, ve, emp, dias) {
     valor_km_excedente: ct.valor_km_excedente != null && ct.valor_km_excedente !== "" ? fmtBRL(ct.valor_km_excedente) : "",
     protecao_contratada: protecaoLabel,
     valor_participacao: participacao,
-    participacao_danos: _vlrOuFranquia(ct.participacao_danos, participacao),
-    participacao_roubo_furto: _vlrOuFranquia(ct.participacao_roubo_furto, participacao),
-    participacao_perda_total: _vlrOuFranquia(ct.participacao_perda_total, participacao),
+    participacao_danos: _vlrOuFranquia(ct.participacao_danos, participacao, _fipeValor),
+    participacao_roubo_furto: _vlrOuFranquia(ct.participacao_roubo_furto, participacao, _fipeValor),
+    participacao_perda_total: _vlrOuFranquia(ct.participacao_perda_total, participacao, _fipeValor),
     valor_caucao: ct.caucao_valor != null && ct.caucao_valor !== "" ? fmtBRL(ct.caucao_valor) : "",
     condicao_especial: _stripSnapEnc(ct.observacoes),
     prazo_contratado: _anual ? "12 (doze) meses, por prazo determinado" : "livre, conforme o período indicado neste contrato",
@@ -24954,7 +24971,7 @@ function aplicarVarsTexto(txt, ct, cl, ve, emp, dias) {
       ? fmtBRL(_mensal * _mesesMulta) + ", correspondente a " + _mesesExtenso(_mesesMulta) + " de " + fmtBRL(_mensal)
       : "não se aplica — contratação sem prazo mínimo",
     canal_privacidade: emp.email,
-    taxa_administrativa_multa: emp.taxa_admin_multa != null && emp.taxa_admin_multa !== "" ? fmtBRL(emp.taxa_admin_multa) : "",
+    taxa_administrativa_multa: emp.taxa_admin_multa != null && emp.taxa_admin_multa !== "" ? (parseFloat(emp.taxa_admin_multa) + "%") : "",
     condutor_nome: cd.nome, condutor_cpf: cd.cpf, condutor_cnh: cd.cnh,
     condutor_categoria: cd.categoria,
     condutor_validade_cnh: cd.validade ? fmtDate(cd.validade) : "",
@@ -24978,6 +24995,7 @@ var VARS_CLAUSULAS = "PARTES: {{cliente_completo}} (nome + CNPJ/CPF + endereço)
   + "LOCAÇÃO: {{contrato_numero}} · {{data_retirada}} · {{hora_retirada}} · {{data_devolucao}} · {{hora_devolucao}} · {{local_retirada}} · {{local_devolucao}} · {{dias}} · {{km_retirada}} · {{km_devolucao}} · {{km_contratados}}\n"
   + "VALORES: {{valor_locacao}} · {{valor_km_excedente}} · {{valor_caucao}} · {{condicao_especial}}\n"
   + "PROTEÇÃO: {{protecao_contratada}} · {{valor_participacao}} · {{participacao_danos}} · {{participacao_roubo_furto}} · {{participacao_perda_total}}\n"
+  + "MULTA DE TRÂNSITO: {{taxa_administrativa_multa}}\n"
   + "CONDUTOR: {{condutor_nome}} · {{condutor_cpf}} · {{condutor_cnh}} · {{condutor_categoria}} · {{condutor_validade_cnh}} · {{condutor_telefone}}\n"
   + "ASSINATURA: {{cidade_assinatura}} · {{data_assinatura}} · {{canal_privacidade}}";
 
@@ -30457,8 +30475,8 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
               , React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.seguro_valor_dia || "", onChange: function(e){ F("seguro_valor_dia", e.target.value); }, placeholder: "0,00" })
             )
           )
-          , React.createElement(Lbl, { label: "Franquia em caso de sinistro (R$)" }
-            , React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.seguro_franquia_valor || "", onChange: function(e){ F("seguro_franquia_valor", e.target.value); }, placeholder: "Ex: 1500,00" })
+          , React.createElement(Lbl, { label: "Franquia em caso de sinistro (% da FIPE)" }
+            , React.createElement('input', { style: FI, type: "number", step: "0.1", min: "0", max: "100", value: form.seguro_franquia_valor || "", onChange: function(e){ F("seguro_franquia_valor", e.target.value); }, placeholder: "Ex: 10" })
           )
         )
         , React.createElement('div', { style: { display: "flex", gap: 10 } }
@@ -33234,22 +33252,22 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
               , React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.seguro_valor_dia || "", onChange: function(e){ F("seguro_valor_dia", e.target.value); }, placeholder: "0,00" })
             )
           )
-          , React.createElement(Lbl, { label: "Franquia em caso de sinistro (R$)" }
-            , React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.seguro_franquia_valor || "", onChange: function(e){ F("seguro_franquia_valor", e.target.value); }, placeholder: "Ex: 1500,00" })
+          , React.createElement(Lbl, { label: "Franquia em caso de sinistro (% da FIPE)" }
+            , React.createElement('input', { style: FI, type: "number", step: "0.1", min: "0", max: "100", value: form.seguro_franquia_valor || "", onChange: function(e){ F("seguro_franquia_valor", e.target.value); }, placeholder: "Ex: 10" })
           )
           /* Participações por tipo de sinistro. O Termo de Proteções distingue
              dano, roubo/furto e perda total — um valor só para os três é o que
              faz o termo perder sentido. Em branco, cada um cai na franquia
              acima, que é como o contrato funcionava antes destes campos. */
           , React.createElement('div', { style: { display: "flex", gap: 10, marginTop: 2 } }
-            , React.createElement(Lbl, { label: "Particip. danos (R$)", flex: 1 }
-              , React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.participacao_danos || "", onChange: function(e){ F("participacao_danos", e.target.value); }, placeholder: "= franquia" })
+            , React.createElement(Lbl, { label: "Particip. danos (%)", flex: 1 }
+              , React.createElement('input', { style: FI, type: "number", step: "0.1", min: "0", max: "100", value: form.participacao_danos || "", onChange: function(e){ F("participacao_danos", e.target.value); }, placeholder: "= franquia" })
             )
-            , React.createElement(Lbl, { label: "Particip. roubo/furto (R$)", flex: 1 }
-              , React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.participacao_roubo_furto || "", onChange: function(e){ F("participacao_roubo_furto", e.target.value); }, placeholder: "= franquia" })
+            , React.createElement(Lbl, { label: "Particip. roubo/furto (%)", flex: 1 }
+              , React.createElement('input', { style: FI, type: "number", step: "0.1", min: "0", max: "100", value: form.participacao_roubo_furto || "", onChange: function(e){ F("participacao_roubo_furto", e.target.value); }, placeholder: "= franquia" })
             )
-            , React.createElement(Lbl, { label: "Particip. perda total (R$)", flex: 1 }
-              , React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.participacao_perda_total || "", onChange: function(e){ F("participacao_perda_total", e.target.value); }, placeholder: "= franquia" })
+            , React.createElement(Lbl, { label: "Particip. perda total (%)", flex: 1 }
+              , React.createElement('input', { style: FI, type: "number", step: "0.1", min: "0", max: "100", value: form.participacao_perda_total || "", onChange: function(e){ F("participacao_perda_total", e.target.value); }, placeholder: "= franquia" })
             )
           )
         )
@@ -43618,10 +43636,10 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
       , React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 160, fontSize: 13, lineHeight: 1.8 }), value: form.clausulas || "", onChange: e => F("clausulas", e.target.value), placeholder: CLAUSULAS_PADRAO, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2957}} )
       , React.createElement('button', { className: "lg-pill lg-ghost" , style: { marginTop: 8, fontSize: 13 }, onClick: () => F("clausulas", CLAUSULAS_PADRAO), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2958}}, "Restaurar padrao" )
       , React.createElement('div', { style: { marginTop: 14, paddingTop: 14, borderTop: "1px solid " + C.border } }
-        , React.createElement(Lbl, { label: "Taxa administrativa por infração (R$)" }
-          , React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.taxa_admin_multa == null ? "" : form.taxa_admin_multa, onChange: function(e){ F("taxa_admin_multa", e.target.value); }, placeholder: "Ex: 50,00" })
+        , React.createElement(Lbl, { label: "Taxa administrativa por infração (%)" }
+          , React.createElement('input', { style: FI, type: "number", step: "0.01", min: "0", value: form.taxa_admin_multa == null ? "" : form.taxa_admin_multa, onChange: function(e){ F("taxa_admin_multa", e.target.value); }, placeholder: "Ex: 20" })
         )
-        , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 4, lineHeight: 1.5 } }, "Preenche a variável {{taxa_administrativa_multa}} do Termo de Responsabilidade por Infrações. Em branco, sai como \u2014.")
+        , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 4, lineHeight: 1.5 } }, "Percentual cobrado do locatário sobre o valor da multa de trânsito repassada, como taxa administrativa da locadora. Preenche a variável {{taxa_administrativa_multa}}. A multa é repassada pelo valor integral da autuação \u2014 sem o desconto legal de pagamento antecipado (art. 76-A do CTB) \u2014 mais esta taxa administrativa. Em branco, sai como \u2014.")
       )
     )
     , React.createElement('button', { className: bCls(Btn()), style: bStyle(Btn()), onClick: save, disabled: loading, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2960}}, loading ? "Salvando..." : "Salvar Empresa")

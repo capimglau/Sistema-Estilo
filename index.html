@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="8280266"/>
+<meta name="ag-build" content="ad9e4c8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -44189,13 +44189,13 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
   var _res = React.useState(null); var resultado = _res[0], setResultado = _res[1];
   var fileRef = React.useRef();
 
-  /* alimentar fluxo de caixa automaticamente com o extrato importado — desligado por padrão,
-     o usuário precisa ligar explicitamente pra evitar lançamentos duplicados/indesejados */
-  var _eaf = React.useState(function(){ try { return localStorage.getItem("ag_extrato_autofeed_v1") === "1"; } catch(e) { return false; } }); var extratoAutoFeed = _eaf[0], setExtratoAutoFeed = _eaf[1];
   /* arquivo escolhido no seletor, só processado quando o usuário clica no botão "Importar" */
   var _ef = React.useState(null); var extratoFile = _ef[0], setExtratoFile = _ef[1];
   var _eb = React.useState(false); var extratoBusy = _eb[0], setExtratoBusy = _eb[1];
   var extratoFileRef = React.useRef(null);
+  /* tela de conciliação: null = fechada; senão { origemLabel, itens:[{data,descricao,valor,matched,sel}] } */
+  var _erv = React.useState(null); var extratoReview = _erv[0], setExtratoReview = _erv[1];
+  var _erb = React.useState(false); var extratoReviewBusy = _erb[0], setExtratoReviewBusy = _erb[1];
 
   var CAMPOS = {
     clientes: [
@@ -44401,26 +44401,43 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
         });
       }
 
-      async function processarExtratoReg(reg, origemLabel) {
-        if (!extratoAutoFeed) {
-          toast(reg.length + " lançamentos lidos — ative \"Alimentar fluxo de caixa\" pra lançar automaticamente");
-          alert("Importação (pré-visualização):\n\n" + reg.slice(0,10).map(function(r){ return fmtDate(r.data) + " · " + r.descricao + " · " + fmtBRL(r.valor); }).join("\n") + (reg.length>10?"\n\n... e mais "+(reg.length-10):""));
-          return;
-        }
+      /* Monta a tela de conciliação em vez de lançar direto: cada linha do extrato é
+         classificada como "já existe no sistema" (mesma data+valor de algo já cadastrado —
+         não é relançada) ou "novo" (marcado pra criar, mas o usuário pode desmarcar antes de
+         confirmar). Nada é gravado no banco até o usuário confirmar na tela. */
+      function prepararConciliacaoExtrato(reg, origemLabel) {
         if (reg.length === 0) { toast("Nenhum lançamento reconhecível no arquivo", "error"); return; }
-        if (!confirm("Lançar automaticamente " + reg.length + " movimentações do extrato como Receitas/Despesas avulsas?\n\nEntradas (valor ≥ 0) viram Receita · Saídas (valor < 0) viram Despesa. PIX pro Leandro Francisco Alves vira Retirada de Lucro. Lançamentos que já existem manualmente no sistema (mesma data e valor) são ignorados.")) return;
+        var itens = reg.map(function(r){
+          var isDespesa = r.valor < 0;
+          var matched = _jaLancadoManualmente(isDespesa, r.data, Math.abs(r.valor));
+          return { data: r.data, descricao: r.descricao, valor: r.valor, isDespesa: isDespesa, pixLeandro: isDespesa && _isPixLeandro(r.descricao), matched: matched, sel: !matched };
+        });
+        setExtratoReview({ origemLabel: origemLabel, itens: itens });
+      }
 
-        var novasDesp = [], novasRec = [], puladosManual = 0;
-        for (var i = 0; i < reg.length; i++) {
-          var r = reg[i];
-          var absV = Math.abs(r.valor);
-          if (_jaLancadoManualmente(r.valor < 0, r.data, absV)) { puladosManual++; continue; }
-          if (r.valor < 0) {
-            var _pixLeandro = _isPixLeandro(r.descricao);
+      function toggleExtratoItem(idx) {
+        setExtratoReview(function(p){
+          if (!p) return p;
+          var itens = p.itens.slice();
+          itens[idx] = Object.assign({}, itens[idx], { sel: !itens[idx].sel });
+          return Object.assign({}, p, { itens: itens });
+        });
+      }
+
+      async function confirmarConciliacaoExtrato() {
+        if (!extratoReview) return;
+        var origemLabel = extratoReview.origemLabel;
+        var selecionados = extratoReview.itens.filter(function(it){ return it.sel && !it.matched; });
+        if (selecionados.length === 0) { toast("Nenhum lançamento selecionado"); setExtratoReview(null); return; }
+        setExtratoReviewBusy(true);
+        var novasDesp = [], novasRec = [];
+        for (var i = 0; i < selecionados.length; i++) {
+          var r = selecionados[i];
+          if (r.isDespesa) {
             var pd = {
-              descricao: _pixLeandro ? "[Extrato] Retirada de Lucro — PIX Leandro Francisco Alves" : "[Extrato] " + (r.descricao || "Lançamento importado"),
-              categoria: _pixLeandro ? "Retirada de Lucro" : "Outros",
-              valor: absV.toFixed(2),
+              descricao: r.pixLeandro ? "[Extrato] Retirada de Lucro — PIX Leandro Francisco Alves" : "[Extrato] " + (r.descricao || "Lançamento importado"),
+              categoria: r.pixLeandro ? "Retirada de Lucro" : "Outros",
+              valor: Math.abs(r.valor).toFixed(2),
               data: r.data,
               status: "pago",
               data_pagamento: r.data,
@@ -44453,7 +44470,9 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
         }
         if (novasDesp.length) setDespesas(function(p){ return novasDesp.concat(p); });
         if (novasRec.length) setReceitas(function(p){ return novasRec.concat(p); });
-        toast((novasDesp.length + novasRec.length) + " lançamentos importados do extrato (" + novasRec.length + " receitas, " + novasDesp.length + " despesas)" + (puladosManual ? " · " + puladosManual + " ignorados por já existir lançamento manual" : ""));
+        setExtratoReviewBusy(false);
+        setExtratoReview(null);
+        toast((novasDesp.length + novasRec.length) + " lançamentos importados do extrato (" + novasRec.length + " receitas, " + novasDesp.length + " despesas)");
       }
 
       /* Limpeza pra quando um extrato foi importado mais de uma vez (ex.: testando antes do
@@ -44510,7 +44529,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
                 var reg = _parseLinhasExtratoPdfC6(linhas);
                 if (reg.length === 0) reg = linhas.map(_parseLinhaExtratoPdfGenerico).filter(Boolean);
                 if (reg.length === 0) { toast("Não foi possível reconhecer lançamentos no PDF (formato não suportado)", "error"); }
-                else { await processarExtratoReg(reg, "PDF"); }
+                else { prepararConciliacaoExtrato(reg, "PDF"); }
                 break;
               } catch(er) {
                 var protegido = er && (er.name === "PasswordException" || /password/i.test(er.message||""));
@@ -44541,7 +44560,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
               var iVal = head.findIndex(function(h){ return /valor|amount|value/.test(h); });
               if (iData < 0 || iVal < 0) { toast("CSV sem colunas data/valor reconhecíveis", "error"); fim(); return; }
               var reg = lines.slice(1).map(function(l){ var c = l.split(sep); var v = parseFloat((c[iVal]||"0").replace(/["']/g,"").replace(/\./g,"").replace(",",".")); var dt = (c[iData]||"").replace(/["']/g,"").trim(); if (/^\d{2}\/\d{2}\/\d{4}$/.test(dt)) { var p = dt.split("/"); dt = p[2]+"-"+p[1]+"-"+p[0]; } return { data: dt, descricao: (c[iDesc]||"").replace(/["']/g,"").trim(), valor: v }; }).filter(function(x){ return x.data && !isNaN(x.valor); });
-              await processarExtratoReg(reg, "CSV");
+              prepararConciliacaoExtrato(reg, "CSV");
             } catch(er) { toast("Erro ao processar CSV", "error"); }
             fim();
           };
@@ -44663,16 +44682,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
     // ── Importar Extrato Bancário (CSV ou PDF) → Receitas/Despesas ──
     , React.createElement('div', { style:{ background:"var(--c-card)", borderRadius:14, padding:16, marginTop:24, border:"1px solid var(--c-border)" } }
       , React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:"var(--c-sub)", textTransform:"uppercase", marginBottom:6, letterSpacing:0.5 } }, "Importar Extrato Bancário (CSV ou PDF)")
-      , React.createElement('div', { style:{ fontSize:12, color:"var(--c-sub)", marginBottom:12 } }, "CSV: colunas com data (YYYY-MM-DD ou DD/MM/AAAA), descrição e valor, separador , ou ; · PDF: extrato bancário com linhas \"DD/MM/AAAA Descrição Valor D/C\"")
-      , React.createElement('div', { onClick: function(){ var nv = !extratoAutoFeed; setExtratoAutoFeed(nv); localStorage.setItem("ag_extrato_autofeed_v1", nv ? "1" : "0"); }, style: { display: "flex", alignItems: "center", gap: 10, background: extratoAutoFeed ? C.green + "15" : "var(--c-border)" + "40", borderRadius: 12, padding: "12px 14px", cursor: "pointer", border: "1.5px solid " + (extratoAutoFeed ? C.green : "var(--c-border)"), marginBottom: 12 } }
-        , React.createElement('div', { style: { width: 22, height: 22, borderRadius: 6, background: extratoAutoFeed ? C.green : "#fff", border: "2px solid " + (extratoAutoFeed ? C.green : "#C7C7CC"), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }
-          , extratoAutoFeed && React.createElement('span', { style: { color: "#fff", fontSize: 14, fontWeight: 900 } }, "✓")
-        )
-        , React.createElement('div', null
-          , React.createElement('div', { style: { fontWeight: 700, fontSize: 14, color: extratoAutoFeed ? C.green : "var(--c-text)" } }, "Alimentar fluxo de caixa automaticamente")
-          , React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)" } }, extratoAutoFeed ? "Ligado — cada linha do extrato vira Receita/Despesa avulsa ao importar" : "Desligado (padrão) — importar só mostra a prévia, sem lançar nada")
-        )
-      )
+      , React.createElement('div', { style:{ fontSize:12, color:"var(--c-sub)", marginBottom:12 } }, "CSV: colunas com data (YYYY-MM-DD ou DD/MM/AAAA), descrição e valor, separador , ou ; · PDF: extrato bancário com linhas \"DD/MM/AAAA Descrição Valor D/C\". Depois de ler o arquivo, uma tela de conciliação mostra o que já existe no sistema e o que é novo, antes de lançar qualquer coisa.")
       , React.createElement('div', { onClick: function(){ if (extratoFileRef.current) extratoFileRef.current.click(); }, style: { display: "flex", alignItems: "center", gap: 14, cursor: "pointer", padding: "14px 16px", borderRadius: 12, border: "2px dashed var(--c-border)", background: "var(--c-bg)" } }
         , React.createElement('span', { style: { fontSize: 26 } }, "📎")
         , React.createElement('div', null
@@ -44691,6 +44701,56 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
           onClick: limparImportadosExtrato,
           style: { width:"100%", marginTop:10, padding:"10px 14px", borderRadius:10, background:"transparent", border:"1.5px solid "+C.red, color:C.red, fontSize:13, fontWeight:700, cursor:"pointer" }
         }, "🗑 Remover lançamentos importados do extrato")
+    )
+
+    // ── Tela de conciliação do extrato: o que já existe (não relança) × o que é novo (escolhe o que lançar) ──
+    , React.createElement(Modal, { open: !!extratoReview, onClose: function(){ if (!extratoReviewBusy) setExtratoReview(null); }, title: "Conciliar extrato" + (extratoReview ? " ("+extratoReview.origemLabel+")" : ""), wide: true }
+      , extratoReview && (function(){
+          var itens = extratoReview.itens;
+          var jaExistem = itens.filter(function(it){ return it.matched; });
+          var novos = itens.filter(function(it){ return !it.matched; });
+          var selCount = novos.filter(function(it){ return it.sel; }).length;
+          function linhaItem(it, idx, clicavel) {
+            var cor = it.isDespesa ? C.red : C.green;
+            return React.createElement('div', { key: idx, onClick: clicavel ? function(){ toggleExtratoItem(itens.indexOf(it)); } : undefined,
+                style: { display:"flex", alignItems:"center", gap:10, padding:"8px 10px", borderRadius:8, cursor: clicavel ? "pointer" : "default", opacity: (clicavel && !it.sel) ? 0.45 : 1, background: (clicavel && it.sel) ? "var(--c-bg)" : "transparent" } }
+              , clicavel && React.createElement('div', { style:{ width:18, height:18, borderRadius:5, background: it.sel ? cor : "#fff", border:"2px solid "+(it.sel?cor:"#C7C7CC"), display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 } }
+                  , it.sel && React.createElement('span', { style:{ color:"#fff", fontSize:11, fontWeight:900 } }, "✓")
+                )
+              , React.createElement('div', { style:{ flex:1, minWidth:0 } }
+                  , React.createElement('div', { style:{ fontSize:13, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, it.descricao || "Lançamento importado")
+                  , React.createElement('div', { style:{ fontSize:11, color:"var(--c-sub)" } }, fmtDate(it.data) + (it.pixLeandro ? " · Retirada de Lucro" : ""))
+                )
+              , React.createElement('div', { style:{ fontSize:13, fontWeight:800, color:cor, flexShrink:0 } }, (it.isDespesa?"-":"+") + fmtBRL(Math.abs(it.valor)))
+            );
+          }
+          return React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:16 } }
+            , React.createElement('div', { style:{ fontSize:13, color:"var(--c-sub)" } }, itens.length + " lançamentos lidos · " + jaExistem.length + " já existem no sistema · " + novos.length + " novos")
+            , jaExistem.length > 0 && React.createElement('div', null
+                , React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:"var(--c-sub)", textTransform:"uppercase", marginBottom:6 } }, "Já existem no sistema — não serão lançados de novo")
+                , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:2, maxHeight:220, overflowY:"auto", border:"1px solid var(--c-border)", borderRadius:10, padding:4 } }
+                  , jaExistem.map(function(it,i){ return linhaItem(it, i, false); })
+                )
+              )
+            , React.createElement('div', null
+                , React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 } }
+                  , React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:"var(--c-sub)", textTransform:"uppercase" } }, "Novos — selecione o que deseja lançar")
+                  , novos.length > 0 && React.createElement('button', { onClick: function(){ var todosSel = novos.every(function(it){ return it.sel; }); setExtratoReview(function(p){ return Object.assign({}, p, { itens: p.itens.map(function(it){ return it.matched ? it : Object.assign({}, it, { sel: !todosSel }); }) }); }); }, style:{ background:"transparent", border:"none", color:C.blue, fontSize:12, fontWeight:700, cursor:"pointer" } }, novos.every(function(it){ return it.sel; }) ? "Desmarcar todos" : "Marcar todos")
+                )
+                , novos.length === 0
+                  ? React.createElement('div', { style:{ fontSize:13, color:"var(--c-sub)", padding:16, textAlign:"center" } }, "Nada novo — todo o extrato já está lançado no sistema")
+                  : React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:2, maxHeight:280, overflowY:"auto", border:"1px solid var(--c-border)", borderRadius:10, padding:4 } }
+                      , novos.map(function(it,i){ return linhaItem(it, i, true); })
+                    )
+              )
+            , React.createElement('div', { style:{ display:"flex", gap:10 } }
+                , React.createElement('button', { onClick: function(){ setExtratoReview(null); }, disabled: extratoReviewBusy, style:{ flex:1, padding:"12px", borderRadius:12, background:"transparent", border:"1.5px solid var(--c-border)", color:"var(--c-text)", fontSize:14, fontWeight:600, cursor:"pointer" } }, "Cancelar")
+                , React.createElement('button', { onClick: confirmarConciliacaoExtrato, disabled: extratoReviewBusy || selCount === 0,
+                    className: bCls(Btn(C.blue)), style: Object.assign({}, bStyle(Btn(C.blue)), { flex:2, opacity:(extratoReviewBusy||selCount===0)?0.5:1, cursor:(extratoReviewBusy||selCount===0)?"default":"pointer" }) },
+                    extratoReviewBusy ? "Lançando..." : "Lançar " + selCount + " selecionado" + (selCount===1?"":"s"))
+              )
+          );
+        })()
     )
   );
 }

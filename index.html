@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="78ffdf8"/>
+<meta name="ag-build" content="8280266"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -44388,13 +44388,13 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
       function _normTxt(s){ return (s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase(); }
       function _isPixLeandro(desc){ return _normTxt(desc).indexOf("leandro francisco alves") >= 0; }
 
-      /* Lançamento do extrato que bate (mesma data + mesmo valor) com algo que o usuário já
-         cadastrou manualmente no sistema — não é duplicado do próprio extrato — é ignorado
-         pra não contar a mesma movimentação duas vezes. */
+      /* Lançamento do extrato que bate (mesma data + mesmo valor) com algo que já existe no
+         sistema — seja um lançamento manual, seja de uma importação anterior — é ignorado pra
+         não contar a mesma movimentação duas vezes. Reimportar o mesmo extrato (ex.: depois de
+         corrigir a senha ou o formato do PDF) não pode duplicar os lançamentos já criados. */
       function _jaLancadoManualmente(isDespesa, dataStr, valorAbs){
         var lista = isDespesa ? despesas : receitas;
         return (lista||[]).some(function(x){
-          if ((x.observacoes||"").indexOf("Importado do extrato bancário") >= 0) return false;
           var xData = (x.data_pagamento || x.data || "").slice(0,10);
           var xVal = parseFloat(x.valor||0);
           return xData === dataStr && Math.abs(xVal - valorAbs) < 0.01;
@@ -44454,6 +44454,28 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
         if (novasDesp.length) setDespesas(function(p){ return novasDesp.concat(p); });
         if (novasRec.length) setReceitas(function(p){ return novasRec.concat(p); });
         toast((novasDesp.length + novasRec.length) + " lançamentos importados do extrato (" + novasRec.length + " receitas, " + novasDesp.length + " despesas)" + (puladosManual ? " · " + puladosManual + " ignorados por já existir lançamento manual" : ""));
+      }
+
+      /* Limpeza pra quando um extrato foi importado mais de uma vez (ex.: testando antes do
+         dedupe cobrir reimportação) — apaga só os lançamentos marcados como vindos de extrato,
+         nunca toca em nada digitado manualmente. */
+      async function limparImportadosExtrato(){
+        var despImp = (despesas||[]).filter(function(d){ return (d.observacoes||"").indexOf("Importado do extrato bancário") >= 0; });
+        var recImp = (receitas||[]).filter(function(r){ return (r.observacoes||"").indexOf("Importado do extrato bancário") >= 0; });
+        var total = despImp.length + recImp.length;
+        if (total === 0) { toast("Nenhum lançamento importado de extrato encontrado"); return; }
+        if (!confirm("Remover " + total + " lançamentos importados de extrato bancário (" + recImp.length + " receitas, " + despImp.length + " despesas)?\n\nSó apaga o que foi marcado como vindo de importação — nada digitado manualmente é afetado. Essa ação não pode ser desfeita.")) return;
+        for (var i = 0; i < despImp.length; i++) {
+          try { await db.del("despesas", despImp[i].id); } catch(e) { console.warn("[limparImportadosExtrato] erro despesa:", e); }
+        }
+        for (var j = 0; j < recImp.length; j++) {
+          try { await db.del("receitas", recImp[j].id); } catch(e) { console.warn("[limparImportadosExtrato] erro receita:", e); }
+        }
+        var despIds = despImp.map(function(d){ return d.id; });
+        var recIds = recImp.map(function(r){ return r.id; });
+        setDespesas(function(p){ return (p||[]).filter(function(d){ return despIds.indexOf(d.id) < 0; }); });
+        setReceitas(function(p){ return (p||[]).filter(function(r){ return recIds.indexOf(r.id) < 0; }); });
+        toast(total + " lançamentos importados removidos");
       }
 
       function extratoFileHandler(e){
@@ -44665,6 +44687,10 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
           className: bCls(Btn(C.blue)),
           style: Object.assign({}, bStyle(Btn(C.blue)), { marginTop: 10, opacity: (!extratoFile || extratoBusy) ? 0.5 : 1, cursor: (!extratoFile || extratoBusy) ? "default" : "pointer" })
         }, extratoBusy ? "Importando..." : "⬆ Importar")
+      , React.createElement('button', {
+          onClick: limparImportadosExtrato,
+          style: { width:"100%", marginTop:10, padding:"10px 14px", borderRadius:10, background:"transparent", border:"1.5px solid "+C.red, color:C.red, fontSize:13, fontWeight:700, cursor:"pointer" }
+        }, "🗑 Remover lançamentos importados do extrato")
     )
   );
 }

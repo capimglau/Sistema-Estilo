@@ -39703,6 +39703,11 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   /* alimentar fluxo de caixa automaticamente com o extrato importado — desligado por padrão,
      o usuário precisa ligar explicitamente pra evitar lançamentos duplicados/indesejados */
   const [extratoAutoFeed, setExtratoAutoFeed] = useState(function(){ try { return localStorage.getItem("ag_extrato_autofeed_v1") === "1"; } catch(e) { return false; } });
+  /* arquivo escolhido no seletor, só processado quando o usuário clica no botão "Importar"
+     — antes disso o onChange do <input type=file> disparava o processamento sozinho, sem
+     nenhum botão pra clicar, o que confundia quem esperava um passo explícito de "Importar" */
+  const [extratoFile, setExtratoFile] = useState(null);
+  const [extratoBusy, setExtratoBusy] = useState(false);
   const [modalFat, setModalFat] = useState(null); // { tipo:"emitir"|"pagar", fat:{...}, dtInput:"" }
   const [filtroStatusFat, setFiltroStatusFat] = useState("todas");
   const [fatSheet, setFatSheet] = useState(null);
@@ -41031,40 +41036,53 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         toast((novasDesp.length + novasRec.length) + " lançamentos importados do extrato (" + novasRec.length + " receitas, " + novasDesp.length + " despesas)" + (puladosManual ? " · " + puladosManual + " ignorados por já existir lançamento manual" : ""));
       }
 
-      function importHandler(e){
-        var f = e.target.files && e.target.files[0]; if (!f) return;
+      function extratoFileHandler(e){
+        var f = e.target.files && e.target.files[0];
+        setExtratoFile(f || null);
+        e.target.value = "";
+      }
+
+      function executarImportExtrato(){
+        var f = extratoFile;
+        if (!f) { toast("Escolha um arquivo CSV ou PDF primeiro", "error"); return; }
+        if (extratoBusy) return;
+        setExtratoBusy(true);
         var isPdf = /\.pdf$/i.test(f.name) || f.type === "application/pdf";
         var rd = new FileReader();
+        function fim(){ setExtratoBusy(false); setExtratoFile(null); }
         if (isPdf) {
           rd.onload = async function(ev){
             try {
               toast("Lendo PDF do extrato...");
               var linhas = await _extrairLinhasPdf(ev.target.result);
               var reg = linhas.map(_parseLinhaExtratoPdf).filter(Boolean);
-              if (reg.length === 0) { toast("Não foi possível reconhecer lançamentos no PDF (formato não suportado)", "error"); return; }
+              if (reg.length === 0) { toast("Não foi possível reconhecer lançamentos no PDF (formato não suportado)", "error"); fim(); return; }
               await processarExtratoReg(reg, "PDF");
             } catch(er) { toast("Erro ao processar PDF: " + (er.message||er), "error"); }
+            fim();
           };
+          rd.onerror = function(){ toast("Erro ao ler o arquivo PDF", "error"); fim(); };
           rd.readAsArrayBuffer(f);
         } else {
           rd.onload = async function(ev){
             try {
               var txt = ev.target.result || "";
               var lines = txt.split(/\r?\n/).filter(function(l){ return l.trim(); });
-              if (lines.length < 2) { toast("Arquivo vazio", "error"); return; }
+              if (lines.length < 2) { toast("Arquivo vazio", "error"); fim(); return; }
               var sep = lines[0].indexOf(";") >= 0 ? ";" : ",";
               var head = lines[0].split(sep).map(function(x){ return x.toLowerCase().replace(/["']/g,"").trim(); });
               var iData = head.findIndex(function(h){ return /data|date/.test(h); });
               var iDesc = head.findIndex(function(h){ return /desc|hist|memo/.test(h); });
               var iVal = head.findIndex(function(h){ return /valor|amount|value/.test(h); });
-              if (iData < 0 || iVal < 0) { toast("CSV sem colunas data/valor reconhecíveis", "error"); return; }
+              if (iData < 0 || iVal < 0) { toast("CSV sem colunas data/valor reconhecíveis", "error"); fim(); return; }
               var reg = lines.slice(1).map(function(l){ var c = l.split(sep); var v = parseFloat((c[iVal]||"0").replace(/["']/g,"").replace(/\./g,"").replace(",",".")); var dt = (c[iData]||"").replace(/["']/g,"").trim(); if (/^\d{2}\/\d{2}\/\d{4}$/.test(dt)) { var p = dt.split("/"); dt = p[2]+"-"+p[1]+"-"+p[0]; } return { data: dt, descricao: (c[iDesc]||"").replace(/["']/g,"").trim(), valor: v }; }).filter(function(x){ return x.data && !isNaN(x.valor); });
               await processarExtratoReg(reg, "CSV");
             } catch(er) { toast("Erro ao processar CSV", "error"); }
+            fim();
           };
+          rd.onerror = function(){ toast("Erro ao ler o arquivo CSV", "error"); fim(); };
           rd.readAsText(f);
         }
-        e.target.value = "";
       }
 
       return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } }
@@ -41190,7 +41208,14 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, extratoAutoFeed ? "Ligado — cada linha do CSV vira Receita/Despesa avulsa ao importar" : "Desligado (padrão) — importar só mostra a prévia, sem lançar nada")
             )
           )
-          , React.createElement('input', { type: "file", accept: ".csv,text/csv,.pdf,application/pdf", onChange: importHandler, style: Object.assign({}, FI, { cursor: "pointer" }) })
+          , React.createElement('input', { type: "file", accept: ".csv,text/csv,.pdf,application/pdf", onChange: extratoFileHandler, style: Object.assign({}, FI, { cursor: "pointer" }) })
+          , extratoFile && React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 8 } }, "Selecionado: " + extratoFile.name)
+          , React.createElement('button', {
+              onClick: executarImportExtrato,
+              disabled: !extratoFile || extratoBusy,
+              className: bCls(Btn(C.blue)),
+              style: Object.assign({}, bStyle(Btn(C.blue)), { marginTop: 10, opacity: (!extratoFile || extratoBusy) ? 0.5 : 1, cursor: (!extratoFile || extratoBusy) ? "default" : "pointer" })
+            }, extratoBusy ? "Importando..." : "⬆ Importar")
         )
       );
     })()

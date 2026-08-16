@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="e3bec89"/>
+<meta name="ag-build" content="bf1520e"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -40959,6 +40959,23 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       }).filter(function(x){ return x.receita > 0 || x.nCts > 0; }).sort(function(a,b){ return b.lucro - a.lucro; });
 
       // ===== Import Extrato (CSV ou PDF): reg = [{data, descricao, valor}] → preview ou lançamento automático =====
+      /* PIX enviado pro Leandro Francisco Alves = retirada de lucro do dono, não despesa operacional comum */
+      function _normTxt(s){ return (s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase(); }
+      function _isPixLeandro(desc){ return _normTxt(desc).indexOf("leandro francisco alves") >= 0; }
+
+      /* Lançamento do extrato que bate (mesma data + mesmo valor) com algo que o usuário já
+         cadastrou manualmente no sistema — não é duplicado do próprio extrato — é ignorado
+         pra não contar a mesma movimentação duas vezes. */
+      function _jaLancadoManualmente(isDespesa, dataStr, valorAbs){
+        var lista = isDespesa ? despesas : receitas;
+        return (lista||[]).some(function(x){
+          if ((x.observacoes||"").indexOf("Importado do extrato bancário") >= 0) return false;
+          var xData = (x.data_pagamento || x.data || "").slice(0,10);
+          var xVal = parseFloat(x.valor||0);
+          return xData === dataStr && Math.abs(xVal - valorAbs) < 0.01;
+        });
+      }
+
       async function processarExtratoReg(reg, origemLabel) {
         if (!extratoAutoFeed) {
           toast(reg.length + " lançamentos lidos — ative \"Alimentar fluxo de caixa\" pra lançar automaticamente");
@@ -40966,16 +40983,19 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           return;
         }
         if (reg.length === 0) { toast("Nenhum lançamento reconhecível no arquivo", "error"); return; }
-        if (!confirm("Lançar automaticamente " + reg.length + " movimentações do extrato como Receitas/Despesas avulsas?\n\nEntradas (valor ≥ 0) viram Receita · Saídas (valor < 0) viram Despesa.")) return;
+        if (!confirm("Lançar automaticamente " + reg.length + " movimentações do extrato como Receitas/Despesas avulsas?\n\nEntradas (valor ≥ 0) viram Receita · Saídas (valor < 0) viram Despesa. PIX pro Leandro Francisco Alves vira Retirada de Lucro. Lançamentos que já existem manualmente no sistema (mesma data e valor) são ignorados.")) return;
 
-        var novasDesp = [], novasRec = [];
+        var novasDesp = [], novasRec = [], puladosManual = 0;
         for (var i = 0; i < reg.length; i++) {
           var r = reg[i];
+          var absV = Math.abs(r.valor);
+          if (_jaLancadoManualmente(r.valor < 0, r.data, absV)) { puladosManual++; continue; }
           if (r.valor < 0) {
+            var _pixLeandro = _isPixLeandro(r.descricao);
             var pd = {
-              descricao: "[Extrato] " + (r.descricao || "Lançamento importado"),
-              categoria: "Outros",
-              valor: Math.abs(r.valor).toFixed(2),
+              descricao: _pixLeandro ? "[Extrato] Retirada de Lucro — PIX Leandro Francisco Alves" : "[Extrato] " + (r.descricao || "Lançamento importado"),
+              categoria: _pixLeandro ? "Retirada de Lucro" : "Outros",
+              valor: absV.toFixed(2),
               data: r.data,
               status: "pago",
               data_pagamento: r.data,
@@ -41008,7 +41028,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         }
         if (novasDesp.length) setDespesas(function(p){ return novasDesp.concat(p); });
         if (novasRec.length) setReceitas(function(p){ return novasRec.concat(p); });
-        toast((novasDesp.length + novasRec.length) + " lançamentos importados do extrato (" + novasRec.length + " receitas, " + novasDesp.length + " despesas)");
+        toast((novasDesp.length + novasRec.length) + " lançamentos importados do extrato (" + novasRec.length + " receitas, " + novasDesp.length + " despesas)" + (puladosManual ? " · " + puladosManual + " ignorados por já existir lançamento manual" : ""));
       }
 
       function importHandler(e){

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="ad9e4c8"/>
+<meta name="ag-build" content="3e3a1fd"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -44401,16 +44401,51 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
         });
       }
 
-      /* Monta a tela de conciliação em vez de lançar direto: cada linha do extrato é
-         classificada como "já existe no sistema" (mesma data+valor de algo já cadastrado —
-         não é relançada) ou "novo" (marcado pra criar, mas o usuário pode desmarcar antes de
-         confirmar). Nada é gravado no banco até o usuário confirmar na tela. */
+      /* Sugestão de mesclagem: quando não há match exato, procura no sistema um lançamento do
+         mesmo tipo (despesa/receita) com data próxima (±5 dias) e valor na mesma faixa de
+         grandeza (até 3x de diferença) — ex. a conta de luz variou de mês pra mês, mas é
+         claramente a mesma conta. O extrato é o que realmente aconteceu na conta (efetivado),
+         então na mesclagem o VALOR vem do extrato; o NOME/categoria do lançamento do sistema
+         prevalece (não faz sentido a descrição virar "Pix enviado para..."). `usados` evita
+         duas linhas do extrato "roubarem" o mesmo lançamento do sistema. */
+      function _acharCandidatoMesclagem(isDespesa, dataStr, valorAbs, usados) {
+        var lista = (isDespesa ? despesas : receitas) || [];
+        var alvo = new Date(dataStr + "T12:00:00").getTime();
+        var melhor = null, melhorDist = Infinity;
+        lista.forEach(function(x){
+          if (usados.indexOf(x.id) >= 0) return;
+          if ((x.observacoes||"").indexOf("Importado do extrato bancário") >= 0) return;
+          var xData = (x.data_pagamento || x.data || "").slice(0,10);
+          var xVal = parseFloat(x.valor||0);
+          if (!xData || !xVal) return;
+          var distMs = Math.abs(new Date(xData + "T12:00:00").getTime() - alvo);
+          var diasDist = distMs / 86400000;
+          if (diasDist > 5) return;
+          var razao = Math.max(xVal, valorAbs) / Math.min(xVal, valorAbs || 0.01);
+          if (razao > 3) return;
+          if (distMs < melhorDist) { melhorDist = distMs; melhor = x; }
+        });
+        return melhor;
+      }
+
+      /* Monta a tela de conciliação em vez de lançar direto: cada linha do extrato vira uma de
+         três coisas — "já existe" (match exato, ignorado), "sugestão de mesclagem" (data
+         próxima + valor parecido de algo do sistema — atualiza o valor desse lançamento em vez
+         de criar um novo) ou "novo" (sem correspondência, cria um lançamento). Nada é gravado
+         no banco até o usuário confirmar na tela. */
       function prepararConciliacaoExtrato(reg, origemLabel) {
         if (reg.length === 0) { toast("Nenhum lançamento reconhecível no arquivo", "error"); return; }
+        var usados = [];
         var itens = reg.map(function(r){
           var isDespesa = r.valor < 0;
-          var matched = _jaLancadoManualmente(isDespesa, r.data, Math.abs(r.valor));
-          return { data: r.data, descricao: r.descricao, valor: r.valor, isDespesa: isDespesa, pixLeandro: isDespesa && _isPixLeandro(r.descricao), matched: matched, sel: !matched };
+          var absV = Math.abs(r.valor);
+          var matched = _jaLancadoManualmente(isDespesa, r.data, absV);
+          var mescla = null;
+          if (!matched) {
+            var cand = _acharCandidatoMesclagem(isDespesa, r.data, absV, usados);
+            if (cand) { mescla = cand; usados.push(cand.id); }
+          }
+          return { data: r.data, descricao: r.descricao, valor: r.valor, isDespesa: isDespesa, pixLeandro: isDespesa && _isPixLeandro(r.descricao), matched: matched, mescla: mescla, sel: !matched };
         });
         setExtratoReview({ origemLabel: origemLabel, itens: itens });
       }
@@ -44427,9 +44462,27 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
       async function confirmarConciliacaoExtrato() {
         if (!extratoReview) return;
         var origemLabel = extratoReview.origemLabel;
-        var selecionados = extratoReview.itens.filter(function(it){ return it.sel && !it.matched; });
-        if (selecionados.length === 0) { toast("Nenhum lançamento selecionado"); setExtratoReview(null); return; }
+        var criar = extratoReview.itens.filter(function(it){ return it.sel && !it.matched && !it.mescla; });
+        var mesclar = extratoReview.itens.filter(function(it){ return it.sel && !it.matched && it.mescla; });
+        if (criar.length === 0 && mesclar.length === 0) { toast("Nenhum lançamento selecionado"); setExtratoReview(null); return; }
         setExtratoReviewBusy(true);
+
+        var despAtualizadas = [], recAtualizadas = [];
+        for (var k = 0; k < mesclar.length; k++) {
+          var itM = mesclar[k];
+          var novoValor = Math.abs(itM.valor).toFixed(2);
+          try {
+            if (itM.isDespesa) {
+              var ud = await db.patch("despesas", itM.mescla.id, { valor: novoValor });
+              despAtualizadas.push(Object.assign({}, itM.mescla, ud));
+            } else {
+              var ur = await db.patch("receitas", itM.mescla.id, { valor: novoValor });
+              recAtualizadas.push(Object.assign({}, itM.mescla, ur));
+            }
+          } catch(em) { console.warn("[confirmarConciliacaoExtrato] erro mesclagem:", em); }
+        }
+
+        var selecionados = criar;
         var novasDesp = [], novasRec = [];
         for (var i = 0; i < selecionados.length; i++) {
           var r = selecionados[i];
@@ -44470,9 +44523,14 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
         }
         if (novasDesp.length) setDespesas(function(p){ return novasDesp.concat(p); });
         if (novasRec.length) setReceitas(function(p){ return novasRec.concat(p); });
+        if (despAtualizadas.length) setDespesas(function(p){ return p.map(function(d){ var u = despAtualizadas.find(function(x){ return x.id === d.id; }); return u ? u : d; }); });
+        if (recAtualizadas.length) setReceitas(function(p){ return p.map(function(r){ var u = recAtualizadas.find(function(x){ return x.id === r.id; }); return u ? u : r; }); });
         setExtratoReviewBusy(false);
         setExtratoReview(null);
-        toast((novasDesp.length + novasRec.length) + " lançamentos importados do extrato (" + novasRec.length + " receitas, " + novasDesp.length + " despesas)");
+        var msgs = [];
+        if (novasDesp.length + novasRec.length > 0) msgs.push((novasDesp.length + novasRec.length) + " novos (" + novasRec.length + " receitas, " + novasDesp.length + " despesas)");
+        if (despAtualizadas.length + recAtualizadas.length > 0) msgs.push((despAtualizadas.length + recAtualizadas.length) + " mesclados/atualizados com o valor do extrato");
+        toast(msgs.length ? msgs.join(" · ") : "Nada foi alterado");
       }
 
       /* Limpeza pra quando um extrato foi importado mais de uma vez (ex.: testando antes do
@@ -44708,8 +44766,14 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
       , extratoReview && (function(){
           var itens = extratoReview.itens;
           var jaExistem = itens.filter(function(it){ return it.matched; });
-          var novos = itens.filter(function(it){ return !it.matched; });
-          var selCount = novos.filter(function(it){ return it.sel; }).length;
+          var sugestoes = itens.filter(function(it){ return !it.matched && it.mescla; });
+          var novos = itens.filter(function(it){ return !it.matched && !it.mescla; });
+          var selCount = itens.filter(function(it){ return it.sel && !it.matched; }).length;
+          function marcarTodos(grupo) {
+            var ids = grupo.map(function(it){ return itens.indexOf(it); });
+            var todosSel = grupo.every(function(it){ return it.sel; });
+            setExtratoReview(function(p){ return Object.assign({}, p, { itens: p.itens.map(function(it,i){ return ids.indexOf(i) >= 0 ? Object.assign({}, it, { sel: !todosSel }) : it; }) }); });
+          }
           function linhaItem(it, idx, clicavel) {
             var cor = it.isDespesa ? C.red : C.green;
             return React.createElement('div', { key: idx, onClick: clicavel ? function(){ toggleExtratoItem(itens.indexOf(it)); } : undefined,
@@ -44724,22 +44788,54 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
               , React.createElement('div', { style:{ fontSize:13, fontWeight:800, color:cor, flexShrink:0 } }, (it.isDespesa?"-":"+") + fmtBRL(Math.abs(it.valor)))
             );
           }
+          function linhaMescla(it, idx) {
+            var cor = it.isDespesa ? C.red : C.green;
+            var valorAntigo = parseFloat(it.mescla.valor||0);
+            var mudou = Math.abs(valorAntigo - Math.abs(it.valor)) >= 0.01;
+            return React.createElement('div', { key: idx, onClick: function(){ toggleExtratoItem(itens.indexOf(it)); },
+                style: { display:"flex", alignItems:"center", gap:10, padding:"8px 10px", borderRadius:8, cursor:"pointer", opacity: it.sel ? 1 : 0.45, background: it.sel ? "var(--c-bg)" : "transparent" } }
+              , React.createElement('div', { style:{ width:18, height:18, borderRadius:5, background: it.sel ? cor : "#fff", border:"2px solid "+(it.sel?cor:"#C7C7CC"), display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 } }
+                  , it.sel && React.createElement('span', { style:{ color:"#fff", fontSize:11, fontWeight:900 } }, "✓")
+                )
+              , React.createElement('div', { style:{ flex:1, minWidth:0 } }
+                  , React.createElement('div', { style:{ fontSize:13, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, it.mescla.descricao || "Lançamento do sistema")
+                  , React.createElement('div', { style:{ fontSize:11, color:"var(--c-sub)" } }
+                      , "Sistema " + fmtDate((it.mescla.data_pagamento||it.mescla.data||"").slice(0,10)) + " · Extrato " + fmtDate(it.data)
+                      , it.mescla.recorrente && React.createElement('span', { style:{ color:C.blue, fontWeight:700 } }, " · 🔁 recorrente — atualiza mês atual e próximos")
+                    )
+                )
+              , React.createElement('div', { style:{ textAlign:"right", flexShrink:0 } }
+                  , mudou && React.createElement('div', { style:{ fontSize:11, color:"var(--c-sub)", textDecoration:"line-through" } }, fmtBRL(valorAntigo))
+                  , React.createElement('div', { style:{ fontSize:13, fontWeight:800, color:cor } }, (it.isDespesa?"-":"+") + fmtBRL(Math.abs(it.valor)))
+                )
+            );
+          }
           return React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:16 } }
-            , React.createElement('div', { style:{ fontSize:13, color:"var(--c-sub)" } }, itens.length + " lançamentos lidos · " + jaExistem.length + " já existem no sistema · " + novos.length + " novos")
+            , React.createElement('div', { style:{ fontSize:13, color:"var(--c-sub)" } }, itens.length + " lançamentos lidos · " + jaExistem.length + " já existem · " + sugestoes.length + " sugestões de mesclagem · " + novos.length + " novos")
             , jaExistem.length > 0 && React.createElement('div', null
                 , React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:"var(--c-sub)", textTransform:"uppercase", marginBottom:6 } }, "Já existem no sistema — não serão lançados de novo")
-                , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:2, maxHeight:220, overflowY:"auto", border:"1px solid var(--c-border)", borderRadius:10, padding:4 } }
+                , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:2, maxHeight:180, overflowY:"auto", border:"1px solid var(--c-border)", borderRadius:10, padding:4 } }
                   , jaExistem.map(function(it,i){ return linhaItem(it, i, false); })
+                )
+              )
+            , sugestoes.length > 0 && React.createElement('div', null
+                , React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 } }
+                  , React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:C.blue, textTransform:"uppercase" } }, "Sugestões de mesclagem — data próxima, valor parecido")
+                  , React.createElement('button', { onClick: function(){ marcarTodos(sugestoes); }, style:{ background:"transparent", border:"none", color:C.blue, fontSize:12, fontWeight:700, cursor:"pointer" } }, sugestoes.every(function(it){ return it.sel; }) ? "Desmarcar todos" : "Marcar todos")
+                )
+                , React.createElement('div', { style:{ fontSize:11, color:"var(--c-sub)", marginBottom:6 } }, "Mantém o nome do lançamento do sistema e atualiza o valor pro que realmente saiu/entrou na conta, conforme o extrato.")
+                , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:2, maxHeight:240, overflowY:"auto", border:"1px solid "+C.blue, borderRadius:10, padding:4 } }
+                  , sugestoes.map(function(it,i){ return linhaMescla(it, i); })
                 )
               )
             , React.createElement('div', null
                 , React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 } }
                   , React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:"var(--c-sub)", textTransform:"uppercase" } }, "Novos — selecione o que deseja lançar")
-                  , novos.length > 0 && React.createElement('button', { onClick: function(){ var todosSel = novos.every(function(it){ return it.sel; }); setExtratoReview(function(p){ return Object.assign({}, p, { itens: p.itens.map(function(it){ return it.matched ? it : Object.assign({}, it, { sel: !todosSel }); }) }); }); }, style:{ background:"transparent", border:"none", color:C.blue, fontSize:12, fontWeight:700, cursor:"pointer" } }, novos.every(function(it){ return it.sel; }) ? "Desmarcar todos" : "Marcar todos")
+                  , novos.length > 0 && React.createElement('button', { onClick: function(){ marcarTodos(novos); }, style:{ background:"transparent", border:"none", color:C.blue, fontSize:12, fontWeight:700, cursor:"pointer" } }, novos.every(function(it){ return it.sel; }) ? "Desmarcar todos" : "Marcar todos")
                 )
                 , novos.length === 0
-                  ? React.createElement('div', { style:{ fontSize:13, color:"var(--c-sub)", padding:16, textAlign:"center" } }, "Nada novo — todo o extrato já está lançado no sistema")
-                  : React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:2, maxHeight:280, overflowY:"auto", border:"1px solid var(--c-border)", borderRadius:10, padding:4 } }
+                  ? React.createElement('div', { style:{ fontSize:13, color:"var(--c-sub)", padding:16, textAlign:"center" } }, "Nada realmente novo — o resto do extrato já existe ou tem sugestão de mesclagem")
+                  : React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:2, maxHeight:240, overflowY:"auto", border:"1px solid var(--c-border)", borderRadius:10, padding:4 } }
                       , novos.map(function(it,i){ return linhaItem(it, i, true); })
                     )
               )
@@ -44747,7 +44843,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
                 , React.createElement('button', { onClick: function(){ setExtratoReview(null); }, disabled: extratoReviewBusy, style:{ flex:1, padding:"12px", borderRadius:12, background:"transparent", border:"1.5px solid var(--c-border)", color:"var(--c-text)", fontSize:14, fontWeight:600, cursor:"pointer" } }, "Cancelar")
                 , React.createElement('button', { onClick: confirmarConciliacaoExtrato, disabled: extratoReviewBusy || selCount === 0,
                     className: bCls(Btn(C.blue)), style: Object.assign({}, bStyle(Btn(C.blue)), { flex:2, opacity:(extratoReviewBusy||selCount===0)?0.5:1, cursor:(extratoReviewBusy||selCount===0)?"default":"pointer" }) },
-                    extratoReviewBusy ? "Lançando..." : "Lançar " + selCount + " selecionado" + (selCount===1?"":"s"))
+                    extratoReviewBusy ? "Processando..." : "Confirmar " + selCount + " selecionado" + (selCount===1?"":"s"))
               )
           );
         })()

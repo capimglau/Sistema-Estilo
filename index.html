@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="fa2bbde"/>
+<meta name="ag-build" content="fa21bbc"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -39700,15 +39700,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
   const [filtroMes, setFiltroMes] = useState(_brNow().toISOString().slice(0, 7));
   const [budgetsState, setBudgetsState] = useState(function(){ try { return JSON.parse(localStorage.getItem("ag_budgets_v1") || "{}"); } catch(e) { return {}; } });
-  /* alimentar fluxo de caixa automaticamente com o extrato importado — desligado por padrão,
-     o usuário precisa ligar explicitamente pra evitar lançamentos duplicados/indesejados */
-  const [extratoAutoFeed, setExtratoAutoFeed] = useState(function(){ try { return localStorage.getItem("ag_extrato_autofeed_v1") === "1"; } catch(e) { return false; } });
-  /* arquivo escolhido no seletor, só processado quando o usuário clica no botão "Importar"
-     — antes disso o onChange do <input type=file> disparava o processamento sozinho, sem
-     nenhum botão pra clicar, o que confundia quem esperava um passo explícito de "Importar" */
-  const [extratoFile, setExtratoFile] = useState(null);
-  const [extratoBusy, setExtratoBusy] = useState(false);
-  const extratoFileRef = useRef(null);
   const [modalFat, setModalFat] = useState(null); // { tipo:"emitir"|"pagar", fat:{...}, dtInput:"" }
   const [filtroStatusFat, setFiltroStatusFat] = useState("todas");
   const [fatSheet, setFatSheet] = useState(null);
@@ -40964,136 +40955,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         return { cl: cl, receita: recCl, custo: custoAloc, multas: mults, lucro: lucro, nCts: cts.length };
       }).filter(function(x){ return x.receita > 0 || x.nCts > 0; }).sort(function(a,b){ return b.lucro - a.lucro; });
 
-      // ===== Import Extrato (CSV ou PDF): reg = [{data, descricao, valor}] → preview ou lançamento automático =====
-      /* PIX enviado pro Leandro Francisco Alves = retirada de lucro do dono, não despesa operacional comum */
-      function _normTxt(s){ return (s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase(); }
-      function _isPixLeandro(desc){ return _normTxt(desc).indexOf("leandro francisco alves") >= 0; }
-
-      /* Lançamento do extrato que bate (mesma data + mesmo valor) com algo que o usuário já
-         cadastrou manualmente no sistema — não é duplicado do próprio extrato — é ignorado
-         pra não contar a mesma movimentação duas vezes. */
-      function _jaLancadoManualmente(isDespesa, dataStr, valorAbs){
-        var lista = isDespesa ? despesas : receitas;
-        return (lista||[]).some(function(x){
-          if ((x.observacoes||"").indexOf("Importado do extrato bancário") >= 0) return false;
-          var xData = (x.data_pagamento || x.data || "").slice(0,10);
-          var xVal = parseFloat(x.valor||0);
-          return xData === dataStr && Math.abs(xVal - valorAbs) < 0.01;
-        });
-      }
-
-      async function processarExtratoReg(reg, origemLabel) {
-        if (!extratoAutoFeed) {
-          toast(reg.length + " lançamentos lidos — ative \"Alimentar fluxo de caixa\" pra lançar automaticamente");
-          alert("Importação (pré-visualização):\n\n" + reg.slice(0,10).map(function(r){ return fmtDate(r.data) + " · " + r.descricao + " · " + fmtBRL(r.valor); }).join("\n") + (reg.length>10?"\n\n... e mais "+(reg.length-10):""));
-          return;
-        }
-        if (reg.length === 0) { toast("Nenhum lançamento reconhecível no arquivo", "error"); return; }
-        if (!confirm("Lançar automaticamente " + reg.length + " movimentações do extrato como Receitas/Despesas avulsas?\n\nEntradas (valor ≥ 0) viram Receita · Saídas (valor < 0) viram Despesa. PIX pro Leandro Francisco Alves vira Retirada de Lucro. Lançamentos que já existem manualmente no sistema (mesma data e valor) são ignorados.")) return;
-
-        var novasDesp = [], novasRec = [], puladosManual = 0;
-        for (var i = 0; i < reg.length; i++) {
-          var r = reg[i];
-          var absV = Math.abs(r.valor);
-          if (_jaLancadoManualmente(r.valor < 0, r.data, absV)) { puladosManual++; continue; }
-          if (r.valor < 0) {
-            var _pixLeandro = _isPixLeandro(r.descricao);
-            var pd = {
-              descricao: _pixLeandro ? "[Extrato] Retirada de Lucro — PIX Leandro Francisco Alves" : "[Extrato] " + (r.descricao || "Lançamento importado"),
-              categoria: _pixLeandro ? "Retirada de Lucro" : "Outros",
-              valor: absV.toFixed(2),
-              data: r.data,
-              status: "pago",
-              data_pagamento: r.data,
-              observacoes: "Importado do extrato bancário (" + origemLabel + ")",
-              recorrente: false,
-              prazo_recorrencia: null,
-              veiculo_id: null,
-              manutencao_id: null,
-              contrato_id: null,
-              forma_pagamento: null
-            };
-            try { novasDesp.push(await db.post("despesas", pd)); } catch(ep) { console.warn("[importHandler] erro despesa:", ep); }
-          } else {
-            var pr = {
-              descricao: "[Extrato] " + (r.descricao || "Lançamento importado"),
-              categoria: "Outros",
-              valor: r.valor.toFixed(2),
-              data: r.data,
-              status: "recebido",
-              data_pagamento: r.data,
-              observacoes: "Importado do extrato bancário (" + origemLabel + ")",
-              recorrente: false,
-              prazo_recorrencia: null,
-              veiculo_id: null,
-              contrato_id: null,
-              forma_pagamento: "Pix"
-            };
-            try { novasRec.push(await db.post("receitas", pr)); } catch(er2) { console.warn("[importHandler] erro receita:", er2); }
-          }
-        }
-        if (novasDesp.length) setDespesas(function(p){ return novasDesp.concat(p); });
-        if (novasRec.length) setReceitas(function(p){ return novasRec.concat(p); });
-        toast((novasDesp.length + novasRec.length) + " lançamentos importados do extrato (" + novasRec.length + " receitas, " + novasDesp.length + " despesas)" + (puladosManual ? " · " + puladosManual + " ignorados por já existir lançamento manual" : ""));
-      }
-
-      function extratoFileHandler(e){
-        var f = e.target.files && e.target.files[0];
-        if (f && !/\.(csv|pdf)$/i.test(f.name)) {
-          toast("Escolha um arquivo .csv ou .pdf", "error");
-          e.target.value = "";
-          return;
-        }
-        setExtratoFile(f || null);
-        e.target.value = "";
-      }
-
-      function executarImportExtrato(){
-        var f = extratoFile;
-        if (!f) { toast("Escolha um arquivo CSV ou PDF primeiro", "error"); return; }
-        if (extratoBusy) return;
-        setExtratoBusy(true);
-        var isPdf = /\.pdf$/i.test(f.name) || f.type === "application/pdf";
-        var rd = new FileReader();
-        function fim(){ setExtratoBusy(false); setExtratoFile(null); }
-        if (isPdf) {
-          rd.onload = async function(ev){
-            try {
-              toast("Lendo PDF do extrato...");
-              var linhas = await _extrairLinhasPdf(ev.target.result);
-              var reg = linhas.map(_parseLinhaExtratoPdf).filter(Boolean);
-              if (reg.length === 0) { toast("Não foi possível reconhecer lançamentos no PDF (formato não suportado)", "error"); fim(); return; }
-              await processarExtratoReg(reg, "PDF");
-            } catch(er) {
-              var protegido = er && (er.name === "PasswordException" || /password/i.test(er.message||""));
-              toast(protegido ? "PDF protegido por senha — remova a senha do arquivo e tente de novo" : "Erro ao processar PDF: " + (er.message||er), "error");
-            }
-            fim();
-          };
-          rd.onerror = function(){ toast("Erro ao ler o arquivo PDF", "error"); fim(); };
-          rd.readAsArrayBuffer(f);
-        } else {
-          rd.onload = async function(ev){
-            try {
-              var txt = ev.target.result || "";
-              var lines = txt.split(/\r?\n/).filter(function(l){ return l.trim(); });
-              if (lines.length < 2) { toast("Arquivo vazio", "error"); fim(); return; }
-              var sep = lines[0].indexOf(";") >= 0 ? ";" : ",";
-              var head = lines[0].split(sep).map(function(x){ return x.toLowerCase().replace(/["']/g,"").trim(); });
-              var iData = head.findIndex(function(h){ return /data|date/.test(h); });
-              var iDesc = head.findIndex(function(h){ return /desc|hist|memo/.test(h); });
-              var iVal = head.findIndex(function(h){ return /valor|amount|value/.test(h); });
-              if (iData < 0 || iVal < 0) { toast("CSV sem colunas data/valor reconhecíveis", "error"); fim(); return; }
-              var reg = lines.slice(1).map(function(l){ var c = l.split(sep); var v = parseFloat((c[iVal]||"0").replace(/["']/g,"").replace(/\./g,"").replace(",",".")); var dt = (c[iData]||"").replace(/["']/g,"").trim(); if (/^\d{2}\/\d{2}\/\d{4}$/.test(dt)) { var p = dt.split("/"); dt = p[2]+"-"+p[1]+"-"+p[0]; } return { data: dt, descricao: (c[iDesc]||"").replace(/["']/g,"").trim(), valor: v }; }).filter(function(x){ return x.data && !isNaN(x.valor); });
-              await processarExtratoReg(reg, "CSV");
-            } catch(er) { toast("Erro ao processar CSV", "error"); }
-            fim();
-          };
-          rd.onerror = function(){ toast("Erro ao ler o arquivo CSV", "error"); fim(); };
-          rd.readAsText(f);
-        }
-      }
-
       return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } }
         // Fluxo 12m
         , React.createElement('div', { className: "lg-card", style: CARD }
@@ -41203,34 +41064,6 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 , React.createElement('div', { style: { fontWeight: 800, color: x.lucro >= 0 ? C.green : C.red, fontSize: 14 } }, (x.lucro>=0?"+":"") + fmtBRL(x.lucro))
               );
             })
-        )
-        // Import CSV
-        , React.createElement('div', { className: "lg-card", style: CARD }
-          , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 8 } }, "Importar Extrato (CSV ou PDF)")
-          , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginBottom: 10 } }, "CSV: colunas com data (YYYY-MM-DD ou DD/MM/AAAA), descrição e valor, separador , ou ; · PDF: extrato bancário com linhas \"DD/MM/AAAA Descrição Valor D/C\"")
-          , React.createElement('div', { onClick: function(){ var nv = !extratoAutoFeed; setExtratoAutoFeed(nv); localStorage.setItem("ag_extrato_autofeed_v1", nv ? "1" : "0"); }, style: { display: "flex", alignItems: "center", gap: 10, background: extratoAutoFeed ? C.green + "15" : C.border + "40", borderRadius: 12, padding: "12px 14px", cursor: "pointer", border: "1.5px solid " + (extratoAutoFeed ? C.green : C.border), marginBottom: 12 } }
-            , React.createElement('div', { style: { width: 22, height: 22, borderRadius: 6, background: extratoAutoFeed ? C.green : "#fff", border: "2px solid " + (extratoAutoFeed ? C.green : "#C7C7CC"), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }
-              , extratoAutoFeed && React.createElement('span', { style: { color: "#fff", fontSize: 14, fontWeight: 900 } }, "✓")
-            )
-            , React.createElement('div', null
-              , React.createElement('div', { style: { fontWeight: 700, fontSize: 14, color: extratoAutoFeed ? C.green : "var(--c-text)" } }, "Alimentar fluxo de caixa automaticamente")
-              , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, extratoAutoFeed ? "Ligado — cada linha do CSV vira Receita/Despesa avulsa ao importar" : "Desligado (padrão) — importar só mostra a prévia, sem lançar nada")
-            )
-          )
-          , React.createElement('div', { onClick: function(){ if (extratoFileRef.current) extratoFileRef.current.click(); }, style: { display: "flex", alignItems: "center", gap: 14, cursor: "pointer", padding: "14px 16px", borderRadius: 12, border: "2px dashed " + C.border, background: "var(--c-bg)" } }
-            , React.createElement('span', { style: { fontSize: 26 } }, "📎")
-            , React.createElement('div', null
-              , React.createElement('div', { style: { fontSize: 14, fontWeight: 600 } }, extratoFile ? extratoFile.name : "Selecionar arquivo")
-              , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, "Toque pra escolher o extrato (.csv ou .pdf)")
-            )
-          )
-          , React.createElement('input', { ref: extratoFileRef, type: "file", onChange: extratoFileHandler, style: { display: "none" } })
-          , React.createElement('button', {
-              onClick: executarImportExtrato,
-              disabled: !extratoFile || extratoBusy,
-              className: bCls(Btn(C.blue)),
-              style: Object.assign({}, bStyle(Btn(C.blue)), { marginTop: 10, opacity: (!extratoFile || extratoBusy) ? 0.5 : 1, cursor: (!extratoFile || extratoBusy) ? "default" : "pointer" })
-            }, extratoBusy ? "Importando..." : "⬆ Importar")
         )
       );
     })()
@@ -44320,7 +44153,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
 }
 
 // -- IMPORTAR DADOS ----------------------------------------------------------
-function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, toast }) {
+function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, despesas, setDespesas, receitas, setReceitas, toast }) {
   var _e = React.useState("clientes"); var entidade = _e[0], setEntidade = _e[1];
   var _r = React.useState(null); var rows = _r[0], setRows = _r[1];
   var _h = React.useState([]); var headers = _h[0], setHeaders = _h[1];
@@ -44329,6 +44162,14 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
   var _prog = React.useState(null); var progresso = _prog[0], setProgresso = _prog[1];
   var _res = React.useState(null); var resultado = _res[0], setResultado = _res[1];
   var fileRef = React.useRef();
+
+  /* alimentar fluxo de caixa automaticamente com o extrato importado — desligado por padrão,
+     o usuário precisa ligar explicitamente pra evitar lançamentos duplicados/indesejados */
+  var _eaf = React.useState(function(){ try { return localStorage.getItem("ag_extrato_autofeed_v1") === "1"; } catch(e) { return false; } }); var extratoAutoFeed = _eaf[0], setExtratoAutoFeed = _eaf[1];
+  /* arquivo escolhido no seletor, só processado quando o usuário clica no botão "Importar" */
+  var _ef = React.useState(null); var extratoFile = _ef[0], setExtratoFile = _ef[1];
+  var _eb = React.useState(false); var extratoBusy = _eb[0], setExtratoBusy = _eb[1];
+  var extratoFileRef = React.useRef(null);
 
   var CAMPOS = {
     clientes: [
@@ -44516,6 +44357,135 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
     if (inseridos > 0) toast(inseridos+" registros importados!", "success");
   }
 
+      // ===== Import Extrato (CSV ou PDF): reg = [{data, descricao, valor}] → preview ou lançamento automático =====
+      /* PIX enviado pro Leandro Francisco Alves = retirada de lucro do dono, não despesa operacional comum */
+      function _normTxt(s){ return (s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase(); }
+      function _isPixLeandro(desc){ return _normTxt(desc).indexOf("leandro francisco alves") >= 0; }
+
+      /* Lançamento do extrato que bate (mesma data + mesmo valor) com algo que o usuário já
+         cadastrou manualmente no sistema — não é duplicado do próprio extrato — é ignorado
+         pra não contar a mesma movimentação duas vezes. */
+      function _jaLancadoManualmente(isDespesa, dataStr, valorAbs){
+        var lista = isDespesa ? despesas : receitas;
+        return (lista||[]).some(function(x){
+          if ((x.observacoes||"").indexOf("Importado do extrato bancário") >= 0) return false;
+          var xData = (x.data_pagamento || x.data || "").slice(0,10);
+          var xVal = parseFloat(x.valor||0);
+          return xData === dataStr && Math.abs(xVal - valorAbs) < 0.01;
+        });
+      }
+
+      async function processarExtratoReg(reg, origemLabel) {
+        if (!extratoAutoFeed) {
+          toast(reg.length + " lançamentos lidos — ative \"Alimentar fluxo de caixa\" pra lançar automaticamente");
+          alert("Importação (pré-visualização):\n\n" + reg.slice(0,10).map(function(r){ return fmtDate(r.data) + " · " + r.descricao + " · " + fmtBRL(r.valor); }).join("\n") + (reg.length>10?"\n\n... e mais "+(reg.length-10):""));
+          return;
+        }
+        if (reg.length === 0) { toast("Nenhum lançamento reconhecível no arquivo", "error"); return; }
+        if (!confirm("Lançar automaticamente " + reg.length + " movimentações do extrato como Receitas/Despesas avulsas?\n\nEntradas (valor ≥ 0) viram Receita · Saídas (valor < 0) viram Despesa. PIX pro Leandro Francisco Alves vira Retirada de Lucro. Lançamentos que já existem manualmente no sistema (mesma data e valor) são ignorados.")) return;
+
+        var novasDesp = [], novasRec = [], puladosManual = 0;
+        for (var i = 0; i < reg.length; i++) {
+          var r = reg[i];
+          var absV = Math.abs(r.valor);
+          if (_jaLancadoManualmente(r.valor < 0, r.data, absV)) { puladosManual++; continue; }
+          if (r.valor < 0) {
+            var _pixLeandro = _isPixLeandro(r.descricao);
+            var pd = {
+              descricao: _pixLeandro ? "[Extrato] Retirada de Lucro — PIX Leandro Francisco Alves" : "[Extrato] " + (r.descricao || "Lançamento importado"),
+              categoria: _pixLeandro ? "Retirada de Lucro" : "Outros",
+              valor: absV.toFixed(2),
+              data: r.data,
+              status: "pago",
+              data_pagamento: r.data,
+              observacoes: "Importado do extrato bancário (" + origemLabel + ")",
+              recorrente: false,
+              prazo_recorrencia: null,
+              veiculo_id: null,
+              manutencao_id: null,
+              contrato_id: null,
+              forma_pagamento: null
+            };
+            try { novasDesp.push(await db.post("despesas", pd)); } catch(ep) { console.warn("[importHandler] erro despesa:", ep); }
+          } else {
+            var pr = {
+              descricao: "[Extrato] " + (r.descricao || "Lançamento importado"),
+              categoria: "Outros",
+              valor: r.valor.toFixed(2),
+              data: r.data,
+              status: "recebido",
+              data_pagamento: r.data,
+              observacoes: "Importado do extrato bancário (" + origemLabel + ")",
+              recorrente: false,
+              prazo_recorrencia: null,
+              veiculo_id: null,
+              contrato_id: null,
+              forma_pagamento: "Pix"
+            };
+            try { novasRec.push(await db.post("receitas", pr)); } catch(er2) { console.warn("[importHandler] erro receita:", er2); }
+          }
+        }
+        if (novasDesp.length) setDespesas(function(p){ return novasDesp.concat(p); });
+        if (novasRec.length) setReceitas(function(p){ return novasRec.concat(p); });
+        toast((novasDesp.length + novasRec.length) + " lançamentos importados do extrato (" + novasRec.length + " receitas, " + novasDesp.length + " despesas)" + (puladosManual ? " · " + puladosManual + " ignorados por já existir lançamento manual" : ""));
+      }
+
+      function extratoFileHandler(e){
+        var f = e.target.files && e.target.files[0];
+        if (f && !/\.(csv|pdf)$/i.test(f.name)) {
+          toast("Escolha um arquivo .csv ou .pdf", "error");
+          e.target.value = "";
+          return;
+        }
+        setExtratoFile(f || null);
+        e.target.value = "";
+      }
+
+      function executarImportExtrato(){
+        var f = extratoFile;
+        if (!f) { toast("Escolha um arquivo CSV ou PDF primeiro", "error"); return; }
+        if (extratoBusy) return;
+        setExtratoBusy(true);
+        var isPdf = /\.pdf$/i.test(f.name) || f.type === "application/pdf";
+        var rd = new FileReader();
+        function fim(){ setExtratoBusy(false); setExtratoFile(null); }
+        if (isPdf) {
+          rd.onload = async function(ev){
+            try {
+              toast("Lendo PDF do extrato...");
+              var linhas = await _extrairLinhasPdf(ev.target.result);
+              var reg = linhas.map(_parseLinhaExtratoPdf).filter(Boolean);
+              if (reg.length === 0) { toast("Não foi possível reconhecer lançamentos no PDF (formato não suportado)", "error"); fim(); return; }
+              await processarExtratoReg(reg, "PDF");
+            } catch(er) {
+              var protegido = er && (er.name === "PasswordException" || /password/i.test(er.message||""));
+              toast(protegido ? "PDF protegido por senha — remova a senha do arquivo e tente de novo" : "Erro ao processar PDF: " + (er.message||er), "error");
+            }
+            fim();
+          };
+          rd.onerror = function(){ toast("Erro ao ler o arquivo PDF", "error"); fim(); };
+          rd.readAsArrayBuffer(f);
+        } else {
+          rd.onload = async function(ev){
+            try {
+              var txt = ev.target.result || "";
+              var lines = txt.split(/\r?\n/).filter(function(l){ return l.trim(); });
+              if (lines.length < 2) { toast("Arquivo vazio", "error"); fim(); return; }
+              var sep = lines[0].indexOf(";") >= 0 ? ";" : ",";
+              var head = lines[0].split(sep).map(function(x){ return x.toLowerCase().replace(/["']/g,"").trim(); });
+              var iData = head.findIndex(function(h){ return /data|date/.test(h); });
+              var iDesc = head.findIndex(function(h){ return /desc|hist|memo/.test(h); });
+              var iVal = head.findIndex(function(h){ return /valor|amount|value/.test(h); });
+              if (iData < 0 || iVal < 0) { toast("CSV sem colunas data/valor reconhecíveis", "error"); fim(); return; }
+              var reg = lines.slice(1).map(function(l){ var c = l.split(sep); var v = parseFloat((c[iVal]||"0").replace(/["']/g,"").replace(/\./g,"").replace(",",".")); var dt = (c[iData]||"").replace(/["']/g,"").trim(); if (/^\d{2}\/\d{2}\/\d{4}$/.test(dt)) { var p = dt.split("/"); dt = p[2]+"-"+p[1]+"-"+p[0]; } return { data: dt, descricao: (c[iDesc]||"").replace(/["']/g,"").trim(), valor: v }; }).filter(function(x){ return x.data && !isNaN(x.valor); });
+              await processarExtratoReg(reg, "CSV");
+            } catch(er) { toast("Erro ao processar CSV", "error"); }
+            fim();
+          };
+          rd.onerror = function(){ toast("Erro ao ler o arquivo CSV", "error"); fim(); };
+          rd.readAsText(f);
+        }
+      }
   var campos = CAMPOS[entidade] || [];
   var previewRows = rows ? rows.slice(0,5) : [];
   var mappedCampos = campos.filter(function(c){ return mapping[c.k] !== undefined && mapping[c.k] !== ""; });
@@ -44625,6 +44595,35 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
           onClick: resetTudo,
           style:{ marginTop:14, padding:"8px 18px", borderRadius:10, background:"transparent", border:"1.5px solid var(--c-border)", color:"var(--c-text)", fontSize:13, cursor:"pointer" }
         }, "Nova importação")
+    )
+
+    // ── Importar Extrato Bancário (CSV ou PDF) → Receitas/Despesas ──
+    , React.createElement('div', { style:{ background:"var(--c-card)", borderRadius:14, padding:16, marginTop:24, border:"1px solid var(--c-border)" } }
+      , React.createElement('div', { style:{ fontSize:11, fontWeight:700, color:"var(--c-sub)", textTransform:"uppercase", marginBottom:6, letterSpacing:0.5 } }, "Importar Extrato Bancário (CSV ou PDF)")
+      , React.createElement('div', { style:{ fontSize:12, color:"var(--c-sub)", marginBottom:12 } }, "CSV: colunas com data (YYYY-MM-DD ou DD/MM/AAAA), descrição e valor, separador , ou ; · PDF: extrato bancário com linhas \"DD/MM/AAAA Descrição Valor D/C\"")
+      , React.createElement('div', { onClick: function(){ var nv = !extratoAutoFeed; setExtratoAutoFeed(nv); localStorage.setItem("ag_extrato_autofeed_v1", nv ? "1" : "0"); }, style: { display: "flex", alignItems: "center", gap: 10, background: extratoAutoFeed ? C.green + "15" : "var(--c-border)" + "40", borderRadius: 12, padding: "12px 14px", cursor: "pointer", border: "1.5px solid " + (extratoAutoFeed ? C.green : "var(--c-border)"), marginBottom: 12 } }
+        , React.createElement('div', { style: { width: 22, height: 22, borderRadius: 6, background: extratoAutoFeed ? C.green : "#fff", border: "2px solid " + (extratoAutoFeed ? C.green : "#C7C7CC"), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }
+          , extratoAutoFeed && React.createElement('span', { style: { color: "#fff", fontSize: 14, fontWeight: 900 } }, "✓")
+        )
+        , React.createElement('div', null
+          , React.createElement('div', { style: { fontWeight: 700, fontSize: 14, color: extratoAutoFeed ? C.green : "var(--c-text)" } }, "Alimentar fluxo de caixa automaticamente")
+          , React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)" } }, extratoAutoFeed ? "Ligado — cada linha do extrato vira Receita/Despesa avulsa ao importar" : "Desligado (padrão) — importar só mostra a prévia, sem lançar nada")
+        )
+      )
+      , React.createElement('div', { onClick: function(){ if (extratoFileRef.current) extratoFileRef.current.click(); }, style: { display: "flex", alignItems: "center", gap: 14, cursor: "pointer", padding: "14px 16px", borderRadius: 12, border: "2px dashed var(--c-border)", background: "var(--c-bg)" } }
+        , React.createElement('span', { style: { fontSize: 26 } }, "📎")
+        , React.createElement('div', null
+          , React.createElement('div', { style: { fontSize: 14, fontWeight: 600 } }, extratoFile ? extratoFile.name : "Selecionar arquivo")
+          , React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)" } }, "Toque pra escolher o extrato (.csv ou .pdf)")
+        )
+      )
+      , React.createElement('input', { ref: extratoFileRef, type: "file", onChange: extratoFileHandler, style: { display: "none" } })
+      , React.createElement('button', {
+          onClick: executarImportExtrato,
+          disabled: !extratoFile || extratoBusy,
+          className: bCls(Btn(C.blue)),
+          style: Object.assign({}, bStyle(Btn(C.blue)), { marginTop: 10, opacity: (!extratoFile || extratoBusy) ? 0.5 : 1, cursor: (!extratoFile || extratoBusy) ? "default" : "pointer" })
+        }, extratoBusy ? "Importando..." : "⬆ Importar")
     )
   );
 }
@@ -50907,7 +50906,7 @@ function App() {
     if (tab === "config") {
       if (configSubTab === "simulador") return React.createElement(Simulador, { veiculos: veiculos, contratos: contratos, despesas: despesas, manutencoes: manutencoes, multas: multas, receitas: receitas, toast: toast });
       if (configSubTab === "usuarios") return React.createElement(Usuarios, { usuarioAtual: usuarioAtual, toast: toast });
-      if (configSubTab === "importar") return React.createElement(ImportarDados, { veiculos: veiculos, setVeiculos: setVeiculos, clientes: clientes, setClientes: setClientes, contratos: contratos, setContratos: setContratos, toast: toast });
+      if (configSubTab === "importar") return React.createElement(ImportarDados, { veiculos: veiculos, setVeiculos: setVeiculos, clientes: clientes, setClientes: setClientes, contratos: contratos, setContratos: setContratos, despesas: despesas, setDespesas: setDespesas, receitas: receitas, setReceitas: setReceitas, toast: toast });
       return React.createElement(Config, { empresa: empresa, setEmpresa: setEmpresa, toast: toast, darkMode: darkMode, toggleDark: toggleDark, setThemeDirect: setThemeDirect, temaList: TEMA_LIST, temaKeys: TEMA_KEYS, usuarioAtual: usuarioAtual, lgpdConsent: lgpdConsent, setLgpdConsent: setLgpdConsent, modPrivacidade: modPrivacidade, setModPrivacidade: setModPrivacidade, onLogout: handleLogout });
     }
     if (tab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens });

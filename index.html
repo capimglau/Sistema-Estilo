@@ -44393,17 +44393,37 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
         });
       }
 
+      /* Similaridade de texto entre a descrição do extrato e a do lançamento do sistema —
+         ignora palavras genéricas de extrato bancário ("pix", "enviado", "sa", "ltda" etc.) que
+         não ajudam a identificar QUAL conta é, e compara o que sobra por palavra em comum.
+         Score de 0 (nada em comum) a 1 (mesmas palavras-chave). */
+      function _similaridadeTexto(a, b) {
+        var STOP = ["pix","enviado","recebido","para","de","da","do","das","dos","qr","code","cartao","fatura","fat","pgto","pagamento","boleto","credito","debito","ltda","me","eireli","sa","s"];
+        function tokens(s) {
+          return _normTxt(s).replace(/[^a-z0-9\s]/g," ").split(/\s+/).filter(function(w){ return w.length >= 2 && STOP.indexOf(w) < 0; });
+        }
+        var ta = tokens(a), tb = tokens(b);
+        if (!ta.length || !tb.length) return 0;
+        var setB = {}; tb.forEach(function(w){ setB[w] = true; });
+        var inter = ta.filter(function(w){ return setB[w]; }).length;
+        return inter / Math.min(ta.length, tb.length);
+      }
+
       /* Sugestão de mesclagem: quando não há match exato, procura no sistema um lançamento do
          mesmo tipo (despesa/receita) com data próxima (±5 dias) e valor na mesma faixa de
          grandeza (até 3x de diferença) — ex. a conta de luz variou de mês pra mês, mas é
-         claramente a mesma conta. O extrato é o que realmente aconteceu na conta (efetivado),
-         então na mesclagem o VALOR vem do extrato; o NOME/categoria do lançamento do sistema
-         prevalece (não faz sentido a descrição virar "Pix enviado para..."). `usados` evita
-         duas linhas do extrato "roubarem" o mesmo lançamento do sistema. */
-      function _acharCandidatoMesclagem(isDespesa, dataStr, valorAbs, usados) {
+         claramente a mesma conta. Entre os candidatos que passam nesse filtro, prioriza quem
+         tem mais palavras em comum com os dizeres do extrato (ex. "BANCO BRADESCO
+         FINANCIAMENTOS" bate melhor com uma despesa "Financiamento Bradesco" do que com outra
+         despesa qualquer na mesma data/valor) — data e valor sozinhos podem empatar entre duas
+         contas parecidas, o texto desempata. O extrato é o que realmente aconteceu na conta
+         (efetivado), então na mesclagem o VALOR vem do extrato; o NOME/categoria do lançamento
+         do sistema prevalece (não faz sentido a descrição virar "Pix enviado para...").
+         `usados` evita duas linhas do extrato "roubarem" o mesmo lançamento do sistema. */
+      function _acharCandidatoMesclagem(isDespesa, dataStr, valorAbs, descExtrato, usados) {
         var lista = (isDespesa ? despesas : receitas) || [];
         var alvo = new Date(dataStr + "T12:00:00").getTime();
-        var melhor = null, melhorDist = Infinity;
+        var melhor = null, melhorScore = -Infinity;
         lista.forEach(function(x){
           if (usados.indexOf(x.id) >= 0) return;
           if ((x.observacoes||"").indexOf("Importado do extrato bancário") >= 0) return;
@@ -44415,7 +44435,11 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
           if (diasDist > 5) return;
           var razao = Math.max(xVal, valorAbs) / Math.min(xVal, valorAbs || 0.01);
           if (razao > 3) return;
-          if (distMs < melhorDist) { melhorDist = distMs; melhor = x; }
+          var simTexto = _similaridadeTexto(descExtrato, x.descricao || "");
+          /* texto pesa mais que data — duas contas na mesma semana com valor parecido só se
+             distinguem pelo nome; a data ainda desempata quando o texto não ajuda em nada. */
+          var score = simTexto * 10 - diasDist * 0.3;
+          if (score > melhorScore) { melhorScore = score; melhor = x; }
         });
         return melhor;
       }
@@ -44434,7 +44458,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
           var matched = _jaLancadoManualmente(isDespesa, r.data, absV);
           var mescla = null;
           if (!matched) {
-            var cand = _acharCandidatoMesclagem(isDespesa, r.data, absV, usados);
+            var cand = _acharCandidatoMesclagem(isDespesa, r.data, absV, r.descricao, usados);
             if (cand) { mescla = cand; usados.push(cand.id); }
           }
           return { data: r.data, descricao: r.descricao, valor: r.valor, isDespesa: isDespesa, pixLeandro: isDespesa && _isPixLeandro(r.descricao), matched: matched, mescla: mescla, sel: !matched };

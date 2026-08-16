@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="fa21bbc"/>
+<meta name="ag-build" content="673a2ae"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -25006,9 +25006,11 @@ function _ensurePdfJsLib() {
 
 // Extrai o texto de um PDF de extrato, linha por linha (agrupando itens pela mesma
 // altura/y na página), pra depois rodar o mesmo parser de data+descrição+valor.
-async function _extrairLinhasPdf(arrayBuffer) {
+async function _extrairLinhasPdf(arrayBuffer, senha) {
   var pdfjsLib = await _ensurePdfJsLib();
-  var pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  var params = { data: arrayBuffer };
+  if (senha) params.password = senha;
+  var pdf = await pdfjsLib.getDocument(params).promise;
   var linhas = [];
   for (var p = 1; p <= pdf.numPages; p++) {
     var page = await pdf.getPage(p);
@@ -44451,15 +44453,29 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
         function fim(){ setExtratoBusy(false); setExtratoFile(null); }
         if (isPdf) {
           rd.onload = async function(ev){
-            try {
-              toast("Lendo PDF do extrato...");
-              var linhas = await _extrairLinhasPdf(ev.target.result);
-              var reg = linhas.map(_parseLinhaExtratoPdf).filter(Boolean);
-              if (reg.length === 0) { toast("Não foi possível reconhecer lançamentos no PDF (formato não suportado)", "error"); fim(); return; }
-              await processarExtratoReg(reg, "PDF");
-            } catch(er) {
-              var protegido = er && (er.name === "PasswordException" || /password/i.test(er.message||""));
-              toast(protegido ? "PDF protegido por senha — remova a senha do arquivo e tente de novo" : "Erro ao processar PDF: " + (er.message||er), "error");
+            var buf = ev.target.result;
+            var senha = null, tentativas = 0;
+            /* getDocument "consome" o ArrayBuffer (transferido pro worker do pdf.js) — cada
+               tentativa precisa de uma cópia nova, senão a segunda tentativa falha com buffer vazio. */
+            while (true) {
+              try {
+                toast(senha ? "Tentando abrir com a senha informada..." : "Lendo PDF do extrato...");
+                var linhas = await _extrairLinhasPdf(buf.slice(0), senha);
+                var reg = linhas.map(_parseLinhaExtratoPdf).filter(Boolean);
+                if (reg.length === 0) { toast("Não foi possível reconhecer lançamentos no PDF (formato não suportado)", "error"); }
+                else { await processarExtratoReg(reg, "PDF"); }
+                break;
+              } catch(er) {
+                var protegido = er && (er.name === "PasswordException" || /password/i.test(er.message||""));
+                if (protegido && tentativas < 3) {
+                  tentativas++;
+                  senha = prompt("Este PDF do extrato tem senha." + (tentativas > 1 ? " Senha incorreta, tente de novo:" : " Digite a senha para abrir:"));
+                  if (!senha) { toast("Importação cancelada — senha não informada", "error"); break; }
+                  continue;
+                }
+                toast(protegido ? "Senha incorreta — importação cancelada" : "Erro ao processar PDF: " + (er.message||er), "error");
+                break;
+              }
             }
             fim();
           };

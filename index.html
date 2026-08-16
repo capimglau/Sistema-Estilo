@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="53aadf0"/>
+<meta name="ag-build" content="2bdc214"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -44188,6 +44188,24 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
   /* tela de conciliação: null = fechada; senão { origemLabel, itens:[{data,descricao,valor,matched,sel}] } */
   var _erv = React.useState(null); var extratoReview = _erv[0], setExtratoReview = _erv[1];
   var _erb = React.useState(false); var extratoReviewBusy = _erb[0], setExtratoReviewBusy = _erb[1];
+  /* despesas/receitas excluídas (soft-delete) — o extrato pode cobrir um período em que um
+     lançamento ainda existia no sistema e foi apagado depois; sem isso ele nunca aparece como
+     candidato de mesclagem. Carregado sob demanda na primeira conciliação e reaproveitado. */
+  var _edx = React.useState(null); var extratoDeletados = _edx[0], setExtratoDeletados = _edx[1];
+  async function _garantirDeletadosCarregados(){
+    if (extratoDeletados) return extratoDeletados;
+    var d = { despesas: [], receitas: [] };
+    try {
+      var todasDesp = await db.getAll("despesas", { incluirExcluidos: true });
+      d.despesas = (todasDesp||[]).filter(function(x){ return !!x.deleted_at; });
+    } catch(e) { console.warn("[extrato] erro ao carregar despesas excluídas:", e); }
+    try {
+      var todasRec = await db.getAll("receitas", { incluirExcluidos: true });
+      d.receitas = (todasRec||[]).filter(function(x){ return !!x.deleted_at; });
+    } catch(e) { console.warn("[extrato] erro ao carregar receitas excluídas:", e); }
+    setExtratoDeletados(d);
+    return d;
+  }
 
   var CAMPOS = {
     clientes: [
@@ -44420,8 +44438,18 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
          (efetivado), então na mesclagem o VALOR vem do extrato; o NOME/categoria do lançamento
          do sistema prevalece (não faz sentido a descrição virar "Pix enviado para...").
          `usados` evita duas linhas do extrato "roubarem" o mesmo lançamento do sistema. */
-      function _acharCandidatoMesclagem(isDespesa, dataStr, valorAbs, descExtrato, usados) {
-        var lista = (isDespesa ? despesas : receitas) || [];
+      /* lançamentos vivos + excluídos (soft-delete) — um excluído pode ter existido durante o
+         período coberto pelo extrato (ex.: financiamento encerrado e apagado do sistema depois
+         que o extrato já tinha aquele pagamento), então também entra como candidato. */
+      function _poolLancamentos(isDespesa, deletadosOverride) {
+        var vivos = (isDespesa ? despesas : receitas) || [];
+        var fonte = deletadosOverride !== undefined ? deletadosOverride : extratoDeletados;
+        var deletados = fonte ? (isDespesa ? fonte.despesas : fonte.receitas) : [];
+        return vivos.concat(deletados);
+      }
+
+      function _acharCandidatoMesclagem(isDespesa, dataStr, valorAbs, descExtrato, usados, deletadosOverride) {
+        var lista = _poolLancamentos(isDespesa, deletadosOverride);
         var alvo = new Date(dataStr + "T12:00:00").getTime();
         var melhor = null, melhorScore = -Infinity;
         lista.forEach(function(x){
@@ -44449,8 +44477,9 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
          próxima + valor parecido de algo do sistema — atualiza o valor desse lançamento em vez
          de criar um novo) ou "novo" (sem correspondência, cria um lançamento). Nada é gravado
          no banco até o usuário confirmar na tela. */
-      function prepararConciliacaoExtrato(reg, origemLabel) {
+      async function prepararConciliacaoExtrato(reg, origemLabel) {
         if (reg.length === 0) { toast("Nenhum lançamento reconhecível no arquivo", "error"); return; }
+        var deletados = await _garantirDeletadosCarregados();
         var usados = [];
         var itens = reg.map(function(r){
           var isDespesa = r.valor < 0;
@@ -44458,7 +44487,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
           var matched = _jaLancadoManualmente(isDespesa, r.data, absV);
           var mescla = null;
           if (!matched) {
-            var cand = _acharCandidatoMesclagem(isDespesa, r.data, absV, r.descricao, usados);
+            var cand = _acharCandidatoMesclagem(isDespesa, r.data, absV, r.descricao, usados, deletados);
             if (cand) { mescla = cand; usados.push(cand.id); }
           }
           return { data: r.data, descricao: r.descricao, valor: r.valor, isDespesa: isDespesa, pixLeandro: isDespesa && _isPixLeandro(r.descricao), matched: matched, mescla: mescla, sel: !matched };
@@ -44517,14 +44546,15 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
         for (var k = 0; k < mesclar.length; k++) {
           var itM = mesclar[k];
           var novoValor = Math.abs(itM.valor).toFixed(2);
+          var tabelaM = itM.isDespesa ? "despesas" : "receitas";
           try {
-            if (itM.isDespesa) {
-              var ud = await db.patch("despesas", itM.mescla.id, { valor: novoValor });
-              despAtualizadas.push(Object.assign({}, itM.mescla, ud));
-            } else {
-              var ur = await db.patch("receitas", itM.mescla.id, { valor: novoValor });
-              recAtualizadas.push(Object.assign({}, itM.mescla, ur));
-            }
+            /* candidato pode ter sido excluído do sistema depois que o extrato já tinha esse
+               pagamento (ex.: financiamento encerrado) — mesclar restaura o registro antes de
+               atualizar o valor, senão a mesclagem ficaria "presa" num lançamento invisível. */
+            if (itM.mescla.deleted_at) await db.restaurar(tabelaM, itM.mescla.id);
+            var upd = await db.patch(tabelaM, itM.mescla.id, { valor: novoValor });
+            var regFinal = Object.assign({}, itM.mescla, upd, { deleted_at: null });
+            if (itM.isDespesa) despAtualizadas.push(regFinal); else recAtualizadas.push(regFinal);
           } catch(em) { console.warn("[confirmarConciliacaoExtrato] erro mesclagem:", em); }
         }
 
@@ -44569,8 +44599,22 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
         }
         if (novasDesp.length) setDespesas(function(p){ return novasDesp.concat(p); });
         if (novasRec.length) setReceitas(function(p){ return novasRec.concat(p); });
-        if (despAtualizadas.length) setDespesas(function(p){ return p.map(function(d){ var u = despAtualizadas.find(function(x){ return x.id === d.id; }); return u ? u : d; }); });
-        if (recAtualizadas.length) setReceitas(function(p){ return p.map(function(r){ var u = recAtualizadas.find(function(x){ return x.id === r.id; }); return u ? u : r; }); });
+        /* atualizados podem já existir no state (mesclagem comum) ou terem sido restaurados de
+           um estado excluído (não estavam na lista antes) — nesse caso precisam ser incluídos,
+           não só atualizados no lugar. */
+        if (despAtualizadas.length) setDespesas(function(p){
+          var idsAtuais = p.map(function(d){ return d.id; });
+          var noLugar = p.map(function(d){ var u = despAtualizadas.find(function(x){ return x.id === d.id; }); return u ? u : d; });
+          var restaurados = despAtualizadas.filter(function(x){ return idsAtuais.indexOf(x.id) < 0; });
+          return restaurados.concat(noLugar);
+        });
+        if (recAtualizadas.length) setReceitas(function(p){
+          var idsAtuais = p.map(function(r){ return r.id; });
+          var noLugar = p.map(function(r){ var u = recAtualizadas.find(function(x){ return x.id === r.id; }); return u ? u : r; });
+          var restaurados = recAtualizadas.filter(function(x){ return idsAtuais.indexOf(x.id) < 0; });
+          return restaurados.concat(noLugar);
+        });
+        if (despAtualizadas.length || recAtualizadas.length) setExtratoDeletados(null); /* força recarregar na próxima vez, já que alguns podem ter sido restaurados */
         setExtratoReviewBusy(false);
         setExtratoReview(null);
         var msgs = [];
@@ -44633,7 +44677,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
                 var reg = _parseLinhasExtratoPdfC6(linhas);
                 if (reg.length === 0) reg = linhas.map(_parseLinhaExtratoPdfGenerico).filter(Boolean);
                 if (reg.length === 0) { toast("Não foi possível reconhecer lançamentos no PDF (formato não suportado)", "error"); }
-                else { prepararConciliacaoExtrato(reg, "PDF"); }
+                else { await prepararConciliacaoExtrato(reg, "PDF"); }
                 break;
               } catch(er) {
                 var protegido = er && (er.name === "PasswordException" || /password/i.test(er.message||""));
@@ -44664,7 +44708,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
               var iVal = head.findIndex(function(h){ return /valor|amount|value/.test(h); });
               if (iData < 0 || iVal < 0) { toast("CSV sem colunas data/valor reconhecíveis", "error"); fim(); return; }
               var reg = lines.slice(1).map(function(l){ var c = l.split(sep); var v = parseFloat((c[iVal]||"0").replace(/["']/g,"").replace(/\./g,"").replace(",",".")); var dt = (c[iData]||"").replace(/["']/g,"").trim(); if (/^\d{2}\/\d{2}\/\d{4}$/.test(dt)) { var p = dt.split("/"); dt = p[2]+"-"+p[1]+"-"+p[0]; } return { data: dt, descricao: (c[iDesc]||"").replace(/["']/g,"").trim(), valor: v }; }).filter(function(x){ return x.data && !isNaN(x.valor); });
-              prepararConciliacaoExtrato(reg, "CSV");
+              await prepararConciliacaoExtrato(reg, "CSV");
             } catch(er) { toast("Erro ao processar CSV", "error"); }
             fim();
           };
@@ -44835,7 +44879,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
             );
           }
           function candidatosBusca(it) {
-            var lista = (it.isDespesa ? despesas : receitas) || [];
+            var lista = _poolLancamentos(it.isDespesa);
             var texto = _normTxt(it.buscaTexto||"");
             var filtrados = lista.filter(function(x){
               if ((x.observacoes||"").indexOf("Importado do extrato bancário") >= 0) return false;
@@ -44861,6 +44905,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
                     , React.createElement('div', { style:{ fontSize:11, color:"var(--c-sub)" } }
                         , "Sistema " + fmtDate((it.mescla.data_pagamento||it.mescla.data||"").slice(0,10)) + " · Extrato " + fmtDate(it.data)
                         , it.mescla.recorrente && React.createElement('span', { style:{ color:C.blue, fontWeight:700 } }, " · 🔁 recorrente — atualiza mês atual e próximos")
+                        , it.mescla.deleted_at && React.createElement('span', { style:{ color:C.orange, fontWeight:700 } }, " · 🗑 excluído — será restaurado ao confirmar")
                       )
                     , React.createElement('button', { onClick: function(e){ e.stopPropagation(); toggleBuscaMescla(realIdx); }, style:{ marginTop:2, background:"transparent", border:"none", padding:0, color:C.blue, fontSize:11, fontWeight:700, cursor:"pointer" } }, it.buscaAberta ? "✕ Fechar busca" : "🔍 Trocar lançamento")
                   )
@@ -44877,7 +44922,7 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
                               style:{ display:"flex", justifyContent:"space-between", gap:8, padding:"6px 8px", borderRadius:6, cursor:"pointer", background: cand.id===it.mescla.id ? "var(--c-border)" : "transparent" } }
                             , React.createElement('div', { style:{ minWidth:0 } }
                                 , React.createElement('div', { style:{ fontSize:12, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, cand.descricao || "—")
-                                , React.createElement('div', { style:{ fontSize:10, color:"var(--c-sub)" } }, fmtDate((cand.data_pagamento||cand.data||"").slice(0,10)))
+                                , React.createElement('div', { style:{ fontSize:10, color:cand.deleted_at?C.orange:"var(--c-sub)" } }, fmtDate((cand.data_pagamento||cand.data||"").slice(0,10)) + (cand.deleted_at?" · excluído":""))
                               )
                             , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:cor, flexShrink:0 } }, fmtBRL(parseFloat(cand.valor||0)))
                           );

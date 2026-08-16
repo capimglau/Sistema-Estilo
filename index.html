@@ -25031,9 +25031,9 @@ async function _extrairLinhasPdf(arrayBuffer, senha) {
   return linhas;
 }
 
-// Parser de linha de extrato em PDF: "DD/MM/AAAA  Descrição  1.234,56  D/C" (ou já com sinal).
-// Cobre o formato mais comum de extratos bancários brasileiros exportados em PDF.
-function _parseLinhaExtratoPdf(linha) {
+// Parser genérico (fallback): "DD/MM/AAAA  Descrição  1.234,56  D/C" (ou já com sinal).
+// Usado quando o formato específico de banco (abaixo) não reconhece nada.
+function _parseLinhaExtratoPdfGenerico(linha) {
   var m = linha.match(/^(\d{2}\/\d{2}\/\d{4}|\d{2}\/\d{2}\/\d{2})\s+(.+?)\s+(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*([DC])?\s*$/);
   if (!m) return null;
   var dtStr = m[1], desc = m[2].trim(), valStr = m[3], sinal = m[4];
@@ -25046,6 +25046,30 @@ function _parseLinhaExtratoPdf(linha) {
   else if (sinal === "C") v = Math.abs(v);
   if (!desc) return null;
   return { data: dt, descricao: desc, valor: v };
+}
+
+// Parser do extrato em PDF do C6 Bank: tabela "Data lançamento | Data contábil | Tipo |
+// Descrição | Valor", uma linha por lançamento — ex. "05/05 04/05 Outros gastos IOF CHEQUE
+// ESPECIAL -R$ 5,50". As datas da tabela não têm ano — o ano só aparece no cabeçalho de cada
+// bloco de mês ("Maio 2026 (01/05/2026 - 31/05/2026)"), então processa as linhas em ordem e
+// carrega o ano do cabeçalho mais recente pras linhas de lançamento seguintes. Linhas de
+// "Saldo do dia ..." e cabeçalhos de mês não começam com duas datas DD/MM e ficam de fora.
+function _parseLinhasExtratoPdfC6(linhas) {
+  var ano = null;
+  var reg = [];
+  for (var i = 0; i < linhas.length; i++) {
+    var linha = linhas[i];
+    var mPeriodo = linha.match(/\d{2}\/\d{2}\/(\d{4})\s*-\s*\d{2}\/\d{2}\/(\d{4})/);
+    if (mPeriodo) { ano = mPeriodo[2]; continue; }
+    var m = linha.match(/^(\d{2})\/(\d{2})\s+\d{2}\/\d{2}\s+(.+?)\s+(-?)R\$\s?([\d.,]+)\s*$/);
+    if (!m || !ano) continue;
+    var dia = m[1], mes = m[2], desc = m[3].trim(), sinal = m[4], valStr = m[5];
+    var v = parseFloat(valStr.replace(/\./g, "").replace(",", "."));
+    if (isNaN(v) || !desc) continue;
+    if (sinal === "-") v = -v;
+    reg.push({ data: ano + "-" + mes + "-" + dia, descricao: desc, valor: v });
+  }
+  return reg;
 }
 
 // Deriva um nome de arquivo a partir do <title> do documento.
@@ -44461,7 +44485,8 @@ function ImportarDados({ veiculos, setVeiculos, clientes, setClientes, contratos
               try {
                 toast(senha ? "Tentando abrir com a senha informada..." : "Lendo PDF do extrato...");
                 var linhas = await _extrairLinhasPdf(buf.slice(0), senha);
-                var reg = linhas.map(_parseLinhaExtratoPdf).filter(Boolean);
+                var reg = _parseLinhasExtratoPdfC6(linhas);
+                if (reg.length === 0) reg = linhas.map(_parseLinhaExtratoPdfGenerico).filter(Boolean);
                 if (reg.length === 0) { toast("Não foi possível reconhecer lançamentos no PDF (formato não suportado)", "error"); }
                 else { await processarExtratoReg(reg, "PDF"); }
                 break;

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="f84eb28"/>
+<meta name="ag-build" content="caeefcc"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -39635,6 +39635,9 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
   const [filtroMes, setFiltroMes] = useState(_brNow().toISOString().slice(0, 7));
   const [budgetsState, setBudgetsState] = useState(function(){ try { return JSON.parse(localStorage.getItem("ag_budgets_v1") || "{}"); } catch(e) { return {}; } });
+  /* alimentar fluxo de caixa automaticamente com o extrato importado — desligado por padrão,
+     o usuário precisa ligar explicitamente pra evitar lançamentos duplicados/indesejados */
+  const [extratoAutoFeed, setExtratoAutoFeed] = useState(function(){ try { return localStorage.getItem("ag_extrato_autofeed_v1") === "1"; } catch(e) { return false; } });
   const [modalFat, setModalFat] = useState(null); // { tipo:"emitir"|"pagar", fat:{...}, dtInput:"" }
   const [filtroStatusFat, setFiltroStatusFat] = useState("todas");
   const [fatSheet, setFatSheet] = useState(null);
@@ -40894,7 +40897,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       function importHandler(e){
         var f = e.target.files && e.target.files[0]; if (!f) return;
         var rd = new FileReader();
-        rd.onload = function(ev){
+        rd.onload = async function(ev){
           try {
             var txt = ev.target.result || "";
             var lines = txt.split(/\r?\n/).filter(function(l){ return l.trim(); });
@@ -40906,8 +40909,56 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             var iVal = head.findIndex(function(h){ return /valor|amount|value/.test(h); });
             if (iData < 0 || iVal < 0) { toast("CSV sem colunas data/valor reconhecíveis", "error"); return; }
             var reg = lines.slice(1).map(function(l){ var c = l.split(sep); var v = parseFloat((c[iVal]||"0").replace(/["']/g,"").replace(/\./g,"").replace(",",".")); var dt = (c[iData]||"").replace(/["']/g,"").trim(); if (/^\d{2}\/\d{2}\/\d{4}$/.test(dt)) { var p = dt.split("/"); dt = p[2]+"-"+p[1]+"-"+p[0]; } return { data: dt, descricao: (c[iDesc]||"").replace(/["']/g,"").trim(), valor: v }; }).filter(function(x){ return x.data && !isNaN(x.valor); });
-            toast(reg.length + " lançamentos importados — reveja manualmente em Despesas/Receitas");
-            alert("Importação (pré-visualização):\n\n" + reg.slice(0,10).map(function(r){ return fmtDate(r.data) + " · " + r.descricao + " · " + fmtBRL(r.valor); }).join("\n") + (reg.length>10?"\n\n... e mais "+(reg.length-10):""));
+
+            if (!extratoAutoFeed) {
+              toast(reg.length + " lançamentos lidos — ative \"Alimentar fluxo de caixa\" pra lançar automaticamente");
+              alert("Importação (pré-visualização):\n\n" + reg.slice(0,10).map(function(r){ return fmtDate(r.data) + " · " + r.descricao + " · " + fmtBRL(r.valor); }).join("\n") + (reg.length>10?"\n\n... e mais "+(reg.length-10):""));
+              return;
+            }
+            if (reg.length === 0) { toast("Nenhum lançamento reconhecível no arquivo", "error"); return; }
+            if (!confirm("Lançar automaticamente " + reg.length + " movimentações do extrato como Receitas/Despesas avulsas?\n\nEntradas (valor ≥ 0) viram Receita · Saídas (valor < 0) viram Despesa.")) return;
+
+            var novasDesp = [], novasRec = [];
+            for (var i = 0; i < reg.length; i++) {
+              var r = reg[i];
+              if (r.valor < 0) {
+                var pd = {
+                  descricao: "[Extrato] " + (r.descricao || "Lançamento importado"),
+                  categoria: "Outros",
+                  valor: Math.abs(r.valor).toFixed(2),
+                  data: r.data,
+                  status: "pago",
+                  data_pagamento: r.data,
+                  observacoes: "Importado do extrato bancário (CSV)",
+                  recorrente: false,
+                  prazo_recorrencia: null,
+                  veiculo_id: null,
+                  manutencao_id: null,
+                  contrato_id: null,
+                  forma_pagamento: null
+                };
+                try { novasDesp.push(await db.post("despesas", pd)); } catch(ep) { console.warn("[importHandler] erro despesa:", ep); }
+              } else {
+                var pr = {
+                  descricao: "[Extrato] " + (r.descricao || "Lançamento importado"),
+                  categoria: "Outros",
+                  valor: r.valor.toFixed(2),
+                  data: r.data,
+                  status: "recebido",
+                  data_pagamento: r.data,
+                  observacoes: "Importado do extrato bancário (CSV)",
+                  recorrente: false,
+                  prazo_recorrencia: null,
+                  veiculo_id: null,
+                  contrato_id: null,
+                  forma_pagamento: "Pix"
+                };
+                try { novasRec.push(await db.post("receitas", pr)); } catch(er2) { console.warn("[importHandler] erro receita:", er2); }
+              }
+            }
+            if (novasDesp.length) setDespesas(function(p){ return novasDesp.concat(p); });
+            if (novasRec.length) setReceitas(function(p){ return novasRec.concat(p); });
+            toast((novasDesp.length + novasRec.length) + " lançamentos importados do extrato (" + novasRec.length + " receitas, " + novasDesp.length + " despesas)");
           } catch(er) { toast("Erro ao processar CSV", "error"); }
         };
         rd.readAsText(f);
@@ -41028,6 +41079,15 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         , React.createElement('div', { className: "lg-card", style: CARD }
           , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 8 } }, "Importar Extrato (CSV)")
           , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginBottom: 10 } }, "Formato aceito: colunas com data (YYYY-MM-DD ou DD/MM/AAAA), descrição e valor. Separador , ou ;")
+          , React.createElement('div', { onClick: function(){ var nv = !extratoAutoFeed; setExtratoAutoFeed(nv); localStorage.setItem("ag_extrato_autofeed_v1", nv ? "1" : "0"); }, style: { display: "flex", alignItems: "center", gap: 10, background: extratoAutoFeed ? C.green + "15" : C.border + "40", borderRadius: 12, padding: "12px 14px", cursor: "pointer", border: "1.5px solid " + (extratoAutoFeed ? C.green : C.border), marginBottom: 12 } }
+            , React.createElement('div', { style: { width: 22, height: 22, borderRadius: 6, background: extratoAutoFeed ? C.green : "#fff", border: "2px solid " + (extratoAutoFeed ? C.green : "#C7C7CC"), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }
+              , extratoAutoFeed && React.createElement('span', { style: { color: "#fff", fontSize: 14, fontWeight: 900 } }, "✓")
+            )
+            , React.createElement('div', null
+              , React.createElement('div', { style: { fontWeight: 700, fontSize: 14, color: extratoAutoFeed ? C.green : "var(--c-text)" } }, "Alimentar fluxo de caixa automaticamente")
+              , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, extratoAutoFeed ? "Ligado — cada linha do CSV vira Receita/Despesa avulsa ao importar" : "Desligado (padrão) — importar só mostra a prévia, sem lançar nada")
+            )
+          )
           , React.createElement('input', { type: "file", accept: ".csv,text/csv", onChange: importHandler, style: Object.assign({}, FI, { cursor: "pointer" }) })
         )
       );

@@ -48427,22 +48427,29 @@ function AssinarPublico({ contratoId, token }) {
   var [concluido, setConcluido] = useState(false);
   var [telaCheia, setTelaCheia] = useState(false);
 
+  /* A tela de assinatura abre SEM login (link por WhatsApp/e-mail), e a role
+     anon não tem mais acesso direto às tabelas (ver sql/02-seguranca.sql) —
+     por isso usa as funções RPC dedicadas (sql/03-assinatura-publica.sql),
+     que rodam como SECURITY DEFINER e só devolvem/gravam o contrato quando
+     o token do link bate. Um SELECT/PATCH direto aqui funcionava só para
+     quem já estivesse com sessão de usuário autenticado ativa no navegador
+     (mascarando o problema) e mostrava "Contrato não encontrado" pro
+     cliente, que nunca logou no app. */
+  var hdrsPub = { apikey: SB_KEY, Authorization: "Bearer " + SB_KEY, "Content-Type": "application/json" };
   useEffect(function() {
     (async function() {
       try {
-        var r = await fetch(SB_URL + "/rest/v1/contratos?id=eq." + contratoId + "&select=*", { headers: HDR });
-        var arr = await r.json();
-        var c = arr && arr[0];
+        var r = await fetch(SB_URL + "/rest/v1/rpc/contrato_assinatura_publica", {
+          method: "POST", headers: hdrsPub, body: JSON.stringify({ p_contrato_id: Number(contratoId), p_token: token })
+        });
+        var res = await r.json();
+        var c = res && res.contrato && res.contrato[0];
         if (!c) { setErro("Contrato não encontrado."); setCarregando(false); return; }
-        if (!c.token_assinatura || c.token_assinatura !== token) { setErro("Link inválido ou expirado."); setCarregando(false); return; }
         if (c.assinado_em) { setContrato(c); setConcluido(true); setCarregando(false); return; }
         setContrato(c);
-        var rc = await fetch(SB_URL + "/rest/v1/clientes?id=eq." + c.cliente_id + "&select=*", { headers: HDR });
-        var ac = await rc.json(); setCliente((ac && ac[0]) || {});
-        var rv = await fetch(SB_URL + "/rest/v1/veiculos?id=eq." + c.veiculo_id + "&select=*", { headers: HDR });
-        var av = await rv.json(); setVeiculo((av && av[0]) || {});
-        var re = await fetch(SB_URL + "/rest/v1/config?order=id.desc&limit=1", { headers: HDR });
-        var ae = await re.json(); setEmpresa((ae && ae[0]) || {});
+        setCliente((res.cliente && res.cliente[0]) || {});
+        setVeiculo((res.veiculo && res.veiculo[0]) || {});
+        setEmpresa((res.empresa && res.empresa[0]) || {});
         setCarregando(false);
       } catch(e) { setErro("Erro ao carregar: " + e.message); setCarregando(false); }
     })();
@@ -48455,12 +48462,14 @@ function AssinarPublico({ contratoId, token }) {
     if (temCondutor && !assinaturaMotorista) { alert("Falta a assinatura do motorista/condutor."); return; }
     setEnviando(true);
     try {
-      var payload = { assinatura_cliente: assinatura, assinado_em: new Date().toISOString(), token_assinatura: null };
-      if (temCondutor) { payload.assinatura_motorista = assinaturaMotorista; payload.assinado_motorista_em = new Date().toISOString(); }
-      var r = await fetch(SB_URL + "/rest/v1/contratos?id=eq." + contratoId + "&token_assinatura=eq." + token, {
-        method: "PATCH", headers: Object.assign({}, HDR, { Prefer: "return=representation" }), body: JSON.stringify(payload)
+      var r = await fetch(SB_URL + "/rest/v1/rpc/confirmar_assinatura_publica", {
+        method: "POST", headers: hdrsPub, body: JSON.stringify({
+          p_contrato_id: Number(contratoId), p_token: token,
+          p_assinatura_cliente: assinatura, p_assinatura_motorista: temCondutor ? assinaturaMotorista : null
+        })
       });
-      if (!r.ok) { setEnviando(false); alert("Falha ao enviar. Link pode ter expirado."); return; }
+      var ok = await r.json();
+      if (!r.ok || ok !== true) { setEnviando(false); alert("Falha ao enviar. Link pode ter expirado."); return; }
       setConcluido(true);
     } catch(e) { alert("Erro: " + e.message); setEnviando(false); }
   }

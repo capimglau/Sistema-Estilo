@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="eb2184d"/>
+<meta name="ag-build" content="381389b"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -46241,7 +46241,8 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   var diaSelAlerta = _sa[0], setDiaSelAlerta = _sa[1];
   var _pg = React.useState(0);
   var pagina = _pg[0], setPagina = _pg[1];
-  var scrollRef = React.useRef(null);
+  var _calTouchX = React.useRef(null);
+  var _calTouchY = React.useRef(null);
   var _op = React.useState(orcItensProp || []);
   var orcItens = orcItensProp != null ? orcItensProp : _op[0], setOrcItens = _op[1];
 
@@ -46257,16 +46258,22 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   function nextMes() { setMesBase(new Date(ano, mes + 1, 1)); setDiaSelFin(null); setDiaSelAlerta(null); }
   function irHoje()  { setMesBase(new Date(now.getFullYear(), now.getMonth(), 1)); setDiaSelFin(hoje); setDiaSelAlerta(null); irPagina(0); }
 
-  function irPagina(i) {
-    setPagina(i);
-    var el = scrollRef.current;
-    if (el) el.scrollTo({ left: i * el.clientWidth, behavior: "smooth" });
+  function irPagina(i) { setPagina(i); }
+  // Swipe manual (mesmo padrão usado no resto do app pra trocar de mês/página
+  // por arrasto): mais confiável no mobile do que depender de overflow-x nativo
+  // dentro de uma página que já rola verticalmente pelo documento inteiro.
+  function onCalTouchStart(e) {
+    _calTouchX.current = e.touches[0].clientX;
+    _calTouchY.current = e.touches[0].clientY;
   }
-  function onScrollCal(e) {
-    var el = e.currentTarget;
-    if (!el.clientWidth) return;
-    var idx = Math.round(el.scrollLeft / el.clientWidth);
-    if (idx !== pagina) setPagina(idx);
+  function onCalTouchEnd(e) {
+    if (_calTouchX.current === null) return;
+    var dx = _calTouchX.current - e.changedTouches[0].clientX;
+    var dy = Math.abs(_calTouchY.current - e.changedTouches[0].clientY);
+    _calTouchX.current = null; _calTouchY.current = null;
+    if (dy > 60) return; // gesto predominantemente vertical — ignora
+    if (dx > 40 && pagina === 0) irPagina(1);
+    else if (dx < -40 && pagina === 1) irPagina(0);
   }
 
   function fmtV(v) { var n=parseFloat(v||0); return "R$ "+n.toLocaleString("pt-BR",{minimumFractionDigits:2}); }
@@ -46740,7 +46747,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
       .sort()
       .map(function(d) { return { data: d, evs: opts.eventosPorDia[d] }; });
 
-    return React.createElement('div', { style: { flex: "0 0 100%", width: "100%", minWidth: "100%", boxSizing: "border-box", scrollSnapAlign: "start" } },
+    return React.createElement('div', { style: { width: "100%", boxSizing: "border-box" } },
 
       renderLegenda(opts.legenda),
 
@@ -46855,25 +46862,29 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
       )
     ),
 
-    // Carrossel: scroll/swipe horizontal alterna entre os dois calendários
-    React.createElement('div', {
-      ref: scrollRef, onScroll: onScrollCal,
-      style: { display: "flex", overflowX: "auto", scrollSnapType: "x mandatory", WebkitOverflowScrolling: "touch", scrollBehavior: "smooth" }
-    },
-      renderPagina({
-        eventosPorDia: eventosPorDiaFin, diaSel: diaSelFin, setDiaSel: setDiaSelFin,
-        alertaPorDia: eventosPorDiaAlerta, legenda: legendaFin,
-        agendaTitulo: "📌 Próximos 30 dias · Financeiro",
-        vazioTexto: "Nenhum evento financeiro neste dia ✅",
-        agendaVaziaTexto: "Nenhum vencimento financeiro nos próximos 30 dias ✅"
-      }),
-      renderPagina({
-        eventosPorDia: eventosPorDiaAlerta, diaSel: diaSelAlerta, setDiaSel: setDiaSelAlerta,
-        alertaPorDia: null, legenda: legendaAlerta,
-        agendaTitulo: "🔔 Próximos 30 dias · Alertas",
-        vazioTexto: "Nenhum alerta neste dia ✅",
-        agendaVaziaTexto: "Nenhum alerta nos próximos 30 dias ✅"
-      })
+    // Carrossel: swipe horizontal (arraste manual, igual ao usado em outros
+    // pontos do app pra trocar de mês) alterna entre os dois calendários
+    React.createElement('div', { style: { overflow: "hidden", touchAction: "pan-y" }, onTouchStart: onCalTouchStart, onTouchEnd: onCalTouchEnd },
+      React.createElement('div', { style: { display: "flex", width: "200%", transform: "translateX(" + (pagina === 0 ? "0%" : "-50%") + ")", transition: "transform 0.32s cubic-bezier(.4,0,.2,1)" } },
+        React.createElement('div', { style: { width: "50%", flexShrink: 0, boxSizing: "border-box", paddingRight: 2 } },
+          renderPagina({
+            eventosPorDia: eventosPorDiaFin, diaSel: diaSelFin, setDiaSel: setDiaSelFin,
+            alertaPorDia: eventosPorDiaAlerta, legenda: legendaFin,
+            agendaTitulo: "📌 Próximos 30 dias · Financeiro",
+            vazioTexto: "Nenhum evento financeiro neste dia ✅",
+            agendaVaziaTexto: "Nenhum vencimento financeiro nos próximos 30 dias ✅"
+          })
+        ),
+        React.createElement('div', { style: { width: "50%", flexShrink: 0, boxSizing: "border-box", paddingLeft: 2 } },
+          renderPagina({
+            eventosPorDia: eventosPorDiaAlerta, diaSel: diaSelAlerta, setDiaSel: setDiaSelAlerta,
+            alertaPorDia: null, legenda: legendaAlerta,
+            agendaTitulo: "🔔 Próximos 30 dias · Alertas",
+            vazioTexto: "Nenhum alerta neste dia ✅",
+            agendaVaziaTexto: "Nenhum alerta nos próximos 30 dias ✅"
+          })
+        )
+      )
     )
   );
 }

@@ -50919,6 +50919,21 @@ function App() {
     var coldTimer = setTimeout(function(){ setBancoAcordando(true); }, 3000);
     var coldDone = false;
     function marcarAcordado() { if (!coldDone) { coldDone = true; clearTimeout(coldTimer); setBancoAcordando(false); } }
+    // Mesma proteção contra cold start que carregarFrotaEContratos já tinha só para
+    // contratos: se vier vazio, banco pode só ter respondido "acordando" — sem isto
+    // despesas/receitas/contas ficavam presas em [] (R$0,00/"Nenhum dado no mês")
+    // até um F5 manual, mesmo com o banco já de pé.
+    function _agGetAllResiliente(nome, opts, tentativasRestantes) {
+      var t = tentativasRestantes == null ? 2 : tentativasRestantes;
+      return db.getAll(nome, opts).then(function(d) {
+        if ((!d || d.length === 0) && t > 0) {
+          return new Promise(function(resolve) {
+            setTimeout(function(){ resolve(_agGetAllResiliente(nome, opts, t - 1)); }, 4000);
+          });
+        }
+        return d || [];
+      });
+    }
     // Deleta contratos duplicados de renovação automática DIRETO no banco (sem carregar na memória).
     // Vai por fetch cru, fora do db.del — então a checagem de permissão precisa
     // ser explícita aqui: é um DELETE em massa, e sem isto um perfil somente
@@ -51020,9 +51035,9 @@ function App() {
     db.get("reservas").then(d => setReservas(d || []));
     db.getAll("multas").then(d => setMultas(d || []));
     db.getAll("manutencao").then(d => setManutencoes(d || []));
-    db.getAll("despesas").then(d => setDespesas(d || []));
-    db.getAll("receitas").then(d => setReceitas(d || []));
-    db.getAll("contas").then(d => setContas(d || []));
+    _agGetAllResiliente("despesas").then(d => setDespesas(d || []));
+    _agGetAllResiliente("receitas").then(d => setReceitas(d || []));
+    _agGetAllResiliente("contas").then(d => setContas(d || []));
     db.getAll("usos").then(d => setUsos(d || []));
     db.get("config", "limit=1").then(d => { if (d && d[0]) { setEmpresa(d[0]); preloadLogoEmbed(d[0].logo_url); } });
   }, [refreshTick]);

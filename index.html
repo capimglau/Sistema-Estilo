@@ -25850,6 +25850,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
   const [chartDaySheet, setChartDaySheet] = React.useState(null);
   const [chartDaySheetMes, setChartDaySheetMes] = React.useState(null);
   const [chartDaySheetMode, setChartDaySheetMode] = React.useState(null);
+  const [alertaDaySheet, setAlertaDaySheet] = React.useState(null);
   const [showSimulacao, setShowSimulacao] = React.useState(false);
   const [catFiltro, setCatFiltro] = React.useState("previstas");
   const [_homeVH, _setHomeVH] = React.useState(window.innerHeight);
@@ -26794,6 +26795,101 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       });
       var _despDays = Object.keys(_despChartMap).map(Number).sort(function(a,b){return a-b;});
 
+      /* ── Alertas do mini calendário (página "Alertas", swipe/botão) ──
+         Renovação de contrato, multas, documentos de veículo, CNH e manutenção com
+         prazo vencido. Só entra como alerta o que realmente ainda precisa de ação:
+         um contrato que já tem sucessor (já foi renovado) não conta mais como
+         pendente, mesmo que o pagamento daquele período já tenha sido recebido —
+         status financeiro e status de renovação são coisas diferentes, e misturar
+         os dois é o que fazia dias já recebidos piscarem como se fossem alerta. */
+      function _fmtDc(d){ if(!d) return "--"; var p=d.split("-"); return p[2]+"/"+p[1]; }
+      var _ctTemSucessor = {};
+      (contratos||[]).forEach(function(c){ if (c.renovado_para) _ctTemSucessor[String(c.renovado_para)] = true; });
+      var _alertasDoMes = {}; /* {day: {count, vencido, items:[{emoji,titulo,sub,cor,onClick}]}} */
+      function _alertaAdd(_dia,_venc,_item){
+        if (!_dia || _dia.slice(0,7)!==dashMes) return;
+        var _day = parseInt(_dia.slice(8,10),10);
+        if (!_alertasDoMes[_day]) _alertasDoMes[_day] = {count:0,vencido:false,items:[]};
+        _alertasDoMes[_day].count++;
+        if (_venc) _alertasDoMes[_day].vencido = true;
+        _alertasDoMes[_day].items.push(_item);
+      }
+      (contratos||[]).forEach(function(c){
+        if (!c.data_fim || c.status==="cancelado" || _ctTemSucessor[String(c.id)]) return;
+        var cl=(clientes||[]).find(function(x){return x.id==c.cliente_id;});
+        var ve=(veiculos||[]).find(function(x){return x.id==c.veiculo_id;});
+        var _venc=c.data_fim<hoje;
+        _alertaAdd(c.data_fim, _venc, {
+          emoji:"📋", cor:_venc?C.red:C.blue,
+          titulo:"Contrato "+((cl&&cl.nome)||"#"+c.id)+" — "+(_venc?"venceu, aguardando renovação":(c.data_fim===hoje?"vence hoje, precisa renovar":"vence em breve, ainda sem renovação")),
+          sub:(ve&&ve.placa||"--")+" "+(ve&&ve.modelo||"")+" · fim de vigência "+_fmtDc(c.data_fim),
+          onClick:function(){ onItemNav({type:"contrato",id:c.id},"contratos"); setAlertaDaySheet(null); }
+        });
+      });
+      (multas||[]).forEach(function(m){
+        if (!m.vencimento || m.status==="pago") return;
+        var ve=(veiculos||[]).find(function(x){return x.id==m.veiculo_id;});
+        var cl=(clientes||[]).find(function(x){return x.id==m.cliente_id;});
+        var _venc=m.vencimento<hoje;
+        _alertaAdd(m.vencimento, _venc, {
+          emoji:"⚠️", cor:_venc?C.red:C.orange,
+          titulo:(m.tipo||"Multa")+(m.ait?" · AIT "+m.ait:"")+" — "+(ve&&ve.placa||"--"),
+          sub:(cl&&cl.nome?cl.nome+" · ":"")+"vencimento "+_fmtDc(m.vencimento)+(_venc?" (vencida)":""),
+          onClick:function(){ onItemNav({type:"multa",id:m.id},"multas"); setAlertaDaySheet(null); }
+        });
+      });
+      (multas||[]).forEach(function(m){
+        if (m.status==="cancelada"||m.status==="cancelado") return;
+        if ((m.status_notificacao||"nao_notificado")==="notificado") return;
+        var prazo=m.prazo_notificacao_orgao||m.vencimento||"";
+        if (!prazo) return;
+        var ve=(veiculos||[]).find(function(x){return x.id==m.veiculo_id;});
+        var _venc=prazo<hoje;
+        _alertaAdd(prazo, _venc, {
+          emoji:"🏛️", cor:_venc?C.red:C.orange,
+          titulo:"Indicar condutor — "+(m.tipo||"Multa")+" · "+(ve&&ve.placa||"--"),
+          sub:"Prazo pro órgão "+_fmtDc(prazo)+(_venc?" (vencido)":""),
+          onClick:function(){ onItemNav({type:"multa",id:m.id},"multas"); setAlertaDaySheet(null); }
+        });
+      });
+      (veiculos||[]).forEach(function(v){
+        [
+          {campo:v.venc_ipva,emoji:"📄",nome:"IPVA"},
+          {campo:v.venc_seguro,emoji:"🛡️",nome:"Seguro"},
+          {campo:v.venc_licenciamento,emoji:"🪪",nome:"Licenciamento"},
+          {campo:v.venc_revisao,emoji:"🔧",nome:"Revisão"}
+        ].forEach(function(d){
+          if (!d.campo) return;
+          var _venc=d.campo<hoje;
+          _alertaAdd(d.campo, _venc, {
+            emoji:d.emoji, cor:_venc?C.red:C.orange,
+            titulo:d.nome+" — "+(v.placa||"--"),
+            sub:(v.marca||"")+" "+(v.modelo||"")+" · vencimento "+_fmtDc(d.campo)+(_venc?" (vencido)":""),
+            onClick:function(){ onItemNav({type:"veiculo",id:v.id},"frota"); setAlertaDaySheet(null); }
+          });
+        });
+      });
+      (clientes||[]).forEach(function(cl){
+        if (!cl.vencimento_cnh) return;
+        var _venc=cl.vencimento_cnh<hoje;
+        _alertaAdd(cl.vencimento_cnh, _venc, {
+          emoji:"🪪", cor:_venc?C.red:C.orange,
+          titulo:"CNH — "+(cl.nome||"--"),
+          sub:"Cat. "+(cl.categoria_cnh||"--")+" · vencimento "+_fmtDc(cl.vencimento_cnh)+(_venc?" (vencida)":""),
+          onClick:function(){ onItemNav({type:"cliente",id:cl.id},"clientes"); setAlertaDaySheet(null); }
+        });
+      });
+      (manutencoes||[]).forEach(function(m){
+        if (m.status!=="em_andamento" || !m.data_saida || m.data_saida>=hoje) return;
+        var ve=(veiculos||[]).find(function(x){return x.id==m.veiculo_id;});
+        _alertaAdd(m.data_saida, true, {
+          emoji:"🔧", cor:C.red,
+          titulo:"Manutenção com prazo vencido — "+(ve&&ve.placa||"--"),
+          sub:(m.tipo||"Manutenção")+" · previsão de saída era "+_fmtDc(m.data_saida),
+          onClick:function(){ onItemNav({type:"manutencao",id:m.id},"manutencao"); setAlertaDaySheet(null); }
+        });
+      });
+
       return React.createElement(React.Fragment, null
         , React.createElement('div', { className:"ag-dash-charts", style:{ display:"flex", flexDirection:"column", gap:14 } }
         /* ── PAINEL UNIFICADO (layout "Creme Puro") ── */
@@ -27149,21 +27245,11 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                     };
                   }
                   /* Página "Alertas" do mini calendário (swipe, sem botão): renovações/vencimento
-                     de contrato, multas, documentos de veículo (IPVA/seguro/licenciamento/revisão)
-                     e CNH, manutenção com prazo vencido — tudo que não é entrada/saída de caixa. */
-                  var _m4ValsAlerta={};
-                  function _m4AddAlerta(_dia,_venc){
-                    if (!_dia || _dia.slice(0,7)!==dashMes) return;
-                    var _day=parseInt(_dia.slice(8,10),10);
-                    if (!_m4ValsAlerta[_day]) _m4ValsAlerta[_day]={count:0,vencido:false};
-                    _m4ValsAlerta[_day].count++;
-                    if (_venc) _m4ValsAlerta[_day].vencido=true;
-                  }
-                  (contratos||[]).forEach(function(c){ if (c.data_fim && c.status!=="cancelado") _m4AddAlerta(c.data_fim, c.data_fim<hoje); });
-                  (multas||[]).forEach(function(m){ if (m.vencimento && m.status!=="pago") _m4AddAlerta(m.vencimento, m.vencimento<hoje); });
-                  (veiculos||[]).forEach(function(v){ [v.venc_ipva,v.venc_seguro,v.venc_licenciamento,v.venc_revisao].forEach(function(d){ if (d) _m4AddAlerta(d, d<hoje); }); });
-                  (clientes||[]).forEach(function(cl){ if (cl.vencimento_cnh) _m4AddAlerta(cl.vencimento_cnh, cl.vencimento_cnh<hoje); });
-                  (manutencoes||[]).forEach(function(m){ if (m.status==="em_andamento" && m.data_saida && m.data_saida<hoje) _m4AddAlerta(m.data_saida, true); });
+                     de contrato, multas, documentos de veículo e CNH, manutenção com prazo vencido —
+                     tudo que não é entrada/saída de caixa. Os dados (contagem, se está vencido, e a
+                     lista detalhada de cada item) vêm de _alertasDoMes, construído uma vez lá em
+                     cima pra alimentar tanto a grade quanto o sheet de detalhe do dia. */
+                  var _m4ValsAlerta = _alertasDoMes;
                   /* linhas de semana ÚTIL (seg–sex, 5 dias + coluna de subtotal) — sábado/domingo
                      ficam de fora do grid (não geram coluna nem célula), então as 5 colunas úteis
                      ganham mais espaço/largura cada uma. Junta dias reais + folgas iniciais/finais. */
@@ -27327,17 +27413,17 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                         , React.createElement('span',{key:"d",style:{fontSize:12,fontWeight:600,color:C.sub,opacity:0.55}},_d4)
                       );
                     }
+                    /* pulsa só quando é algo realmente vencido (não pela data ser "hoje" sozinha) —
+                       um dia sem nada em atraso não deve piscar, mesmo que seja hoje. */
                     var _corA=_a4.vencido?C.red:C.orange;
-                    var _bg4=_isHoje||_a4.vencido
-                      ? "color-mix(in srgb, "+_corA+" 26%, var(--c-card))"
-                      : "color-mix(in srgb, "+_corA+" 14%, var(--c-card))";
-                    var _pulseA=(_isHoje||_a4.vencido)?_corA:null;
+                    var _bg4="color-mix(in srgb, "+_corA+" "+(_a4.vencido?26:14)+"%, var(--c-card))";
+                    var _pulseA=_a4.vencido?_corA:null;
                     return _m4Box(_key,_isHoje?C.blue:C.border,_bg4
                       , [
                           React.createElement('span',{key:"d",style:{position:"absolute",top:2,left:3,fontSize:8.5,fontWeight:600,color:C.sub,opacity:0.65,zIndex:1}},_d4)
-                          , React.createElement('span',{key:"n",style:{display:"flex",alignItems:"center",gap:2,fontSize:13,fontWeight:800,color:_corA,lineHeight:1.2}}, "🔔 "+_a4.count)
+                          , React.createElement('span',{key:"n",style:{fontSize:14,fontWeight:800,color:_corA,lineHeight:1.2}}, _a4.count)
                         ]
-                      , function(){ setChartDaySheetMode(null); setChartDaySheetMes(dashMes); setChartDaySheet(_d4); }
+                      , function(){ setAlertaDaySheet(_d4); }
                       , _pulseA
                     );
                   }
@@ -28164,6 +28250,27 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                   )
                   , _vazio && React.createElement('div', { style:{padding:"24px 16px",textAlign:"center",color:C.sub,fontSize:14} }
                     , "Nenhum lan\xe7amento neste dia")
+                );
+              })()
+          )
+        , alertaDaySheet !== null && React.createElement(Modal, { wide:true, open:true, onClose:function(){setAlertaDaySheet(null);}, title:"🔔 Alertas · Dia "+alertaDaySheet+" \xb7 "+new Date(dashMes+"-15").toLocaleString("pt-BR",{month:"long",year:"numeric"}) }
+            , (function(){
+                var _al = _alertasDoMes[alertaDaySheet];
+                var _items = (_al && _al.items) || [];
+                if (!_items.length) return React.createElement('div', { style:{padding:"24px 16px",textAlign:"center",color:C.sub,fontSize:14} }, "Nenhum alerta neste dia ✅");
+                return React.createElement('div', { style:{paddingBottom:8} }
+                  , _items.map(function(it,i){
+                      return React.createElement('div', {
+                        key:i, onClick:it.onClick,
+                        style:{display:"flex",gap:12,alignItems:"flex-start",padding:"12px 16px",borderTop:i>0?"1px solid "+C.border:"none",cursor:it.onClick?"pointer":"default"}
+                      }
+                        , React.createElement('div', {style:{fontSize:20,flexShrink:0,lineHeight:1.35}}, it.emoji)
+                        , React.createElement('div', {style:{flex:1,minWidth:0}}
+                          , React.createElement('div', {style:{fontSize:14,fontWeight:700,color:it.cor||"var(--c-text)"}}, it.titulo)
+                          , it.sub && React.createElement('div', {style:{fontSize:12,color:C.sub,marginTop:2}}, it.sub)
+                        )
+                      );
+                    })
                 );
               })()
           )

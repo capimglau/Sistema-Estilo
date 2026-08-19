@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="4c4418e"/>
+<meta name="ag-build" content="eb2184d"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -46236,7 +46236,12 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   var _m = React.useState(new Date(now.getFullYear(), now.getMonth(), 1));
   var mesBase = _m[0], setMesBase = _m[1];
   var _s = React.useState(hoje);
-  var diaSel = _s[0], setDiaSel = _s[1];
+  var diaSelFin = _s[0], setDiaSelFin = _s[1];
+  var _sa = React.useState(null);
+  var diaSelAlerta = _sa[0], setDiaSelAlerta = _sa[1];
+  var _pg = React.useState(0);
+  var pagina = _pg[0], setPagina = _pg[1];
+  var scrollRef = React.useRef(null);
   var _op = React.useState(orcItensProp || []);
   var orcItens = orcItensProp != null ? orcItensProp : _op[0], setOrcItens = _op[1];
 
@@ -46248,9 +46253,21 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   var ano = mesBase.getFullYear();
   var mes = mesBase.getMonth();
 
-  function prevMes() { setMesBase(new Date(ano, mes - 1, 1)); setDiaSel(null); }
-  function nextMes() { setMesBase(new Date(ano, mes + 1, 1)); setDiaSel(null); }
-  function irHoje()  { setMesBase(new Date(now.getFullYear(), now.getMonth(), 1)); setDiaSel(hoje); }
+  function prevMes() { setMesBase(new Date(ano, mes - 1, 1)); setDiaSelFin(null); setDiaSelAlerta(null); }
+  function nextMes() { setMesBase(new Date(ano, mes + 1, 1)); setDiaSelFin(null); setDiaSelAlerta(null); }
+  function irHoje()  { setMesBase(new Date(now.getFullYear(), now.getMonth(), 1)); setDiaSelFin(hoje); setDiaSelAlerta(null); irPagina(0); }
+
+  function irPagina(i) {
+    setPagina(i);
+    var el = scrollRef.current;
+    if (el) el.scrollTo({ left: i * el.clientWidth, behavior: "smooth" });
+  }
+  function onScrollCal(e) {
+    var el = e.currentTarget;
+    if (!el.clientWidth) return;
+    var idx = Math.round(el.scrollLeft / el.clientWidth);
+    if (idx !== pagina) setPagina(idx);
+  }
 
   function fmtV(v) { var n=parseFloat(v||0); return "R$ "+n.toLocaleString("pt-BR",{minimumFractionDigits:2}); }
   function fmtD(d) { if (!d) return "--"; var p=d.split("-"); return p[2]+"/"+p[1]+"/"+p[0]; }
@@ -46284,15 +46301,17 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     return "nº " + numCt(cur.id) + "/" + (depth + 1);
   }
 
-  // Monta lista de todos os eventos
-  var eventos = [];
+  // Duas listas de eventos: "Financeiro" (fluxo de caixa/pagamentos/recebimentos)
+  // e "Alertas" (renovações, vencimentos administrativos, multas, documentos).
+  var eventosFin = [];
+  var eventosAlerta = [];
 
-  // CONTRATOS — vencimento do período
+  // CONTRATOS — vencimento do período (ALERTA: fim de vigência/renovação)
   (contratos || []).forEach(function(c) {
     if (!c.data_fim || c.status === "cancelado") return;
     var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;});
     var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;});
-    eventos.push({
+    eventosAlerta.push({
       data: c.data_fim, tipo: "contrato",
       cor: c.data_fim < hoje ? "#FF3B30" : "#007AFF",
       emoji: "📋",
@@ -46313,7 +46332,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     var dtEmissaoStr = dtEmissao.toISOString().split("T")[0];
     var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;});
     var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;});
-    eventos.push({
+    eventosFin.push({
       data: dtEmissaoStr, tipo: "emissao",
       cor: "#5856D6",
       emoji: "📤",
@@ -46328,7 +46347,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     if (!c.previsao_pagamento || c.status_pagamento === "pago" || c.status_pagamento === "isento") return;
     var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;});
     var ve = (veiculos||[]).find(function(x){return x.id==c.veiculo_id;});
-    eventos.push({
+    eventosFin.push({
       data: c.previsao_pagamento, tipo: "pagamento",
       cor: c.previsao_pagamento < hoje ? "#FF3B30" : "#FF9500",
       emoji: "💰",
@@ -46338,14 +46357,14 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     });
   });
 
-  // CONTRATOS — renovação incompleta (pai concluído aponta para filho que não existe mais)
+  // CONTRATOS — renovação incompleta (pai concluído aponta para filho que não existe mais) — ALERTA
   var idsContratosCal = new Set((contratos||[]).map(function(c){ return String(c.id); }));
   var _hoje14strCal = _addDiasISO(hoje, -14);
   (contratos || []).forEach(function(c) {
     if (c.status !== "concluido" || !c.renovado_para || idsContratosCal.has(String(c.renovado_para))) return;
     if (!c.data_fim || c.data_fim < _hoje14strCal) return;
     var cl = (clientes||[]).find(function(x){return x.id==c.cliente_id;});
-    eventos.push({
+    eventosAlerta.push({
       data: c.data_fim, tipo: "renovacao_orfa",
       cor: "#FF3B30",
       emoji: "⚠️",
@@ -46355,12 +46374,12 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     });
   });
 
-  // MULTAS — vencimento
+  // MULTAS — vencimento (ALERTA)
   (multas || []).forEach(function(m) {
     if (!m.vencimento || m.status === "pago") return;
     var ve = (veiculos||[]).find(function(x){return x.id==m.veiculo_id;});
     var cl = (clientes||[]).find(function(x){return x.id==m.cliente_id;});
-    eventos.push({
+    eventosAlerta.push({
       data: m.vencimento, tipo: "multa",
       cor: m.vencimento < hoje ? "#FF3B30" : "#FF9500",
       emoji: "⚠️",
@@ -46370,7 +46389,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     });
   });
 
-  // MULTAS — prazo de indicação de condutor ao órgão
+  // MULTAS — prazo de indicação de condutor ao órgão (ALERTA)
   (multas || []).forEach(function(m) {
     if (m.status === "cancelada" || m.status === "cancelado") return;
     if ((m.status_notificacao||"nao_notificado") === "notificado") return;
@@ -46378,7 +46397,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     if (!prazo) return;
     var ve = (veiculos||[]).find(function(x){return x.id==m.veiculo_id;});
     var cl = (clientes||[]).find(function(x){return x.id==m.cliente_id;});
-    eventos.push({
+    eventosAlerta.push({
       data: prazo, tipo: "multa_notif",
       cor: prazo < hoje ? "#FF3B30" : "#FF9500",
       emoji: "🏛️",
@@ -46388,7 +46407,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     });
   });
 
-  // VEÍCULOS — documentos
+  // VEÍCULOS — documentos (ALERTA)
   (veiculos || []).forEach(function(v) {
     [
       { campo: v.venc_ipva,          emoji: "📄", nome: "IPVA",          cor: "#AF52DE" },
@@ -46397,7 +46416,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
       { campo: v.venc_revisao,       emoji: "🔧", nome: "Revisão",        cor: "#FF9500" }
     ].forEach(function(d) {
       if (!d.campo) return;
-      eventos.push({
+      eventosAlerta.push({
         data: d.campo, tipo: "veiculo",
         cor: d.campo < hoje ? "#FF3B30" : d.cor,
         emoji: d.emoji,
@@ -46408,10 +46427,10 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     });
   });
 
-  // CNH — clientes
+  // CNH — clientes (ALERTA)
   (clientes || []).forEach(function(cl) {
     if (!cl.vencimento_cnh) return;
-    eventos.push({
+    eventosAlerta.push({
       data: cl.vencimento_cnh, tipo: "cnh",
       cor: cl.vencimento_cnh < hoje ? "#FF3B30" : "#FF9500",
       emoji: "🪪",
@@ -46428,7 +46447,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     if (c.status === "pago" || c.status === "cancelado" || c.status === "recebido" || c.data_pagamento) return;
     var isRec = c.tipo === "receber";
     var atrasada = c.vencimento < hoje;
-    eventos.push({
+    eventosFin.push({
       data: c.vencimento, tipo: "conta",
       cor: atrasada ? "#FF3B30" : (isRec ? "#34C759" : "#FF9500"),
       emoji: isRec ? "📥" : "📤",
@@ -46459,7 +46478,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
       if (despesasJaAdicionadas.has(chave)) return;
       despesasJaAdicionadas.add(chave);
       var atrasada = d.data < hoje;
-      eventos.push({
+      eventosFin.push({
         data: d.data, tipo: "despesa",
         cor: atrasada ? "#FF3B30" : "#FF9500",
         emoji: "📤",
@@ -46477,7 +46496,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     if (despesasJaAdicionadas.has("man_"+d.id)) return;
     despesasJaAdicionadas.add("man_"+d.id);
     var atrasada = d.data < hoje;
-    eventos.push({
+    eventosFin.push({
       data: d.data, tipo: "manutencao",
       cor: atrasada ? "#FF3B30" : "#FF9500",
       emoji: "🔧",
@@ -46487,10 +46506,10 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     });
   });
 
-  // MANUTENÇÕES — prazo (saída) vencido, veículo ainda em oficina
+  // MANUTENÇÕES — prazo (saída) vencido, veículo ainda em oficina (ALERTA)
   (manutencoes||[]).filter(function(m){ return m.status === "em_andamento" && m.data_saida && m.data_saida < hoje; }).forEach(function(m) {
     var ve = (veiculos||[]).find(function(v){ return v.id == m.veiculo_id; });
-    eventos.push({
+    eventosAlerta.push({
       data: m.data_saida, tipo: "manutencao_prazo",
       cor: "#AF52DE",
       emoji: "🔧",
@@ -46509,7 +46528,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   }).forEach(function(m) {
     var ve = (veiculos||[]).find(function(v){ return v.id == m.veiculo_id; });
     var dt = m.data_previsao_pagamento || m.data_entrada;
-    eventos.push({
+    eventosFin.push({
       data: dt, tipo: "manutencao",
       cor: "#FF9500",
       emoji: "🔧",
@@ -46523,7 +46542,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   (receitas || []).forEach(function(r) {
     if (!r.data) return;
     if (r.ref_fatura) return; // evita duplicidade com "Pgto Contrato"
-    eventos.push({
+    eventosFin.push({
       data: r.data, tipo: "receita",
       cor: "#34C759",
       emoji: "📥",
@@ -46537,7 +46556,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   (reservas || []).forEach(function(rs) {
     if (!rs.data_retirada || rs.status === "cancelada") return;
     var ve = (veiculos||[]).find(function(x){ return x.id==rs.veiculo_id; });
-    eventos.push({
+    eventosFin.push({
       data: rs.data_retirada, tipo: "reserva",
       cor: rs.status === "confirmada" ? "#30C768" : "#FF9500",
       emoji: "📅",
@@ -46555,7 +46574,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     var dataChegada = _recebidasEm[String(rs.id)];
     if (!dataChegada) return;
     var ve = (veiculos||[]).find(function(x){ return x.id==rs.veiculo_id; });
-    eventos.push({
+    eventosFin.push({
       data: dataChegada, tipo: "reserva_recebida",
       cor: "#5AC8FA",
       emoji: "📩",
@@ -46572,7 +46591,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     if (it.status === "pago" || it.status === "recebido" || it.data_pagamento) return;
     var isDespesa = it.tipo === "despesa" || !it.tipo;
     var atrasada = data < hoje;
-    eventos.push({
+    eventosFin.push({
       data: data, tipo: "orcamento",
       cor: isDespesa ? (atrasada ? "#FF3B30" : "#FF9500") : "#34C759",
       emoji: isDespesa ? "🏠" : "💵",
@@ -46582,11 +46601,16 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     });
   });
 
-  // Indexa por data
-  var eventosPorDia = {};
-  eventos.forEach(function(ev) {
-    if (!eventosPorDia[ev.data]) eventosPorDia[ev.data] = [];
-    eventosPorDia[ev.data].push(ev);
+  // Indexa por data — uma para cada calendário
+  var eventosPorDiaFin = {};
+  eventosFin.forEach(function(ev) {
+    if (!eventosPorDiaFin[ev.data]) eventosPorDiaFin[ev.data] = [];
+    eventosPorDiaFin[ev.data].push(ev);
+  });
+  var eventosPorDiaAlerta = {};
+  eventosAlerta.forEach(function(ev) {
+    if (!eventosPorDiaAlerta[ev.data]) eventosPorDiaAlerta[ev.data] = [];
+    eventosPorDiaAlerta[ev.data].push(ev);
   });
 
   function exportarICS() {
@@ -46616,7 +46640,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
         sub: (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + " · venc. " + fmtD(c.previsao_pagamento)
       });
     });
-    var todosEventos = eventos.filter(function(ev){ return ev.tipo !== "emissao"; }).concat(eventosEmissao);
+    var todosEventos = eventosFin.concat(eventosAlerta).filter(function(ev){ return ev.tipo !== "emissao"; }).concat(eventosEmissao);
     todosEventos.forEach(function(ev, i) {
       if (!ev.data) return;
       var d = ev.data.replace(/-/g, "");
@@ -46657,21 +46681,151 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   var mesesNomes = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
   var diasSemana = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
 
-  var evsDia = diaSel ? (eventosPorDia[diaSel] || []) : [];
-
-  // Agenda próximos 30 dias
+  // Agenda próximos 30 dias (usada por cada página, filtrando seu próprio mapa)
   var hoje30 = new Date(_brNowMs() + 30 * 86400000).toISOString().split("T")[0];
-  var agenda = Object.keys(eventosPorDia)
-    .filter(function(d) { return d >= hoje && d <= hoje30; })
-    .sort()
-    .map(function(d) { return { data: d, evs: eventosPorDia[d] }; });
 
   var CARD = { borderRadius: 20, background: C.card, backdropFilter: "blur(40px) saturate(2.0)", WebkitBackdropFilter: "blur(40px) saturate(2.0)", border: "0.5px solid " + C.border, boxShadow: "0 2px 0 rgba(255,255,255,0.80) inset, 0 8px 24px rgba(100,120,200,0.10)", padding: 18, marginBottom: 16 };
+
+  // Quantidade de dias do mês corrente com alertas pendentes — usado no badge da aba "Alertas"
+  var diasComAlertaNoMes = Object.keys(eventosPorDiaAlerta).filter(function(d) {
+    return d.slice(0,4) == ano && parseInt(d.slice(5,7),10) - 1 === mes;
+  }).length;
+
+  function renderLegenda(items) {
+    return React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 } },
+      items.map(function(l) {
+        return React.createElement('div', { key: l.label, style: { display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--c-text)" } },
+          React.createElement('div', { style: { width: 8, height: 8, borderRadius: "50%", background: l.cor, flexShrink: 0 } }),
+          l.label
+        );
+      })
+    );
+  }
+
+  function renderGrade(eventosPorDiaX, diaSelX, setDiaSelX, alertaPorDiaX) {
+    return React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", padding: "0 8px 12px", gap: 2 } },
+      Array.from({ length: primeiroDia }).map(function(_, i) { return React.createElement('div', { key: "e"+i }); }),
+      Array.from({ length: diasNoMes }).map(function(_, i) {
+        var d = i + 1;
+        var dStr = ano + "-" + String(mes+1).padStart(2,"0") + "-" + String(d).padStart(2,"0");
+        var evs = eventosPorDiaX[dStr] || [];
+        var isHoje = dStr === hoje;
+        var isSel = dStr === diaSelX;
+        var temAlerta = !!(alertaPorDiaX && alertaPorDiaX[dStr] && alertaPorDiaX[dStr].length > 0);
+        var cores = [];
+        evs.forEach(function(e) { if (cores.indexOf(e.cor) === -1) cores.push(e.cor); });
+        return React.createElement('div', {
+          key: dStr, onClick: function() { setDiaSelX(isSel ? null : dStr); },
+          className: temAlerta && !isSel ? "ag-urgent" : "",
+          title: temAlerta ? "Há alertas neste dia (renovações, multas, vencimentos) — veja no calendário de Alertas" : "",
+          style: { position: "relative", borderRadius: 10, padding: "5px 2px 4px", cursor: "pointer", background: isSel ? "#007AFF" : isHoje ? "rgba(0,122,255,0.10)" : "transparent", border: temAlerta && !isSel ? "1.5px solid rgba(255,59,48,0.55)" : (isHoje && !isSel ? "1.5px solid rgba(0,122,255,0.30)" : "1.5px solid transparent"), display: "flex", flexDirection: "column", alignItems: "center", gap: 3, minHeight: 48 }
+        },
+          temAlerta && React.createElement('span', { style: { position: "absolute", top: 1, right: 2, fontSize: 8, lineHeight: 1 } }, "🔔"),
+          React.createElement('span', { style: { fontSize: 13, fontWeight: isHoje || isSel ? 700 : 400, color: isSel ? "#fff" : isHoje ? "#007AFF" : "var(--c-text)" } }, d),
+          evs.length > 0 && React.createElement('div', { style: { display: "flex", gap: 2, flexWrap: "wrap", justifyContent: "center" } },
+            cores.slice(0,4).map(function(cor, ci) {
+              return React.createElement('div', { key: ci, style: { width: 5, height: 5, borderRadius: "50%", background: isSel ? "rgba(255,255,255,0.85)" : cor } });
+            }),
+            evs.length > 4 && React.createElement('span', { style: { fontSize: 9, color: isSel ? "rgba(255,255,255,0.7)" : "#8E8E93" } }, "+" + (evs.length - 4))
+          )
+        );
+      })
+    );
+  }
+
+  function renderPagina(opts) {
+    var evsDiaX = opts.diaSel ? (opts.eventosPorDia[opts.diaSel] || []) : [];
+    var agendaX = Object.keys(opts.eventosPorDia)
+      .filter(function(d) { return d >= hoje && d <= hoje30; })
+      .sort()
+      .map(function(d) { return { data: d, evs: opts.eventosPorDia[d] }; });
+
+    return React.createElement('div', { style: { flex: "0 0 100%", width: "100%", minWidth: "100%", boxSizing: "border-box", scrollSnapAlign: "start" } },
+
+      renderLegenda(opts.legenda),
+
+      // Grade calendário
+      React.createElement('div', { style: Object.assign({}, CARD, { padding: 0, overflow: "hidden" }) },
+        React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: "0.5px solid rgba(0,0,0,0.06)" } },
+          React.createElement('button', { onClick: prevMes, style: { border: "none", background: C.border, borderRadius: 8, width: 32, height: 32, cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--c-text)" } }, "‹"),
+          React.createElement('span', { style: { fontWeight: 700, fontSize: 16, color: "var(--c-text)" } }, mesesNomes[mes] + " " + ano),
+          React.createElement('button', { onClick: nextMes, style: { border: "none", background: C.border, borderRadius: 8, width: 32, height: 32, cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--c-text)" } }, "›")
+        ),
+        React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", padding: "8px 8px 4px" } },
+          diasSemana.map(function(d) {
+            return React.createElement('div', { key: d, style: { textAlign: "center", fontSize: 11, fontWeight: 600, color: "#8E8E93", padding: "4px 0" } }, d);
+          })
+        ),
+        renderGrade(opts.eventosPorDia, opts.diaSel, opts.setDiaSel, opts.alertaPorDia)
+      ),
+
+      // Painel dia selecionado
+      opts.diaSel && React.createElement('div', { style: Object.assign({}, CARD) },
+        React.createElement('div', { style: { fontWeight: 700, fontSize: 15, color: "var(--c-text)", marginBottom: 12 } },
+          fmtD(opts.diaSel) + (opts.diaSel === hoje ? "  · Hoje" : "")
+        ),
+        evsDiaX.length === 0
+          ? React.createElement('div', { style: { color: "#8E8E93", fontSize: 14, textAlign: "center", padding: "16px 0" } }, opts.vazioTexto || "Nenhum evento neste dia ✅")
+          : evsDiaX.map(function(ev, i) {
+              return React.createElement('div', { key: i, onClick: function() { setTab(ev.tab); },
+                style: { display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: i < evsDiaX.length-1 ? "0.5px solid " + C.border : "none", cursor: "pointer" }
+              },
+                React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+                  React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "var(--c-text)" } }, ev.titulo),
+                  ev.sub && React.createElement('div', { style: { fontSize: 11, color: "#8E8E93", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, ev.sub)
+                ),
+                React.createElement('div', { style: { width: 8, height: 8, borderRadius: "50%", background: ev.cor, flexShrink: 0 } })
+              );
+            })
+      ),
+
+      // Agenda 30 dias
+      React.createElement('div', { style: Object.assign({}, CARD) },
+        React.createElement('div', { style: { fontWeight: 700, fontSize: 15, color: "var(--c-text)", marginBottom: 14 } }, opts.agendaTitulo),
+        agendaX.length === 0
+          ? React.createElement('div', { style: { color: "#8E8E93", fontSize: 14, textAlign: "center", padding: "16px 0" } }, opts.agendaVaziaTexto || "Nenhum vencimento nos próximos 30 dias ✅")
+          : agendaX.map(function(item) {
+              var isHoje2 = item.data === hoje;
+              return React.createElement('div', { key: item.data, style: { marginBottom: 14 } },
+                React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: isHoje2 ? "#007AFF" : "#8E8E93", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 } },
+                  isHoje2 ? "HOJE · " + strData(item.data) : strData(item.data) + " · " + diasSemana[new Date(item.data + "T12:00:00").getDay()]
+                ),
+                item.evs.map(function(ev, i) {
+                  return React.createElement('div', { key: i, onClick: function() { setTab(ev.tab); },
+                    style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, background: C.border, marginBottom: 4, cursor: "pointer", borderLeft: "3px solid " + ev.cor }
+                  },
+                    React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+                      React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "var(--c-text)" } }, ev.titulo),
+                      ev.sub && React.createElement('div', { style: { fontSize: 11, color: "#8E8E93", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, ev.sub)
+                    )
+                  );
+                })
+              );
+            })
+      )
+    );
+  }
+
+  var legendaFin = [
+    { cor: "#FF9500", label: "Pagamentos/Despesas" },
+    { cor: "#5856D6", label: "Emissão Fatura" },
+    { cor: "#FF3B30", label: "Vencidos" },
+    { cor: "#34C759", label: "Receitas" },
+    { cor: "#30C768", label: "Reservas" }
+  ];
+  var legendaAlerta = [
+    { cor: "#007AFF", label: "Contratos" },
+    { cor: "#FF3B30", label: "Vencidos" },
+    { cor: "#FF9500", label: "Multas/Revisão" },
+    { cor: "#AF52DE", label: "IPVA/Manutenção" },
+    { cor: "#32ADE6", label: "Seguro" },
+    { cor: "#5856D6", label: "Licenciamento" }
+  ];
 
   return React.createElement('div', { style: { maxWidth: 720, margin: "0 auto" } },
 
     // Header
-    React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 } },
+    React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 } },
       React.createElement('h2', { style: { fontSize: 24, fontWeight: 800, color: "var(--c-text)", margin: 0 } }, "📅 Calendário"),
       React.createElement('div', { style: { display: "flex", gap: 8 } },
         React.createElement('button', { onClick: function() { location.href = "webcal://jsyiriqtzpbuqvjrkwin.supabase.co/functions/v1/calendar-ics?apikey=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpzeWlyaXF0enBidXF2anJrd2luIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMDEyNjksImV4cCI6MjA4ODU3NzI2OX0.BCeCKcwLGnrRhfaFryeTbbCRoGyt3wRPlZzfsxuV0mM"; }, style: { background: "rgba(52,199,89,0.12)", border: "none", borderRadius: 10, padding: "6px 14px", fontSize: 13, fontWeight: 600, color: "#34C759", cursor: "pointer" } }, "🔔 Assinar"),
@@ -46680,105 +46834,46 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
       )
     ),
 
-    // Legenda
-    React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 } },
-      [
-        { cor: "#007AFF", label: "Contratos" },
-        { cor: "#FF9500", label: "Pagamentos" },
-        { cor: "#FF3B30", label: "Vencidos/Multas" },
-        { cor: "#AF52DE", label: "IPVA" },
-        { cor: "#32ADE6", label: "Seguro" },
-        { cor: "#5856D6", label: "Licenciamento" },
-        { cor: "#34C759", label: "Receitas" },
-        { cor: "#FF9500", label: "Pessoal/CNH" }].map(function(l) {
-        return React.createElement('div', { key: l.label, style: { display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--c-text)" } },
-          React.createElement('div', { style: { width: 8, height: 8, borderRadius: "50%", background: l.cor, flexShrink: 0 } }),
-          l.label
-        );
-      })
-    ),
-
-    // Grade calendário
-    React.createElement('div', { style: Object.assign({}, CARD, { padding: 0, overflow: "hidden" }) },
-      React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: "0.5px solid rgba(0,0,0,0.06)" } },
-        React.createElement('button', { onClick: prevMes, style: { border: "none", background: C.border, borderRadius: 8, width: 32, height: 32, cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--c-text)" } }, "‹"),
-        React.createElement('span', { style: { fontWeight: 700, fontSize: 16, color: "var(--c-text)" } }, mesesNomes[mes] + " " + ano),
-        React.createElement('button', { onClick: nextMes, style: { border: "none", background: C.border, borderRadius: 8, width: 32, height: 32, cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--c-text)" } }, "›")
-      ),
-      React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", padding: "8px 8px 4px" } },
-        diasSemana.map(function(d) {
-          return React.createElement('div', { key: d, style: { textAlign: "center", fontSize: 11, fontWeight: 600, color: "#8E8E93", padding: "4px 0" } }, d);
-        })
-      ),
-      React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", padding: "0 8px 12px", gap: 2 } },
-        Array.from({ length: primeiroDia }).map(function(_, i) { return React.createElement('div', { key: "e"+i }); }),
-        Array.from({ length: diasNoMes }).map(function(_, i) {
-          var d = i + 1;
-          var dStr = ano + "-" + String(mes+1).padStart(2,"0") + "-" + String(d).padStart(2,"0");
-          var evs = eventosPorDia[dStr] || [];
-          var isHoje = dStr === hoje;
-          var isSel = dStr === diaSel;
-          var cores = [];
-          evs.forEach(function(e) { if (cores.indexOf(e.cor) === -1) cores.push(e.cor); });
-          return React.createElement('div', {
-            key: dStr, onClick: function() { setDiaSel(isSel ? null : dStr); },
-            style: { borderRadius: 10, padding: "5px 2px 4px", cursor: "pointer", background: isSel ? "#007AFF" : isHoje ? "rgba(0,122,255,0.10)" : "transparent", border: isHoje && !isSel ? "1.5px solid rgba(0,122,255,0.30)" : "1.5px solid transparent", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, minHeight: 48 }
-          },
-            React.createElement('span', { style: { fontSize: 13, fontWeight: isHoje || isSel ? 700 : 400, color: isSel ? "#fff" : isHoje ? "#007AFF" : "var(--c-text)" } }, d),
-            evs.length > 0 && React.createElement('div', { style: { display: "flex", gap: 2, flexWrap: "wrap", justifyContent: "center" } },
-              cores.slice(0,4).map(function(cor, ci) {
-                return React.createElement('div', { key: ci, style: { width: 5, height: 5, borderRadius: "50%", background: isSel ? "rgba(255,255,255,0.85)" : cor } });
-              }),
-              evs.length > 4 && React.createElement('span', { style: { fontSize: 9, color: isSel ? "rgba(255,255,255,0.7)" : "#8E8E93" } }, "+" + (evs.length - 4))
-            )
-          );
-        })
+    // Seletor de página (Financeiro ↔ Alertas) — clicável e sincronizado com o scroll horizontal
+    React.createElement('div', { style: { display: "flex", gap: 8, marginBottom: 14 } },
+      React.createElement('button', { onClick: function(){ irPagina(0); }, style: {
+          flex: 1, border: "none", borderRadius: 12, padding: "10px 12px", cursor: "pointer",
+          fontSize: 13, fontWeight: 700, transition: "background .15s, color .15s",
+          background: pagina === 0 ? "#007AFF" : C.border, color: pagina === 0 ? "#fff" : "var(--c-text)"
+        } }, "💰 Financeiro"),
+      React.createElement('button', { onClick: function(){ irPagina(1); }, style: {
+          flex: 1, border: "none", borderRadius: 12, padding: "10px 12px", cursor: "pointer",
+          fontSize: 13, fontWeight: 700, transition: "background .15s, color .15s",
+          background: pagina === 1 ? "#FF3B30" : C.border, color: pagina === 1 ? "#fff" : "var(--c-text)",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+        } },
+        "🔔 Alertas",
+        diasComAlertaNoMes > 0 && React.createElement('span', { className: pagina === 1 ? "" : "ag-urgent", style: {
+            display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 18, height: 18, borderRadius: 9,
+            background: pagina === 1 ? "rgba(255,255,255,0.30)" : "#FF3B30", color: "#fff", fontSize: 10, fontWeight: 800, padding: "0 5px"
+          } }, diasComAlertaNoMes)
       )
     ),
 
-    // Painel dia selecionado
-    diaSel && React.createElement('div', { style: Object.assign({}, CARD) },
-      React.createElement('div', { style: { fontWeight: 700, fontSize: 15, color: "var(--c-text)", marginBottom: 12 } },
-        fmtD(diaSel) + (diaSel === hoje ? "  · Hoje" : "")
-      ),
-      evsDia.length === 0
-        ? React.createElement('div', { style: { color: "#8E8E93", fontSize: 14, textAlign: "center", padding: "16px 0" } }, "Nenhum evento neste dia ✅")
-        : evsDia.map(function(ev, i) {
-            return React.createElement('div', { key: i, onClick: function() { setTab(ev.tab); },
-              style: { display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: i < evsDia.length-1 ? "0.5px solid " + C.border : "none", cursor: "pointer" }
-            },
-              React.createElement('div', { style: { flex: 1, minWidth: 0 } },
-                React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "var(--c-text)" } }, ev.titulo),
-                ev.sub && React.createElement('div', { style: { fontSize: 11, color: "#8E8E93", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, ev.sub)
-              ),
-              React.createElement('div', { style: { width: 8, height: 8, borderRadius: "50%", background: ev.cor, flexShrink: 0 } })
-            );
-          })
-    ),
-
-    // Agenda 30 dias
-    React.createElement('div', { style: Object.assign({}, CARD) },
-      React.createElement('div', { style: { fontWeight: 700, fontSize: 15, color: "var(--c-text)", marginBottom: 14 } }, "📌 Próximos 30 dias"),
-      agenda.length === 0
-        ? React.createElement('div', { style: { color: "#8E8E93", fontSize: 14, textAlign: "center", padding: "16px 0" } }, "Nenhum vencimento nos próximos 30 dias ✅")
-        : agenda.map(function(item) {
-            var isHoje2 = item.data === hoje;
-            return React.createElement('div', { key: item.data, style: { marginBottom: 14 } },
-              React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: isHoje2 ? "#007AFF" : "#8E8E93", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 } },
-                isHoje2 ? "HOJE · " + strData(item.data) : strData(item.data) + " · " + diasSemana[new Date(item.data + "T12:00:00").getDay()]
-              ),
-              item.evs.map(function(ev, i) {
-                return React.createElement('div', { key: i, onClick: function() { setTab(ev.tab); },
-                  style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, background: C.border, marginBottom: 4, cursor: "pointer", borderLeft: "3px solid " + ev.cor }
-                },
-                  React.createElement('div', { style: { flex: 1, minWidth: 0 } },
-                    React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "var(--c-text)" } }, ev.titulo),
-                    ev.sub && React.createElement('div', { style: { fontSize: 11, color: "#8E8E93", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, ev.sub)
-                  )
-                );
-              })
-            );
-          })
+    // Carrossel: scroll/swipe horizontal alterna entre os dois calendários
+    React.createElement('div', {
+      ref: scrollRef, onScroll: onScrollCal,
+      style: { display: "flex", overflowX: "auto", scrollSnapType: "x mandatory", WebkitOverflowScrolling: "touch", scrollBehavior: "smooth" }
+    },
+      renderPagina({
+        eventosPorDia: eventosPorDiaFin, diaSel: diaSelFin, setDiaSel: setDiaSelFin,
+        alertaPorDia: eventosPorDiaAlerta, legenda: legendaFin,
+        agendaTitulo: "📌 Próximos 30 dias · Financeiro",
+        vazioTexto: "Nenhum evento financeiro neste dia ✅",
+        agendaVaziaTexto: "Nenhum vencimento financeiro nos próximos 30 dias ✅"
+      }),
+      renderPagina({
+        eventosPorDia: eventosPorDiaAlerta, diaSel: diaSelAlerta, setDiaSel: setDiaSelAlerta,
+        alertaPorDia: null, legenda: legendaAlerta,
+        agendaTitulo: "🔔 Próximos 30 dias · Alertas",
+        vazioTexto: "Nenhum alerta neste dia ✅",
+        agendaVaziaTexto: "Nenhum alerta nos próximos 30 dias ✅"
+      })
     )
   );
 }

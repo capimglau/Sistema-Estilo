@@ -50934,6 +50934,21 @@ function App() {
         return d || [];
       });
     }
+    // Rede de segurança final: mesmo com os retries acima, uma falha de rede
+    // pontual (ex: 429/503 do Supabase, Wi-Fi cair um instante) pode fazer um
+    // getAll voltar [] depois que a tela já mostrava dados bons. Sem este
+    // guard, o setState aceitava o [] cegamente e a tela inteira zerava na
+    // frente do usuário (visto ao vivo: contratos/receitas somem primeiro,
+    // dashboard vira R$0,00/"Nenhum dado no mês" segundos depois). Nunca troca
+    // dado bom que já está na tela por um resultado vazio — só aceita [] se
+    // ainda não havia nada carregado.
+    function _agSetSeguro(setter, dados) {
+      setter(function(prev) {
+        if (dados && dados.length) return dados;
+        if (prev && prev.length) return prev;
+        return dados || [];
+      });
+    }
     // Deleta contratos duplicados de renovação automática DIRETO no banco (sem carregar na memória).
     // Vai por fetch cru, fora do db.del — então a checagem de permissão precisa
     // ser explícita aqui: é um DELETE em massa, e sem isto um perfil somente
@@ -50946,7 +50961,7 @@ function App() {
     // getAll (paginado) e não get: sem paginação o PostgREST corta a lista no
     // limite de linhas do projeto, e o cliente que ficou de fora some da busca,
     // do autopreenchimento por CPF e da checagem de duplicata — sem erro nenhum.
-    db.getAll("clientes").then(d => setClientes(d || []));
+    db.getAll("clientes").then(d => _agSetSeguro(setClientes, d));
     // Carrega veículos E contratos juntos — statusEfetivoVeiculo() precisa dos dois
     // para calcular badge correto já no primeiro render.
     // db.get/db.getAll nunca rejeitam (voltam [] em erro/timeout), então um
@@ -50983,14 +50998,14 @@ function App() {
       ctsNorm.forEach(function(c, i) {
         if (c !== cts[i]) db.patch("contratos", c.id, { status_pagamento: "pago" }).catch(function(){});
       });
-      setContratos(ctsNorm);
+      _agSetSeguro(setContratos, ctsNorm);
       // Aplica statusEfetivoVeiculo nos dados do banco antes de setar o state
       var veicsCorrigidos = veics.map(function(v) {
         if (v.status !== "alugado" && v.status !== "disponivel") return v;
         var stEf = statusEfetivoVeiculo(v, cts);
         return stEf !== v.status ? Object.assign({}, v, { status: stEf }) : v;
       });
-      setVeiculos(veicsCorrigidos);
+      _agSetSeguro(setVeiculos, veicsCorrigidos);
       // Persiste correções no banco (background)
       veics.forEach(function(v) {
         if (v.status !== "alugado") return;
@@ -51032,13 +51047,13 @@ function App() {
       });
     }
     carregarFrotaEContratos(false);
-    db.get("reservas").then(d => setReservas(d || []));
-    db.getAll("multas").then(d => setMultas(d || []));
-    db.getAll("manutencao").then(d => setManutencoes(d || []));
-    _agGetAllResiliente("despesas").then(d => setDespesas(d || []));
-    _agGetAllResiliente("receitas").then(d => setReceitas(d || []));
-    _agGetAllResiliente("contas").then(d => setContas(d || []));
-    db.getAll("usos").then(d => setUsos(d || []));
+    db.get("reservas").then(d => _agSetSeguro(setReservas, d));
+    db.getAll("multas").then(d => _agSetSeguro(setMultas, d));
+    db.getAll("manutencao").then(d => _agSetSeguro(setManutencoes, d));
+    _agGetAllResiliente("despesas").then(d => _agSetSeguro(setDespesas, d));
+    _agGetAllResiliente("receitas").then(d => _agSetSeguro(setReceitas, d));
+    _agGetAllResiliente("contas").then(d => _agSetSeguro(setContas, d));
+    db.getAll("usos").then(d => _agSetSeguro(setUsos, d));
     db.get("config", "limit=1").then(d => { if (d && d[0]) { setEmpresa(d[0]); preloadLogoEmbed(d[0].logo_url); } });
   }, [refreshTick]);
 

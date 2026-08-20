@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="848b86c"/>
+<meta name="ag-build" content="3e2b65a"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -42745,7 +42745,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         // Numeração sequencial calculada uma única vez (state é assíncrono)
         var todos = (receitas || []).filter(function(r){ return r.numero_fatura && r.numero_fatura.startsWith("FAT-"); });
         var maxN = todos.reduce(function(m, r) { var n = parseInt((r.numero_fatura || "FAT-00000").replace("FAT-", ""), 10); return isNaN(n) ? m : Math.max(m, n); }, 0);
-        var novas = [], patches = {}, ok = 0;
+        var novas = [], patches = {}, ok = 0, falhas = [];
         for (var i = 0; i < alvo.length; i++) {
           var fat = alvo[i]; maxN++; var num = "FAT-" + String(maxN).padStart(5, "0");
           try {
@@ -42766,13 +42766,23 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               novas.push(nova);
             }
             ok++;
-          } catch(e) {}
+          } catch(e) {
+            /* falha silenciosa aqui deixava a fatura sem emitir de verdade (trava
+               otimista, RLS, rede) enquanto o toast dizia sucesso — e o alerta do
+               calendário continuava aparecendo sem o usuário entender por quê. */
+            maxN--;
+            falhas.push((fat.cliente||"Contrato #"+fat.c.id) + ": " + (e.message||String(e)));
+          }
         }
         setReceitas(function(p) {
           var arr = p.map(function(r){ return patches[r.id] ? Object.assign({}, r, patches[r.id]) : r; });
           return novas.concat(arr);
         });
-        toast(ok + " fatura(s) emitida(s)!");
+        if (falhas.length) {
+          toast((ok>0 ? ok+" fatura(s) emitida(s), " : "") + falhas.length+" falhou(aram) — "+falhas.join(" · "), "error");
+        } else {
+          toast(ok + " fatura(s) emitida(s)!");
+        }
         setFatSel({}); setFatSelMode(false);
       }
 
@@ -43192,6 +43202,8 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     h += '<scr' + 'ipt>window.print();</scr' + 'ipt></body></html>';
     openPdfPage(h, _wfr);
   }
+  /* função duplicada (idêntica) removida — só a versão abaixo é usada de
+     verdade (a redeclaração de function em JS pega sempre a última). */
   function toggleFatSel(refKey) {
     setFatSel(function(p) { var n = Object.assign({}, p); if (n[refKey]) delete n[refKey]; else n[refKey] = true; return n; });
   }
@@ -43203,7 +43215,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     var dtEmissao = _hojeRelat;
     var maxN = (receitas||[]).filter(function(r){ return r.numero_fatura && r.numero_fatura.startsWith("FAT-"); })
       .reduce(function(m,r){ var n = parseInt((r.numero_fatura||"FAT-00000").replace("FAT-",""),10); return isNaN(n)?m:Math.max(m,n); }, 0);
-    var novas = [], patches = {}, ok = 0;
+    var novas = [], patches = {}, ok = 0, falhas = [];
     for (var i = 0; i < alvo.length; i++) {
       var f = alvo[i]; maxN++; var num = "FAT-" + String(maxN).padStart(5,"0");
       try {
@@ -43224,54 +43236,24 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
           novas.push(nova);
         }
         ok++;
-      } catch(e) {}
+      } catch(e) {
+        /* antes o erro sumia em silêncio: a fatura ficava sem emitir de verdade
+           (trava otimista, RLS, rede), mas o toast dizia "emitida" mesmo assim —
+           e o alerta do calendário continuava aparecendo, sem o usuário entender
+           por quê. Agora toda falha é reportada, com o nome do cliente. */
+        maxN--;
+        falhas.push((f.cl.nome||"Contrato #"+f.c.id) + ": " + (e.message||String(e)));
+      }
     }
     setReceitas(function(p) {
       var arr = p.map(function(r){ return patches[r.id] ? Object.assign({}, r, patches[r.id]) : r; });
       return novas.concat(arr);
     });
-    toast(ok + " fatura(s) emitida(s)!");
-    setFatSel({}); setFatSelMode(false);
-  }
-  function toggleFatSel(refKey) {
-    setFatSel(function(p) { var n = Object.assign({}, p); if (n[refKey]) delete n[refKey]; else n[refKey] = true; return n; });
-  }
-  var fatEmitiveis = faturasFil.filter(function(f){ return f.sit === "prevista" || f.sit === "vencida"; });
-  var fatSelVisiveis = fatEmitiveis.filter(function(f){ return fatSel[f.refKey]; });
-  async function emitirFaturasSelecionadas() {
-    var alvo = fatSelVisiveis;
-    if (!alvo.length) { toast("Nenhuma fatura prevista/vencida selecionada."); return; }
-    var dtEmissao = _hojeRelat;
-    var maxN = (receitas||[]).filter(function(r){ return r.numero_fatura && r.numero_fatura.startsWith("FAT-"); })
-      .reduce(function(m,r){ var n = parseInt((r.numero_fatura||"FAT-00000").replace("FAT-",""),10); return isNaN(n)?m:Math.max(m,n); }, 0);
-    var novas = [], patches = {}, ok = 0;
-    for (var i = 0; i < alvo.length; i++) {
-      var f = alvo[i]; maxN++; var num = "FAT-" + String(maxN).padStart(5,"0");
-      try {
-        if (f.recId) {
-          await db.patch("receitas", f.recId, { status: "emitida", data_emissao: dtEmissao, numero_fatura: num });
-          patches[f.recId] = { status: "emitida", data_emissao: dtEmissao, numero_fatura: num };
-        } else {
-          var nova = await db.post("receitas", {
-            descricao: "Fatura " + (f.cl.nome||"") + " — " + (f.ve.placa||"") + " (" + (f.dtRef||"").slice(0,7) + ")",
-            valor: f.valor, categoria: "Locacao",
-            data: dtEmissao, data_emissao: dtEmissao,
-            data_vencimento: f.dtRef, numero_fatura: num,
-            ref_fatura: f.refKey, status: "emitida",
-            forma_pagamento: "Pix",
-            cliente_id: f.c.cliente_id, veiculo_id: f.c.veiculo_id,
-            contrato_id: f.c.id
-          });
-          novas.push(nova);
-        }
-        ok++;
-      } catch(e) {}
+    if (falhas.length) {
+      toast((ok>0 ? ok+" fatura(s) emitida(s), " : "") + falhas.length+" falhou(aram) — "+falhas.join(" · "), "error");
+    } else {
+      toast(ok + " fatura(s) emitida(s)!");
     }
-    setReceitas(function(p) {
-      var arr = p.map(function(r){ return patches[r.id] ? Object.assign({}, r, patches[r.id]) : r; });
-      return novas.concat(arr);
-    });
-    toast(ok + " fatura(s) emitida(s)!");
     setFatSel({}); setFatSelMode(false);
   }
 

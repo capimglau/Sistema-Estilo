@@ -23649,6 +23649,21 @@ function _decodeSnapEnc(str) {
 function _encodeSnapEnc(obj) { return "[[snap_enc:" + btoa(unescape(encodeURIComponent(JSON.stringify(obj)))) + "]]"; }
 function _stripSnapEnc(str) { return (str || "").replace(/\n?\[\[snap_enc:[A-Za-z0-9+/=]+\]\]/, "").trim(); }
 
+/* Observação limpa para exibição — sem os marcadores de controle que o app grava
+   dentro de `observacoes` ("Renovação contrato #N", baixas). Eles são dados
+   internos: o vínculo pai/filho de uma renovação ainda é lido dali quando o
+   contrato não tem `renovado_para` preenchido, então não dá pra apagar do banco;
+   mas também não têm por que sair impressos numa fatura enviada ao cliente.
+   Renovar um contrato empilha um marcador por vez, e depois de algumas
+   renovações a observação vira uma fileira de "Renovação contrato #57.
+   Renovação contrato #51. …" no documento. */
+function _obsVisivel(obs) {
+  return _stripSnapEnc(obs || "")
+    .replace(/(?:Renova(?:ç|c)(?:ã|a)o(?: autom(?:á|a)tica)? contrato #?\d+|Recebido em \d{4}-\d{2}-\d{2}|Pagamento completo em \d{4}-\d{2}-\d{2})\.?/gi, " ")
+    .split("\n").map(function(l) { return l.replace(/\s+/g, " ").trim(); })
+    .filter(Boolean).join("\n").trim();
+}
+
 /* Saldo real do caixa desde o início dos lançamentos até (exclusive) ateDt */
 function saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, ateDt) {
   var s = 0;
@@ -24820,7 +24835,7 @@ function aplicarVarsTexto(txt, ct, cl, ve, emp, dias) {
     participacao_roubo_furto: _vlrOuFranquia(ct.participacao_roubo_furto, participacao, _fipeValor),
     participacao_perda_total: _vlrOuFranquia(ct.participacao_perda_total, participacao, _fipeValor),
     valor_caucao: ct.caucao_valor != null && ct.caucao_valor !== "" ? fmtBRL(ct.caucao_valor) : "",
-    condicao_especial: _stripSnapEnc(ct.observacoes),
+    condicao_especial: _obsVisivel(ct.observacoes),
     prazo_contratado: _anual ? "12 (doze) meses, por prazo determinado" : "livre, conforme o período indicado neste contrato",
     valor_mensal: _mensal != null ? fmtBRL(_mensal) : "",
     multa_rescisao_meses: _anual ? _mesesExtenso(_mesesMulta) : "não se aplica",
@@ -24915,7 +24930,7 @@ function buildFaturaHtmlViewer(ct, cl, ve, emp, mesRef) {
   if (kmExc > 0) h += '<tr><td>KM Excedente</td><td>—</td><td>—</td><td style="color:#FF3B30">'+fmtBRL(kmExc)+'</td></tr>';
   extras.forEach(function(ex){ if (parseFloat(ex.valor||0)>0) h += '<tr><td>'+(ex.tipo||"Extra")+(ex.obs?' — '+ex.obs:'')+'</td><td>1</td><td>'+fmtBRL(ex.valor)+'</td><td>'+fmtBRL(ex.valor)+'</td></tr>'; });
   if (parseFloat(ct.desconto||0)>0) h += '<tr><td colspan="3" style="color:#34C759">Desconto</td><td style="color:#34C759">- '+fmtBRL(ct.desconto)+'</td></tr>';
-  if (ct.observacoes && _stripSnapEnc(ct.observacoes)) h += '<tr><td colspan="4" style="color:#666;font-size:12px">Obs: '+_stripSnapEnc(ct.observacoes)+'</td></tr>';
+  if (_obsVisivel(ct.observacoes)) h += '<tr><td colspan="4" style="color:#666;font-size:12px">Obs: '+_obsVisivel(ct.observacoes)+'</td></tr>';
   h += '<tr class="tot"><td colspan="3"><b>TOTAL</b></td><td><b>'+fmtBRL(valorTotal)+'</b></td></tr></table>';
   if (ct.previsao_pagamento) h += '<p style="text-align:center;margin-top:18px;font-size:14px"><b>Vencimento: '+fmtDate(ct.previsao_pagamento)+'</b></p>';
   h += '<div class="sig"><div class="sl">Assinatura do Locatário<br/><span style="font-size:11px;color:#aaa">'+(cl.nome||"")+'</span></div><div class="sl">Assinatura da Locadora<br/><span style="font-size:11px;color:#aaa">'+(emp.nome||"")+'</span></div></div>';
@@ -25077,10 +25092,21 @@ function _gerarPdfBlob(html) {
         var wrap = document.createElement('div');
         wrap.style.cssText = 'position:fixed;left:-10000px;top:0;width:800px;z-index:-1;background:#fff;';
         var styleEl = document.createElement('style');
-        styleEl.textContent = scoped + '\n#_pdfsrc .np,#_pdfsrc .no-print{display:none!important}';
+        // O negrito vai explícito: aqui o documento é montado DENTRO da página do
+        // app, onde a fonte da interface está carregada, e o <b> pode acabar
+        // desenhado num peso que essa fonte não tem — a fatura saía sem os
+        // destaques (nome do cliente, placa, chave PIX) que a mesma fatura tem
+        // quando gerada pela aba do documento.
+        styleEl.textContent = scoped + '\n#_pdfsrc .np,#_pdfsrc .no-print{display:none!important}'
+          + '\n#_pdfsrc b,#_pdfsrc strong{font-weight:700}';
         var src = document.createElement('div');
         src.id = '_pdfsrc';
-        src.style.cssText = 'width:800px;background:#fff;';
+        // Sem largura fixa aqui de propósito: o html2pdf clona este elemento dentro
+        // de um container de 190mm (a área útil do A4). Qualquer width em px trava o
+        // clone numa medida que não é a da folha — maior, e sobra corta na direita;
+        // menor, e o conteúdo é ampliado pra preencher a página. Deixando o div
+        // fluido, ele assume exatamente a largura do papel.
+        src.style.cssText = 'background:#fff;';
         src.innerHTML = bodyHtml;
         wrap.appendChild(styleEl);
         wrap.appendChild(src);
@@ -25093,7 +25119,12 @@ function _gerarPdfBlob(html) {
             var opt = {
               margin: [12, 10, 12, 10],
               image: { type: 'jpeg', quality: 0.95 },
-              html2canvas: { scale: 1.5, useCORS: true, backgroundColor: '#ffffff', width: 800, windowWidth: 800 },
+              // windowWidth fixo em 794px (= largura do A4 a 96dpi): sem isso o
+              // html2canvas renderiza o clone numa "janela" do tamanho da tela do
+              // aparelho e o documento sai com a diagramação de celular. NÃO passar
+              // `width` — ele recorta o canvas, e o recorte é o que fazia a fatura
+              // sair cortada na direita.
+              html2canvas: { scale: 1.5, useCORS: true, backgroundColor: '#ffffff', windowWidth: 794 },
               jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
               pagebreak: { mode: ['css', 'legacy'] }
             };
@@ -25182,20 +25213,19 @@ var _PDF_CHILD_JS = [
   '  }',
   '  function capturar() {',
   '    var nome = ((d.title || "documento").replace(/[\\\\\\/:*?"<>#]+/g, "").replace(/\\s+/g, "_") || "documento") + ".pdf";',
-  // Trava o body numa largura fixa em px (sem max-width + margin:auto): com
-  // o body centralizado numa janela bem mais larga que o conteúdo, o
-  // html2canvas às vezes mede a caixa errada na hora de montar o canvas
-  // (mesmo passando width/windowWidth) — o efeito é um PDF com o conteúdo
-  // fora de escala e cortado nas bordas, sobretudo em documentos de 2+
-  // páginas. Fixando width + margin:0 antes de capturar, a caixa que o
-  // html2canvas mede é sempre exatamente a que o html2pdf usa pra montar
-  // as páginas.
-  '    var largBody = d.body.getBoundingClientRect().width;',
-  '    d.body.style.maxWidth = "none";',
-  '    d.body.style.width = largBody + "px";',
+  // NÃO travar o body na largura da tela antes de capturar. O html2pdf clona o
+  // body dentro de um container de 190mm — a área útil da folha A4 — e é essa
+  // caixa que define a diagramação do PDF. Fixar width na medida do aparelho
+  // (390px num iPhone) fazia o clone ser montado com a diagramação de celular e
+  // depois ampliado pra preencher a folha: texto gigante, colunas espremidas,
+  // conteúdo cortado na direita e o documento estourando pra 3 páginas.
+  // margin:0 continua, só pra não sobrar respiro lateral dentro da folha.
   '    d.body.style.margin = "0";',
   '    var opt = { margin: [12, 10, 12, 10], image: { type: "jpeg", quality: 0.95 },',
-  '      html2canvas: { scale: 1.5, useCORS: true, backgroundColor: "#ffffff", width: largBody, windowWidth: largBody },',
+  // windowWidth = 794px é a largura do A4 a 96dpi. Sem isso o html2canvas usa a
+  // janela do aparelho como viewport do clone. `width` fica de fora de propósito:
+  // ele recorta o canvas e é o que cortava a fatura ao meio.
+  '      html2canvas: { scale: 1.5, useCORS: true, backgroundColor: "#ffffff", windowWidth: 794 },',
   '      jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },',
   '      pagebreak: { mode: ["css", "legacy"] } };',
   '    window.html2pdf().set(opt).from(d.body).toPdf().get("pdf").then(function(pdf) {',
@@ -25523,7 +25553,7 @@ function buildContratoFullHtml(ct, cl, ve, emp) {
   if (parseFloat(ct.desconto||0) > 0) h += '<div style="font-size:11px;color:#34C759;font-weight:600">Desconto: ' + fmtBRL(ct.desconto) + '</div>';
   if (ct.previsao_pagamento) h += '<div class="plbl">Vencimento</div><div style="font-size:14px;font-weight:800;color:#E68A00">' + fmtDate(ct.previsao_pagamento) + '</div>';
   h += '</div></div></div>';
-  if (ct.observacoes && _stripSnapEnc(ct.observacoes)) h += '<div class="s"><div class="st">Observações</div><div class="txtc">' + _stripSnapEnc(ct.observacoes) + '</div></div>';
+  if (_obsVisivel(ct.observacoes)) h += '<div class="s"><div class="st">Observações</div><div class="txtc">' + _obsVisivel(ct.observacoes) + '</div></div>';
   /* Imagens das assinaturas digitais — calculadas aqui (antes da rubrica) porque
      agora elas aparecem em DOIS lugares do documento: na rubrica da folha de
      qualificação (abaixo) e na seção "Assinaturas" no fim, depois das cláusulas.
@@ -25646,23 +25676,23 @@ function _buildFaturaBody(ct, cl, ve, emp) {
   h += '<div class="ib"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#888;margin-bottom:6px">Veículo</div><b>' + (ve.placa || "--") + '</b> — ' + (ve.marca || "") + " " + (ve.modelo || "") + '<br/>' + (ve.cor ? ve.cor + '<br/>' : '') + '</div>';
   h += '<div class="ib"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#888;margin-bottom:6px">Locação</div>Período: ' + fmtDate(ct.data_inicio) + ' a ' + fmtDate(ct.data_fim) + '<br/>Duração: ' + dias + ' dia(s)' + (ct.forma_pagamento ? '<br/>Pagamento: ' + ct.forma_pagamento : '') + '</div>';
   h += '</div>';
-  h += '<table><tr><th>Descrição</th><th style="width:80px;text-align:center">Qtd</th><th style="width:110px;text-align:right">Unitário</th><th style="width:110px;text-align:right">Total</th></tr>';
-  h += '<tr><td>Locação — ' + fmtDate(ct.data_inicio) + ' a ' + fmtDate(ct.data_fim) + '</td><td style="text-align:center">' + dias + ' dia(s)</td><td style="text-align:right">' + fmtBRL(vd) + '</td><td style="text-align:right">' + fmtBRL(locBase) + '</td></tr>';
+  h += '<table><tr><th>Descrição</th><th style="width:95px;text-align:center">Qtd</th><th style="width:115px;text-align:right">Unitário</th><th style="width:115px;text-align:right">Total</th></tr>';
+  h += '<tr><td>Locação — ' + fmtDate(ct.data_inicio) + ' a ' + fmtDate(ct.data_fim) + '</td><td style="text-align:center;white-space:nowrap">' + dias + ' dia(s)</td><td style="text-align:right;white-space:nowrap">' + fmtBRL(vd) + '</td><td style="text-align:right;white-space:nowrap">' + fmtBRL(locBase) + '</td></tr>';
   if (kmExc > 0) h += '<tr><td>KM Excedente</td><td style="text-align:center">—</td><td style="text-align:right">—</td><td style="text-align:right;color:#FF3B30">' + fmtBRL(kmExc) + '</td></tr>';
   extras.forEach(function(ex){ if (parseFloat(ex.valor||0)>0) h += '<tr><td>'+(ex.tipo||"Extra")+(ex.obs?' — '+ex.obs:'')+'</td><td style="text-align:center">1</td><td style="text-align:right">'+fmtBRL(ex.valor)+'</td><td style="text-align:right">'+fmtBRL(ex.valor)+'</td></tr>'; });
   if (parseFloat(ct.desconto||0) > 0) h += '<tr><td colspan="3" style="color:#34C759;font-weight:600">Desconto</td><td style="text-align:right;color:#34C759;font-weight:700">— ' + fmtBRL(ct.desconto) + '</td></tr>';
-  if (ct.observacoes && _stripSnapEnc(ct.observacoes)) h += '<tr><td colspan="4" style="color:#666;font-size:13px">Obs: ' + _stripSnapEnc(ct.observacoes) + '</td></tr>';
+  if (_obsVisivel(ct.observacoes)) h += '<tr><td colspan="4" style="color:#666;font-size:13px">Obs: ' + _obsVisivel(ct.observacoes) + '</td></tr>';
   h += '<tr class="tot"><td colspan="3"><b>TOTAL</b></td><td style="text-align:right"><b>' + fmtBRL(valorTotal) + '</b></td></tr></table>';
   if (ct.previsao_pagamento) h += '<div style="text-align:center;background:#F9F9F9;border-radius:12px;padding:14px 18px;margin:20px 0;font-size:15px;font-weight:600">Vencimento: <span style="color:' + (isVencida ? '#FF3B30' : '#FF9500') + '">' + fmtDate(ct.previsao_pagamento) + '</span></div>';
   if (emp.pix) h += '<div class="pix-box"><b>💠 Pagamento via PIX</b><br/>Chave: <b>' + emp.pix + '</b> · Favorecido: ' + (emp.nome || "") + '</div>';
   h += '<div class="sig"><div class="sl"><div style="height:40px"></div><div class="sl-line">Assinatura do Locatário<br/><span style="font-size:12px;color:#aaa">' + (cl.nome || "") + '</span></div></div>';
   h += '<div class="sl"><div style="height:40px"></div><div class="sl-line">Assinatura da Locadora<br/><span style="font-size:12px;color:#aaa">' + (emp.nome || "") + '</span></div></div></div>';
-  h += '<p style="text-align:center;font-size:13px;color:#999;margin-top:40px">Obrigado pela preferência!</p>';
+  h += '<p style="text-align:center;font-size:13px;color:#999;margin-top:26px">Obrigado pela preferência!</p>';
   if (emp.nome || emp.cnpj || emp.telefone) h += '<p style="text-align:center;font-size:11px;color:#aaa;margin-top:20px;padding-top:14px;border-top:1px solid #E5E5EA">' + (emp.nome||"") + (emp.cnpj?' — CNPJ '+emp.cnpj:'') + (emp.telefone?' — Tel '+emp.telefone:'') + '</p>';
   return h;
 }
 
-var _FATURA_CSS = 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;max-width:800px;margin:26px auto;font-size:14px;color:#1C1C1E;background:#fff;overflow-wrap:break-word}.np{display:flex;gap:10px;margin-bottom:18px}table{width:100%;border-collapse:collapse}th{background:#F2F2F7;padding:12px 16px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;border-bottom:2px solid #E5E5EA;color:#3C3C43}td{padding:14px 16px;border-bottom:1px solid #F2F2F7;font-size:14px;overflow-wrap:break-word}tr,.ib,.sig,.pix-box,.alerta-vencido{page-break-inside:avoid;break-inside:avoid}.tot td{font-size:24px;font-weight:800;color:#34C759;border-top:2px solid #1C1C1E;border-bottom:none;padding-top:18px}.ib{background:#F9F9F9;border-radius:12px;padding:16px 18px;margin:8px 0;font-size:14px;line-height:1.8;min-width:0;overflow-wrap:break-word}.sig{display:flex;gap:60px;margin-top:64px}.sl{flex:1;text-align:center;color:#555;font-size:13px}.sl-line{border-top:1.5px solid #1C1C1E;padding-top:8px;font-weight:500}.pix-box{background:#E8F0FF;border-radius:12px;padding:14px 18px;margin:14px 0;font-size:14px;line-height:1.6;border-left:4px solid #007AFF}.alerta-vencido{background:#FEECEB;border-radius:12px;padding:14px 18px;margin:14px 0;font-size:14px;font-weight:700;color:#C0392B;text-align:center;border:1px solid #ffcccc}@page{margin:0}.pgw{width:100%;border-collapse:collapse}.pgw>thead>tr>td,.pgw>tfoot>tr>td{padding:0;border:none}.pgw-top{height:0}.pgw-bot{height:0}@media print{.pgw-top{height:12mm}.pgw-bot{height:9mm}}@media print{.np{display:none}body{margin:0;padding:0 10mm}}';
+var _FATURA_CSS = 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;max-width:800px;margin:26px auto;font-size:14px;color:#1C1C1E;background:#fff;overflow-wrap:break-word}.np{display:flex;gap:10px;margin-bottom:18px}table{width:100%;border-collapse:collapse}th{background:#F2F2F7;padding:12px 16px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;border-bottom:2px solid #E5E5EA;color:#3C3C43}td{padding:14px 16px;border-bottom:1px solid #F2F2F7;font-size:14px;overflow-wrap:break-word}tr,.ib,.sig,.pix-box,.alerta-vencido{page-break-inside:avoid;break-inside:avoid}.tot td{font-size:22px;font-weight:800;color:#34C759;border-top:2px solid #1C1C1E;border-bottom:none;padding-top:16px;white-space:nowrap}.ib{background:#F9F9F9;border-radius:12px;padding:16px 18px;margin:8px 0;font-size:14px;line-height:1.8;min-width:0;overflow-wrap:break-word}.sig{display:flex;gap:60px;margin-top:44px}.sl{flex:1;text-align:center;color:#555;font-size:13px}.sl-line{border-top:1.5px solid #1C1C1E;padding-top:8px;font-weight:500}.pix-box{background:#E8F0FF;border-radius:12px;padding:14px 18px;margin:14px 0;font-size:14px;line-height:1.6;border-left:4px solid #007AFF}.alerta-vencido{background:#FEECEB;border-radius:12px;padding:14px 18px;margin:14px 0;font-size:14px;font-weight:700;color:#C0392B;text-align:center;border:1px solid #ffcccc}@page{margin:0}.pgw{width:100%;border-collapse:collapse}.pgw>thead>tr>td,.pgw>tfoot>tr>td{padding:0;border:none}.pgw-top{height:0}.pgw-bot{height:0}@media print{.pgw-top{height:12mm}.pgw-bot{height:9mm}}@media print{.np{display:none}body{margin:0;padding:0 10mm}}';
 
 async function printFatura(ct, cl, ve, emp) {
   emp = emp || {};
@@ -25770,7 +25800,7 @@ function shareWhatsApp(ct, cl, ve, emp) {
   txt += "Devolucao: " + (ct.data_fim || "") + "\n";
   txt += "Dias: " + dias + "\n";
   txt += "Valor Total: " + fmtBRL(ct.valor_total) + "\n\n";
-  if (ct.observacoes && _stripSnapEnc(ct.observacoes)) txt += "Obs: " + _stripSnapEnc(ct.observacoes) + "\n\n";
+  if (_obsVisivel(ct.observacoes)) txt += "Obs: " + _obsVisivel(ct.observacoes) + "\n\n";
   txt += "Qualquer duvida, entre em contato!";
   var tel = (cl.telefone || "").replace(/\D/g, "");
   if (tel && tel.length >= 10) {
@@ -31692,6 +31722,22 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
     var dados = Object.assign({}, form);
     if (dados.cpf)      dados.cpf = fmtCpfCnpj(dados.cpf);
     if (dados.telefone) dados.telefone = fmtTelefone(dados.telefone);
+    // Manda só o que a tabela realmente tem. O formulário acumula chaves que não
+    // são colunas de `clientes` (autopreenchimento por CNPJ/CEP, telas que
+    // reaproveitam o mesmo form), e basta UMA delas para o PostgREST recusar o
+    // registro inteiro — "Could not find the 'numero' column of 'clientes' in
+    // the schema cache" — deixando o cadastro sem salvar nada. As linhas já
+    // carregadas do banco vêm com todas as colunas (o db.get não faz select
+    // parcial), então servem de referência viva do schema: nada de lista fixa
+    // pra ficar desatualizando a cada coluna nova.
+    var colsReais = {};
+    (clientes || []).forEach(function(c) {
+      Object.keys(c || {}).forEach(function(k) { colsReais[k] = true; });
+    });
+    if (Object.keys(colsReais).length) {
+      Object.keys(dados).forEach(function(k) { if (!colsReais[k]) delete dados[k]; });
+    }
+    delete dados.id;
     setLoading(true);
     try {
       if (edit) { const u = await db.patch("clientes", edit, dados); setClientes(p => p.map(c => c.id === edit ? Object.assign({}, c, u) : c)); toast("Atualizado!"); }
@@ -33472,7 +33518,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             , isEncerradoFinal && React.createElement('span', { style: BadgeSolid(C.red) }, "🏁 encerrado")
           )
           , (() => {
-            var obsLimpa = _stripSnapEnc(c.observacoes).split("\n").filter(function(l) { var t = l.trim(); return !/^(Recebido em \d{4}-\d{2}-\d{2}|Pagamento completo em \d{4}-\d{2}-\d{2}|Renovação contrato #\d+)/.test(t); }).join("\n").trim();
+            var obsLimpa = _obsVisivel(c.observacoes);
             return obsLimpa && React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 4, fontStyle: "italic", whiteSpace: "pre-line", lineClamp: 2, overflow: "hidden", maxHeight: 34 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1056}}, obsLimpa);
           })()
           , React.createElement('div', { style: { display: "flex", justifyContent: "flex-start", marginTop: 10 } }
@@ -50153,7 +50199,7 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
     if (kmExc > 0) h += '<tr><td>KM Excedente</td><td>—</td><td>—</td><td style="color:#FF3B30">'+fmtBRL(kmExc)+'</td></tr>';
     extras.forEach(function(ex) { if (parseFloat(ex.valor||0) > 0) h += '<tr><td>'+(ex.tipo||"Extra")+(ex.obs?' — '+ex.obs:'')+'</td><td>1</td><td>'+fmtBRL(ex.valor)+'</td><td>'+fmtBRL(ex.valor)+'</td></tr>'; });
     if (parseFloat(ct.desconto||0) > 0) h += '<tr><td colspan="3" style="color:#34C759">Desconto</td><td style="color:#34C759">- '+fmtBRL(ct.desconto)+'</td></tr>';
-    if (ct.observacoes && _stripSnapEnc(ct.observacoes)) h += '<tr><td colspan="4" style="color:#666;font-size:12px">Obs: '+_stripSnapEnc(ct.observacoes)+'</td></tr>';
+    if (_obsVisivel(ct.observacoes)) h += '<tr><td colspan="4" style="color:#666;font-size:12px">Obs: '+_obsVisivel(ct.observacoes)+'</td></tr>';
     h += '<tr class="tot"><td colspan="3"><b>TOTAL</b></td><td><b>'+fmtBRL(valorTotal)+'</b></td></tr></table>';
     if (ct.previsao_pagamento) h += '<p style="text-align:center;margin-top:18px;font-size:14px"><b>Vencimento: '+fmtDate(ct.previsao_pagamento)+'</b></p>';
     h += '<div class="sig"><div class="sl">Assinatura do Locatário<br/><span style="font-size:11px;color:#aaa">'+(cl.nome||"")+'</span></div><div class="sl">Assinatura da Locadora<br/><span style="font-size:11px;color:#aaa">'+(emp.nome||"")+'</span></div></div>';

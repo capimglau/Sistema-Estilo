@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="44246cd"/>
+<meta name="ag-build" content="1f4b3a8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -24884,9 +24884,13 @@ function buildHeader(emp) {
     info += '<div>' + [cidadeUf, tel].filter(Boolean).join(' · ') + '</div>';
   }
   if (emp.email) info += '<div>' + emp.email + '</div>';
+  // min-width:0 + overflow-wrap:anywhere no bloco de texto: sem isso, um e-mail
+  // ou CNPJ sem espaços (token não quebrável) força esse flex item a crescer
+  // além do espaço disponível, empurrando a página inteira para fora da largura
+  // da caixa — o que quebra a escala calculada na hora de gerar o PDF.
   return '<div style="display:flex;justify-content:space-between;align-items:center;gap:20px;padding-bottom:10px;border-bottom:2px solid #007AFF;margin-bottom:12px">'
     + '<div style="flex:0 0 220px;display:flex;align-items:center;height:88px">' + logo + '</div>'
-    + '<div style="text-align:right;font-size:11px;color:#555;line-height:1.6">' + info + '</div>'
+    + '<div style="text-align:right;font-size:11px;color:#555;line-height:1.6;min-width:0;overflow-wrap:anywhere">' + info + '</div>'
     + '</div>';
 }
 
@@ -25164,11 +25168,32 @@ var _PDF_CHILD_JS = [
   'window._agPdfDireto = function() {',
   '  var d = document;',
   '  var bar = d.querySelector(".np");',
-  '  function solta() { if (bar) bar.style.display = ""; }',
+  '  var bodyStyleAntes = d.body.getAttribute("style") || "";',
+  '  function solta() { if (bar) bar.style.display = ""; d.body.setAttribute("style", bodyStyleAntes); }',
   '  function roda() {',
   '    if (bar) bar.style.display = "none";',
+  // Espera as imagens (o logo, sobretudo) terminarem de carregar antes de
+  // capturar — igual já era feito no fluxo de compartilhamento do PWA
+  // (_gerarPdfBlob). Sem isso o html2canvas pode capturar o logo pela metade
+  // ou vazio, e ainda corre atrás do carregamento em paralelo à montagem do
+  // PDF, o que também contribuía pro cálculo de escala sair errado.
+  '    var imgs = Array.prototype.slice.call(d.querySelectorAll("img"));',
+  '    Promise.all(imgs.map(function(img) { return img.complete ? Promise.resolve() : new Promise(function(r) { img.onload = img.onerror = r; }); })).then(capturar);',
+  '  }',
+  '  function capturar() {',
   '    var nome = ((d.title || "documento").replace(/[\\\\\\/:*?"<>#]+/g, "").replace(/\\s+/g, "_") || "documento") + ".pdf";',
-  '    var largBody = d.body.scrollWidth;',
+  // Trava o body numa largura fixa em px (sem max-width + margin:auto): com
+  // o body centralizado numa janela bem mais larga que o conteúdo, o
+  // html2canvas às vezes mede a caixa errada na hora de montar o canvas
+  // (mesmo passando width/windowWidth) — o efeito é um PDF com o conteúdo
+  // fora de escala e cortado nas bordas, sobretudo em documentos de 2+
+  // páginas. Fixando width + margin:0 antes de capturar, a caixa que o
+  // html2canvas mede é sempre exatamente a que o html2pdf usa pra montar
+  // as páginas.
+  '    var largBody = d.body.getBoundingClientRect().width;',
+  '    d.body.style.maxWidth = "none";',
+  '    d.body.style.width = largBody + "px";',
+  '    d.body.style.margin = "0";',
   '    var opt = { margin: [12, 10, 12, 10], image: { type: "jpeg", quality: 0.95 },',
   '      html2canvas: { scale: 1.5, useCORS: true, backgroundColor: "#ffffff", width: largBody, windowWidth: largBody },',
   '      jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },',
@@ -25637,7 +25662,7 @@ function _buildFaturaBody(ct, cl, ve, emp) {
   return h;
 }
 
-var _FATURA_CSS = 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;max-width:800px;margin:26px auto;font-size:14px;color:#1C1C1E;background:#fff}.np{display:flex;gap:10px;margin-bottom:18px}table{width:100%;border-collapse:collapse}th{background:#F2F2F7;padding:12px 16px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;border-bottom:2px solid #E5E5EA;color:#3C3C43}td{padding:14px 16px;border-bottom:1px solid #F2F2F7;font-size:14px}.tot td{font-size:24px;font-weight:800;color:#34C759;border-top:2px solid #1C1C1E;border-bottom:none;padding-top:18px}.ib{background:#F9F9F9;border-radius:12px;padding:16px 18px;margin:8px 0;font-size:14px;line-height:1.8}.sig{display:flex;gap:60px;margin-top:64px}.sl{flex:1;text-align:center;color:#555;font-size:13px}.sl-line{border-top:1.5px solid #1C1C1E;padding-top:8px;font-weight:500}.pix-box{background:#E8F0FF;border-radius:12px;padding:14px 18px;margin:14px 0;font-size:14px;line-height:1.6;border-left:4px solid #007AFF}.alerta-vencido{background:#FEECEB;border-radius:12px;padding:14px 18px;margin:14px 0;font-size:14px;font-weight:700;color:#C0392B;text-align:center;border:1px solid #ffcccc}@page{margin:0}.pgw{width:100%;border-collapse:collapse}.pgw>thead>tr>td,.pgw>tfoot>tr>td{padding:0;border:none}.pgw-top{height:0}.pgw-bot{height:0}@media print{.pgw-top{height:12mm}.pgw-bot{height:9mm}}@media print{.np{display:none}body{margin:0;padding:0 10mm}}';
+var _FATURA_CSS = 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;max-width:800px;margin:26px auto;font-size:14px;color:#1C1C1E;background:#fff;overflow-wrap:break-word}.np{display:flex;gap:10px;margin-bottom:18px}table{width:100%;border-collapse:collapse;table-layout:fixed}th{background:#F2F2F7;padding:12px 16px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;border-bottom:2px solid #E5E5EA;color:#3C3C43}td{padding:14px 16px;border-bottom:1px solid #F2F2F7;font-size:14px;overflow-wrap:break-word}.tot td{font-size:24px;font-weight:800;color:#34C759;border-top:2px solid #1C1C1E;border-bottom:none;padding-top:18px}.ib{background:#F9F9F9;border-radius:12px;padding:16px 18px;margin:8px 0;font-size:14px;line-height:1.8;min-width:0;overflow-wrap:break-word}.sig{display:flex;gap:60px;margin-top:64px}.sl{flex:1;text-align:center;color:#555;font-size:13px}.sl-line{border-top:1.5px solid #1C1C1E;padding-top:8px;font-weight:500}.pix-box{background:#E8F0FF;border-radius:12px;padding:14px 18px;margin:14px 0;font-size:14px;line-height:1.6;border-left:4px solid #007AFF}.alerta-vencido{background:#FEECEB;border-radius:12px;padding:14px 18px;margin:14px 0;font-size:14px;font-weight:700;color:#C0392B;text-align:center;border:1px solid #ffcccc}@page{margin:0}.pgw{width:100%;border-collapse:collapse}.pgw>thead>tr>td,.pgw>tfoot>tr>td{padding:0;border:none}.pgw-top{height:0}.pgw-bot{height:0}@media print{.pgw-top{height:12mm}.pgw-bot{height:9mm}}@media print{.np{display:none}body{margin:0;padding:0 10mm}}';
 
 async function printFatura(ct, cl, ve, emp) {
   emp = emp || {};

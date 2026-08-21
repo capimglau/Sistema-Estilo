@@ -11,11 +11,11 @@
  *  - Supabase e qualquer API: nunca passa pelo cache. Dado financeiro velho
  *    servido como se fosse atual é pior do que erro de rede.
  *
- * O CACHE muda de nome a cada deploy (o workflow substitui 5cb70d9), e o
+ * O CACHE muda de nome a cada deploy (o workflow substitui 043cb8c), e o
  * activate apaga os caches antigos — é isso que evita o app velho grudado.
  */
 
-const BUILD = "5cb70d9";
+const BUILD = "043cb8c";
 const CACHE = "autogest-" + BUILD;
 
 /* Só o essencial para abrir offline. O resto entra conforme for usado —

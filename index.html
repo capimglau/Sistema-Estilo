@@ -79,7 +79,12 @@ input[type=file]{display:none}
    pelo componente Modal() genérico (.lg-modal-window), que é a "janela"
    reaproveitada em toda a tela de cadastro/edição do app — mantém o
    diálogo centralizado o tempo todo, só "aparecendo" no lugar. */
-@keyframes ag-window-pop{from{opacity:0;transform:scale(0.92)}to{opacity:1;transform:scale(1)}}
+@keyframes ag-window-pop{
+  0%{opacity:0;transform:scale(0.84)}
+  55%{opacity:1;transform:scale(1.035)}
+  80%{transform:scale(0.99)}
+  100%{opacity:1;transform:scale(1)}
+}
 @keyframes ag-tab-enter{0%{opacity:0;transform:translateX(100%)}100%{opacity:1;transform:translateX(0)}}
 @keyframes ag-tab-enter-back{0%{opacity:0;transform:translateX(-30%)}100%{opacity:1;transform:translateX(0)}}
 @keyframes ag-tab-switch{0%{opacity:0;transform:translateX(100%)}100%{opacity:1;transform:translateX(0)}}
@@ -474,7 +479,7 @@ body.steel .lg-banner-panel{background:linear-gradient(165deg,#eef3fb 0%,#ffffff
    de "janela" (scale+fade a partir do próprio centro) em qualquer tamanho de
    tela — sobrescreve o slide-up de baixo que .lg-modal usa por padrão no
    mobile, que é o certo só pros sheets ancorados na base (AgConfirmModal). */
-.lg-modal.lg-modal-window{animation:ag-window-pop 0.26s cubic-bezier(0.22,1,0.36,1) both;}
+.lg-modal.lg-modal-window{animation:ag-window-pop 0.4s cubic-bezier(0.22,1,0.36,1) both;}
 
 /* Page enter */
 .ag-page-enter{animation:ag-tab-switch 0.28s cubic-bezier(0.22,1,0.36,1) both}
@@ -32528,7 +32533,16 @@ function DocsModalBody({ contrato, clientes, veiculos, onSave }) {
 
 // -- CONTRATOS --------------------------------------------------------------
 
-function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, empresa, usos, setUsos, receitas, setReceitas, manutencoes, toast, ctDeepLink, setCtDeepLink }) {
+function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, empresa, usos, setUsos, receitas, setReceitas, manutencoes, toast, ctDeepLink, setCtDeepLink, setTab }) {
+  /* Marca se a ação em andamento (renovar/baixar) veio da Agenda Mensal do
+     Início (ctDeepLink.voltarInicio) — nesse caso, ao fechar a janela que
+     resolve a pendência, o usuário volta pra Início em vez de ficar preso
+     na aba Contratos. Ref (não state): só precisa sobreviver entre o efeito
+     que abre o fluxo e o fechamento da janela, sem disparar re-render. */
+  var _voltarInicioRef = React.useRef(false);
+  function _talvezVoltarInicio(){
+    if (_voltarInicioRef.current) { _voltarInicioRef.current = false; if (setTab) setTab("inicio"); }
+  }
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({});
   const [edit, setEdit] = useState(null);
@@ -32576,6 +32590,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (ctDeepLink.itemId != null) {
       var _ctDL = (contratos||[]).find(function(x){ return x.id == ctDeepLink.itemId; });
       if (_ctDL) {
+        _voltarInicioRef.current = !!ctDeepLink.voltarInicio;
         if (ctDeepLink.acao === "renovar") renovar(_ctDL);
         else if (ctDeepLink.acao === "baixar") { setBaixarCtData(_brNow().toISOString().split("T")[0]); setBaixarCtModal(_ctDL); }
       }
@@ -33020,7 +33035,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     finally { setLoading(false); }
   }
   async function renovar(ct) {
-    if (!confirm("Renovar contrato por mais 30 dias?")) return;
+    if (!confirm("Renovar contrato por mais 30 dias?")) { _talvezVoltarInicio(); return; }
     var dataInicio = ct.data_fim;
     var dataFim = new Date(ct.data_fim);
     dataFim.setDate(dataFim.getDate() + 30);
@@ -33060,6 +33075,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       await criarFaturaPrevista(novo);
       toast("Renovado! Novo contrato nº " + numCt(novo.id));
     } catch(e) { toast("Erro ao renovar: " + e.message, "error"); }
+    _talvezVoltarInicio();
   }
   function abrirEncerrarCt(ct) {
     // A anotação já existente vem preenchida: encerrar não pode apagar uma
@@ -33251,6 +33267,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:baixarCtData}) : x; }); });
       await sincronizarRefFatura(c, baixarCtData);
       setBaixarCtModal(null);
+      _talvezVoltarInicio();
       window._agUndo("Contrato baixado!", async function(){
         try {
           await db.patch("contratos", c.id, { status_pagamento: statusOriginal, data_pagamento: dataPagOriginal });
@@ -34347,7 +34364,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
 
 
     /* -- MODAL BAIXAR CONTRATO -- */
-    , baixarCtModal && React.createElement(Modal, { open: true, onClose: function(){ setBaixarCtModal(null); }, full: true, title: '\ud83d\udcb8 Baixar Contrato' }
+    , baixarCtModal && React.createElement(Modal, { open: true, onClose: function(){ setBaixarCtModal(null); _talvezVoltarInicio(); }, full: true, title: '\ud83d\udcb8 Baixar Contrato' }
       , React.createElement('div', { style: { fontSize:13,color:'var(--c-sub)',marginBottom:20 } }
           , (clientes.find(function(x){ return x.id==baixarCtModal.cliente_id; })||{}).nome||'\u2014'
           , ' \u00b7 '
@@ -34359,7 +34376,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       , React.createElement('input', { type:'date', value:baixarCtData, onChange:function(e){ setBaixarCtData(e.target.value); },
           style: { display:'block',width:'100%',marginTop:7,marginBottom:22,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } })
       , React.createElement('div', { style: { display:'grid',gridTemplateColumns:'1fr 1fr',gap:12 } }
-          , React.createElement('button', { onClick:function(){ setBaixarCtModal(null); }, style: { border:'1.5px solid var(--c-border)',background:'transparent',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer',color:'var(--c-text)' } }, 'Cancelar')
+          , React.createElement('button', { onClick:function(){ setBaixarCtModal(null); _talvezVoltarInicio(); }, style: { border:'1.5px solid var(--c-border)',background:'transparent',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer',color:'var(--c-text)' } }, 'Cancelar')
           , React.createElement('button', { onClick:confirmarBaixarCt, style: { border:'none',background:'linear-gradient(135deg,#15803d,#34C759)',color:'#fff',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer' } }, '\u2705 Confirmar Baixa')
         )
     )
@@ -40243,7 +40260,17 @@ function _neuShadow(_cor){
 }
 
 // -- FINANCEIRO ------------------------------------------------------------─
-function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setContas, contratos, setContratos, manutencoes, setManutencoes, multas, veiculos, clientes, empresa, toast, finDeepLink, setFinDeepLink, orcItens, onOrcItensChange }) {
+function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setContas, contratos, setContratos, manutencoes, setManutencoes, multas, veiculos, clientes, empresa, toast, finDeepLink, setFinDeepLink, orcItens, onOrcItensChange, setTab: setAppTab }) {
+  /* Marca se a ação em andamento (baixar/emitir) veio da Agenda Mensal do
+     Início (finDeepLink.voltarInicio) — nesse caso, ao terminar o fluxo de
+     confirm+prompt que resolve a pendência, o usuário volta pra Início em
+     vez de ficar preso na aba Financeiro. Renomeado pra setAppTab porque
+     este componente já tem seu próprio "tab"/"setTab" locais (sub-abas
+     Despesas/Receitas/Faturas) — mesmo nome, coisas diferentes. */
+  var _voltarInicioRef = React.useRef(false);
+  function _talvezVoltarInicio(){
+    if (_voltarInicioRef.current) { _voltarInicioRef.current = false; if (setAppTab) setAppTab("inicio"); }
+  }
   const [modal, setModal] = useState(false);
   const [modalTipo, setModalTipo] = useState("despesa");
   const [form, setForm] = useState({});
@@ -40267,6 +40294,9 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
      sincronização (regra do CLAUDE.md: toda baixa tem que sincronizar com
      tudo que estiver relacionado). */
   async function _baixarDespesaFluxo(d) {
+    try { await _baixarDespesaFluxoInner(d); } finally { _talvezVoltarInicio(); }
+  }
+  async function _baixarDespesaFluxoInner(d) {
     if (!d) return;
     var _confBD = await window.__agConfirm({ title: "Baixar Despesa", icon: "💸", message: "Confirmar baixa de \"" + (d.descricao||d.categoria||"despesa") + "\"?", okLabel: "Confirmar" });
     if (!_confBD.ok) return;
@@ -40320,6 +40350,9 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     } catch(e) { toast("❌ Erro ao baixar: " + (e.message || e)); }
   }
   async function _baixarReceitaFluxo(r) {
+    try { await _baixarReceitaFluxoInner(r); } finally { _talvezVoltarInicio(); }
+  }
+  async function _baixarReceitaFluxoInner(r) {
     if (!r) return;
     var _confBR = await window.__agConfirm({ title: "Baixar Receita", icon: "✅", message: "Confirmar baixa de \"" + (r.descricao||"receita") + "\"?", okLabel: "Confirmar" });
     if (!_confBR.ok) return;
@@ -40336,6 +40369,9 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
      "fat" só quando tab==="faturas" está renderizado, então não dá pra
      chamar a função de lá direto a partir do deep-link do calendário. */
   async function _emitirFaturaFluxo(c) {
+    try { await _emitirFaturaFluxoInner(c); } finally { _talvezVoltarInicio(); }
+  }
+  async function _emitirFaturaFluxoInner(c) {
     if (!c || !c.previsao_pagamento) return;
     var _mesFatEv = c.previsao_pagamento.slice(0,7);
     var _refKeyEv = "fat_" + c.id + "_" + _mesFatEv;
@@ -40369,6 +40405,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   }
   useEffect(function() {
     if (!finDeepLink || finDeepLink.subTab !== "faturas") return;
+    _voltarInicioRef.current = !!finDeepLink.voltarInicio;
     setTab("faturas");
     if (finDeepLink.mes) setFiltroMes(finDeepLink.mes);
     if (finDeepLink.acao === "emitir" && finDeepLink.itemId != null) {
@@ -40379,6 +40416,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   }, [finDeepLink]);
   useEffect(function() {
     if (!finDeepLink || finDeepLink.subTab !== "receitas") return;
+    _voltarInicioRef.current = !!finDeepLink.voltarInicio;
     setTab("receitas");
     var _dlMesR = finDeepLink.mes;
     if (_dlMesR) setFiltroMes(_dlMesR);
@@ -40394,6 +40432,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   }, [finDeepLink]);
   useEffect(function() {
     if (!finDeepLink || finDeepLink.subTab !== "despesas") return;
+    _voltarInicioRef.current = !!finDeepLink.voltarInicio;
     setTab("despesas");
     if (finDeepLink.cat !== undefined) setFiltroCatDesp(finDeepLink.cat);
     var _dlMes = finDeepLink.mes;
@@ -47653,11 +47692,15 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                                    já sincronizava antes. Evento sem "acao" (documento, CNH, reserva etc.)
                                    só navega, como sempre foi. */
                                 : function(){
-                                    if (ev.acao === "renovar" && ev.id != null && setCtDeepLink) { setCtDeepLink({ acao:"renovar", itemId: ev.id }); if (setTab) setTab("contratos"); return; }
-                                    if (ev.acao === "emitir" && ev.id != null && setFinDeepLink) { setFinDeepLink({ subTab:"faturas", acao:"emitir", itemId: ev.id, mes: ev.mesFat }); if (setTab) setTab("financeiro"); return; }
+                                    /* voltarInicio:true — a ação foi disparada direto da Agenda
+                                       Mensal (Início), então ao fechar a janela que abre em
+                                       Contratos/Financeiro pra resolver, o usuário deve voltar
+                                       pra Início/Agenda em vez de ficar parado na outra aba. */
+                                    if (ev.acao === "renovar" && ev.id != null && setCtDeepLink) { setCtDeepLink({ acao:"renovar", itemId: ev.id, voltarInicio:true }); if (setTab) setTab("contratos"); return; }
+                                    if (ev.acao === "emitir" && ev.id != null && setFinDeepLink) { setFinDeepLink({ subTab:"faturas", acao:"emitir", itemId: ev.id, mes: ev.mesFat, voltarInicio:true }); if (setTab) setTab("financeiro"); return; }
                                     if (ev.acao === "baixar" && ev.id != null) {
-                                      if (ev.tipo === "pagamento" && setCtDeepLink) { setCtDeepLink({ acao:"baixar", itemId: ev.id }); if (setTab) setTab("contratos"); return; }
-                                      if ((ev.tipo === "despesa" || ev.tipo === "receita") && setFinDeepLink) { setFinDeepLink({ subTab: ev.tipo==="despesa"?"despesas":"receitas", acao:"baixar", itemId: ev.id, mes:(ev.data||"").slice(0,7) }); if (setTab) setTab("financeiro"); return; }
+                                      if (ev.tipo === "pagamento" && setCtDeepLink) { setCtDeepLink({ acao:"baixar", itemId: ev.id, voltarInicio:true }); if (setTab) setTab("contratos"); return; }
+                                      if ((ev.tipo === "despesa" || ev.tipo === "receita") && setFinDeepLink) { setFinDeepLink({ subTab: ev.tipo==="despesa"?"despesas":"receitas", acao:"baixar", itemId: ev.id, mes:(ev.data||"").slice(0,7), voltarInicio:true }); if (setTab) setTab("financeiro"); return; }
                                     }
                                     if (ev.tab && setTab) setTab(ev.tab);
                                   }

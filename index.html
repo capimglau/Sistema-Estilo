@@ -15571,16 +15571,27 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
 .agk2-day-col-body{display:flex; flex-direction:column; gap:9px;}
 .agk2-day-empty{border:1.5px dashed var(--c-border); border-radius:14px; padding:18px 10px; text-align:center; color:var(--c-sub); font-size:11.5px; font-weight:500;}
 
-/* Todos os cartões com a mesma altura (título trunca em 2 linhas). */
-.agk2-ev-card{background:var(--c-card); border:1px solid var(--c-border); border-radius:14px; padding:12px 13px 11px; height:104px; box-sizing:border-box; overflow:hidden; box-shadow:0 6px 14px rgba(0,0,0,0.09), 0 2px 5px rgba(0,0,0,0.06); cursor:pointer; transition:transform .15s ease; border-left:3.5px solid transparent; flex-shrink:0;}
+/* Todos os cartões com a mesma altura (título trunca em 2 linhas). Fundo já
+   nasce com um degradê leve na cor do evento (vermelho pra despesa/multa/
+   manutenção/conta, verde pra receita/pagamento — ver AGK2_EV_TINT) — não é
+   só um efeito do pulso, é a identidade visual do cartão o tempo todo. */
+.agk2-ev-card{
+  background:linear-gradient(135deg, color-mix(in srgb, var(--ev-color) 8%, var(--c-card)), color-mix(in srgb, var(--ev-color) 2%, var(--c-card)));
+  border:1px solid var(--c-border); border-radius:14px; padding:12px 13px 11px; height:104px; box-sizing:border-box; overflow:hidden;
+  box-shadow:0 6px 14px rgba(0,0,0,0.09), 0 2px 5px rgba(0,0,0,0.06);
+  cursor:pointer; transition:transform .15s ease, opacity .2s ease; border-left:3.5px solid transparent; flex-shrink:0;
+}
 .agk2-ev-card:active{transform:scale(0.97);}
-/* Hoje ou atrasado (evento de dia já passado que segue não resolvido): leve
-   degradê pulsante na cor da categoria, sinalizando que pede atenção agora. */
+/* Pendente (não resolvido) com o dia já vencido/hoje: pulsa mais forte na
+   mesma cor do degradê, pedindo atenção agora. */
 @keyframes agk2-ev-pulse{
   0%,100%{ background:linear-gradient(135deg, color-mix(in srgb, var(--ev-color) 9%, var(--c-card)), color-mix(in srgb, var(--ev-color) 2%, var(--c-card))); box-shadow:0 0 0 0 color-mix(in srgb, var(--ev-color) 30%, transparent), 0 2px 6px rgba(0,0,0,0.05); }
   50%{ background:linear-gradient(135deg, color-mix(in srgb, var(--ev-color) 24%, var(--c-card)), color-mix(in srgb, var(--ev-color) 9%, var(--c-card))); box-shadow:0 0 0 3px color-mix(in srgb, var(--ev-color) 14%, transparent), 0 2px 6px rgba(0,0,0,0.05); }
 }
 .agk2-ev-card.agk2-ev-pulsa{ animation:agk2-ev-pulse 2.6s ease-in-out infinite; }
+/* Resolvido (ex.: contrato já renovado) com o dia já vencido/hoje: esmaece
+   em vez de pulsar — já foi tratado, não precisa mais de atenção. */
+.agk2-ev-card.agk2-ev-esmaece{ opacity:0.48; }
 /* "Monte" de cartões (3º evento em diante do dia) — duas cópias fantasmas
    atrás, deslocadas, simulando uma pilha de cartões; toca pra expandir. */
 .agk2-ev-pile{
@@ -47111,6 +47122,14 @@ var M4_CAT_COLOR = {
   manutencao:"#8B5E3C", manutencao_prazo:"#8B5E3C", receita:"#34C759",
   reserva:"#5AC8FA", reserva_recebida:"#5AC8FA", orcamento:"#FF2D92"
 };
+/* Degradê do cartão no calendário kanban do Dashboard: vermelho pra dinheiro
+   saindo (despesa, multa, manutenção, conta), verde pra dinheiro entrando
+   (receita, pagamento). Categorias fora dessa lista usam a própria M4_CAT_COLOR. */
+var AGK2_EV_TINT = {
+  despesa:"#FF3B30", manutencao:"#FF3B30", manutencao_prazo:"#FF3B30",
+  multa:"#FF3B30", multa_notif:"#FF3B30", conta:"#FF3B30",
+  receita:"#34C759", pagamento:"#34C759"
+};
 
 /* Constrói a lista completa de eventos do sistema (contratos, multas, documentos de
    veículo, CNH, contas, despesas, manutenções, receitas avulsas, reservas, orçamento
@@ -47149,10 +47168,18 @@ function buildAgendaEventos(ctx) {
     if (depth === 0) return "nº " + numCt(c.id);
     return "nº " + numCt(cur.id) + "/" + (depth + 1);
   }
+  // usado pelo evento "Venc. Contrato" abaixo (resolvido = já tem contrato de
+  // continuidade) e pela "renovação incompleta" mais adiante — construído uma
+  // vez só, no topo, pra servir os dois.
+  var idsContratosCal = new Set(contratos.map(function(c){ return String(c.id); }));
 
   var eventos = [];
 
-  // CONTRATOS — vencimento do período
+  // CONTRATOS — vencimento do período. Sempre aparece (mesmo já renovado —
+  // é um marcador informativo de quando o período encerrou), mas carrega
+  // `resolvido` pra o calendário do Dashboard saber que não precisa mais
+  // pulsar: já tem contrato de continuidade vinculado (renovado_para aponta
+  // pra um contrato que existe), então só esmaece em vez de pedir atenção.
   contratos.forEach(function(c) {
     if (!c.data_fim || c.status === "cancelado") return;
     var cl = clientes.find(function(x){return x.id==c.cliente_id;});
@@ -47160,6 +47187,7 @@ function buildAgendaEventos(ctx) {
     eventos.push({
       data: c.data_fim, tipo: "contrato",
       cor: c.data_fim < hoje ? "#FF3B30" : "#007AFF",
+      resolvido: !!(c.renovado_para && idsContratosCal.has(String(c.renovado_para))),
       emoji: "📋",
       titulo: "Venc. Contrato " + calRenLabel(c) + " · " + fmtComp(c.data_fim),
       sub: (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + " " + (ve&&ve.modelo||""),
@@ -47204,7 +47232,6 @@ function buildAgendaEventos(ctx) {
   });
 
   // CONTRATOS — renovação incompleta (pai concluído aponta para filho que não existe mais)
-  var idsContratosCal = new Set(contratos.map(function(c){ return String(c.id); }));
   var _hoje14strCal = _addDiasISO(hoje, -14);
   contratos.forEach(function(c) {
     if (c.status !== "concluido" || !c.renovado_para || idsContratosCal.has(String(c.renovado_para))) return;
@@ -47378,10 +47405,13 @@ function buildAgendaEventos(ctx) {
     });
   });
 
-  // RECEITAS operacionais (apenas avulsas — as vinculadas a contratos já aparecem como "Pgto Contrato")
+  // RECEITAS operacionais (apenas avulsas — as vinculadas a contratos já aparecem como "Pgto Contrato").
+  // Já recebida/isenta não entra — mesmo padrão de despesa (só paga não some) e
+  // contrato/multa (só pago não some): evento de agenda é sempre algo a resolver.
   receitas.forEach(function(r) {
     if (!r.data) return;
     if (r.ref_fatura) return;
+    if (r.status === "recebido" || r.status === "isento") return;
     eventos.push({
       data: r.data, tipo: "receita",
       cor: "#34C759",
@@ -47536,11 +47566,16 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
           : React.createElement('div', { className: desktop?"agk2-board":"agk2-timeline" }
               , dias.map(function(c){
                   var isHoje = c.isoD===isoHoje, isPassado = c.isoD<isoHoje;
-                  /* Hoje ou atrasado (evento de dia já passado que ainda aparece
-                     porque segue não resolvido) pulsa em degradê na cor da
-                     categoria — os dois pedem atenção agora. Só dias futuros
-                     ficam no visual estático. */
-                  var precisaAtencao = isHoje || isPassado;
+                  var diaVencidoOuHoje = isHoje || isPassado;
+                  /* Pulsar é por EVENTO, não por dia: só quem ainda não foi resolvido
+                     (ev.resolvido !== true — pagamento/despesa/receita/multa etc. só
+                     aparecem aqui quando pendentes, então já valem como não resolvidos;
+                     só "Venc. Contrato" carrega resolvido=true quando já foi renovado)
+                     e cujo dia já chegou/passou pulsa. Se já resolvido, esmaece — nunca
+                     pulsa e nunca fica "normal" (senão passaria despercebido que já foi
+                     tratado). Dia futuro fica neutro nos dois casos. */
+                  var temPendente = c.evsDia.some(function(ev){ return !ev.resolvido; });
+                  var precisaAtencao = diaVencidoOuHoje && temPendente; // usado pra bolinha da linha do tempo (mobile)
                   /* Até 2 eventos aparecem sempre; do 3º em diante viram um "monte"
                      de cartões empilhados (sombra em camadas) que expande ao tocar,
                      revelando o resto no lugar do monte. */
@@ -47558,10 +47593,15 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                     , React.createElement('div', { key:"b", className:"agk2-day-col-body" }
                       , evsVisiveis.map(function(ev,ei){
                           var cor = M4_CAT_COLOR[ev.tipo]||"#8E8E93";
+                          /* Degradê do cartão: vermelho pra despesa/multa/manutenção/conta
+                             (dinheiro saindo), verde pra receita/pagamento (dinheiro
+                             entrando) — nas outras categorias usa a própria cor. */
+                          var tint = AGK2_EV_TINT[ev.tipo] || cor;
+                          var cardEstado = !diaVencidoOuHoje ? "" : (ev.resolvido ? " agk2-ev-esmaece" : " agk2-ev-pulsa");
                           return React.createElement('div', {
                               key:ei,
-                              className:"agk2-ev-card"+(precisaAtencao?" agk2-ev-pulsa":""),
-                              style:{ borderLeftColor:cor, '--ev-color':cor },
+                              className:"agk2-ev-card"+cardEstado,
+                              style:{ borderLeftColor:cor, '--ev-color':tint },
                               onClick:function(){ if (ev.tab && setTab) setTab(ev.tab); }
                             }
                             , React.createElement('p', { className:"agk2-ev-title" }, ev.titulo)

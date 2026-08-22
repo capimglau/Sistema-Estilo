@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="52997c7"/>
+<meta name="ag-build" content="ffe9226"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -27326,7 +27326,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                    que outros trechos ainda usam — mesma prática já adotada aqui pro
                    modelo de gráfico de linhas descontinuado. */
                 return React.createElement('div', { style: desktop ? { flex:1, minHeight:0, display:"flex", flexDirection:"column" } : { height:"80vh", minHeight:540, display:"flex", flexDirection:"column" } }
-                  , React.createElement(CalendarioKanban2, { contratos:contratos, multas:multas, veiculos:veiculos, clientes:clientes, contas:contas, despesas:despesas, receitas:receitas, reservas:reservas, manutencoes:manutencoes, orcItens:orcItens, hoje:hoje, setTab:setTab, desktop:desktop, dashMes:dashMes, mesAtual:mesAtual })
+                  , React.createElement(CalendarioKanban2, { contratos:contratos, multas:multas, veiculos:veiculos, clientes:clientes, contas:contas, despesas:despesas, receitas:receitas, reservas:reservas, manutencoes:manutencoes, orcItens:orcItens, hoje:hoje, setTab:setTab, desktop:desktop, dashMes:dashMes, mesAtual:mesAtual, setCtDeepLink:setCtDeepLink, setFinDeepLink:setFinDeepLink })
                 );
                 /* ── gráfico 3 meses: anterior · atual · próximo ── */
                 function _lastDayOf(m){var d=new Date(m+"-01");d.setMonth(d.getMonth()+1);d.setDate(0);return d.getDate();}
@@ -32921,6 +32921,18 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     if (!ctDeepLink) return;
     if (ctDeepLink.mes) { setFiltroMesCt(ctDeepLink.mes); setKpiMesBar(ctDeepLink.mes); }
     if (ctDeepLink.filter) setFilter(ctDeepLink.filter);
+    /* Vindo do card da Agenda Mensal do dashboard: já chega pedindo pra
+       resolver — abre o MESMO fluxo que o botão de swipe usa (renovar() já
+       tem seu próprio confirm nativo "Renovar contrato por mais 30 dias?";
+       o modal de baixa é o mesmo formulário de data que o swipe "Baixar"
+       abre), nunca uma baixa direta sem o usuário confirmar. */
+    if (ctDeepLink.itemId != null) {
+      var _ctDL = (contratos||[]).find(function(x){ return x.id == ctDeepLink.itemId; });
+      if (_ctDL) {
+        if (ctDeepLink.acao === "renovar") renovar(_ctDL);
+        else if (ctDeepLink.acao === "baixar") { setBaixarCtData(_brNow().toISOString().split("T")[0]); setBaixarCtModal(_ctDL); }
+      }
+    }
     if (setCtDeepLink) setCtDeepLink(null);
   }, [ctDeepLink]);
   const [baixarCtModal, setBaixarCtModal] = useState(null);
@@ -40566,7 +40578,10 @@ function RdSunburstCard({ receitaRows, despesaRows, C, CARD_CLS }) {
    (sombra dupla clara+escura, tingida pela cor do dado) aplicada aqui aos
    cards de Receita/Despesa da tela Financeiro. */
 function _neuBg(_cor,_pct){
-  var _top=(_pct*0.55).toFixed(1), _bot=(_pct*1.7).toFixed(1);
+  /* Mix bem mais leve que 0.55x/1.7x (o fundo embaixo passava de 40% de cor
+     pura em cards "previsto/vencido", ficando carregado — o usuário pediu
+     pra ficar clarinho feito o card "pago", que já usa um _pct bem menor). */
+  var _top=(_pct*0.28).toFixed(1), _bot=(_pct*0.85).toFixed(1);
   return "linear-gradient(180deg, color-mix(in srgb, "+_cor+" "+_top+"%, var(--c-card)), color-mix(in srgb, "+_cor+" "+_bot+"%, var(--c-card)))";
 }
 function _neuShadow(_cor){
@@ -40598,12 +40613,87 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   const highlightTimer = React.useRef(null);
   const [highlightRecId, setHighlightRecId] = useState(null);
   const highlightRecTimer = React.useRef(null);
+  /* Fluxos de baixa extraídos pra função própria (em vez de só existir dentro
+     do .map() de cada lista) — assim tanto o botão de swipe "Baixar" quanto o
+     card da Agenda Mensal do dashboard (via finDeepLink.acao==="baixar")
+     chamam exatamente o mesmo confirm+prompt+patch, sem duplicar a lógica de
+     sincronização (regra do CLAUDE.md: toda baixa tem que sincronizar com
+     tudo que estiver relacionado). */
+  async function _baixarDespesaFluxo(d) {
+    if (!d) return;
+    var _confBD = await window.__agConfirm({ title: "Baixar Despesa", icon: "💸", message: "Confirmar baixa de \"" + (d.descricao||d.categoria||"despesa") + "\"?", okLabel: "Confirmar" });
+    if (!_confBD.ok) return;
+    var _dia = (d.data || "").slice(8, 10) || "01";
+    var _dtDef = d.recorrente ? (filtroMes + "-" + _dia) : (d.data || _brNow().toISOString().split("T")[0]);
+    var _rDesp = await window.__agPrompt({ title: "Baixar Despesa", icon: "💸", label1: "Data do pagamento", type1: "date", default1: _dtDef });
+    if (!_rDesp.ok) return;
+    var dt = _rDesp.v1;
+    try {
+      if (d._fromManutencao) {
+        var mn = d._mn;
+        var veM2 = (veiculos||[]).find(function(v){ return v.id == mn.veiculo_id; });
+        var novaD = await db.post("despesas", {
+          descricao: "Manutenção: " + mn.tipo + (veM2 ? " - " + veM2.placa : ""),
+          categoria: "Manutenção", veiculo_id: mn.veiculo_id || null,
+          valor: mn.custo, data: mn.data_previsao_pagamento || mn.data_entrada || dt,
+          status: "pago", data_pagamento: dt,
+          observacoes: (mn.descricao||"") + (mn.oficina ? " | Oficina: " + mn.oficina : ""),
+          manutencao_id: mn.id
+        });
+        setDespesas(p => [novaD].concat(p));
+        var umM = await db.patch("manutencao", mn.id, { status_financeiro: "pago", data_pagamento: dt });
+        setManutencoes(p => p.map(x => x.id==mn.id ? Object.assign({},x,umM) : x));
+        toast("✅ Manutenção baixada!");
+      } else if (d.recorrente) {
+        var _diaRec = (d.data || "").slice(8,10) || "01";
+        var _origemId = d.recorrencia_origem_id || d.id;
+        var _mesPagoRec = dt.slice(0,7);
+        var _jaExisteRec = despesas.find(function(x){ return x.recorrencia_origem_id == _origemId && (x.data||"").slice(0,7) === _mesPagoRec; });
+        if (_jaExisteRec) {
+          var upd = await db.patch("despesas", _jaExisteRec.id, { status: "pago", data_pagamento: dt });
+          setDespesas(p => p.map(x => x.id === _jaExisteRec.id ? Object.assign({}, x, upd) : x));
+        } else {
+          var _paiId = d.recorrencia_origem_id || d.id;
+          var novaInst = await db.post("despesas", {
+            descricao: d.descricao, categoria: d.categoria, veiculo_id: d.veiculo_id || null,
+            valor: d.valor, data: _mesPagoRec + "-" + _diaRec,
+            status: "pago", data_pagamento: dt,
+            recorrente: false, recorrencia_origem_id: _paiId,
+            observacoes: d.observacoes || null
+          });
+          setDespesas(p => [novaInst].concat(p));
+        }
+        toast("✅ Despesa baixada!");
+      } else {
+        var upd2 = await db.patch("despesas", d.id, { status: "pago", data_pagamento: dt });
+        setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd2) : x));
+        if (d.manutencao_id) { try { var um = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pago", data_pagamento: dt }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um) : x)); } catch(e){ console.warn(e); } }
+        toast("✅ Despesa baixada!");
+      }
+    } catch(e) { toast("❌ Erro ao baixar: " + (e.message || e)); }
+  }
+  async function _baixarReceitaFluxo(r) {
+    if (!r) return;
+    var _confBR = await window.__agConfirm({ title: "Baixar Receita", icon: "✅", message: "Confirmar baixa de \"" + (r.descricao||"receita") + "\"?", okLabel: "Confirmar" });
+    if (!_confBR.ok) return;
+    var _rRec = await window.__agPrompt({ title: "Baixar Receita", icon: "✅", label1: "Data do recebimento", type1: "date", default1: _brNow().toISOString().split("T")[0] });
+    if (!_rRec.ok) return;
+    var dt = _rRec.v1;
+    var upd = await db.patch("receitas", r.id, { status: "recebido", data_pagamento: dt });
+    setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
+    if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){ console.warn(e); } } } }
+    toast("Receita baixada!");
+  }
   useEffect(function() {
     if (!finDeepLink || finDeepLink.subTab !== "receitas") return;
     setTab("receitas");
     var _dlMesR = finDeepLink.mes;
     if (_dlMesR) setFiltroMes(_dlMesR);
     var _dlIdR = finDeepLink.itemId;
+    if (finDeepLink.acao === "baixar" && _dlIdR != null) {
+      var _recDL = (receitas||[]).find(function(x){ return x.id == _dlIdR; });
+      if (_recDL) _baixarReceitaFluxo(_recDL);
+    }
     setHighlightRecId(_dlIdR);
     if (highlightRecTimer.current) clearTimeout(highlightRecTimer.current);
     highlightRecTimer.current = setTimeout(function() { setHighlightRecId(null); }, 3000);
@@ -40625,7 +40715,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           var _dia = (_desp.data||"").slice(8,10);
           _desp = Object.assign({}, _desp, { data: _dlMes + "-" + _dia, status: "previsto", data_pagamento: null });
         }
-        _openDespRef.current(_desp);
+        if (finDeepLink.acao === "baixar") _baixarDespesaFluxo(_desp);
+        else _openDespRef.current(_desp);
       } else {
         setHighlightDespId(_dlId);
         if (highlightTimer.current) clearTimeout(highlightTimer.current);
@@ -41491,17 +41582,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           var _recDDMM = _recDataTab ? _recDataTab.slice(8,10) + "/" + _recDataTab.slice(5,7) : null;
           var _recLabelTab = r.status === "recebido" ? "pago" : r.status === "emitida" ? "emitida" : null;
 
-          var _fnBaixarRec = (!r._fromContrato && !_recebida && !isRec) ? async function() {
-            var _confBR = await window.__agConfirm({ title: "Baixar Receita", icon: "✅", message: "Confirmar baixa de \"" + (r.descricao||"receita") + "\"?", okLabel: "Confirmar" });
-            if (!_confBR.ok) return;
-            var _rRec = await window.__agPrompt({ title: "Baixar Receita", icon: "✅", label1: "Data do recebimento", type1: "date", default1: _brNow().toISOString().split("T")[0] });
-            if (!_rRec.ok) return;
-            var dt = _rRec.v1;
-            var upd = await db.patch("receitas", r.id, { status: "recebido", data_pagamento: dt });
-            setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
-            if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){ console.warn(e); } } } }
-            toast("Receita baixada!");
-          } : (r._fromContrato && !_recebida) ? async function() {
+          var _fnBaixarRec = (!r._fromContrato && !_recebida && !isRec) ? function(){ return _baixarReceitaFluxo(r); } : (r._fromContrato && !_recebida) ? async function() {
             var _confCR = await window.__agConfirm({ title: "Receber Pagamento", icon: "💰", message: "Confirmar recebimento de \"" + (r.descricao||"receita") + "\"?", okLabel: "Confirmar" });
             if (!_confCR.ok) return;
             var _rCtRec = await window.__agPrompt({ title: "Receber Pagamento", icon: "💰", label1: "Data do recebimento", type1: "date", default1: _brNow().toISOString().split("T")[0] });
@@ -41647,63 +41728,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           })();
 
           /* ── função Baixar (para swipe e botão) ── */
-          var _fnBaixarDesp = _pagoMes ? null : async function() {
-            var _confBD = await window.__agConfirm({ title: "Baixar Despesa", icon: "💸", message: "Confirmar baixa de \"" + (d.descricao||d.categoria||"despesa") + "\"?", okLabel: "Confirmar" });
-            if (!_confBD.ok) return;
-            var _dia = (d.data || "").slice(8, 10) || "01";
-            var _dtDef = d.recorrente ? (filtroMes + "-" + _dia) : (d.data || _brNow().toISOString().split("T")[0]);
-            var _rDesp = await window.__agPrompt({ title: "Baixar Despesa", icon: "💸", label1: "Data do pagamento", type1: "date", default1: _dtDef });
-            if (!_rDesp.ok) return;
-            var dt = _rDesp.v1;
-            try {
-              if (d._fromManutencao) {
-                var mn = d._mn;
-                var veM2 = (veiculos||[]).find(function(v){ return v.id == mn.veiculo_id; });
-                var novaD = await db.post("despesas", {
-                  descricao: "Manutenção: " + mn.tipo + (veM2 ? " - " + veM2.placa : ""),
-                  categoria: "Manutenção", veiculo_id: mn.veiculo_id || null,
-                  valor: mn.custo, data: mn.data_previsao_pagamento || mn.data_entrada || dt,
-                  status: "pago", data_pagamento: dt,
-                  observacoes: (mn.descricao||"") + (mn.oficina ? " | Oficina: " + mn.oficina : ""),
-                  manutencao_id: mn.id
-                });
-                setDespesas(p => [novaD].concat(p));
-                var umM = await db.patch("manutencao", mn.id, { status_financeiro: "pago", data_pagamento: dt });
-                setManutencoes(p => p.map(x => x.id==mn.id ? Object.assign({},x,umM) : x));
-                toast("✅ Manutenção baixada!");
-              } else if (d.recorrente) {
-                var _diaRec = (d.data || "").slice(8,10) || "01";
-                var _origemId = d.recorrencia_origem_id || d.id;
-                /* mês da parcela = mês da DATA DE PAGAMENTO digitada (dt), nunca o filtro de
-                   mês só de exibição da tela (filtroMes) — usar o filtro fazia a parcela cair
-                   no mês que estava selecionado na tela no momento da baixa (podia ser
-                   diferente do mês pago de verdade), e ela sumia/ficava "sem baixa" ao olhar
-                   o mês correto em outro aparelho/sessão. */
-                var _mesPagoRec = dt.slice(0,7);
-                var _jaExisteRec = despesas.find(function(x){ return x.recorrencia_origem_id == _origemId && (x.data||"").slice(0,7) === _mesPagoRec; });
-                if (_jaExisteRec) {
-                  var upd = await db.patch("despesas", _jaExisteRec.id, { status: "pago", data_pagamento: dt });
-                  setDespesas(p => p.map(x => x.id === _jaExisteRec.id ? Object.assign({}, x, upd) : x));
-                } else {
-                  var _paiId = d.recorrencia_origem_id || d.id;
-                  var novaInst = await db.post("despesas", {
-                    descricao: d.descricao, categoria: d.categoria, veiculo_id: d.veiculo_id || null,
-                    valor: d.valor, data: _mesPagoRec + "-" + _diaRec,
-                    status: "pago", data_pagamento: dt,
-                    recorrente: false, recorrencia_origem_id: _paiId,
-                    observacoes: d.observacoes || null
-                  });
-                  setDespesas(p => [novaInst].concat(p));
-                }
-                toast("✅ Despesa baixada!");
-              } else {
-                var upd = await db.patch("despesas", d.id, { status: "pago", data_pagamento: dt });
-                setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd) : x));
-                if (d.manutencao_id) { try { var um = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pago", data_pagamento: dt }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um) : x)); } catch(e){ console.warn(e); } }
-                toast("✅ Despesa baixada!");
-              }
-            } catch(e) { toast("❌ Erro ao baixar: " + (e.message || e)); }
-          };
+          var _fnBaixarDesp = _pagoMes ? null : function(){ return _baixarDespesaFluxo(d); };
 
           var _fnEstornarDesp = _pagoMes && !d._fromManutencao ? async function() {
             var _rEstD = await window.__agConfirm({ title: "Estornar Despesa", icon: "↩️", message: "Estornar pagamento de \"" + (d.descricao||d.categoria||"despesa") + "\"?", okLabel: "Estornar", danger: true });
@@ -47354,7 +47379,7 @@ function buildAgendaEventos(ctx) {
       emoji: "📋",
       titulo: "Venc. Contrato " + calRenLabel(c) + " · " + fmtComp(c.data_fim),
       sub: (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + " " + (ve&&ve.modelo||""),
-      tab: "contratos"
+      tab: "contratos", id: c.id, acao: "renovar"
     });
   });
 
@@ -47390,7 +47415,7 @@ function buildAgendaEventos(ctx) {
       emoji: "💰",
       titulo: "Pgto Contrato " + calRenLabel(c) + " · " + fmtComp(c.previsao_pagamento) + " · " + fmtV(c.valor_total),
       sub: (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + (c.recorrente ? " · ↻ Recorrente" : ""),
-      tab: "contratos"
+      tab: "contratos", id: c.id, acao: "baixar"
     });
   });
 
@@ -47514,7 +47539,7 @@ function buildAgendaEventos(ctx) {
         emoji: "📤",
         titulo: "Despesa · " + (d.descricao||"--") + " · " + fmtV(d.valor),
         sub: (d.categoria||"") + (d.recorrente ? " · ↻ Recorrente" : "") + (d.observacoes ? " · " + d.observacoes : ""),
-        tab: "financeiro"
+        tab: "financeiro", id: d.id, acao: "baixar"
       });
     });
   });
@@ -47581,7 +47606,7 @@ function buildAgendaEventos(ctx) {
       emoji: "📥",
       titulo: "Receita · " + (r.descricao||"--") + " · " + fmtV(r.valor),
       sub: (r.categoria||"") + (r.forma_pagamento ? " · " + r.forma_pagamento : ""),
-      tab: "financeiro"
+      tab: "financeiro", id: r.id, acao: "baixar"
     });
   });
 
@@ -47642,7 +47667,7 @@ function buildAgendaEventos(ctx) {
    embutido no painel do Dashboard. Usa buildAgendaEventos (mesma fonte da aba
    Agenda) pra nunca divergir do que aparece nos outros calendários do sistema
    (regra de cobertura de dados). */
-function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, hoje, setTab, H, desktop, dashMes, mesAtual }) {
+function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, hoje, setTab, H, desktop, dashMes, mesAtual, setCtDeepLink, setFinDeepLink }) {
   var _flArr = React.useState("todos"); var filtro = _flArr[0], setFiltro = _flArr[1];
   /* Dias com o "monte" de cartões expandido (mais de 2 eventos, tocou pra ver
      todos) — chave é a data ISO do dia. */
@@ -47829,7 +47854,22 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                               style:{ '--ev-l':_tone.l, '--ev-d':_tone.d, animationDelay:_pulseDelay||undefined },
                               onClick: ehBaralho
                                 ? function(){ setDiasExpandidos(function(m){ var n=Object.assign({},m); n[c.isoD]=true; return n; }); }
-                                : function(){ if (ev.tab && setTab) setTab(ev.tab); }
+                                /* Cartão com "acao" (renovar/baixar) resolvido: navega já levando um
+                                   deep-link (ctDeepLink/finDeepLink, mesmo mecanismo que os KPIs da
+                                   dashboard já usam) que a tela de destino usa pra abrir sozinha o MESMO
+                                   fluxo de confirmação que o botão de swipe usa lá (renovar(), o modal de
+                                   baixa do contrato, ou o confirm+prompt de baixar despesa/receita) — sem
+                                   duplicar a lógica de baixa aqui, então continua sincronizando tudo que
+                                   já sincronizava antes. Evento sem "acao" (documento, CNH, reserva etc.)
+                                   só navega, como sempre foi. */
+                                : function(){
+                                    if (ev.acao === "renovar" && ev.id != null && setCtDeepLink) { setCtDeepLink({ acao:"renovar", itemId: ev.id }); if (setTab) setTab("contratos"); return; }
+                                    if (ev.acao === "baixar" && ev.id != null) {
+                                      if (ev.tipo === "pagamento" && setCtDeepLink) { setCtDeepLink({ acao:"baixar", itemId: ev.id }); if (setTab) setTab("contratos"); return; }
+                                      if ((ev.tipo === "despesa" || ev.tipo === "receita") && setFinDeepLink) { setFinDeepLink({ subTab: ev.tipo==="despesa"?"despesas":"receitas", acao:"baixar", itemId: ev.id, mes:(ev.data||"").slice(0,7) }); if (setTab) setTab("financeiro"); return; }
+                                    }
+                                    if (ev.tab && setTab) setTab(ev.tab);
+                                  }
                             }
                             , React.createElement('p', { className:"agk2-ev-title" }, ev.titulo)
                             , React.createElement('div', { className:"agk2-ev-tags" }

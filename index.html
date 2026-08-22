@@ -53315,16 +53315,22 @@ if (!__viewerMode) {
 // topo. Sem CSS transition aqui de propósito: o valor é recalculado a cada
 // frame de rolagem (rAF), então já acompanha o dedo 1:1 — uma transition
 // concorrente deixaria o efeito "atrasado" em vez de grudado no toque.
-// O Dock (nav de baixo) acompanha o mesmo esmaecimento. Só reage à rolagem
-// da PÁGINA (window.scrollY) — a rolagem interna da Agenda Mensal embutida
-// (.agk2-board-wrap, overflow:auto) NÃO deve esconder o cabeçalho/Dock: o
-// usuário só espera isso ao rolar o app como um todo, não ao tocar/rolar
-// dentro do card da agenda.
+// O cabeçalho (esmaecer/deslocar) só reage à rolagem da PÁGINA
+// (window.scrollY) — rolar dentro da Agenda Mensal embutida
+// (.agk2-board-wrap, overflow:auto) não move a página, então não deve
+// esconder o cabeçalho: o usuário só espera isso ao rolar o app como um
+// todo, não ao tocar/rolar dentro do card da agenda.
+// O Dock (nav de baixo) continua escondendo nos dois casos — inclusive
+// rolando só dentro da agenda —, por isso ainda escuta 'scroll' no
+// document COM capture (não borbulha, mas capture intercepta mesmo assim)
+// e, quando o alvo é esse painel interno, usa a posição de rolagem DELE
+// pra decidir se esconde o Dock, sem tocar no cabeçalho.
 (function(){
   var FADE_DIST = 60; // px de rolagem até sumir por completo
   var raf = false;
   var dockHidden = false;
-  var pendingY = 0;
+  var pendingY = 0;      // cabeçalho: só window scroll
+  var pendingDockY = 0;  // dock: window scroll OU scroll interno da agenda
   function bar(){ return document.querySelector('.ag-mobile-topbar'); }
   function apply(){
     raf = false;
@@ -53337,19 +53343,29 @@ if (!__viewerMode) {
       var extra = Math.max(0, y - FADE_DIST);
       b.style.transform = extra > 0 ? "translateY(-" + extra + "px)" : "";
     }
-    if (y > FADE_DIST && !dockHidden) { dockHidden = true; if (window.__agHideDock) window.__agHideDock(); }
-    else if (y <= FADE_DIST && dockHidden) { dockHidden = false; if (window.__agShowDock) window.__agShowDock(); }
+    var dy = pendingDockY;
+    if (dy > FADE_DIST && !dockHidden) { dockHidden = true; if (window.__agHideDock) window.__agHideDock(); }
+    else if (dy <= FADE_DIST && dockHidden) { dockHidden = false; if (window.__agShowDock) window.__agShowDock(); }
   }
-  function queue(y){
+  function queue(y, dockY){
     pendingY = y;
+    pendingDockY = dockY;
     if (raf) return;
     raf = true;
     requestAnimationFrame(apply);
   }
   function onWindowScroll(){
-    queue(window.scrollY || document.documentElement.scrollTop || 0);
+    var y = window.scrollY || document.documentElement.scrollTop || 0;
+    queue(y, y);
+  }
+  function onCaptureScroll(e){
+    var t = e.target;
+    if (t && t.classList && t.classList.contains('agk2-board-wrap')) {
+      queue(pendingY, t.scrollTop || 0);
+    }
   }
   window.addEventListener("scroll", onWindowScroll, { passive: true });
+  document.addEventListener("scroll", onCaptureScroll, { passive: true, capture: true });
   document.addEventListener("DOMContentLoaded", onWindowScroll);
   onWindowScroll();
 })();

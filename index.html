@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="b651d0c"/>
+<meta name="ag-build" content="c946139"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -28971,6 +28971,37 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           && (_inMes || _vencidoOutroMes);
       }).slice().sort(function(a,b){ return (a.previsao_pagamento||'').localeCompare(b.previsao_pagamento||''); });
 
+      /* ── Barra de progresso (pago/recebido × total do mês) dentro dos
+         painéis Despesas Pendentes e Recebimentos de Locação — as barras
+         horizontais que existiam abaixo da Agenda (ocultas atrás do clique
+         em "Resultado Previsto") voltam aqui, uma dentro de cada painel
+         correspondente, mostrando quanto já foi pago/recebido e quanto
+         falta. Clicar na barra abre o detalhamento completo (Modal). */
+      var _despTodasMesBar = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), dashMes);
+      var _despTotalBar  = _despTodasMesBar.reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
+      var _despPagoBar   = _despTodasMesBar.filter(function(d){ return d.status==='pago' || !!d.data_pagamento; }).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
+      /* Regra de contrato parcial (CLAUDE.md): previsto=valor_total,
+         recebido=valor_pago, a receber=valor_total−valor_pago — nunca medir
+         pelo valor_pago sozinho nem sobrescrever o previsto com ele. */
+      var _ctsRecebidoBar = ctsMes.filter(function(c){ return c.status_pagamento==='pago'; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0)
+        + ctsMes.filter(function(c){ return c.status_pagamento==='parcial' && c.valor_pago; }).reduce(function(s,c){ return s+parseFloat(c.valor_pago||0); }, 0);
+      var _ctsPrevistoBar = ctsMes.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0);
+
+      var _barModalState = React.useState(null); var _barModal = _barModalState[0]; var setBarModal = _barModalState[1];
+
+      var _barRow = function(opts){
+        var pct = opts.total>0 ? Math.min(100, opts.pago/opts.total*100) : 0;
+        return React.createElement('div', { onClick:opts.onClick, style:{ padding:'0 16px 14px', cursor:'pointer' } }
+          , React.createElement('div', { style:{ position:'relative', height:6, borderRadius:99, background:opts.corPago+'1A', overflow:'hidden' } }
+            , React.createElement('div', { style:{ position:'absolute', left:0, top:0, bottom:0, width:pct+'%', background:opts.corPago, borderRadius:99, transition:'width .3s ease' } })
+          )
+          , React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', marginTop:6 } }
+            , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:opts.corPago } }, opts.labelPago+': '+fmtBRLint(opts.pago))
+            , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:C.sub } }, opts.labelRestante+': '+fmtBRLint(Math.max(0,opts.total-opts.pago)))
+          )
+        );
+      };
+
       var _renShow  = renDashExp  ? _renList      : _renList.slice(0,4);
       var _despShow = despDashExp ? _despPendList : _despPendList.slice(0,4);
       var _recShow  = recDashExp  ? _recList      : _recList.slice(0,4);
@@ -29368,13 +29399,15 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       // menos itens sobrava um vão vazio embaixo, deixando a barra "+N mais"
       // flutuando longe do conteúdo em vez de logo depois dele. Cada painel
       // agora tem só a altura do próprio conteúdo, como o cartão de Boletos.
-      return React.createElement('div', { style:Object.assign({ display:'grid' },
+      return React.createElement(React.Fragment, null
+      , React.createElement('div', { style:Object.assign({ display:'grid' },
           desktop ? { marginTop:28, columnGap:20, rowGap:40, gridTemplateColumns:'1fr 1fr', alignItems:'start' }
                   : { marginTop:36, gap:36, gridTemplateColumns:'1fr' }) }
 
         /* ── DESPESAS PENDENTES ── */
         , React.createElement('div', { style:_panBase }
           , _panHdr('Despesas pendentes', _despPendList.length, C.red, nomeMes+' · deslize para baixar')
+          , _despTotalBar>0 && _barRow({ pago:_despPagoBar, total:_despTotalBar, corPago:C.green, labelPago:'Pago', labelRestante:'A pagar', onClick:function(){ setBarModal('despesas'); } })
           , React.createElement('div', { style:_panBody }
             , _despPendList.length===0
               ? _empty('Nenhuma despesa pendente em '+nomeMes)
@@ -29388,6 +29421,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         /* ── RECEBIMENTOS DE LOCAÇÃO ── */
         , React.createElement('div', { style:_panBase }
           , _panHdr('Recebimentos de locação', _recList.length, C.green, nomeMes+' · deslize para baixar')
+          , _ctsPrevistoBar>0 && _barRow({ pago:_ctsRecebidoBar, total:_ctsPrevistoBar, corPago:C.green, labelPago:'Recebido', labelRestante:'A receber', onClick:function(){ setBarModal('recebimentos'); } })
           , React.createElement('div', { style:_panBody }
             , _recList.length===0
               ? _empty('Nenhum recebimento pendente em '+nomeMes)
@@ -29448,6 +29482,51 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           , _mulTotal > 0 ? _moreBtn(_mulGrupos.reduce(function(t,g){ return t + Math.max(g.itens.length-_mulTeto,0); },0),
                                      mulDashExp, setMulDashExp, C.orange) : null
         )
+      )
+      /* ── Detalhamento da barra (Despesas/Recebimentos) — Modal genérico,
+         mesmo padrão dos outros diálogos do app. */
+      , _barModal && React.createElement(Modal, {
+          open:true, onClose:function(){ setBarModal(null); },
+          title: _barModal==='despesas' ? ('Despesas de '+nomeMes) : ('Recebimentos de '+nomeMes)
+        }
+        , _barModal==='despesas'
+          ? (_despTodasMesBar.length===0
+              ? _empty('Nenhuma despesa em '+nomeMes)
+              : _despTodasMesBar.slice().sort(function(a,b){ return (a.data||'').localeCompare(b.data||''); }).map(function(d){
+                  var pago = d.status==='pago' || !!d.data_pagamento;
+                  return React.createElement('div', {
+                      key:d.id, onClick:function(){ onItemNav({type:'despesa',id:d.id,mes:dashMes}); setBarModal(null); },
+                      style:{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 0', borderBottom:'1px solid '+C.border, cursor:'pointer' }
+                    }
+                    , React.createElement('div', null
+                      , React.createElement('div', { style:{ fontSize:14, fontWeight:600 } }, (pago?'✅ ':'⏳ ')+(d.descricao||'Despesa'))
+                      , React.createElement('div', { style:{ fontSize:12, color:C.sub } }, d.categoria||'')
+                    )
+                    , React.createElement('div', { style:{ fontSize:14, fontWeight:700, color:pago?C.green:C.red } }, fmtBRL(d.valor))
+                  );
+                }))
+          : (ctsMes.length===0
+              ? _empty('Nenhum contrato em '+nomeMes)
+              : ctsMes.slice().sort(function(a,b){ return (a.previsao_pagamento||'').localeCompare(b.previsao_pagamento||''); }).map(function(c){
+                  var cl = (clientes||[]).find(function(x){ return x.id==c.cliente_id; });
+                  var ve = (veiculos||[]).find(function(x){ return x.id==c.veiculo_id; });
+                  var isPago = c.status_pagamento==='pago';
+                  var isParcial = c.status_pagamento==='parcial';
+                  return React.createElement('div', {
+                      key:c.id, onClick:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); setBarModal(null); },
+                      style:{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 0', borderBottom:'1px solid '+C.border, cursor:'pointer' }
+                    }
+                    , React.createElement('div', null
+                      , React.createElement('div', { style:{ fontSize:14, fontWeight:600 } }, (isPago?'✅ ':isParcial?'⧆ ':'⏳ ')+((cl&&cl.nome)||'--'))
+                      , React.createElement('div', { style:{ fontSize:12, color:C.sub } }, (ve&&ve.placa)||'')
+                    )
+                    , React.createElement('div', null
+                      , React.createElement('div', { style:{ fontSize:14, fontWeight:700, textAlign:'right', color:isPago?C.green:isParcial?C.orange:C.red } }, fmtBRL(c.valor_total))
+                      , isParcial && React.createElement('div', { style:{ fontSize:11, color:C.sub, textAlign:'right' } }, 'recebido: '+fmtBRL(c.valor_pago||0))
+                    )
+                  );
+                }))
+      )
       );
     })()
 

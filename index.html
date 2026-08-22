@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="ffe9226"/>
+<meta name="ag-build" content="7d60d19"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -40684,6 +40684,52 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){ console.warn(e); } } } }
     toast("Receita baixada!");
   }
+  /* Mesma lógica de emissão da aba Faturas (função emitir(fat) ali dentro),
+     recalculada aqui a partir do próprio contrato — a aba Faturas monta o
+     "fat" só quando tab==="faturas" está renderizado, então não dá pra
+     chamar a função de lá direto a partir do deep-link do calendário. */
+  async function _emitirFaturaFluxo(c) {
+    if (!c || !c.previsao_pagamento) return;
+    var _mesFatEv = c.previsao_pagamento.slice(0,7);
+    var _refKeyEv = "fat_" + c.id + "_" + _mesFatEv;
+    if (faturaContratoEmitida(_refKeyEv, receitas)) return;
+    var cl = (clientes||[]).find(function(x){ return x.id == c.cliente_id; });
+    var ve = (veiculos||[]).find(function(x){ return x.id == c.veiculo_id; });
+    var _confEm = await window.__agConfirm({ title: "Emitir Fatura", icon: "📤", message: "Emitir fatura de \"" + (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + "\" (" + fmtComp(_mesFatEv) + ")?", okLabel: "Emitir" });
+    if (!_confEm.ok) return;
+    var hojeEm = _brNow().toISOString().split("T")[0];
+    var num = await proximoNumeroFatura(receitas);
+    var recExist = (receitas||[]).find(function(r){ return r.ref_fatura === _refKeyEv; });
+    try {
+      if (recExist) {
+        await db.patch("receitas", recExist.id, { status: "emitida", data_emissao: hojeEm, numero_fatura: num });
+        setReceitas(p => p.map(x => x.id === recExist.id ? Object.assign({}, x, { status: "emitida", data_emissao: hojeEm, numero_fatura: num }) : x));
+      } else {
+        var novaFat = await db.post("receitas", {
+          descricao: "Fatura " + (cl&&cl.nome||"--") + " — " + (ve&&ve.placa||"--") + " (" + _mesFatEv + ")",
+          valor: c.valor_total, categoria: "Locacao",
+          data: hojeEm, data_emissao: hojeEm,
+          data_vencimento: c.previsao_pagamento, numero_fatura: num,
+          ref_fatura: _refKeyEv, status: "emitida",
+          forma_pagamento: "Pix",
+          cliente_id: c.cliente_id, veiculo_id: c.veiculo_id,
+          contrato_id: c.id
+        });
+        setReceitas(p => [novaFat].concat(p));
+      }
+      toast(num + " emitida!");
+    } catch(e) { toast("Erro ao emitir."); }
+  }
+  useEffect(function() {
+    if (!finDeepLink || finDeepLink.subTab !== "faturas") return;
+    setTab("faturas");
+    if (finDeepLink.mes) setFiltroMes(finDeepLink.mes);
+    if (finDeepLink.acao === "emitir" && finDeepLink.itemId != null) {
+      var _ctDL = (contratos||[]).find(function(x){ return x.id == finDeepLink.itemId; });
+      if (_ctDL) _emitirFaturaFluxo(_ctDL);
+    }
+    if (setFinDeepLink) setFinDeepLink(null);
+  }, [finDeepLink]);
   useEffect(function() {
     if (!finDeepLink || finDeepLink.subTab !== "receitas") return;
     setTab("receitas");
@@ -47400,7 +47446,7 @@ function buildAgendaEventos(ctx) {
       emoji: "📤",
       titulo: "Emitir Fatura " + calRenLabel(c) + " · " + fmtComp(c.previsao_pagamento),
       sub: (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + " · venc. " + fmtD(c.previsao_pagamento),
-      tab: "financeiro"
+      tab: "financeiro", id: c.id, acao: "emitir", mesFat: c.previsao_pagamento.slice(0,7)
     });
   });
 
@@ -47864,6 +47910,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                                    só navega, como sempre foi. */
                                 : function(){
                                     if (ev.acao === "renovar" && ev.id != null && setCtDeepLink) { setCtDeepLink({ acao:"renovar", itemId: ev.id }); if (setTab) setTab("contratos"); return; }
+                                    if (ev.acao === "emitir" && ev.id != null && setFinDeepLink) { setFinDeepLink({ subTab:"faturas", acao:"emitir", itemId: ev.id, mes: ev.mesFat }); if (setTab) setTab("financeiro"); return; }
                                     if (ev.acao === "baixar" && ev.id != null) {
                                       if (ev.tipo === "pagamento" && setCtDeepLink) { setCtDeepLink({ acao:"baixar", itemId: ev.id }); if (setTab) setTab("contratos"); return; }
                                       if ((ev.tipo === "despesa" || ev.tipo === "receita") && setFinDeepLink) { setFinDeepLink({ subTab: ev.tipo==="despesa"?"despesas":"receitas", acao:"baixar", itemId: ev.id, mes:(ev.data||"").slice(0,7) }); if (setTab) setTab("financeiro"); return; }

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="1245667"/>
+<meta name="ag-build" content="4d64b42"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -15565,6 +15565,12 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
 .agk2-day-col.agk2-today .agk2-dow{color:#0A63D6;}
 .agk2-day-col-head .agk2-count{min-width:20px; height:20px; padding:0 6px; border-radius:99px; background:rgba(128,128,128,0.14); font-size:11px; font-weight:700; color:var(--c-sub); display:flex; align-items:center; justify-content:center;}
 .agk2-day-col.agk2-today .agk2-count{background:#0A84FF; color:#fff;}
+/* Coluna "Atrasados" — todo o passado empilhado numa coluna só, sempre a
+   primeira, com o mesmo tratamento visual de destaque do "hoje", mas em
+   vermelho (é atraso, não é o dia vigente). */
+.agk2-day-col.agk2-atrasados .agk2-day-col-head{background:rgba(255,59,48,0.10); border-color:rgba(255,59,48,0.30);}
+.agk2-day-col.agk2-atrasados .agk2-dow{color:#FF3B30;}
+.agk2-day-col.agk2-atrasados .agk2-count{background:#FF3B30; color:#fff;}
 
 /* Todos os eventos do dia, um abaixo do outro, sem limite nem rolagem própria
    (a coluna cresce e quem rola é o board-wrap inteiro). */
@@ -47178,8 +47184,12 @@ function buildAgendaEventos(ctx) {
   // CONTRATOS — vencimento do período. Sempre aparece (mesmo já renovado —
   // é um marcador informativo de quando o período encerrou), mas carrega
   // `resolvido` pra o calendário do Dashboard saber que não precisa mais
-  // pulsar: já tem contrato de continuidade vinculado (renovado_para aponta
-  // pra um contrato que existe), então só esmaece em vez de pedir atenção.
+  // pulsar: status "concluido" é o próprio flag que o fluxo de renovação (e
+  // qualquer encerramento manual) grava no contrato — mais confiável que
+  // conferir renovado_para/idsContratosCal, que dependiam do id do contrato
+  // filho ainda existir no array. Se o encerramento ficou "órfão" (sem
+  // continuidade), o evento "renovacao_orfa" abaixo é quem sinaliza isso —
+  // este aqui é só o marcador informativo do fim do período. */
   contratos.forEach(function(c) {
     if (!c.data_fim || c.status === "cancelado") return;
     var cl = clientes.find(function(x){return x.id==c.cliente_id;});
@@ -47187,7 +47197,7 @@ function buildAgendaEventos(ctx) {
     eventos.push({
       data: c.data_fim, tipo: "contrato",
       cor: c.data_fim < hoje ? "#FF3B30" : "#007AFF",
-      resolvido: !!(c.renovado_para && idsContratosCal.has(String(c.renovado_para))),
+      resolvido: c.status === "concluido",
       emoji: "📋",
       titulo: "Venc. Contrato " + calRenLabel(c) + " · " + fmtComp(c.data_fim),
       sub: (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + " " + (ve&&ve.modelo||""),
@@ -47520,16 +47530,34 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
   var MES_LBL = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
   var isoHoje = hoje;
 
-  /* Só dias com evento viram coluna, em ordem cronológica — um do lado do outro,
-     sem agrupar por semana. Cada coluna lista TODOS os eventos do dia, um abaixo
+  /* Dias com evento viram coluna, em ordem cronológica — um do lado do outro.
+     Todo o atraso (dias antes de hoje) vira UMA coluna só ("Atrasados") logo
+     no início, em vez de espalhar cada dia passado numa coluna própria — daí
+     em diante é sempre hoje (ou o próximo dia com evento) primeiro, com o
+     futuro seguindo à direita. Cada coluna lista TODOS os eventos, um abaixo
      do outro (sem limite nem rolagem interna). */
   var dias = React.useMemo(function(){
     var porDia = {};
     eventosFiltrados.forEach(function(ev){ (porDia[ev.data] = porDia[ev.data] || []).push(ev); });
-    return Object.keys(porDia).sort().map(function(iso){
-      return { isoD:iso, dt:new Date(iso+"T12:00:00"), evsDia:porDia[iso] };
+    var atrasados = [], futuros = [];
+    Object.keys(porDia).sort().forEach(function(iso){
+      if (iso < isoHoje) atrasados = atrasados.concat(porDia[iso]);
+      else futuros.push({ isoD:iso, dt:new Date(iso+"T12:00:00"), evsDia:porDia[iso] });
     });
-  }, [eventosFiltrados]);
+    var resultado = [];
+    if (atrasados.length) resultado.push({ isoD:"atrasados", dt:null, evsDia:atrasados, atrasados:true });
+    if (futuros.length) futuros[0].alvoCentral = true; // hoje, ou o próximo dia com evento
+    return resultado.concat(futuros);
+  }, [eventosFiltrados, isoHoje]);
+
+  /* PC: sempre reabre centralizado no dia vigente (ou próximo com evento),
+     nunca no início da lista (que pode ser a coluna "Atrasados"). */
+  var _hojeColRef = React.useRef(null);
+  React.useEffect(function(){
+    if (!desktop) return;
+    var el = _hojeColRef.current;
+    if (el && el.scrollIntoView) el.scrollIntoView({ block:"nearest", inline:"center" });
+  }, [desktop, dias.length]);
 
   return React.createElement('div', { className:"agk2-inline", style: H ? { height:H } : null }
       , React.createElement('div', { className:"agk2-top" }
@@ -47541,8 +47569,8 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
               )
             )
             , React.createElement('div', null
-              , React.createElement('h1', null, "Calendário Detalhado")
-              , React.createElement('div', { className:"agk2-crumb" }, "Dashboard", React.createElement('span', null, "›"), "Próximos compromissos")
+              , React.createElement('h1', null, "Compromissos")
+              , React.createElement('div', { className:"agk2-crumb" }, "Dashboard", React.createElement('span', null, "›"), "Próximos e atrasados")
             )
           )
           /* Filtro na mesma linha do título, alinhado à direita. */
@@ -47565,8 +47593,11 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
           ? React.createElement('div', { className:"agk2-day-empty", style:{ margin:"4px 20px" } }, "Sem eventos no período")
           : React.createElement('div', { className: desktop?"agk2-board":"agk2-timeline" }
               , dias.map(function(c){
-                  var isHoje = c.isoD===isoHoje, isPassado = c.isoD<isoHoje;
-                  var diaVencidoOuHoje = isHoje || isPassado;
+                  var isAtrasados = !!c.atrasados;
+                  var isHoje = !isAtrasados && c.isoD===isoHoje;
+                  /* Passado não gera mais coluna própria (virou "Atrasados", já
+                     sempre vencido) — só falta o próprio pseudo-dia "Atrasados". */
+                  var diaVencidoOuHoje = isAtrasados || isHoje;
                   /* Pulsar é por EVENTO, não por dia: só quem ainda não foi resolvido
                      (ev.resolvido !== true — pagamento/despesa/receita/multa etc. só
                      aparecem aqui quando pendentes, então já valem como não resolvidos;
@@ -47585,8 +47616,12 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                   var conteudo = [
                     React.createElement('div', { key:"h", className:"agk2-day-col-head" }
                       , React.createElement('div', { className:"agk2-dh-left" }
-                        , React.createElement('span', { className:"agk2-dow" }, DOW_LBL[c.dt.getDay()])
-                        , React.createElement('span', { className:"agk2-dom" }, c.dt.getDate()+" "+MES_LBL[c.dt.getMonth()])
+                        , isAtrasados
+                          ? React.createElement('span', { className:"agk2-dow" }, "Atrasados")
+                          : [
+                              React.createElement('span', { key:"d1", className:"agk2-dow" }, DOW_LBL[c.dt.getDay()]),
+                              React.createElement('span', { key:"d2", className:"agk2-dom" }, c.dt.getDate()+" "+MES_LBL[c.dt.getMonth()])
+                            ]
                       )
                       , React.createElement('div', { className:"agk2-count" }, c.evsDia.length)
                     )
@@ -47627,7 +47662,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                      por dia sobre uma linha contínua (agk2-timeline/agk2-tl-item),
                      em vez de rolar para o lado. */
                   return desktop
-                    ? React.createElement('div', { key:c.isoD, className:"agk2-day-col"+(isHoje?" agk2-today":"") }, conteudo)
+                    ? React.createElement('div', { key:c.isoD, ref: c.alvoCentral ? _hojeColRef : null, className:"agk2-day-col"+(isHoje?" agk2-today":"")+(isAtrasados?" agk2-atrasados":"") }, conteudo)
                     : React.createElement('div', { key:c.isoD, className:"agk2-tl-item"+(isHoje?" agk2-tl-hoje":"")+(precisaAtencao?" agk2-tl-atencao":"") }
                         , React.createElement('span', { className:"agk2-tl-dot" })
                         , React.createElement('div', { className:"agk2-day-col" }, conteudo)

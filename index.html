@@ -52319,15 +52319,64 @@ function App() {
   const [undoToastData, setUndoToastData] = useState(null);
   const undoTimerRef = React.useRef(null);
   function dismissUndoToast() { clearTimeout(undoTimerRef.current); setUndoToastData(null); }
+  // Guarda a última ação desfazível por mais tempo que o popup fica visível
+  // (o popup some em segundos, mas o "chacoalhar pra desfazer" precisa
+  // continuar funcionando um pouco depois disso — ver efeito de shake abaixo).
+  const lastUndoRef = React.useRef(null);
   React.useEffect(function(){
     // agUndo(mensagem, desfazerFn, ms): mostra o popup; se ninguém tocar em
     // "Desfazer" dentro do prazo, a ação (já efetivada) permanece valendo.
     window._agUndo = function(msg, desfazerFn, ms) {
       clearTimeout(undoTimerRef.current);
-      setUndoToastData({ msg: msg, onUndo: desfazerFn });
+      // Roda uma vez só: chacoalhar depois de já ter desfeito (ou de ter
+      // desfeito pelo botão) não pode desfazer de novo.
+      var wrappedUndo = function(){ lastUndoRef.current = null; desfazerFn(); };
+      setUndoToastData({ msg: msg, onUndo: wrappedUndo });
+      lastUndoRef.current = { msg: msg, onUndo: wrappedUndo, expira: Date.now() + 60000 };
       undoTimerRef.current = setTimeout(function(){ setUndoToastData(null); }, ms || 6000);
     };
     return function(){ delete window._agUndo; clearTimeout(undoTimerRef.current); };
+  }, []);
+  // Chacoalhar o aparelho reabre o popup de "Desfazer" da última ação, mesmo
+  // que ele já tenha sumido da tela — janela de 60s pra não reviver uma ação
+  // antiga sem o usuário entender de onde veio.
+  React.useEffect(function(){
+    var lastX = null, lastY = null, lastZ = null, lastShakeAt = 0;
+    var LIMIAR = 18, DEBOUNCE_MS = 1200;
+    function onMotion(e) {
+      var acc = e.accelerationIncludingGravity || e.acceleration;
+      if (!acc || acc.x == null) return;
+      var x = acc.x || 0, y = acc.y || 0, z = acc.z || 0;
+      if (lastX != null) {
+        var delta = Math.abs(x - lastX) + Math.abs(y - lastY) + Math.abs(z - lastZ);
+        var agora = Date.now();
+        if (delta > LIMIAR && agora - lastShakeAt > DEBOUNCE_MS) {
+          lastShakeAt = agora;
+          var lu = lastUndoRef.current;
+          if (lu && agora < lu.expira) {
+            clearTimeout(undoTimerRef.current);
+            setUndoToastData({ msg: lu.msg, onUndo: lu.onUndo });
+            undoTimerRef.current = setTimeout(function(){ setUndoToastData(null); }, 8000);
+            try { navigator.vibrate && navigator.vibrate(40); } catch(_e) {}
+          }
+        }
+      }
+      lastX = x; lastY = y; lastZ = z;
+    }
+    function attach() { window.addEventListener('devicemotion', onMotion); }
+    // iOS 13+ exige permissão do usuário pra ler o acelerômetro, e essa
+    // permissão só pode ser pedida a partir de um gesto real — por isso
+    // pedimos no primeiro toque na tela, não direto no boot do app.
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+      var onFirstTouch = function() {
+        document.removeEventListener('touchend', onFirstTouch);
+        DeviceMotionEvent.requestPermission().then(function(state){ if (state === 'granted') attach(); }).catch(function(){});
+      };
+      document.addEventListener('touchend', onFirstTouch, { once: true });
+      return function(){ document.removeEventListener('touchend', onFirstTouch); window.removeEventListener('devicemotion', onMotion); };
+    }
+    attach();
+    return function(){ window.removeEventListener('devicemotion', onMotion); };
   }, []);
   // Modo do dashboard (locadora | pessoal) — espelhado do Início para a
   // barra fixa do topo trocar o logo pela foto pessoal no Orçamento Pessoal.

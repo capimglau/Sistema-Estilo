@@ -32954,8 +32954,14 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       var _ctDL = (contratos||[]).find(function(x){ return x.id == ctDeepLink.itemId; });
       if (_ctDL) {
         _voltarInicioRef.current = !!ctDeepLink.voltarInicio;
-        if (ctDeepLink.acao === "renovar") renovar(_ctDL);
-        else if (ctDeepLink.acao === "baixar") { setBaixarCtData(_brNow().toISOString().split("T")[0]); setBaixarCtModal(_ctDL); }
+        /* Com `data`/`confirmado`, a confirmação já foi feita no modal do
+           cartão da Agenda Mensal: executa direto, sem reabrir formulário
+           nem perguntar de novo. Sem eles, abre o fluxo normal desta tela. */
+        if (ctDeepLink.acao === "renovar") renovar(_ctDL, { confirmado: !!ctDeepLink.confirmado });
+        else if (ctDeepLink.acao === "baixar") {
+          if (ctDeepLink.data) confirmarBaixarCt(_ctDL, ctDeepLink.data);
+          else { setBaixarCtData(_brNow().toISOString().split("T")[0]); setBaixarCtModal(_ctDL); }
+        }
       }
     }
     if (setCtDeepLink) setCtDeepLink(null);
@@ -33397,8 +33403,13 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     }
     finally { setLoading(false); }
   }
-  async function renovar(ct) {
-    if (!confirm("Renovar contrato por mais 30 dias?")) { _talvezVoltarInicio(); return; }
+  /* opts.confirmado: a confirmação já foi dada em outro lugar — hoje, no modal
+     do cartão da Agenda Mensal, que mostra cliente, veículo, valor e período
+     antes de perguntar. Sem isso o usuário confirmaria duas vezes seguidas
+     (uma no cartão, outra neste confirm) pela mesma ação. A renovação em si
+     continua sendo só esta função: a Agenda não recria nada. */
+  async function renovar(ct, opts) {
+    if (!(opts && opts.confirmado) && !confirm("Renovar contrato por mais 30 dias?")) { _talvezVoltarInicio(); return; }
     var dataInicio = ct.data_fim;
     var dataFim = new Date(ct.data_fim);
     dataFim.setDate(dataFim.getDate() + 30);
@@ -33619,16 +33630,21 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       toast("Veículo substituído! " + fmtBRL(valorAntigo) + " no " + (veAntigo?veAntigo.placa:"antigo") + " + " + fmtBRL(valorNovo) + " no " + (veNovo?veNovo.placa:"novo") + ".");
     } catch(e) { toast("Erro ao substituir veículo: " + e.message, "error"); }
   }
-  async function confirmarBaixarCt() {
-    var c = baixarCtModal;
-    if (!c || !baixarCtData) return toast("Informe a data de pagamento", "error");
+  /* cParam/dtParam: quando a baixa vem do modal do cartão da Agenda Mensal, o
+     contrato e a data já foram escolhidos lá e chegam por argumento — o
+     formulário daqui nem chega a abrir. Sem parâmetro, segue lendo o estado
+     do próprio modal desta tela, como sempre. Um caminho de gravação só. */
+  async function confirmarBaixarCt(cParam, dtParam) {
+    var c = cParam || baixarCtModal;
+    var dtBaixa = dtParam || baixarCtData;
+    if (!c || !dtBaixa) return toast("Informe a data de pagamento", "error");
     var statusOriginal = c.status_pagamento;
     var dataPagOriginal = c.data_pagamento;
     var recSnapshot = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); }).map(function(r){ return Object.assign({}, r); });
     try {
-      await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: baixarCtData });
-      setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:baixarCtData}) : x; }); });
-      await sincronizarRefFatura(c, baixarCtData);
+      await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtBaixa });
+      setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dtBaixa}) : x; }); });
+      await sincronizarRefFatura(c, dtBaixa);
       setBaixarCtModal(null);
       _talvezVoltarInicio();
       window._agUndo("Contrato baixado!", async function(){
@@ -40682,18 +40698,29 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
      chamam exatamente o mesmo confirm+prompt+patch, sem duplicar a lógica de
      sincronização (regra do CLAUDE.md: toda baixa tem que sincronizar com
      tudo que estiver relacionado). */
-  async function _baixarDespesaFluxo(d) {
-    try { await _baixarDespesaFluxoInner(d); } finally { _talvezVoltarInicio(); }
+  /* preset.data: a baixa já foi confirmada com data escolhida em outro lugar —
+     hoje, no modal do cartão da Agenda Mensal. Nesse caso o confirm e o prompt
+     de data daqui são pulados (seriam a MESMA pergunta duas vezes), mas tudo
+     que vem depois — recorrente que gera instância do mês, manutenção
+     vinculada, despesa simples — continua sendo executado por esta função e
+     só por ela. */
+  async function _baixarDespesaFluxo(d, preset) {
+    try { await _baixarDespesaFluxoInner(d, preset); } finally { _talvezVoltarInicio(); }
   }
-  async function _baixarDespesaFluxoInner(d) {
+  async function _baixarDespesaFluxoInner(d, preset) {
     if (!d) return;
-    var _confBD = await window.__agConfirm({ title: "Baixar Despesa", icon: "💸", message: "Confirmar baixa de \"" + (d.descricao||d.categoria||"despesa") + "\"?", okLabel: "Confirmar" });
-    if (!_confBD.ok) return;
-    var _dia = (d.data || "").slice(8, 10) || "01";
-    var _dtDef = d.recorrente ? (filtroMes + "-" + _dia) : (d.data || _brNow().toISOString().split("T")[0]);
-    var _rDesp = await window.__agPrompt({ title: "Baixar Despesa", icon: "💸", label1: "Data do pagamento", type1: "date", default1: _dtDef });
-    if (!_rDesp.ok) return;
-    var dt = _rDesp.v1;
+    var dt;
+    if (preset && preset.data) {
+      dt = preset.data;
+    } else {
+      var _confBD = await window.__agConfirm({ title: "Baixar Despesa", icon: "💸", message: "Confirmar baixa de \"" + (d.descricao||d.categoria||"despesa") + "\"?", okLabel: "Confirmar" });
+      if (!_confBD.ok) return;
+      var _dia = (d.data || "").slice(8, 10) || "01";
+      var _dtDef = d.recorrente ? (filtroMes + "-" + _dia) : (d.data || _brNow().toISOString().split("T")[0]);
+      var _rDesp = await window.__agPrompt({ title: "Baixar Despesa", icon: "💸", label1: "Data do pagamento", type1: "date", default1: _dtDef });
+      if (!_rDesp.ok) return;
+      dt = _rDesp.v1;
+    }
     try {
       if (d._fromManutencao) {
         var mn = d._mn;
@@ -40738,16 +40765,24 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       }
     } catch(e) { toast("❌ Erro ao baixar: " + (e.message || e)); }
   }
-  async function _baixarReceitaFluxo(r) {
-    try { await _baixarReceitaFluxoInner(r); } finally { _talvezVoltarInicio(); }
+  async function _baixarReceitaFluxo(r, preset) {
+    try { await _baixarReceitaFluxoInner(r, preset); } finally { _talvezVoltarInicio(); }
   }
-  async function _baixarReceitaFluxoInner(r) {
+  /* preset.data: idem _baixarDespesaFluxo — confirmação e data já vieram do
+     modal do cartão da Agenda. A sincronia com o contrato vinculado
+     (ref_fatura) continua acontecendo aqui embaixo, em qualquer caminho. */
+  async function _baixarReceitaFluxoInner(r, preset) {
     if (!r) return;
-    var _confBR = await window.__agConfirm({ title: "Baixar Receita", icon: "✅", message: "Confirmar baixa de \"" + (r.descricao||"receita") + "\"?", okLabel: "Confirmar" });
-    if (!_confBR.ok) return;
-    var _rRec = await window.__agPrompt({ title: "Baixar Receita", icon: "✅", label1: "Data do recebimento", type1: "date", default1: _brNow().toISOString().split("T")[0] });
-    if (!_rRec.ok) return;
-    var dt = _rRec.v1;
+    var dt;
+    if (preset && preset.data) {
+      dt = preset.data;
+    } else {
+      var _confBR = await window.__agConfirm({ title: "Baixar Receita", icon: "✅", message: "Confirmar baixa de \"" + (r.descricao||"receita") + "\"?", okLabel: "Confirmar" });
+      if (!_confBR.ok) return;
+      var _rRec = await window.__agPrompt({ title: "Baixar Receita", icon: "✅", label1: "Data do recebimento", type1: "date", default1: _brNow().toISOString().split("T")[0] });
+      if (!_rRec.ok) return;
+      dt = _rRec.v1;
+    }
     var upd = await db.patch("receitas", r.id, { status: "recebido", data_pagamento: dt });
     setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
     if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){ console.warn(e); } } } }
@@ -40812,7 +40847,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     var _dlIdR = finDeepLink.itemId;
     if (finDeepLink.acao === "baixar" && _dlIdR != null) {
       var _recDL = (receitas||[]).find(function(x){ return x.id == _dlIdR; });
-      if (_recDL) _baixarReceitaFluxo(_recDL);
+      if (_recDL) _baixarReceitaFluxo(_recDL, finDeepLink.data ? { data: finDeepLink.data } : null);
     }
     setHighlightRecId(_dlIdR);
     if (highlightRecTimer.current) clearTimeout(highlightRecTimer.current);
@@ -40836,7 +40871,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           var _dia = (_desp.data||"").slice(8,10);
           _desp = Object.assign({}, _desp, { data: _dlMes + "-" + _dia, status: "previsto", data_pagamento: null });
         }
-        if (finDeepLink.acao === "baixar") _baixarDespesaFluxo(_desp);
+        if (finDeepLink.acao === "baixar") _baixarDespesaFluxo(_desp, finDeepLink.data ? { data: finDeepLink.data } : null);
         else _openDespRef.current(_desp);
       } else {
         setHighlightDespId(_dlId);
@@ -47984,6 +48019,10 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
      depois, tempo da transição — troca pro próximo evento escondido
      (_baralhoIdx) e desliga, revelando o novo conteúdo de volta. Cartão já
      tem altura fixa, então a troca de texto não empurra nada. */
+  /* [AGK2-V2 · acao-no-cartao] Evento cujo cartão foi tocado e está com a
+     janela de ação aberta, e a data escolhida nela. */
+  var _acArr = React.useState(null); var acaoModal = _acArr[0], setAcaoModal = _acArr[1];
+  var _adArr = React.useState(""); var acaoData = _adArr[0], setAcaoData = _adArr[1];
   var _bIdxArr = React.useState(0); var _baralhoIdx = _bIdxArr[0], _setBaralhoIdx = _bIdxArr[1];
   var _bFlipArr = React.useState(false); var _baralhoFlipping = _bFlipArr[0], _setBaralhoFlipping = _bFlipArr[1];
   React.useEffect(function(){
@@ -48305,6 +48344,17 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                                    já sincronizava antes. Evento sem "acao" (documento, CNH, reserva etc.)
                                    só navega, como sempre foi. */
                                 : function(){
+                                    /* [AGK2-V2 · acao-no-cartao] Renovar, receber contrato e baixar
+                                       despesa/receita param de sair da tela na hora: abrem primeiro
+                                       a janela centralizada (Modal padrão do app, com o mesmo efeito
+                                       de entrada das outras), mostrando de quem é, quanto é e a data
+                                       — e é ali que o usuário confirma. Só depois a ação corre, e
+                                       corre pela MESMA função de sempre (ver _agk2Executar). */
+                                    if ((ev.acao === "renovar" || ev.acao === "baixar") && ev.id != null) {
+                                      setAcaoData(isoHoje);
+                                      setAcaoModal(ev);
+                                      return;
+                                    }
                                     /* voltarInicio:true — a ação foi disparada direto da Agenda
                                        Mensal (Início), então ao fechar a janela que abre em
                                        Contratos/Financeiro pra resolver, o usuário deve voltar
@@ -48375,6 +48425,120 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                 })
             )
       )
+      /* [AGK2-V2 · acao-no-cartao] Janela de ação do cartão — Modal padrão do
+         app (centralizada, fundo desfocado, mesma animação de entrada das
+         demais). Mostra de quem é, quanto é e desde quando está pendente, pede
+         a data quando é baixa, e oferece as duas saídas: resolver na hora ou
+         abrir o item na tela dele. */
+      , acaoModal && _agk2ModalAcao({
+          ev: acaoModal, data: acaoData, setData: setAcaoData,
+          onFechar: function(){ setAcaoModal(null); },
+          onConfirmar: function(){ var _e = acaoModal; setAcaoModal(null); _agk2Executar(_e, acaoData, true); },
+          onIrPara:    function(){ var _e = acaoModal; setAcaoModal(null); _agk2Executar(_e, null, false); }
+        })
+  );
+
+  /* Dispara a ação do cartão. `confirmado` decide o caminho:
+
+     true  → o usuário já confirmou aqui na janela do cartão, então o deep-link
+             leva a data/confirmação junto e a tela de destino EXECUTA direto,
+             sem repetir a pergunta (ver o parâmetro `preset` em
+             _baixarDespesaFluxo/_baixarReceitaFluxo, e `data`/`confirmado` nos
+             handlers de Contratos).
+     false → "Ir para": só abre o item na tela dele, sem executar nada.
+
+     Em nenhum dos dois a Agenda grava coisa alguma: quem escreve no banco
+     continua sendo a função de sempre, uma só por operação. */
+  function _agk2Executar(ev, data, confirmado) {
+    if (!ev || ev.id == null) return;
+    /* voltarInicio só quando a ação foi resolvida aqui: aí faz sentido devolver
+       o usuário pra Agenda assim que terminar. No "Ir para" ele pediu
+       explicitamente pra ficar na outra tela — e mandar voltarInicio ali
+       deixaria o gatilho de volta armado sem nenhum fluxo pra desarmá-lo,
+       chutando o usuário pro Início na próxima coisa que fizesse lá. */
+    var _volta = confirmado ? { voltarInicio: true } : {};
+    if (ev.acao === "renovar") {
+      if (!setCtDeepLink) return;
+      setCtDeepLink(Object.assign({ acao: confirmado ? "renovar" : null, itemId: ev.id, confirmado: !!confirmado }, _volta));
+      if (setTab) setTab("contratos");
+      return;
+    }
+    if (ev.tipo === "pagamento") {
+      if (!setCtDeepLink) return;
+      setCtDeepLink(Object.assign({ acao:"baixar", itemId: ev.id, data: confirmado ? data : null }, _volta));
+      if (setTab) setTab("contratos");
+      return;
+    }
+    if (ev.tipo === "despesa" || ev.tipo === "receita") {
+      if (!setFinDeepLink) return;
+      setFinDeepLink(Object.assign({
+        subTab: ev.tipo==="despesa" ? "despesas" : "receitas",
+        acao: confirmado ? "baixar" : null,
+        itemId: ev.id, mes: (ev.data||"").slice(0,7),
+        data: confirmado ? data : null
+      }, _volta));
+      if (setTab) setTab("financeiro");
+    }
+  }
+}
+
+/* [AGK2-V2 · acao-no-cartao] Corpo da janela de ação do cartão da Agenda.
+   Fora do componente porque é só apresentação — recebe tudo por parâmetro e
+   não guarda estado nenhum. */
+function _agk2ModalAcao(o) {
+  var ev = o.ev;
+  var ehRenovar = ev.acao === "renovar";
+  var ehContrato = ehRenovar || ev.tipo === "pagamento";
+  var titulo = ehRenovar ? "Renovar contrato"
+             : ev.tipo === "pagamento" ? "Receber contrato"
+             : ev.tipo === "receita" ? "Baixar receita" : "Baixar despesa";
+  var rotuloOk = ehRenovar ? "Renovar" : ev.tipo === "pagamento" ? "Receber" : "Baixar";
+  var rotuloIr = ehContrato ? "Abrir em Contratos" : "Abrir em Financeiro";
+  var tone = _agk2Tone(ev.tipo);
+  var atraso = _agk2Atraso(ev.data, _brNow().toISOString().split("T")[0]);
+  function fmtD(d){ if(!d) return "--"; var p=String(d).split("-"); return p[2]+"/"+p[1]+"/"+p[0]; }
+
+  return React.createElement(Modal, { open:true, onClose:o.onFechar, title:titulo }
+    , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:14 } }
+      /* Resumo do que vai ser resolvido — os mesmos dados do cartão, para o
+         usuário não precisar lembrar em qual cartão tocou. */
+      , React.createElement('div', { style:{ background:"var(--c-bg)", border:"1px solid var(--c-border)", borderRadius:12, padding:"12px 14px", display:"flex", flexDirection:"column", gap:6 } }
+        , React.createElement('div', { style:{ display:"flex", alignItems:"baseline", justifyContent:"space-between", gap:12 } }
+          , React.createElement('span', { style:{ fontSize:15, fontWeight:700 } }, ev.quem || ev.titulo)
+          , ev.valor != null && React.createElement('span', { style:{ fontSize:15, fontWeight:800, whiteSpace:"nowrap", fontVariantNumeric:"tabular-nums" } }, _agk2Moeda(ev.valor))
+        )
+        , React.createElement('div', { style:{ fontSize:12, color:"var(--c-sub)" } }
+          , React.createElement('span', { style:{ fontWeight:800, color:tone.tag } }, M4_CAT_LABEL[ev.tipo]||ev.tipo)
+          , (ev.detalhe || ev.sub) ? (" · " + (ev.detalhe || ev.sub)) : ""
+        )
+        , React.createElement('div', { style:{ fontSize:12, color:"var(--c-sub)" } }
+          , (ehRenovar ? "Vence em " : "Previsto para ") + fmtD(ev.data)
+          , atraso ? React.createElement('span', { style:{ marginLeft:8, fontWeight:800, color:"#C0392F" } }, "· " + atraso) : null
+        )
+      )
+      /* Renovar não tem data a escolher: a renovação é sempre a partir do fim
+         do contrato atual, como no fluxo da tela de Contratos. */
+      , !ehRenovar && React.createElement(Lbl, { label: ev.tipo === "despesa" ? "📅 Data do pagamento" : "📅 Data do recebimento" }
+        , React.createElement('input', { style:FI, type:"date", value:o.data, onChange:function(e){ o.setData(e.target.value); } })
+      )
+      , ehRenovar && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
+        , "Renova por mais 30 dias a partir do fim do contrato atual, criando o contrato seguinte e a fatura prevista dele."
+      )
+      /* Ação principal em cima, ocupando a largura inteira, e as duas saídas
+         secundárias embaixo dividindo a linha. Os três lado a lado não cabem
+         numa tela de 390px: "Baixar" quebrava sozinho pra uma segunda linha,
+         longe do polegar e sem parecer o botão principal. */
+      , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:8, marginTop:2 } }
+        , React.createElement('button', {
+            className:bCls(Btn(C.green)), onClick:o.onConfirmar, disabled: !ehRenovar && !o.data,
+            style: Object.assign({}, bStyle(Btn(C.green)), { width:"100%", textAlign:"center", opacity: (!ehRenovar && !o.data) ? 0.5 : 1 })
+          }, rotuloOk)
+        , React.createElement('div', { style:{ display:"flex", gap:8 } }
+          , React.createElement('button', { className:bCls(Ghost(C.sub)), style:Object.assign({}, bStyle(Ghost(C.sub)), { flex:1, textAlign:"center" }), onClick:o.onFechar }, "Cancelar")
+          , React.createElement('button', { className:bCls(Ghost(C.blue)), style:Object.assign({}, bStyle(Ghost(C.blue)), { flex:1, textAlign:"center" }), onClick:o.onIrPara }, rotuloIr)
+        )
+      )
+    )
   );
 }
 

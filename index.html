@@ -15732,6 +15732,10 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
      ÚLTIMO cartão do dia, ele engolia o espaço antes do próximo cabeçalho
      (dia seguinte / "Atrasados"), deixando tudo grudado. */
   margin-bottom:12px;
+  /* perspective no PAI (não como função dentro do transform do filho, que
+     em alguns WebViews não renderiza o giro 3D de verdade e só "achata" a
+     rotação numa translação diagonal — foi o bug do round anterior). */
+  perspective:700px;
 }
 /* fantasmas um tantinho mais escuros que o cartão da frente (não a mesma cor)
    + borda própria — cartões "em dia" usam um tom bem claro, e sem contraste
@@ -15746,18 +15750,22 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
 }
 .agk2-ev-card.agk2-ev-baralho::before{ transform:translate(6px,7px) rotate(1.8deg); opacity:0.9; }
 .agk2-ev-card.agk2-ev-baralho::after{ transform:translate(10px,12px) rotate(3.4deg); opacity:0.55; }
-/* Efeito "folha virando": a cada 3s o conteúdo da frente (não os fantasmas,
-   que ficam parados) levanta como a quina de uma página, girando no eixo
-   vertical a partir da borda esquerda, e volta — revela por um instante os
-   fantasmas atrás, como se uma folha do baralho virasse. Nada de
-   translate/posição (não empurra nada nem parece "subir e descer"). */
+/* Efeito "folha virando" DE VERDADE: a cada 3s o conteúdo do topo gira no
+   eixo vertical (a partir da borda esquerda) até quase de perfil e esmaece,
+   TROCA para o próximo evento escondido nesse instante (por trás do próprio
+   giro, então a troca fica disfarçada em vez de "piscar"), e volta virando
+   de novo — como puxar a carta de cima do baralho e revelar a de baixo.
+   Controlado via classe (JS, is-flipping) + transition, não @keyframes —
+   assim o React troca o conteúdo exatamente no ápice do giro. O cartão já
+   tem altura fixa (104px, ver .agk2-ev-card) e overflow:hidden, então trocar
+   o texto não empurra nada abaixo. */
 .agk2-ev-card.agk2-ev-baralho .agk2-baralho-flip-inner{
   transform-origin:left center;
-  animation:agk2-baralho-flip 3s ease-in-out infinite;
+  transform:rotateY(0deg); opacity:1;
+  transition:transform .38s ease, opacity .38s ease;
 }
-@keyframes agk2-baralho-flip{
-  0%,65%,100%{ transform:perspective(700px) rotateY(0deg); opacity:1; }
-  32%{ transform:perspective(700px) rotateY(-18deg); opacity:0.55; }
+.agk2-ev-card.agk2-ev-baralho .agk2-baralho-flip-inner.is-flipping{
+  transform:rotateY(-78deg); opacity:0.15;
 }
 /* Nos temas escuros a borda/sombra acima (derivadas de --ev-d, que já é um
    tom escuro) mal aparecem contra um fundo já quase preto — o "espiar" dos
@@ -47736,6 +47744,20 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
   /* Coluna/item "Atrasados": toca no cabeçalho pra recolher (só o cabeçalho
      com a contagem fica visível) e liberar espaço pros próximos dias. */
   var _colArr = React.useState(false); var atrasadosRecolhido = _colArr[0], setAtrasadosRecolhido = _colArr[1];
+  /* Efeito "folha virando" do card do topo do baralho: a cada 3s ele gira
+     (is-flipping liga a transição CSS) e, no ápice do giro — 380ms depois,
+     tempo da transição — troca pro próximo evento escondido (_baralhoIdx) e
+     desliga o giro, revelando o novo conteúdo virando de volta. Cartão já
+     tem altura fixa, então a troca de texto não empurra nada. */
+  var _bIdxArr = React.useState(0); var _baralhoIdx = _bIdxArr[0], _setBaralhoIdx = _bIdxArr[1];
+  var _bFlipArr = React.useState(false); var _baralhoFlipping = _bFlipArr[0], _setBaralhoFlipping = _bFlipArr[1];
+  React.useEffect(function(){
+    var _iv = setInterval(function(){
+      _setBaralhoFlipping(true);
+      setTimeout(function(){ _setBaralhoIdx(function(v){ return v+1; }); _setBaralhoFlipping(false); }, 380);
+    }, 3000);
+    return function(){ clearInterval(_iv); };
+  }, []);
 
   function _pad2(n){ return n<10?"0"+n:""+n; }
 
@@ -47948,14 +47970,13 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                              eventos escondidos — tocar nele expande a coluna inteira,
                              revelando todos os cartões (mobile e PC, mesma regra). */
                           var ehBaralho = evsOcultos>0 && ei===evsVisiveis.length-1;
-                          /* Chegou a trocar o CONTEÚDO real do card do topo a cada 3s, mas
-                             textos de tamanho diferente mudavam a altura do card e
-                             empurravam todos os cards abaixo na coluna (reflow) — ficava
-                             "pulando" a lista inteira. Revertido: o topo mostra sempre o
-                             mesmo evento; só os fantasmas atrás (CSS, ::before/::after)
-                             balançam sozinhos, sem afetar layout. */
-                          var _toneShow = _tone;
-                          var _evShow = ev;
+                          /* Card do topo do baralho: gira entre ele mesmo e os eventos
+                             escondidos (_baralhoIdx, avança a cada 3s — ver useEffect lá em
+                             cima). O cartão tem altura fixa (104px) e overflow:hidden, então
+                             trocar o texto não empurra nada abaixo. */
+                          var _rotArr = ehBaralho ? [ev].concat(c.evsDia.slice(evsVisiveis.length)) : null;
+                          var _evShow = ehBaralho ? _rotArr[_baralhoIdx % _rotArr.length] : ev;
+                          var _toneShow = ehBaralho ? _agk2Tone(_evShow.tipo) : _tone;
                           /* animation-delay ancorado no relógio, não no momento em que o
                              cartão montou — sem isso, dois cartões atrasados podiam pulsar
                              fora de fase (um claro, outro escuro na mesma hora), parecendo
@@ -47990,7 +48011,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                                     if (ev.tab && setTab) setTab(ev.tab);
                                   }
                             }
-                            , React.createElement('div', { className: ehBaralho?"agk2-baralho-flip-inner":undefined }
+                            , React.createElement('div', { className: ehBaralho?("agk2-baralho-flip-inner"+(_baralhoFlipping?" is-flipping":"")):undefined }
                                 , React.createElement('p', { className:"agk2-ev-title" }, _evShow.titulo)
                                 , React.createElement('div', { className:"agk2-ev-tags" }
                                   , React.createElement('span', { className:"agk2-ev-tag", style:{ background:"color-mix(in srgb, "+_toneShow.d+" 22%, var(--c-card))", color:_toneShow.tag } }, M4_CAT_LABEL[_evShow.tipo]||_evShow.tipo)

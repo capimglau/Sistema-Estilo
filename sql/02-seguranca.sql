@@ -86,7 +86,7 @@ as $$
     'clientes','veiculos','contratos','multas','manutencao','despesas',
     'receitas','contas','orcamento_pessoal','orcamentos','audit_log',
     'ocupacao_historico','perfis','usuarios','config','reservas','usos',
-    'fornecedores','sinistros'
+    'fornecedores','sinistros','agenda_adiamentos'
   ]::text[];
 $$;
 

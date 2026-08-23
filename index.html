@@ -47785,16 +47785,26 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
     var ult = new Date(y, m, 0); // dia 0 do mês seguinte = último dia de _mesRef
     return ult.getFullYear()+"-"+_pad2(ult.getMonth()+1)+"-"+_pad2(ult.getDate());
   })();
+  /* [AGK2-V2 · atraso-retroativo] Estando no MÊS CORRENTE, a coluna "Atrasados"
+     passa a varrer também os meses anteriores (AGK2_LOOKBACK_ATRASO). Antes a
+     janela começava rígida no dia 1 do mês selecionado, então uma despesa
+     vencida em 28/07 e não paga simplesmente sumia da Agenda quando virava
+     agosto — o item continuava pendente no Financeiro, mas invisível aqui.
+     Em mês passado/futuro (navegação mensal) nada muda: a janela continua
+     sendo só aquele mês, senão a "Agenda Mensal" deixaria de ser mensal. */
+  var AGK2_LOOKBACK_ATRASO = 6;
+  var ehMesCorrente = _mesRef === hoje.slice(0,7);
   var mesesCobertos = React.useMemo(function(){
     var mm = {};
     var cur = new Date(isoIni+"T12:00:00");
+    if (ehMesCorrente) cur.setMonth(cur.getMonth() - AGK2_LOOKBACK_ATRASO);
     var fim = new Date(isoFim+"T12:00:00");
     while (cur.getFullYear()<fim.getFullYear() || (cur.getFullYear()===fim.getFullYear() && cur.getMonth()<=fim.getMonth())) {
       mm[cur.getFullYear()+"-"+_pad2(cur.getMonth()+1)] = { ano:cur.getFullYear(), mes:cur.getMonth() };
       cur.setMonth(cur.getMonth()+1);
     }
     return mm;
-  }, [isoIni, isoFim]);
+  }, [isoIni, isoFim, ehMesCorrente]);
 
   var eventosJanela = React.useMemo(function(){
     var todos = [];
@@ -47802,8 +47812,22 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
       var mm = mesesCobertos[mk];
       todos = todos.concat(buildAgendaEventos({ contratos:contratos||[], multas:multas||[], veiculos:veiculos||[], clientes:clientes||[], contas:contas||[], despesas:despesas||[], receitas:receitas||[], reservas:reservas||[], manutencoes:manutencoes||[], orcItens:orcItens||[], hoje:hoje, ano:mm.ano, mes:mm.mes }));
     });
-    return todos.filter(function(ev){ return ev.data && ev.data>=isoIni && ev.data<=isoFim; });
-  }, [contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, hoje, mesesCobertos, isoIni, isoFim]);
+    /* Varrendo vários meses, as categorias que NÃO são mensais (contrato, multa,
+       documento, CNH, conta, reserva…) voltam idênticas em cada passada — daí o
+       dedup por tipo+data+título. Sem ele, o mesmo vencimento apareceria 7×. */
+    var vistos = {}, out = [];
+    todos.forEach(function(ev){
+      if (!ev.data) return;
+      var dentroDoMes = ev.data>=isoIni && ev.data<=isoFim;
+      var atrasoAnterior = ehMesCorrente && ev.data<isoIni && ev.data<hoje;
+      if (!dentroDoMes && !atrasoAnterior) return;
+      var k = ev.tipo+"|"+ev.data+"|"+ev.titulo;
+      if (vistos[k]) return;
+      vistos[k] = true;
+      out.push(ev);
+    });
+    return out;
+  }, [contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, hoje, mesesCobertos, isoIni, isoFim, ehMesCorrente]);
 
   var eventosFiltrados = filtro==="todos" ? eventosJanela : eventosJanela.filter(function(ev){ return ev.tipo===filtro; });
 

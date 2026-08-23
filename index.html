@@ -15602,28 +15602,6 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
    de altura extra pro texto secundário. */
 .agk2-top h1{font-size:12.5px; font-weight:700; margin:0; letter-spacing:-0.1px; color:var(--c-text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 
-/* [AGK2-V2 · chips-filtro] Trilha rolável de chips no lugar do <select>
-   "Todos". O seletor deixava um bloco largo de espaço morto ao lado de um
-   ícone pequeno, escondia as categorias atrás de um toque e só permitia uma
-   escolha por vez sem mostrar qual estava ativa. Os chips ocupam a faixa que
-   sobra, rolam de lado e deixam o filtro corrente sempre visível. */
-.agk2-chips{
-  display:flex; align-items:center; gap:6px; flex:1 1 auto; min-width:0;
-  overflow-x:auto; scrollbar-width:none; -webkit-overflow-scrolling:touch; padding:1px 0;
-}
-.agk2-chips::-webkit-scrollbar{display:none;}
-.agk2-chip{
-  flex-shrink:0; height:31px; padding:0 12px; border-radius:99px; cursor:pointer;
-  background:var(--c-card); border:1px solid var(--c-border); color:var(--c-sub);
-  font-size:12px; font-weight:700; white-space:nowrap; -webkit-appearance:none; appearance:none;
-  transition:background .15s ease, color .15s ease, border-color .15s ease, transform .12s ease;
-}
-.agk2-chip:active{transform:scale(0.96);}
-.agk2-chip.agk2-chip-on{background:var(--c-text); border-color:var(--c-text); color:var(--c-bg);}
-/* "Atrasados" é o único chip que não é categoria — carrega a mesma cor de
-   alerta que o cabeçalho da coluna já usa, pra ser reconhecido de relance. */
-.agk2-chip-atraso{color:#C0392F; border-color:rgba(255,59,48,0.35);}
-.agk2-chip-atraso.agk2-chip-on{background:#FF3B30; border-color:#FF3B30; color:#fff;}
 .agk2-filters{display:flex; align-items:center; gap:8px; flex-shrink:0;}
 .agk2-filter-select{
   /* height (não padding vertical) — garante a MESMA altura do .agk2-outline-btn
@@ -48025,13 +48003,26 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
      escondia as subcategorias: escolher "Manutenção" (tipo `manutencao`)
      sumia com `manutencao_prazo`, e "Reserva" sumia com `reserva_recebida`. */
   function _agk2Rotulo(tp){ return M4_CAT_LABEL[tp] || tp; }
-  /* [AGK2-V2 · chips-filtro] "__atraso" não é categoria: filtra por estado
-     (tudo que já venceu), que é o recorte mais pedido na prática. */
+  /* "__atraso" não é categoria e sim estado (tudo que já venceu) — o recorte
+     mais pedido na prática, então vive no mesmo seletor das categorias. */
   var eventosFiltrados = filtro==="todos"
     ? eventosJanela
     : filtro==="__atraso"
       ? eventosJanela.filter(function(ev){ return ev.data < hoje; })
       : eventosJanela.filter(function(ev){ return _agk2Rotulo(ev.tipo)===_agk2Rotulo(filtro); });
+
+  /* [AGK2-V2 · totais-do-dia] Os totais do cabeçalho só aparecem quando o
+     filtro está num recorte financeiro. Em "Todos" a soma junta contrato,
+     despesa, multa e orçamento pessoal num número só, que não responde a
+     pergunta nenhuma; filtrando "Despesa", o "−R$ X" do dia é exatamente o
+     que se quer saber. "Atrasados" também mistura entrada e saída de
+     categorias diferentes, então fica de fora. Categoria não-financeira
+     (Documento, CNH, Reserva) não soma nada e a linha some sozinha. */
+  var mostrarTotais = filtro !== "todos" && filtro !== "__atraso";
+
+  var temAtrasoNaJanela = React.useMemo(function(){
+    return eventosJanela.some(function(ev){ return ev.data < hoje; });
+  }, [eventosJanela, hoje]);
 
   /* Todas as categorias relevantes (M4_CAT_LABEL), não só as que têm evento
      no mês corrente — sem isso, filtros como "Multa"/"Receita" sumiam do
@@ -48049,17 +48040,6 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
     });
     return out;
   }, []);
-
-  /* [AGK2-V2 · chips-filtro] "Todos", depois "Atrasados" (só quando existe
-     algo vencido na janela) e então uma categoria por rótulo. */
-  var chipsFiltro = React.useMemo(function(){
-    var temAtraso = eventosJanela.some(function(ev){ return ev.data < hoje; });
-    var lista = [{ v:"todos", l:"Todos" }];
-    if (temAtraso) lista.push({ v:"__atraso", l:"Atrasados", atraso:true });
-    return lista.concat(tiposPresentes.map(function(tp){
-      return { v:tp, l:M4_CAT_LABEL[tp]||tp };
-    }));
-  }, [eventosJanela, hoje, tiposPresentes]);
 
   var DOW_LBL = ["DOM","SEG","TER","QUA","QUI","SEX","SÁB"];
   var MES_LBL = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
@@ -48141,16 +48121,19 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                     , React.createElement('circle', { cx:12, cy:18, r:1.1, fill:"currentColor", stroke:"none" })
                   )
               )
-          /* [AGK2-V2 · chips-filtro] Chips roláveis no lugar do <select>. */
-          , React.createElement('div', { className:"agk2-chips" }
-            , chipsFiltro.map(function(ch){
-                return React.createElement('button', {
-                    key: ch.v, type:"button",
-                    className: "agk2-chip"+(ch.atraso?" agk2-chip-atraso":"")+(filtro===ch.v?" agk2-chip-on":""),
-                    "aria-pressed": filtro===ch.v,
-                    onClick: function(){ setFiltro(ch.v); }
-                  }, ch.l);
-              })
+          , React.createElement('div', { className:"agk2-filters" }
+            , React.createElement('select', {
+                className:"agk2-filter-select", value:filtro,
+                onChange:function(e){ setFiltro(e.target.value); }
+              }
+              , React.createElement('option', { value:"todos" }, "Todos")
+              /* "Atrasados" só aparece quando há de fato algo vencido na
+                 janela — sem isso vira uma opção que nunca devolve nada. */
+              , temAtrasoNaJanela && React.createElement('option', { value:"__atraso" }, "Atrasados")
+              , tiposPresentes.map(function(tp){
+                  return React.createElement('option', { key:tp, value:tp }, M4_CAT_LABEL[tp]||tp);
+                })
+            )
           )
         )
       )
@@ -48218,7 +48201,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                         )
                         , React.createElement('div', { className:"agk2-count" }, c.evsDia.length)
                       )
-                      , (c.tot && (c.tot.ent>0 || c.tot.sai>0)) && React.createElement('div', { key:"t", className:"agk2-dh-tot" }
+                      , (mostrarTotais && c.tot && (c.tot.ent>0 || c.tot.sai>0)) && React.createElement('div', { key:"t", className:"agk2-dh-tot" }
                         , c.tot.ent>0 && React.createElement('span', { className:"agk2-dh-in" }, "+"+_agk2Moeda(c.tot.ent))
                         , c.tot.sai>0 && React.createElement('span', { className:"agk2-dh-out" }, "−"+_agk2Moeda(c.tot.sai))
                       )

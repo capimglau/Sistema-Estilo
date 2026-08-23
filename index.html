@@ -48019,6 +48019,10 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
      depois, tempo da transição — troca pro próximo evento escondido
      (_baralhoIdx) e desliga, revelando o novo conteúdo de volta. Cartão já
      tem altura fixa, então a troca de texto não empurra nada. */
+  /* [AGK2-V2 · acao-no-cartao] Evento cujo cartão foi tocado e está com a
+     janela de ação aberta, e a data escolhida nela. */
+  var _acArr = React.useState(null); var acaoModal = _acArr[0], setAcaoModal = _acArr[1];
+  var _adArr = React.useState(""); var acaoData = _adArr[0], setAcaoData = _adArr[1];
   var _bIdxArr = React.useState(0); var _baralhoIdx = _bIdxArr[0], _setBaralhoIdx = _bIdxArr[1];
   var _bFlipArr = React.useState(false); var _baralhoFlipping = _bFlipArr[0], _setBaralhoFlipping = _bFlipArr[1];
   React.useEffect(function(){
@@ -48340,6 +48344,17 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                                    já sincronizava antes. Evento sem "acao" (documento, CNH, reserva etc.)
                                    só navega, como sempre foi. */
                                 : function(){
+                                    /* [AGK2-V2 · acao-no-cartao] Renovar, receber contrato e baixar
+                                       despesa/receita param de sair da tela na hora: abrem primeiro
+                                       a janela centralizada (Modal padrão do app, com o mesmo efeito
+                                       de entrada das outras), mostrando de quem é, quanto é e a data
+                                       — e é ali que o usuário confirma. Só depois a ação corre, e
+                                       corre pela MESMA função de sempre (ver _agk2Executar). */
+                                    if ((ev.acao === "renovar" || ev.acao === "baixar") && ev.id != null) {
+                                      setAcaoData(isoHoje);
+                                      setAcaoModal(ev);
+                                      return;
+                                    }
                                     /* voltarInicio:true — a ação foi disparada direto da Agenda
                                        Mensal (Início), então ao fechar a janela que abre em
                                        Contratos/Financeiro pra resolver, o usuário deve voltar
@@ -48410,6 +48425,120 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                 })
             )
       )
+      /* [AGK2-V2 · acao-no-cartao] Janela de ação do cartão — Modal padrão do
+         app (centralizada, fundo desfocado, mesma animação de entrada das
+         demais). Mostra de quem é, quanto é e desde quando está pendente, pede
+         a data quando é baixa, e oferece as duas saídas: resolver na hora ou
+         abrir o item na tela dele. */
+      , acaoModal && _agk2ModalAcao({
+          ev: acaoModal, data: acaoData, setData: setAcaoData,
+          onFechar: function(){ setAcaoModal(null); },
+          onConfirmar: function(){ var _e = acaoModal; setAcaoModal(null); _agk2Executar(_e, acaoData, true); },
+          onIrPara:    function(){ var _e = acaoModal; setAcaoModal(null); _agk2Executar(_e, null, false); }
+        })
+  );
+
+  /* Dispara a ação do cartão. `confirmado` decide o caminho:
+
+     true  → o usuário já confirmou aqui na janela do cartão, então o deep-link
+             leva a data/confirmação junto e a tela de destino EXECUTA direto,
+             sem repetir a pergunta (ver o parâmetro `preset` em
+             _baixarDespesaFluxo/_baixarReceitaFluxo, e `data`/`confirmado` nos
+             handlers de Contratos).
+     false → "Ir para": só abre o item na tela dele, sem executar nada.
+
+     Em nenhum dos dois a Agenda grava coisa alguma: quem escreve no banco
+     continua sendo a função de sempre, uma só por operação. */
+  function _agk2Executar(ev, data, confirmado) {
+    if (!ev || ev.id == null) return;
+    /* voltarInicio só quando a ação foi resolvida aqui: aí faz sentido devolver
+       o usuário pra Agenda assim que terminar. No "Ir para" ele pediu
+       explicitamente pra ficar na outra tela — e mandar voltarInicio ali
+       deixaria o gatilho de volta armado sem nenhum fluxo pra desarmá-lo,
+       chutando o usuário pro Início na próxima coisa que fizesse lá. */
+    var _volta = confirmado ? { voltarInicio: true } : {};
+    if (ev.acao === "renovar") {
+      if (!setCtDeepLink) return;
+      setCtDeepLink(Object.assign({ acao: confirmado ? "renovar" : null, itemId: ev.id, confirmado: !!confirmado }, _volta));
+      if (setTab) setTab("contratos");
+      return;
+    }
+    if (ev.tipo === "pagamento") {
+      if (!setCtDeepLink) return;
+      setCtDeepLink(Object.assign({ acao:"baixar", itemId: ev.id, data: confirmado ? data : null }, _volta));
+      if (setTab) setTab("contratos");
+      return;
+    }
+    if (ev.tipo === "despesa" || ev.tipo === "receita") {
+      if (!setFinDeepLink) return;
+      setFinDeepLink(Object.assign({
+        subTab: ev.tipo==="despesa" ? "despesas" : "receitas",
+        acao: confirmado ? "baixar" : null,
+        itemId: ev.id, mes: (ev.data||"").slice(0,7),
+        data: confirmado ? data : null
+      }, _volta));
+      if (setTab) setTab("financeiro");
+    }
+  }
+}
+
+/* [AGK2-V2 · acao-no-cartao] Corpo da janela de ação do cartão da Agenda.
+   Fora do componente porque é só apresentação — recebe tudo por parâmetro e
+   não guarda estado nenhum. */
+function _agk2ModalAcao(o) {
+  var ev = o.ev;
+  var ehRenovar = ev.acao === "renovar";
+  var ehContrato = ehRenovar || ev.tipo === "pagamento";
+  var titulo = ehRenovar ? "Renovar contrato"
+             : ev.tipo === "pagamento" ? "Receber contrato"
+             : ev.tipo === "receita" ? "Baixar receita" : "Baixar despesa";
+  var rotuloOk = ehRenovar ? "Renovar" : ev.tipo === "pagamento" ? "Receber" : "Baixar";
+  var rotuloIr = ehContrato ? "Abrir em Contratos" : "Abrir em Financeiro";
+  var tone = _agk2Tone(ev.tipo);
+  var atraso = _agk2Atraso(ev.data, _brNow().toISOString().split("T")[0]);
+  function fmtD(d){ if(!d) return "--"; var p=String(d).split("-"); return p[2]+"/"+p[1]+"/"+p[0]; }
+
+  return React.createElement(Modal, { open:true, onClose:o.onFechar, title:titulo }
+    , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:14 } }
+      /* Resumo do que vai ser resolvido — os mesmos dados do cartão, para o
+         usuário não precisar lembrar em qual cartão tocou. */
+      , React.createElement('div', { style:{ background:"var(--c-bg)", border:"1px solid var(--c-border)", borderRadius:12, padding:"12px 14px", display:"flex", flexDirection:"column", gap:6 } }
+        , React.createElement('div', { style:{ display:"flex", alignItems:"baseline", justifyContent:"space-between", gap:12 } }
+          , React.createElement('span', { style:{ fontSize:15, fontWeight:700 } }, ev.quem || ev.titulo)
+          , ev.valor != null && React.createElement('span', { style:{ fontSize:15, fontWeight:800, whiteSpace:"nowrap", fontVariantNumeric:"tabular-nums" } }, _agk2Moeda(ev.valor))
+        )
+        , React.createElement('div', { style:{ fontSize:12, color:"var(--c-sub)" } }
+          , React.createElement('span', { style:{ fontWeight:800, color:tone.tag } }, M4_CAT_LABEL[ev.tipo]||ev.tipo)
+          , (ev.detalhe || ev.sub) ? (" · " + (ev.detalhe || ev.sub)) : ""
+        )
+        , React.createElement('div', { style:{ fontSize:12, color:"var(--c-sub)" } }
+          , (ehRenovar ? "Vence em " : "Previsto para ") + fmtD(ev.data)
+          , atraso ? React.createElement('span', { style:{ marginLeft:8, fontWeight:800, color:"#C0392F" } }, "· " + atraso) : null
+        )
+      )
+      /* Renovar não tem data a escolher: a renovação é sempre a partir do fim
+         do contrato atual, como no fluxo da tela de Contratos. */
+      , !ehRenovar && React.createElement(Lbl, { label: ev.tipo === "despesa" ? "📅 Data do pagamento" : "📅 Data do recebimento" }
+        , React.createElement('input', { style:FI, type:"date", value:o.data, onChange:function(e){ o.setData(e.target.value); } })
+      )
+      , ehRenovar && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
+        , "Renova por mais 30 dias a partir do fim do contrato atual, criando o contrato seguinte e a fatura prevista dele."
+      )
+      /* Ação principal em cima, ocupando a largura inteira, e as duas saídas
+         secundárias embaixo dividindo a linha. Os três lado a lado não cabem
+         numa tela de 390px: "Baixar" quebrava sozinho pra uma segunda linha,
+         longe do polegar e sem parecer o botão principal. */
+      , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:8, marginTop:2 } }
+        , React.createElement('button', {
+            className:bCls(Btn(C.green)), onClick:o.onConfirmar, disabled: !ehRenovar && !o.data,
+            style: Object.assign({}, bStyle(Btn(C.green)), { width:"100%", textAlign:"center", opacity: (!ehRenovar && !o.data) ? 0.5 : 1 })
+          }, rotuloOk)
+        , React.createElement('div', { style:{ display:"flex", gap:8 } }
+          , React.createElement('button', { className:bCls(Ghost(C.sub)), style:Object.assign({}, bStyle(Ghost(C.sub)), { flex:1, textAlign:"center" }), onClick:o.onFechar }, "Cancelar")
+          , React.createElement('button', { className:bCls(Ghost(C.blue)), style:Object.assign({}, bStyle(Ghost(C.blue)), { flex:1, textAlign:"center" }), onClick:o.onIrPara }, rotuloIr)
+        )
+      )
+    )
   );
 }
 

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="e866fdf"/>
+<meta name="ag-build" content="8030381"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -47515,6 +47515,28 @@ function _agk2TotaisDia(evs){
   });
   return { ent:ent, sai:sai };
 }
+/* [AGK2-V2 · adiar-resolver] Sugestão inicial do adiamento: amanhã de manhã.
+   Adiar pra "daqui a pouco no mesmo dia" quase nunca é o que se quer — o
+   cartão voltaria antes de o usuário ter chance de resolver. */
+function _agk2AdiarPadrao() {
+  var d = _brNow();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0,11) + "09:00";
+}
+/* "01/09/2026 às 09:00" — usado na mensagem de confirmação do adiamento. */
+function _agk2QuandoLegivel(iso) {
+  if (!iso) return "depois";
+  var p = String(iso).split("T");
+  var d = (p[0]||"").split("-");
+  if (d.length !== 3) return "depois";
+  return d[2]+"/"+d[1]+"/"+d[0] + (p[1] ? " às " + p[1].slice(0,5) : "");
+}
+/* Nome da aba de destino, pro rótulo do botão "Abrir em ...". */
+var AGK2_TAB_NOME = {
+  contratos:"Contratos", financeiro:"Financeiro", multas:"Multas",
+  manutencao:"Manutenção", frota:"Frota", clientes:"Clientes", reservas:"Reservas"
+};
+
 /* [AGK2-V2 · selo-atraso] Há quantos dias o evento venceu. A coluna
    "Atrasados" junta dias diferentes num bloco só, então sem isso não dava
    pra saber se o cartão venceu ontem ou há três semanas — que é justamente
@@ -47529,6 +47551,87 @@ function _agk2Atraso(dataISO, hojeISO){
   if (d < 30) return "há " + d + " dias";
   var m = Math.floor(d/30);
   return m === 1 ? "há 1 mês" : "há " + m + " meses";
+}
+
+/* ── Adiar / dar por resolvido um cartão da Agenda ────────────────────────
+   A Agenda mostra muita coisa que o sistema não tem como encerrar sozinho:
+   licenciamento pago no despachante, CNH renovada, pneu trocado, reserva
+   combinada por telefone. Sem um lugar pra dizer "já tratei disso", esses
+   cartões cobram pra sempre e o usuário aprende a ignorar a Agenda inteira.
+
+   Guarda em DOIS lugares, de propósito: o localStorage responde na hora e
+   funciona offline (e num banco que ainda não rodou o SQL da tabela), e a
+   tabela `agenda_adiamentos` sincroniza entre celular e computador. A leitura
+   é a união dos dois, com o banco por cima; a escrita grava local primeiro e
+   tenta o banco em seguida, sem travar a interface se ele não responder. */
+var AG_ADIA_TABELA = "agenda_adiamentos";
+var AG_ADIA_LS = "ag_agenda_adiamentos";
+var _agAdiaMapa = null;
+
+function _agAdiaLerLocal() {
+  try { return JSON.parse(localStorage.getItem(AG_ADIA_LS) || "{}") || {}; } catch(e) { return {}; }
+}
+function _agAdiaGravarLocal(mapa) {
+  try { localStorage.setItem(AG_ADIA_LS, JSON.stringify(mapa)); } catch(e) {}
+}
+function agAdiaMapa() {
+  if (!_agAdiaMapa) _agAdiaMapa = _agAdiaLerLocal();
+  return _agAdiaMapa;
+}
+/* Instante atual em horário de parede de São Paulo, no mesmo formato do
+   <input type="datetime-local"> ("YYYY-MM-DDTHH:MM") — assim a comparação com
+   o horário escolhido é só comparação de string, sem fuso pra errar. */
+function agAdiaAgora() { return _brNow().toISOString().slice(0,16); }
+
+function agAdiaOculto(chave, agora) {
+  if (!chave) return false;
+  var r = agAdiaMapa()[chave];
+  if (!r) return false;
+  if (r.resolvido) return true;
+  return !!(r.ate && (agora || agAdiaAgora()) < r.ate);
+}
+
+/* Carrega o que está no banco por cima do que já existe local. db.get devolve
+   [] tanto pra tabela vazia quanto pra tabela inexistente, e é justamente por
+   isso que o local nunca é descartado: num banco sem a tabela, o [] não pode
+   apagar o que o aparelho já sabia. */
+async function agAdiaCarregar() {
+  var mapa = _agAdiaLerLocal();
+  try {
+    var linhas = await db.get(AG_ADIA_TABELA);
+    (linhas || []).forEach(function(l) {
+      if (!l || !l.chave) return;
+      mapa[l.chave] = { ate: l.adiado_para || null, resolvido: !!l.resolvido, id: l.id };
+    });
+  } catch(e) { console.warn("agAdiaCarregar", e); }
+  _agAdiaMapa = mapa;
+  _agAdiaGravarLocal(mapa);
+  return mapa;
+}
+
+/* reg: { ate:"YYYY-MM-DDTHH:MM"|null, resolvido:bool }. Passar null limpa a
+   marca (o cartão volta a aparecer). */
+async function agAdiaDefinir(chave, reg) {
+  if (!chave) return;
+  var mapa = agAdiaMapa();
+  var anterior = mapa[chave];
+  if (reg) mapa[chave] = { ate: reg.ate || null, resolvido: !!reg.resolvido, id: anterior && anterior.id };
+  else delete mapa[chave];
+  _agAdiaGravarLocal(mapa);
+  /* Banco em segundo plano: se a tabela não existe (SQL não rodado) ou a rede
+     caiu, o adiamento já valeu localmente e o app não trava por isso. */
+  try {
+    var existentes = await db.get(AG_ADIA_TABELA, "chave=eq." + encodeURIComponent(chave) + "&limit=1");
+    var linha = (existentes || [])[0];
+    if (!reg) {
+      if (linha) await db.del(AG_ADIA_TABELA, linha.id);
+      return;
+    }
+    var payload = { chave: chave, adiado_para: reg.ate || null, resolvido: !!reg.resolvido, atualizado_em: new Date().toISOString() };
+    if (linha) { await db.patch(AG_ADIA_TABELA, linha.id, payload); mapa[chave].id = linha.id; }
+    else { var nova = await db.post(AG_ADIA_TABELA, payload); if (nova && nova.id) mapa[chave].id = nova.id; }
+    _agAdiaGravarLocal(mapa);
+  } catch(e) { console.warn("agAdiaDefinir", e); }
 }
 
 /* Constrói a lista completa de eventos do sistema (contratos, multas, documentos de
@@ -47675,6 +47778,7 @@ function buildAgendaEventos(ctx) {
       emoji: "⚠️",
       titulo: "Renovação incompleta · Contrato " + calRenLabel(c) + " · " + (cl&&cl.nome||"--"),
       sub: "Encerrou em " + fmtD(c.data_fim) + " sem contrato de continuidade",
+      chave: "renovacao_orfa|" + c.id + "|" + c.data_fim,
       quem: (cl&&cl.nome)||"--",
       detalhe: "Contrato " + calRenLabel(c) + " encerrou em " + fmtD(c.data_fim) + " sem continuidade",
       valor: null, fluxo: null,
@@ -47693,6 +47797,7 @@ function buildAgendaEventos(ctx) {
       emoji: "⚠️",
       titulo: "Multa " + (m.tipo||"") + " · " + (ve&&ve.placa||"--") + " · " + fmtV(m.valor),
       sub: (cl&&cl.nome||"--") + (m.descricao ? " · " + m.descricao : "") + (m.ait ? " · AIT " + m.ait : "") + " · #" + numCt(m.id),
+      chave: "multa|" + m.id + "|" + m.vencimento,
       quem: (ve&&ve.placa||"--") + (m.tipo ? " · " + m.tipo : ""),
       detalhe: (cl&&cl.nome||"--") + (m.descricao ? " · " + m.descricao : "") + (m.ait ? " · AIT " + m.ait : ""),
       valor: numV(m.valor), fluxo: "out",
@@ -47715,6 +47820,7 @@ function buildAgendaEventos(ctx) {
       emoji: "🏛️",
       titulo: "Prazo notificação ao órgão · " + (m.tipo||"Multa") + " · " + (ve&&ve.placa||"--"),
       sub: (cl&&cl.nome||"--") + " · indique o condutor até " + fmtD(prazo),
+      chave: "multa_notif|" + m.id + "|" + prazo,
       quem: (ve&&ve.placa||"--") + " · " + (m.tipo||"Multa"),
       detalhe: prazoEstourado
         ? "prazo de indicação estourou em " + fmtD(prazo) + " · " + (cl&&cl.nome||"--")
@@ -47745,6 +47851,7 @@ function buildAgendaEventos(ctx) {
         emoji: d.emoji,
         titulo: "Venc. " + d.nome + " · " + (v.placa||"--"),
         sub: (v.marca||"") + " " + (v.modelo||"") + (v.ano ? " · " + v.ano : ""),
+        chave: "veiculo|" + v.id + "|" + d.nome + "|" + d.campo,
         quem: d.nome + " · " + (v.placa||"--"),
         detalhe: ((v.marca||"") + " " + (v.modelo||"")).trim() + (v.ano ? " · " + v.ano : ""),
         valor: null, fluxo: null,
@@ -47767,6 +47874,12 @@ function buildAgendaEventos(ctx) {
       sub: sp.vencido
         ? (sp.rodado.toLocaleString("pt-BR") + " km rodados desde a troca (vida útil " + sp.vida.toLocaleString("pt-BR") + " km)")
         : ("faltam " + sp.restante.toLocaleString("pt-BR") + " km"),
+      /* Chave presa à quilometragem da última troca, não à data: este alerta
+         é condição de momento (ancorado em `hoje`), então uma chave com data
+         mudaria sozinha todo dia e o "resolvido" duraria até a meia-noite.
+         Assim ele vale até a próxima troca de pneu, que é o que encerra o
+         assunto de verdade. */
+      chave: "pneus|" + v.id + "|" + (v.pneus_km_troca == null ? "" : v.pneus_km_troca),
       quem: (v.placa||"--") + " · " + (sp.vencido ? "troca vencida" : "troca próxima"),
       detalhe: sp.vencido
         ? (sp.rodado.toLocaleString("pt-BR") + " km desde a troca (vida útil " + sp.vida.toLocaleString("pt-BR") + " km)")
@@ -47788,6 +47901,8 @@ function buildAgendaEventos(ctx) {
       sub: sr.vencida
         ? (sr.atual.toLocaleString("pt-BR") + " km · " + Math.abs(sr.falta).toLocaleString("pt-BR") + " km além da revisão")
         : ("faltam " + sr.falta.toLocaleString("pt-BR") + " km (revisão em " + sr.meta.toLocaleString("pt-BR") + " km)"),
+      /* Idem pneus: presa à meta de km da revisão, não ao dia de hoje. */
+      chave: "revisao_km|" + v.id + "|" + (v.km_revisao_proxima == null ? "" : v.km_revisao_proxima),
       quem: (v.placa||"--") + " · " + (sr.vencida ? "revisão vencida (km)" : "revisão próxima (km)"),
       detalhe: sr.vencida
         ? (sr.atual.toLocaleString("pt-BR") + " km · " + Math.abs(sr.falta).toLocaleString("pt-BR") + " km além da revisão")
@@ -47806,6 +47921,7 @@ function buildAgendaEventos(ctx) {
       emoji: "🪪",
       titulo: "Venc. CNH · " + (cl.nome||"--"),
       sub: "Cat. " + (cl.categoria_cnh||"--") + " · CNH " + (cl.cnh||"--"),
+      chave: "cnh|" + cl.id + "|" + cl.vencimento_cnh,
       quem: cl.nome||"--",
       detalhe: "Cat. " + (cl.categoria_cnh||"--") + " · CNH " + (cl.cnh||"--"),
       valor: null, fluxo: null,
@@ -47825,6 +47941,7 @@ function buildAgendaEventos(ctx) {
       emoji: isRec ? "📥" : "📤",
       titulo: (isRec ? "A Receber" : "A Pagar") + " · " + (c.descricao||"--") + " · " + fmtV(c.valor),
       sub: (c.categoria||"") + (c.observacoes ? " · " + c.observacoes : ""),
+      chave: "conta|" + c.id + "|" + c.vencimento,
       quem: c.descricao||"--",
       detalhe: (isRec ? "A Receber" : "A Pagar") + (c.categoria ? " · " + c.categoria : "") + (c.observacoes ? " · " + c.observacoes : ""),
       valor: numV(c.valor), fluxo: isRec ? "in" : "out",
@@ -47891,6 +48008,7 @@ function buildAgendaEventos(ctx) {
       emoji: "🔧",
       titulo: "Manutenção com prazo vencido · " + (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção"),
       sub: "Previsão de saída " + fmtD(m.data_saida),
+      chave: "manutencao_prazo|" + m.id + "|" + m.data_saida,
       quem: (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção"),
       detalhe: "prazo vencido · previsão de saída " + fmtD(m.data_saida),
       valor: null, fluxo: null,
@@ -47913,6 +48031,7 @@ function buildAgendaEventos(ctx) {
       emoji: "🔧",
       titulo: "Manutenção · " + (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção") + " · " + fmtV(m.custo),
       sub: fmtD(dt),
+      chave: "manutencao|" + m.id + "|" + dt,
       quem: (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção"),
       detalhe: fmtD(dt),
       valor: numV(m.custo), fluxo: "out",
@@ -47950,6 +48069,7 @@ function buildAgendaEventos(ctx) {
       emoji: "📅",
       titulo: "Reserva · " + (rs.nome||"--") + (rs.veiculo ? " · " + rs.veiculo : (ve ? " · " + ve.placa : "")),
       sub: "Retirada " + fmtD(rs.data_retirada) + (rs.data_devolucao ? " → " + fmtD(rs.data_devolucao) : "") + " · " + (rs.status === "confirmada" ? "✓ confirmada" : "pendente"),
+      chave: "reserva|" + rs.id + "|" + rs.data_retirada,
       quem: (rs.nome||"--") + (rs.veiculo ? " · " + rs.veiculo : (ve ? " · " + ve.placa : "")),
       detalhe: "retirada " + fmtD(rs.data_retirada) + (rs.data_devolucao ? " → " + fmtD(rs.data_devolucao) : "") + " · " + (rs.status === "confirmada" ? "✓ confirmada" : "pendente"),
       valor: null, fluxo: null,
@@ -47971,6 +48091,7 @@ function buildAgendaEventos(ctx) {
       emoji: "📩",
       titulo: "Reserva recebida · " + (rs.nome||"--") + (rs.veiculo ? " · " + rs.veiculo : (ve ? " · " + ve.placa : "")),
       sub: "Recebida em " + fmtD(dataChegada) + (rs.data_retirada ? " · Retirada " + fmtD(rs.data_retirada) : ""),
+      chave: "reserva_recebida|" + rs.id,
       quem: (rs.nome||"--") + (rs.veiculo ? " · " + rs.veiculo : (ve ? " · " + ve.placa : "")),
       detalhe: "recebida em " + fmtD(dataChegada) + (rs.data_retirada ? " · retirada " + fmtD(rs.data_retirada) : ""),
       valor: null, fluxo: null,
@@ -47991,6 +48112,7 @@ function buildAgendaEventos(ctx) {
       emoji: isDespesa ? "🏠" : "💵",
       titulo: (isDespesa ? "Pessoal · " : "Receita Pessoal · ") + (it.descricao||"--") + " · " + fmtV(it.valor),
       sub: (it.categoria||"") + (it.recorrente ? " · ↻ Recorrente" : ""),
+      chave: "orcamento|" + it.id + "|" + data,
       quem: it.descricao||"--",
       detalhe: (isDespesa ? "" : "receita · ") + (it.categoria||"") + (it.recorrente ? " · ↻ Recorrente" : ""),
       valor: numV(it.valor), fluxo: isDespesa ? "out" : "in",
@@ -47998,7 +48120,20 @@ function buildAgendaEventos(ctx) {
     });
   });
 
-  return eventos;
+  /* Chave estável de cada cartão, pra poder adiá-lo ou dá-lo por resolvido.
+     Inclui a DATA do vencimento de propósito: renovado o licenciamento, a data
+     muda, a chave muda e o alerta volta sozinho no ciclo seguinte — que é
+     exatamente o que se quer de um "resolvido". Os alertas por quilometragem
+     trazem chave própria (ver `pneus` e `revisao_km` acima), já que a data
+     deles é sempre hoje. */
+  eventos.forEach(function(ev) {
+    if (!ev.chave) ev.chave = ev.tipo + "|" + (ev.id != null ? ev.id : (ev.quem || ev.titulo || "")) + "|" + (ev.data || "");
+  });
+  /* Some com o que o usuário adiou pra depois ou já deu por resolvido. Fica
+     aqui, e não em cada tela, pra valer de uma vez na Agenda Mensal, na aba
+     Calendário e no calendário secundário do Dashboard — as três leem daqui. */
+  var _agoraAdia = agAdiaAgora();
+  return eventos.filter(function(ev) { return !agAdiaOculto(ev.chave, _agoraAdia); });
 }
 
 /* Calendário do Dashboard (modelo aprovado pelo usuário) — board kanban com uma
@@ -48023,6 +48158,19 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
      janela de ação aberta, e a data escolhida nela. */
   var _acArr = React.useState(null); var acaoModal = _acArr[0], setAcaoModal = _acArr[1];
   var _adArr = React.useState(""); var acaoData = _adArr[0], setAcaoData = _adArr[1];
+  /* [AGK2-V2 · adiar-resolver] Sobe da tabela/localStorage o que já foi adiado
+     ou dado por resolvido, e reconta sempre que muda — `adiaVersao` só existe
+     pra forçar o recálculo dos eventos, já que o mapa vive fora do React. */
+  var _avArr = React.useState(0); var adiaVersao = _avArr[0], setAdiaVersao = _avArr[1];
+  React.useEffect(function(){
+    var vivo = true;
+    agAdiaCarregar().then(function(){ if (vivo) setAdiaVersao(function(v){ return v+1; }); });
+    return function(){ vivo = false; };
+  }, []);
+  /* Painel de adiamento aberto dentro da janela do cartão, e o horário
+     escolhido nele ("YYYY-MM-DDTHH:MM", do <input type="datetime-local">). */
+  var _apArr = React.useState(false); var adiarAberto = _apArr[0], setAdiarAberto = _apArr[1];
+  var _ahArr = React.useState(""); var adiarQuando = _ahArr[0], setAdiarQuando = _ahArr[1];
   var _bIdxArr = React.useState(0); var _baralhoIdx = _bIdxArr[0], _setBaralhoIdx = _bIdxArr[1];
   var _bFlipArr = React.useState(false); var _baralhoFlipping = _bFlipArr[0], _setBaralhoFlipping = _bFlipArr[1];
   React.useEffect(function(){
@@ -48091,7 +48239,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
       out.push(ev);
     });
     return out;
-  }, [contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, hoje, mesesCobertos, isoIni, isoFim, ehMesCorrente]);
+  }, [contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, hoje, mesesCobertos, isoIni, isoFim, ehMesCorrente, adiaVersao]);
 
   /* [AGK2-V2 · filtro-por-rotulo] Compara pelo RÓTULO da categoria, não pelo
      tipo cru. O seletor deduplica por rótulo e guarda só a primeira chave de
@@ -48350,8 +48498,18 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                                        de entrada das outras), mostrando de quem é, quanto é e a data
                                        — e é ali que o usuário confirma. Só depois a ação corre, e
                                        corre pela MESMA função de sempre (ver _agk2Executar). */
+                                    /* [AGK2-V2 · adiar-resolver] Cartão SEM ação (licenciamento,
+                                       IPVA, CNH, pneus, reserva…) também abre a janela: o sistema
+                                       não tem como saber que o despachante já pagou o
+                                       licenciamento, então ali o usuário adia pra depois ou
+                                       marca como resolvido — e o alerta para de aparecer. */
                                     if ((ev.acao === "renovar" || ev.acao === "baixar") && ev.id != null) {
-                                      setAcaoData(isoHoje);
+                                      setAcaoData(isoHoje); setAdiarAberto(false); setAdiarQuando("");
+                                      setAcaoModal(ev);
+                                      return;
+                                    }
+                                    if (!ev.acao && ev.chave) {
+                                      setAcaoData(isoHoje); setAdiarAberto(false); setAdiarQuando("");
                                       setAcaoModal(ev);
                                       return;
                                     }
@@ -48432,11 +48590,35 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
          abrir o item na tela dele. */
       , acaoModal && _agk2ModalAcao({
           ev: acaoModal, data: acaoData, setData: setAcaoData,
-          onFechar: function(){ setAcaoModal(null); },
+          adiarAberto: adiarAberto, abrirAdiar: function(){ setAdiarQuando(_agk2AdiarPadrao()); setAdiarAberto(true); },
+          fecharAdiar: function(){ setAdiarAberto(false); },
+          adiarQuando: adiarQuando, setAdiarQuando: setAdiarQuando,
+          onFechar: function(){ setAcaoModal(null); setAdiarAberto(false); },
           onConfirmar: function(){ var _e = acaoModal; setAcaoModal(null); _agk2Executar(_e, acaoData, true); },
-          onIrPara:    function(){ var _e = acaoModal; setAcaoModal(null); _agk2Executar(_e, null, false); }
+          onIrPara:    function(){ var _e = acaoModal; setAcaoModal(null); _agk2Executar(_e, null, false); },
+          onAdiar:     function(){ var _e = acaoModal; setAcaoModal(null); setAdiarAberto(false); _agk2Marcar(_e, { ate: adiarQuando }); },
+          onResolver:  function(){ var _e = acaoModal; setAcaoModal(null); _agk2Marcar(_e, { resolvido: true }); }
         })
   );
+
+  /* [AGK2-V2 · adiar-resolver] Grava a marca (adiado até / resolvido) e some
+     com o cartão. Sempre com "Desfazer": um "resolvido" tira o alerta de
+     circulação até o próximo ciclo do documento, e essa é a única porta de
+     volta — não há tela pra listar o que foi resolvido. */
+  function _agk2Marcar(ev, reg) {
+    if (!ev || !ev.chave) return;
+    agAdiaDefinir(ev.chave, reg).then(function(){ setAdiaVersao(function(v){ return v+1; }); });
+    setAdiaVersao(function(v){ return v+1; });
+    var msg = reg.resolvido
+      ? "Resolvido — sai da Agenda"
+      : "Adiado para " + _agk2QuandoLegivel(reg.ate);
+    if (window._agUndo) {
+      window._agUndo(msg, function(){
+        agAdiaDefinir(ev.chave, null).then(function(){ setAdiaVersao(function(v){ return v+1; }); });
+        setAdiaVersao(function(v){ return v+1; });
+      });
+    }
+  }
 
   /* Dispara a ação do cartão. `confirmado` decide o caminho:
 
@@ -48450,7 +48632,10 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
      Em nenhum dos dois a Agenda grava coisa alguma: quem escreve no banco
      continua sendo a função de sempre, uma só por operação. */
   function _agk2Executar(ev, data, confirmado) {
-    if (!ev || ev.id == null) return;
+    if (!ev) return;
+    /* Cartão sem ação (documento, CNH, reserva…) e cartão sem id: "Abrir em"
+       é só navegar até a aba dele — não há fluxo de baixa pra disparar. */
+    if (!ev.acao || ev.id == null) { if (ev.tab && setTab) setTab(ev.tab); return; }
     /* voltarInicio só quando a ação foi resolvida aqui: aí faz sentido devolver
        o usuário pra Agenda assim que terminar. No "Ir para" ele pediu
        explicitamente pra ficar na outra tela — e mandar voltarInicio ali
@@ -48489,11 +48674,18 @@ function _agk2ModalAcao(o) {
   var ev = o.ev;
   var ehRenovar = ev.acao === "renovar";
   var ehContrato = ehRenovar || ev.tipo === "pagamento";
-  var titulo = ehRenovar ? "Renovar contrato"
+  /* Cartão que o sistema não resolve sozinho (licenciamento, IPVA, CNH,
+     pneus, reserva…): não há baixa a fazer, então a ação principal vira
+     "dar por resolvido". */
+  var semAcao = !ev.acao;
+  var titulo = semAcao ? (M4_CAT_LABEL[ev.tipo] || "Pendência")
+             : ehRenovar ? "Renovar contrato"
              : ev.tipo === "pagamento" ? "Receber contrato"
              : ev.tipo === "receita" ? "Baixar receita" : "Baixar despesa";
-  var rotuloOk = ehRenovar ? "Renovar" : ev.tipo === "pagamento" ? "Receber" : "Baixar";
-  var rotuloIr = ehContrato ? "Abrir em Contratos" : "Abrir em Financeiro";
+  var rotuloOk = semAcao ? "Marcar como resolvido"
+               : ehRenovar ? "Renovar"
+               : ev.tipo === "pagamento" ? "Receber" : "Baixar";
+  var rotuloIr = "Abrir em " + (AGK2_TAB_NOME[ev.tab] || (ehContrato ? "Contratos" : "Financeiro"));
   var tone = _agk2Tone(ev.tipo);
   var atraso = _agk2Atraso(ev.data, _brNow().toISOString().split("T")[0]);
   function fmtD(d){ if(!d) return "--"; var p=String(d).split("-"); return p[2]+"/"+p[1]+"/"+p[0]; }
@@ -48518,26 +48710,57 @@ function _agk2ModalAcao(o) {
       )
       /* Renovar não tem data a escolher: a renovação é sempre a partir do fim
          do contrato atual, como no fluxo da tela de Contratos. */
-      , !ehRenovar && React.createElement(Lbl, { label: ev.tipo === "despesa" ? "📅 Data do pagamento" : "📅 Data do recebimento" }
+      , (!ehRenovar && !semAcao && !o.adiarAberto) && React.createElement(Lbl, { label: ev.tipo === "despesa" ? "📅 Data do pagamento" : "📅 Data do recebimento" }
         , React.createElement('input', { style:FI, type:"date", value:o.data, onChange:function(e){ o.setData(e.target.value); } })
       )
-      , ehRenovar && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
+      , (ehRenovar && !o.adiarAberto) && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
         , "Renova por mais 30 dias a partir do fim do contrato atual, criando o contrato seguinte e a fatura prevista dele."
+      )
+      , (semAcao && !o.adiarAberto) && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
+        , "Esta pendência se resolve fora do sistema. Marque como resolvida para tirá-la da Agenda — ela volta sozinha no próximo vencimento."
+      )
+      /* [AGK2-V2 · adiar-resolver] Passo do adiamento: data e hora, com
+         atalhos pros prazos que a gente usa na prática. */
+      , o.adiarAberto && React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:10 } }
+        , React.createElement('div', { style:{ display:"flex", gap:6, flexWrap:"wrap" } }
+          , [{ l:"Amanhã", d:1 }, { l:"Em 3 dias", d:3 }, { l:"Em 1 semana", d:7 }, { l:"Em 30 dias", d:30 }].map(function(op){
+              var alvo = (function(){ var x=_brNow(); x.setDate(x.getDate()+op.d); return x.toISOString().slice(0,11)+"09:00"; })();
+              var ativo = o.adiarQuando === alvo;
+              return React.createElement('button', {
+                key: op.l, type:"button", onClick:function(){ o.setAdiarQuando(alvo); },
+                style:{ flex:"1 1 auto", padding:"7px 10px", borderRadius:99, cursor:"pointer", fontSize:12, fontWeight:700,
+                        whiteSpace:"nowrap", border:"1px solid "+(ativo?"transparent":"var(--c-border)"),
+                        background: ativo ? "var(--c-text)" : "var(--c-card)", color: ativo ? "var(--c-bg)" : "var(--c-sub)" }
+              }, op.l);
+            })
+        )
+        , React.createElement(Lbl, { label:"⏰ Voltar a avisar em" }
+          , React.createElement('input', { style:FI, type:"datetime-local", value:o.adiarQuando, onChange:function(e){ o.setAdiarQuando(e.target.value); } })
+        )
       )
       /* Ação principal em cima, ocupando a largura inteira, e as duas saídas
          secundárias embaixo dividindo a linha. Os três lado a lado não cabem
          numa tela de 390px: "Baixar" quebrava sozinho pra uma segunda linha,
          longe do polegar e sem parecer o botão principal. */
-      , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:8, marginTop:2 } }
-        , React.createElement('button', {
-            className:bCls(Btn(C.green)), onClick:o.onConfirmar, disabled: !ehRenovar && !o.data,
-            style: Object.assign({}, bStyle(Btn(C.green)), { width:"100%", textAlign:"center", opacity: (!ehRenovar && !o.data) ? 0.5 : 1 })
-          }, rotuloOk)
-        , React.createElement('div', { style:{ display:"flex", gap:8 } }
-          , React.createElement('button', { className:bCls(Ghost(C.sub)), style:Object.assign({}, bStyle(Ghost(C.sub)), { flex:1, textAlign:"center" }), onClick:o.onFechar }, "Cancelar")
-          , React.createElement('button', { className:bCls(Ghost(C.blue)), style:Object.assign({}, bStyle(Ghost(C.blue)), { flex:1, textAlign:"center" }), onClick:o.onIrPara }, rotuloIr)
+      , o.adiarAberto
+        ? React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:8, marginTop:2 } }
+          , React.createElement('button', {
+              className:bCls(Btn(C.green)), onClick:o.onAdiar, disabled: !o.adiarQuando,
+              style: Object.assign({}, bStyle(Btn(C.green)), { width:"100%", textAlign:"center", opacity: o.adiarQuando ? 1 : 0.5 })
+            }, "Adiar")
+          , React.createElement('button', { className:bCls(Ghost(C.sub)), style:Object.assign({}, bStyle(Ghost(C.sub)), { width:"100%", textAlign:"center" }), onClick:o.fecharAdiar }, "Voltar")
         )
-      )
+        : React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:8, marginTop:2 } }
+          , React.createElement('button', {
+              className:bCls(Btn(C.green)), onClick: semAcao ? o.onResolver : o.onConfirmar,
+              disabled: !semAcao && !ehRenovar && !o.data,
+              style: Object.assign({}, bStyle(Btn(C.green)), { width:"100%", textAlign:"center", opacity: (!semAcao && !ehRenovar && !o.data) ? 0.5 : 1 })
+            }, rotuloOk)
+          , React.createElement('div', { style:{ display:"flex", gap:8 } }
+            , React.createElement('button', { className:bCls(Ghost(C.sub)), style:Object.assign({}, bStyle(Ghost(C.sub)), { flex:1, textAlign:"center" }), onClick:o.abrirAdiar }, "Adiar")
+            , React.createElement('button', { className:bCls(Ghost(C.blue)), style:Object.assign({}, bStyle(Ghost(C.blue)), { flex:1, textAlign:"center" }), onClick:o.onIrPara }, rotuloIr)
+          )
+        )
     )
   );
 }

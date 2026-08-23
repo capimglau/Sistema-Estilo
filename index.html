@@ -47372,6 +47372,16 @@ function buildAgendaEventos(ctx) {
       manutencoes=ctx.manutencoes||[], orcItens=ctx.orcItens||[], hoje=ctx.hoje, ano=ctx.ano, mes=ctx.mes;
 
   function fmtV(v) { var n=parseFloat(v||0); return "R$ "+n.toLocaleString("pt-BR",{minimumFractionDigits:2}); }
+  /* [AGK2-V2 · campos-estruturados] Além de `titulo`/`sub` (texto pronto, usado
+     pelo calendário da aba Agenda e pelo .ics), todo evento passa a carregar os
+     mesmos dados SEPARADOS, para quem precisa montar outro layout ou somar
+     dinheiro sem depender de reparsear string:
+       quem    → a entidade principal (cliente, placa, descrição)
+       detalhe → o secundário curto (placa, categoria, prazo)
+       valor   → número (ou null quando o evento não é financeiro)
+       fluxo   → "in" / "out" / null, para totalizar entrada e saída por dia
+     Campos ADITIVOS: nada que já consumia titulo/sub precisou mudar. */
+  function numV(v) { var n = parseFloat(v); return isNaN(n) ? null : n; }
   function fmtD(d) { if (!d) return "--"; var p=d.split("-"); return p[2]+"/"+p[1]+"/"+p[0]; }
   // Primeiro + segundo nome do cliente (ex.: "João Pedro Silva Souza" → "João Pedro") —
   // usado no título do alerta de vencimento no lugar do mês, mais curto e mais fácil de reconhecer.
@@ -47424,6 +47434,9 @@ function buildAgendaEventos(ctx) {
       emoji: "📋",
       titulo: "Venc. Contrato · " + nome2(cl),
       sub: (ve&&ve.placa||"--") + " " + (ve&&ve.modelo||""),
+      quem: (cl&&cl.nome)||"--",
+      detalhe: (ve&&ve.placa||"--") + (ve&&ve.modelo ? " · " + ve.modelo : ""),
+      valor: null, fluxo: null,
       tab: "contratos", id: c.id, acao: "renovar"
     });
   });
@@ -47445,6 +47458,12 @@ function buildAgendaEventos(ctx) {
       emoji: "📤",
       titulo: "Emitir Fatura " + calRenLabel(c) + " · " + fmtComp(c.previsao_pagamento),
       sub: (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + " · venc. " + fmtD(c.previsao_pagamento),
+      quem: (cl&&cl.nome)||"--",
+      detalhe: calRenLabel(c) + " · " + (ve&&ve.placa||"--") + " · venc. " + fmtD(c.previsao_pagamento),
+      /* valor sim (é o tamanho da fatura a emitir), fluxo NÃO: o mesmo dinheiro
+         já entra como "Pgto Contrato" na data do vencimento, e contar os dois
+         inflaria o total do mês. */
+      valor: numV(c.valor_total), fluxo: null,
       tab: "financeiro", id: c.id, acao: "emitir", mesFat: c.previsao_pagamento.slice(0,7)
     });
   });
@@ -47460,6 +47479,15 @@ function buildAgendaEventos(ctx) {
       emoji: "💰",
       titulo: "Pgto Contrato · " + fmtComp(c.previsao_pagamento) + " · " + fmtV(c.valor_total),
       sub: (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + (c.recorrente ? " · ↻ Recorrente" : ""),
+      quem: (cl&&cl.nome)||"--",
+      detalhe: (ve&&ve.placa||"--") + " · comp. " + fmtComp(c.previsao_pagamento) + (c.recorrente ? " · ↻ Recorrente" : ""),
+      /* valor = valor_total (Previsto), nunca valor_pago — regra do contrato
+         parcial. O que ainda falta entrar vai em `pendente`, que é o que os
+         totais por dia somam: previsto − parcela já recebida. */
+      valor: numV(c.valor_total), fluxo: "in",
+      pendente: c.status_pagamento === "parcial"
+        ? Math.max(0, (numV(c.valor_total)||0) - (numV(c.valor_pago)||0))
+        : numV(c.valor_total),
       tab: "contratos", id: c.id, acao: "baixar"
     });
   });
@@ -47476,6 +47504,9 @@ function buildAgendaEventos(ctx) {
       emoji: "⚠️",
       titulo: "Renovação incompleta · Contrato " + calRenLabel(c) + " · " + (cl&&cl.nome||"--"),
       sub: "Encerrou em " + fmtD(c.data_fim) + " sem contrato de continuidade",
+      quem: (cl&&cl.nome)||"--",
+      detalhe: "Contrato " + calRenLabel(c) + " encerrou em " + fmtD(c.data_fim) + " sem continuidade",
+      valor: null, fluxo: null,
       tab: "contratos"
     });
   });
@@ -47491,6 +47522,9 @@ function buildAgendaEventos(ctx) {
       emoji: "⚠️",
       titulo: "Multa " + (m.tipo||"") + " · " + (ve&&ve.placa||"--") + " · " + fmtV(m.valor),
       sub: (cl&&cl.nome||"--") + (m.descricao ? " · " + m.descricao : "") + (m.ait ? " · AIT " + m.ait : "") + " · #" + numCt(m.id),
+      quem: (ve&&ve.placa||"--") + (m.tipo ? " · " + m.tipo : ""),
+      detalhe: (cl&&cl.nome||"--") + (m.descricao ? " · " + m.descricao : "") + (m.ait ? " · AIT " + m.ait : ""),
+      valor: numV(m.valor), fluxo: "out",
       tab: "multas"
     });
   });
@@ -47509,6 +47543,9 @@ function buildAgendaEventos(ctx) {
       emoji: "🏛️",
       titulo: "Prazo notificação ao órgão · " + (m.tipo||"Multa") + " · " + (ve&&ve.placa||"--"),
       sub: (cl&&cl.nome||"--") + " · indique o condutor até " + fmtD(prazo),
+      quem: (ve&&ve.placa||"--") + " · " + (m.tipo||"Multa"),
+      detalhe: "indique o condutor até " + fmtD(prazo) + " · " + (cl&&cl.nome||"--"),
+      valor: null, fluxo: null,
       tab: "multas"
     });
   });
@@ -47528,6 +47565,9 @@ function buildAgendaEventos(ctx) {
         emoji: d.emoji,
         titulo: "Venc. " + d.nome + " · " + (v.placa||"--"),
         sub: (v.marca||"") + " " + (v.modelo||"") + (v.ano ? " · " + v.ano : ""),
+        quem: d.nome + " · " + (v.placa||"--"),
+        detalhe: ((v.marca||"") + " " + (v.modelo||"")).trim() + (v.ano ? " · " + v.ano : ""),
+        valor: null, fluxo: null,
         tab: "frota"
       });
     });
@@ -47547,6 +47587,11 @@ function buildAgendaEventos(ctx) {
       sub: sp.vencido
         ? (sp.rodado.toLocaleString("pt-BR") + " km rodados desde a troca (vida útil " + sp.vida.toLocaleString("pt-BR") + " km)")
         : ("faltam " + sp.restante.toLocaleString("pt-BR") + " km"),
+      quem: (v.placa||"--") + " · " + (sp.vencido ? "troca vencida" : "troca próxima"),
+      detalhe: sp.vencido
+        ? (sp.rodado.toLocaleString("pt-BR") + " km desde a troca (vida útil " + sp.vida.toLocaleString("pt-BR") + " km)")
+        : ("faltam " + sp.restante.toLocaleString("pt-BR") + " km"),
+      valor: null, fluxo: null,
       tab: "frota"
     });
   });
@@ -47563,6 +47608,11 @@ function buildAgendaEventos(ctx) {
       sub: sr.vencida
         ? (sr.atual.toLocaleString("pt-BR") + " km · " + Math.abs(sr.falta).toLocaleString("pt-BR") + " km além da revisão")
         : ("faltam " + sr.falta.toLocaleString("pt-BR") + " km (revisão em " + sr.meta.toLocaleString("pt-BR") + " km)"),
+      quem: (v.placa||"--") + " · " + (sr.vencida ? "revisão vencida (km)" : "revisão próxima (km)"),
+      detalhe: sr.vencida
+        ? (sr.atual.toLocaleString("pt-BR") + " km · " + Math.abs(sr.falta).toLocaleString("pt-BR") + " km além da revisão")
+        : ("faltam " + sr.falta.toLocaleString("pt-BR") + " km (revisão em " + sr.meta.toLocaleString("pt-BR") + " km)"),
+      valor: null, fluxo: null,
       tab: "frota"
     });
   });
@@ -47576,6 +47626,9 @@ function buildAgendaEventos(ctx) {
       emoji: "🪪",
       titulo: "Venc. CNH · " + (cl.nome||"--"),
       sub: "Cat. " + (cl.categoria_cnh||"--") + " · CNH " + (cl.cnh||"--"),
+      quem: cl.nome||"--",
+      detalhe: "Cat. " + (cl.categoria_cnh||"--") + " · CNH " + (cl.cnh||"--"),
+      valor: null, fluxo: null,
       tab: "clientes"
     });
   });
@@ -47592,6 +47645,9 @@ function buildAgendaEventos(ctx) {
       emoji: isRec ? "📥" : "📤",
       titulo: (isRec ? "A Receber" : "A Pagar") + " · " + (c.descricao||"--") + " · " + fmtV(c.valor),
       sub: (c.categoria||"") + (c.observacoes ? " · " + c.observacoes : ""),
+      quem: c.descricao||"--",
+      detalhe: (isRec ? "A Receber" : "A Pagar") + (c.categoria ? " · " + c.categoria : "") + (c.observacoes ? " · " + c.observacoes : ""),
+      valor: numV(c.valor), fluxo: isRec ? "in" : "out",
       tab: "financeiro"
     });
   });
@@ -47618,6 +47674,9 @@ function buildAgendaEventos(ctx) {
         emoji: "📤",
         titulo: "Despesa · " + (d.descricao||"--") + " · " + fmtV(d.valor),
         sub: (d.categoria||"") + (d.recorrente ? " · ↻ Recorrente" : "") + (d.observacoes ? " · " + d.observacoes : ""),
+        quem: d.descricao||"--",
+        detalhe: (d.categoria||"") + (d.recorrente ? " · ↻ Recorrente" : "") + (d.observacoes ? " · " + d.observacoes : ""),
+        valor: numV(d.valor), fluxo: "out",
         tab: "financeiro", id: d.id, acao: "baixar"
       });
     });
@@ -47636,6 +47695,9 @@ function buildAgendaEventos(ctx) {
       emoji: "🔧",
       titulo: "Manutenção · " + (d.descricao||"--") + " · " + fmtV(d.valor),
       sub: (d.categoria||"") + (d.observacoes ? " · " + d.observacoes : ""),
+      quem: d.descricao||"--",
+      detalhe: (d.categoria||"") + (d.observacoes ? " · " + d.observacoes : ""),
+      valor: numV(d.valor), fluxo: "out",
       tab: "manutencao"
     });
   });
@@ -47649,6 +47711,9 @@ function buildAgendaEventos(ctx) {
       emoji: "🔧",
       titulo: "Manutenção com prazo vencido · " + (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção"),
       sub: "Previsão de saída " + fmtD(m.data_saida),
+      quem: (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção"),
+      detalhe: "prazo vencido · previsão de saída " + fmtD(m.data_saida),
+      valor: null, fluxo: null,
       tab: "manutencao"
     });
   });
@@ -47668,6 +47733,9 @@ function buildAgendaEventos(ctx) {
       emoji: "🔧",
       titulo: "Manutenção · " + (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção") + " · " + fmtV(m.custo),
       sub: fmtD(dt),
+      quem: (ve&&ve.placa||"--") + " · " + (m.tipo||"Manutenção"),
+      detalhe: fmtD(dt),
+      valor: numV(m.custo), fluxo: "out",
       tab: "manutencao"
     });
   });
@@ -47685,6 +47753,9 @@ function buildAgendaEventos(ctx) {
       emoji: "📥",
       titulo: "Receita · " + (r.descricao||"--") + " · " + fmtV(r.valor),
       sub: (r.categoria||"") + (r.forma_pagamento ? " · " + r.forma_pagamento : ""),
+      quem: r.descricao||"--",
+      detalhe: (r.categoria||"") + (r.forma_pagamento ? " · " + r.forma_pagamento : ""),
+      valor: numV(r.valor), fluxo: "in",
       tab: "financeiro", id: r.id, acao: "baixar"
     });
   });
@@ -47699,6 +47770,9 @@ function buildAgendaEventos(ctx) {
       emoji: "📅",
       titulo: "Reserva · " + (rs.nome||"--") + (rs.veiculo ? " · " + rs.veiculo : (ve ? " · " + ve.placa : "")),
       sub: "Retirada " + fmtD(rs.data_retirada) + (rs.data_devolucao ? " → " + fmtD(rs.data_devolucao) : "") + " · " + (rs.status === "confirmada" ? "✓ confirmada" : "pendente"),
+      quem: (rs.nome||"--") + (rs.veiculo ? " · " + rs.veiculo : (ve ? " · " + ve.placa : "")),
+      detalhe: "retirada " + fmtD(rs.data_retirada) + (rs.data_devolucao ? " → " + fmtD(rs.data_devolucao) : "") + " · " + (rs.status === "confirmada" ? "✓ confirmada" : "pendente"),
+      valor: null, fluxo: null,
       tab: "reservas"
     });
   });
@@ -47717,6 +47791,9 @@ function buildAgendaEventos(ctx) {
       emoji: "📩",
       titulo: "Reserva recebida · " + (rs.nome||"--") + (rs.veiculo ? " · " + rs.veiculo : (ve ? " · " + ve.placa : "")),
       sub: "Recebida em " + fmtD(dataChegada) + (rs.data_retirada ? " · Retirada " + fmtD(rs.data_retirada) : ""),
+      quem: (rs.nome||"--") + (rs.veiculo ? " · " + rs.veiculo : (ve ? " · " + ve.placa : "")),
+      detalhe: "recebida em " + fmtD(dataChegada) + (rs.data_retirada ? " · retirada " + fmtD(rs.data_retirada) : ""),
+      valor: null, fluxo: null,
       tab: "reservas"
     });
   });
@@ -47734,6 +47811,9 @@ function buildAgendaEventos(ctx) {
       emoji: isDespesa ? "🏠" : "💵",
       titulo: (isDespesa ? "Pessoal · " : "Receita Pessoal · ") + (it.descricao||"--") + " · " + fmtV(it.valor),
       sub: (it.categoria||"") + (it.recorrente ? " · ↻ Recorrente" : ""),
+      quem: it.descricao||"--",
+      detalhe: (isDespesa ? "" : "receita · ") + (it.categoria||"") + (it.recorrente ? " · ↻ Recorrente" : ""),
+      valor: numV(it.valor), fluxo: isDespesa ? "out" : "in",
       tab: "financeiro"
     });
   });

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="8030381"/>
+<meta name="ag-build" content="e860afa"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -26599,8 +26599,11 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
   const multasVencendoAlerta = (multas||[]).filter(m => { var dt = m.vencimento||m.data||""; return m.status !== "pago" && m.status !== "cancelada" && m.status !== "cancelado" && m.cobrado_cliente === "pendente" && dt >= hoje && dt <= str3; });
   // Prazo de indicação de condutor ao órgão
   var _str3notif = new Date(_brNowMs()+3*864e5).toISOString().split("T")[0];
-  const multasPrazoNotifVencido  = (multas||[]).filter(function(m){ if(m.status==="cancelada"||m.status==="cancelado")return false; if(indicacaoCondutorResolvida(m))return false; var prazo=m.prazo_notificacao_orgao||m.vencimento||""; return prazo&&prazo<hoje; });
-  const multasPrazoNotifVencendo = (multas||[]).filter(function(m){ if(m.status==="cancelada"||m.status==="cancelado")return false; if(indicacaoCondutorResolvida(m))return false; var prazo=m.prazo_notificacao_orgao||m.vencimento||""; return prazo&&prazo>=hoje&&prazo<=_str3notif; });
+  /* agAdiaOculto: o mesmo prazo adiado/resolvido pelo cartao da Agenda sai
+     tambem destes dois contadores — chave identica a de buildAgendaEventos. */
+  var _agoraAdiaSc = agAdiaAgora();
+  const multasPrazoNotifVencido  = (multas||[]).filter(function(m){ if(m.status==="cancelada"||m.status==="cancelado")return false; if(indicacaoCondutorResolvida(m))return false; var prazo=m.prazo_notificacao_orgao||m.vencimento||""; if(agAdiaOculto("multa_notif|"+m.id+"|"+prazo,_agoraAdiaSc))return false; return prazo&&prazo<hoje; });
+  const multasPrazoNotifVencendo = (multas||[]).filter(function(m){ if(m.status==="cancelada"||m.status==="cancelado")return false; if(indicacaoCondutorResolvida(m))return false; var prazo=m.prazo_notificacao_orgao||m.vencimento||""; if(agAdiaOculto("multa_notif|"+m.id+"|"+prazo,_agoraAdiaSc))return false; return prazo&&prazo>=hoje&&prazo<=_str3notif; });
 
   // ── ORÇAMENTO PESSOAL ─────────────────────────────────────────────────────
   var _orcItens = orcItens || [];
@@ -27230,7 +27233,13 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         return dt.toISOString().split("T")[0];
       }
       var _alertasDoMes = {}; /* {day: {count, vencido, items:[{emoji,titulo,sub,cor,onClick}]}} */
-      function _alertaAdd(_diaOriginal,_buildItem){
+      /* _chave: a MESMA chave que o cartão tem na Agenda (ver buildAgendaEventos).
+         Passando ela, o alerta some daqui junto com o cartão quando o usuário
+         adia ou dá por resolvido — sem isso o item saía da Agenda e continuava
+         cobrando neste calendário, que é onde ele mais incomoda. */
+      var _agoraAdiaAl = agAdiaAgora();
+      function _alertaAdd(_diaOriginal,_buildItem,_chave){
+        if (_chave && agAdiaOculto(_chave, _agoraAdiaAl)) return;
         var _dia=_diaUtilAntes(_diaOriginal);
         if (!_dia || _dia.slice(0,7)!==dashMes) return;
         var _day = parseInt(_dia.slice(8,10),10);
@@ -27256,7 +27265,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           resumo:"Renovar contrato",
           sub:(ve&&ve.placa||"--")+" "+(ve&&ve.modelo||"")+" · fim de vigência "+_fmtDc(c.data_fim)+_antecipadoTxt(_ant),
           onClick:function(){ window.__pendingRenovarId=c.id; setTab("contratos"); setAlertaDaySheet(null); }
-        }; });
+        }; }, "contrato|"+c.id+"|"+c.data_fim);
       });
       /* renovação incompleta: mesmo critério de renovacoesOrfas (contrato concluído
          aponta pra um sucessor que não existe mais no banco) */
@@ -27269,7 +27278,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           resumo:"Renovação incompleta",
           sub:(ve&&ve.placa||"--")+" · encerrou em "+_fmtDc(c.data_fim)+" sem contrato de continuidade vinculado"+_antecipadoTxt(_ant),
           onClick:function(){ onItemNav({type:"contrato",id:c.id},"contratos"); setAlertaDaySheet(null); }
-        }; });
+        }; }, "renovacao_orfa|"+c.id+"|"+c.data_fim);
       });
       (contratos||[]).forEach(function(c){
         /* mesmo alerta do badge "🧾 Emitir fatura/boleto — pagamento em até 20 dias" (ver
@@ -27289,7 +27298,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           resumo:"Emitir fatura/boleto",
           sub:(ve&&ve.placa||"--")+" · pagamento previsto "+_fmtDc(c.previsao_pagamento)+(_venc?" · emissão atrasada":"")+_antecipadoTxt(_ant),
           onClick:function(){ onItemNav({type:"contrato",id:c.id},"contratos"); setAlertaDaySheet(null); }
-        }; });
+        }; }, "emissao|"+c.id+"|"+_dtEStr);
       });
       (multas||[]).forEach(function(m){
         if (!m.vencimento || m.status==="pago") return;
@@ -27301,7 +27310,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           resumo:_venc?"Multa vencida":"Multa a vencer",
           sub:(cl&&cl.nome?cl.nome+" · ":"")+"vencimento "+_fmtDc(m.vencimento)+(_venc?" (vencida)":"")+_antecipadoTxt(_ant),
           onClick:function(){ onItemNav({type:"multa",id:m.id},"multas"); setAlertaDaySheet(null); }
-        }; });
+        }; }, "multa|"+m.id+"|"+m.vencimento);
       });
       (multas||[]).forEach(function(m){
         if (m.status==="cancelada"||m.status==="cancelado") return;
@@ -27315,7 +27324,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           resumo:"Indicar condutor",
           sub:"Prazo pro órgão "+_fmtDc(prazo)+(_venc?" (vencido)":"")+_antecipadoTxt(_ant),
           onClick:function(){ onItemNav({type:"multa",id:m.id},"multas"); setAlertaDaySheet(null); }
-        }; });
+        }; }, "multa_notif|"+m.id+"|"+prazo);
       });
       (veiculos||[]).forEach(function(v){
         [
@@ -27331,7 +27340,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
             resumo:"Vencimento "+d.nome,
             sub:(v.marca||"")+" "+(v.modelo||"")+" · vencimento "+_fmtDc(d.campo)+(_venc?" (vencido)":"")+_antecipadoTxt(_ant),
             onClick:function(){ onItemNav({type:"veiculo",id:v.id},"frota"); setAlertaDaySheet(null); }
-          }; });
+          }; }, "veiculo|"+v.id+"|"+d.nome+"|"+d.campo);
         });
       });
       (clientes||[]).forEach(function(cl){
@@ -27342,7 +27351,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           resumo:"Vencimento CNH",
           sub:"Cat. "+(cl.categoria_cnh||"--")+" · vencimento "+_fmtDc(cl.vencimento_cnh)+(_venc?" (vencida)":"")+_antecipadoTxt(_ant),
           onClick:function(){ onItemNav({type:"cliente",id:cl.id},"clientes"); setAlertaDaySheet(null); }
-        }; });
+        }; }, "cnh|"+cl.id+"|"+cl.vencimento_cnh);
       });
       (manutencoes||[]).forEach(function(m){
         if (m.status!=="em_andamento" || !m.data_saida || m.data_saida>=hoje) return;
@@ -27353,7 +27362,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           resumo:"Manutenção atrasada",
           sub:(m.tipo||"Manutenção")+" · previsão de saída era "+_fmtDc(m.data_saida)+_antecipadoTxt(_ant),
           onClick:function(){ onItemNav({type:"manutencao",id:m.id},"manutencao"); setAlertaDaySheet(null); }
-        }; });
+        }; }, "manutencao_prazo|"+m.id+"|"+m.data_saida);
       });
 
       return React.createElement(React.Fragment, null

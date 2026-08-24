@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="8473ad6"/>
+<meta name="ag-build" content="f2e6632"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -16540,6 +16540,10 @@ const { useState, useEffect, useRef } = React;
 
 const SB_URL = "https://jsyiriqtzpbuqvjrkwin.supabase.co";
 const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpzeWlyaXF0enBidXF2anJrd2luIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMDEyNjksImV4cCI6MjA4ODU3NzI2OX0.BCeCKcwLGnrRhfaFryeTbbCRoGyt3wRPlZzfsxuV0mM";
+/* Chave pública VAPID — usada só pra se inscrever no Web Push (PushManager),
+   não é segredo (a privada fica só na secret da Edge Function send-push, ver
+   sql/05-push-notificacoes.sql e supabase/functions/send-push). */
+const VAPID_PUBLIC_KEY = "BLmv0KDZpc37z52oK5RPSUPmgNQKSsYQJ4VSmjC2m0X5_pznr_BxHrmYIWdLbb25GVHyiR9Tno5rZXZZ5d0qmGc";
 
 var __viewerMode = false;
 (function() {
@@ -17089,6 +17093,67 @@ async function _agRestaurarRegistro(t, removido) {
     catch(e) { console.warn("restaurar por id falhou, reinserindo", e); }
   }
   return db.post(t, removido);
+}
+
+/* ── Notificações push (Web Push) ───────────────────────────────────────────
+   Diferente do Notification local (checkAndNotify, mais abaixo), isto
+   funciona mesmo com o Safari fechado — desde que o app esteja instalado na
+   Tela de Início (iOS 16.4+) e o usuário tenha concedido permissão. O
+   navegador entrega o push pro Service Worker (sw.js, evento 'push') mesmo
+   sem nenhuma aba aberta; quem dispara o envio é a Edge Function
+   supabase/functions/send-push, chamada uma vez por dia via cron (ver
+   sql/05-push-notificacoes.sql). */
+function _agUrlB64ToUint8Array(base64) {
+  var padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  var base64Safe = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  var raw = atob(base64Safe);
+  var out = new Uint8Array(raw.length);
+  for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+/* Pede permissão (se ainda não pediu/negou) e inscreve este navegador no
+   Web Push, salvando a inscrição no Supabase. Idempotente: pode ser chamada
+   de novo a qualquer momento (ex.: botão em Configurações) — o upsert por
+   endpoint evita duplicar linha. Sempre silenciosa em erro: notificação é
+   um extra, nunca pode travar o app. */
+async function _agAtivarPush() {
+  try {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+      return { ok: false, motivo: "Este navegador não suporta notificações push." };
+    }
+    if (Notification.permission === "denied") {
+      return { ok: false, motivo: "Notificações bloqueadas nas configurações do navegador/app." };
+    }
+    if (Notification.permission === "default") {
+      var perm = await Notification.requestPermission();
+      if (perm !== "granted") return { ok: false, motivo: "Permissão não concedida." };
+    }
+    var reg = await navigator.serviceWorker.ready;
+    var sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: _agUrlB64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    var json = sub.toJSON();
+    var r = await _agFetchAuth(SB_URL + "/rest/v1/push_subscriptions?on_conflict=endpoint", {
+      method: "POST",
+      headers: Object.assign({}, HDR, { Prefer: "resolution=merge-duplicates,return=minimal" }),
+      body: JSON.stringify({
+        endpoint: json.endpoint,
+        p256dh: json.keys && json.keys.p256dh,
+        auth_key: json.keys && json.keys.auth,
+        user_agent: navigator.userAgent,
+      }),
+    }, 15000);
+    if (!r.ok) { var txt = await r.text().catch(function(){return "";}); return { ok: false, motivo: "Erro ao salvar inscrição: " + txt }; }
+    try { localStorage.setItem("ag_push_ativo_v1", "1"); } catch(e) {}
+    return { ok: true };
+  } catch(e) {
+    console.warn("[push] falha ao ativar:", e);
+    return { ok: false, motivo: e && e.message || String(e) };
+  }
 }
 
 const db = {
@@ -44875,6 +44940,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
   var prefsDefault = { dens: "normal", homeTab: "inicio", alertaDocs: 30, alertaContrato: 3, diasInadim: 1, kmFranquia: "", valorKmExc: "", combRet: "cheio", formaPgto: "pix", juroAtraso: 2, multaAtraso: 10 };
   function loadPrefs() { try { return Object.assign({}, prefsDefault, JSON.parse(localStorage.getItem(LS_KEY) || "{}")); } catch(e) { return Object.assign({}, prefsDefault); } }
   const [exportando, setExportando] = useState(false);
+  const [pushLoading, setPushLoading] = useState(false);
   /* Exporta todas as tabelas num único JSON. Complementa o backup agendado:
      serve para quem quer uma cópia na mão antes de mexer em algo grande, sem
      depender de acesso ao GitHub. Inclui os registros excluídos (deleted_at),
@@ -45080,6 +45146,21 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
       , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 10 } }, "Calendário")
       , React.createElement('div', { style: { fontSize: 12, color: C.sub, lineHeight: 1.6, marginBottom: 12 } }, "Assine o calendário do sistema (contratos, multas, vencimentos e afins) no seu celular ou computador — a assinatura fica sempre atualizada, sem precisar exportar de novo.")
       , React.createElement('button', { onClick: function() { location.href = "webcal://jsyiriqtzpbuqvjrkwin.supabase.co/functions/v1/calendar-ics?apikey=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpzeWlyaXF0enBidXF2anJrd2luIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMDEyNjksImV4cCI6MjA4ODU3NzI2OX0.BCeCKcwLGnrRhfaFryeTbbCRoGyt3wRPlZzfsxuV0mM"; }, style: { background: "rgba(52,199,89,0.12)", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, color: "#34C759", cursor: "pointer" } }, "🔔 Assinar calendário")
+    )
+
+    , React.createElement('div', { className: "lg-card", style: CARD }
+      , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 10 } }, "Notificações")
+      , React.createElement('div', { style: { fontSize: 12, color: C.sub, lineHeight: 1.6, marginBottom: 12 } }, "Receba um aviso de contratos e despesas atrasados uma vez por dia — funciona mesmo com o app fechado, desde que ele esteja instalado na Tela de Início (iOS: Compartilhar → Adicionar à Tela de Início).")
+      , React.createElement('button', {
+          onClick: async function(){
+            setPushLoading(true);
+            var r = await _agAtivarPush();
+            setPushLoading(false);
+            toast(r.ok ? "🔔 Notificações ativadas!" : (r.motivo || "Não foi possível ativar as notificações."), r.ok ? undefined : "error");
+          },
+          disabled: pushLoading,
+          style: { background: "rgba(0,122,255,0.12)", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, color: "#007AFF", cursor: pushLoading ? "default" : "pointer", opacity: pushLoading ? 0.6 : 1 }
+        }, pushLoading ? "Ativando..." : "🔔 Ativar notificações")
     )
 
     , React.createElement('div', { className: "lg-card", style: CARD }
@@ -53751,8 +53832,9 @@ function App() {
     }
     if (Notification.permission === "granted") {
       checkAndNotify();
+      _agAtivarPush(); // silencioso — garante a inscrição push mesmo se o app nunca abriu Configurações
     } else if (Notification.permission !== "denied") {
-      Notification.requestPermission().then(function(p) { if (p === "granted") checkAndNotify(); });
+      Notification.requestPermission().then(function(p) { if (p === "granted") { checkAndNotify(); _agAtivarPush(); } });
     }
   }, [contratos.length, despesas.length]);
 

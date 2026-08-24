@@ -11,11 +11,11 @@
  *  - Supabase e qualquer API: nunca passa pelo cache. Dado financeiro velho
  *    servido como se fosse atual é pior do que erro de rede.
  *
- * O CACHE muda de nome a cada deploy (o workflow substitui 8473ad6), e o
+ * O CACHE muda de nome a cada deploy (o workflow substitui f2e6632), e o
  * activate apaga os caches antigos — é isso que evita o app velho grudado.
  */
 
-const BUILD = "8473ad6";
+const BUILD = "f2e6632";
 const CACHE = "autogest-" + BUILD;
 
 /* Só o essencial para abrir offline. O resto entra conforme for usado —
@@ -117,4 +117,39 @@ self.addEventListener("fetch", (event) => {
    o fechamento de todas as abas. */
 self.addEventListener("message", (event) => {
   if (event.data === "skipWaiting") self.skipWaiting();
+});
+
+/* Web Push — chega mesmo com o Safari fechado (app instalado na Tela de
+ * Início, permissão concedida). Quem dispara o envio é a Edge Function
+ * supabase/functions/send-push; aqui só mostra o que ela mandou. Roda fora
+ * de qualquer aba aberta, então não pode depender de nada do documento —
+ * só do próprio evento e da Notification API do worker.
+ */
+self.addEventListener("push", (event) => {
+  var data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (e) {}
+  var title = data.title || "AutoGest Pro";
+  var body = data.body || "";
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: body,
+      icon: "./pwa-icon-180.png",
+      badge: "./pwa-icon-180.png",
+      data: { url: data.url || "./" },
+    }),
+  );
+});
+
+/* Toca a notificação: foca uma aba já aberta do app, ou abre uma nova. */
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  var url = (event.notification.data && event.notification.data.url) || "./";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ("focus" in client) return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(url);
+    }),
+  );
 });

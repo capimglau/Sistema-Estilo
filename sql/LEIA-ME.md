@@ -4,8 +4,13 @@ Cole no **Supabase → SQL Editor**, **nesta ordem**:
 
 1. `01-schema.sql` — colunas e tabelas novas
 2. `02-seguranca.sql` — RLS por perfil, auditoria por trigger, `updated_at`/`deleted_at`
+3. `04-agenda-adiamentos.sql` — tabela dos cartões da Agenda adiados/resolvidos
 
-Os dois são idempotentes: rodar de novo não duplica nada nem perde dado.
+Todos são idempotentes: rodar de novo não duplica nada nem perde dado.
+
+O `04` é **opcional**: sem ele o app grava os adiamentos no localStorage do
+próprio aparelho e continua funcionando normalmente. Rodando, eles passam a
+sincronizar — adiar no celular vale também no computador.
 
 ## Antes de rodar o 02
 

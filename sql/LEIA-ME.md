@@ -5,12 +5,19 @@ Cole no **Supabase → SQL Editor**, **nesta ordem**:
 1. `01-schema.sql` — colunas e tabelas novas
 2. `02-seguranca.sql` — RLS por perfil, auditoria por trigger, `updated_at`/`deleted_at`
 3. `04-agenda-adiamentos.sql` — tabela dos cartões da Agenda adiados/resolvidos
+4. `05-push-notificacoes.sql` — tabela das inscrições de notificação push
 
 Todos são idempotentes: rodar de novo não duplica nada nem perde dado.
 
 O `04` é **opcional**: sem ele o app grava os adiamentos no localStorage do
 próprio aparelho e continua funcionando normalmente. Rodando, eles passam a
 sincronizar — adiar no celular vale também no computador.
+
+O `05` também é **opcional**: sem ele, o botão "Ativar notificações" em
+Configurações some/falha silenciosamente, mas o resto do app funciona normal.
+Rodando, ainda faltam os passos fora do SQL Editor descritos no fim do
+próprio arquivo (gerar/configurar as chaves VAPID, deploy da Edge Function
+`send-push` e agendar o disparo diário).
 
 ## Antes de rodar o 02
 

@@ -46,6 +46,7 @@ function extrair(marcadores) {
     var capSentence = function (s) { return String(s == null ? "" : s); };
     var _brNow = function () { return new Date("2026-08-06T12:00:00Z"); };
     var fmtDate = function (d) { if (!d) return "--"; var p = String(d).split("-"); return p.length !== 3 ? d : p[2] + "/" + p[1] + "/" + p[0]; };
+    var fmtDateShort = function (d) { if (!d) return "--"; var p = String(d).split("-"); return p.length !== 3 ? d : p[2] + "/" + p[1] + "/" + p[0].slice(2); };
   `;
 
   const escopo = {};
@@ -63,7 +64,9 @@ function extrair(marcadores) {
       definirValorAnotacao, definirAnotacaoContrato,
       encerrarAnotacaoCobrada,
       manutencaoAindaPendente, painelManutencoesPendentes, avariaDoContrato,
-      situacaoMulta, multaEncerrada, painelMultasPendentes, GRUPOS_MULTA
+      situacaoMulta, multaEncerrada, painelMultasPendentes, GRUPOS_MULTA,
+      parcelaCC, numParcelasCC, ancoraParcelaCC, grupoParcelasCC,
+      principalParcelaCC, formPrincipalCC
     };
   `);
   return Object.assign(escopo, fn());
@@ -101,6 +104,14 @@ const MARCADORES = [
     nome: "vitrine do gráfico circular",
     de: "function rdNomeNoGrafico(",
     ate: "function rdGroupBy(",
+  },
+  {
+    // Reconstrução do grupo de parcelas de cartão. É o que decide qual
+    // lançamento a edição vai atingir — se agrupar errado, a edição de uma
+    // compra sobrescreve outra. Merece teste.
+    nome: "parcelas de cartão",
+    de: "function parcelaCC(",
+    ate: "// Fatura de contrato realmente EMITIDA",
   },
 ];
 

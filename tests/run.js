@@ -547,6 +547,60 @@ grupo("Vitrine do miolo — volta representativa");
   eq("mês sem lançamento devolve volta vazia", F.rdVoltaVitrine([], [], 16).length, 0);
 }
 
+grupo("Parcelas de cartão — grupo e lançamento principal");
+{
+  // Uma compra de R$ 3.000 em 6x, como o app grava: uma despesa por mês,
+  // ligadas só pela descrição.
+  const compra = (base, total, cat, forma, dataIni, id0) =>
+    Array.from({ length: total }, (_, i) => {
+      const d = new Date(dataIni + "T12:00:00");
+      d.setDate(d.getDate() + i * 30);
+      return { id: id0 + i, descricao: `${base} — Parcela ${i + 1}/${total}`,
+               categoria: cat, forma_pagamento: forma, valor: "500.00",
+               data: d.toISOString().slice(0, 10) };
+    });
+  const seis = compra("Notebook", 6, "Outros", "Cartao Credito 6x", "2026-01-10", 1);
+  const avulsa = { id: 99, descricao: "Pedágio", categoria: "Pedagio", valor: "30.00", data: "2026-01-10" };
+  const lista = seis.concat([avulsa]);
+
+  eq("le numero e total da descricao", F.parcelaCC("X — Parcela 3/6").num, 3);
+  eq("base e a descricao sem o sufixo", F.parcelaCC("X — Parcela 3/6").base, "X");
+  eq("descricao sem sufixo nao e parcela", F.parcelaCC("Pedágio"), null);
+  eq("parcela fora de faixa e ignorada", F.parcelaCC("X — Parcela 7/6"), null);
+  eq("nx sai da forma de pagamento", F.numParcelasCC("Cartao Credito 6x"), 6);
+  eq("forma sem nx conta como 1", F.numParcelasCC("Pix"), 1);
+
+  eq("grupo reune as seis parcelas", F.grupoParcelasCC(seis[2], lista).length, 6);
+  eq("grupo vem ordenado pela parcela", F.grupoParcelasCC(seis[4], lista)[0].id, 1);
+  eq("lancamento avulso e grupo de um so", F.grupoParcelasCC(avulsa, lista).length, 1);
+  eq("categoria diferente nao entra no grupo",
+    F.grupoParcelasCC(seis[0], lista.concat([{ id: 50, descricao: "Notebook — Parcela 2/6",
+      categoria: "Impostos", forma_pagamento: "Cartao Credito 6x", data: "2026-02-09" }])).length, 6);
+
+  // Abrir QUALQUER parcela tem que resolver para o principal.
+  eq("parcela 5 resolve para o principal", F.principalParcelaCC(seis[4], lista).id, 1);
+  eq("principal de avulso e ele mesmo", F.principalParcelaCC(avulsa, lista).id, 99);
+
+  // E o formulário tem que mostrar a compra inteira, não a fatia.
+  const f = F.formPrincipalCC(seis[2], lista);
+  eq("form abre no id do principal", f.id, 1);
+  eq("form mostra a descricao sem sufixo", f.descricao, "Notebook");
+  eq("form soma o valor das parcelas", f.valor, "3000.00");
+  eq("form traz o nx do grupo", f.forma_pagamento, "Cartao Credito 6x");
+  eq("form de avulso nao mexe no valor", F.formPrincipalCC(avulsa, lista).valor, "30.00");
+
+  // Dois parcelamentos idênticos em datas diferentes não podem virar um só —
+  // se virassem, editar um sobrescreveria o outro.
+  const outraCompra = compra("Notebook", 6, "Outros", "Cartao Credito 6x", "2026-07-10", 200);
+  const duplo = seis.concat(outraCompra);
+  eq("compras iguais em datas diferentes nao se misturam",
+    F.grupoParcelasCC(seis[0], duplo).length, 6);
+  eq("cada grupo mantem o proprio principal",
+    F.principalParcelaCC(outraCompra[3], duplo).id, 200);
+  ok("a parcela aberta sempre pertence ao proprio grupo",
+    F.grupoParcelasCC(outraCompra[3], duplo).some((x) => x.id === outraCompra[3].id));
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam
 // promessas de refresh e mensagens de WebSocket dublado. Por isso rodam por

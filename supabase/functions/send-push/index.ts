@@ -20,11 +20,25 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
 
   try {
-    const VAPID_PUBLIC = Deno.env.get('VAPID_PUBLIC_KEY') ?? ''
-    const VAPID_PRIVATE = Deno.env.get('VAPID_PRIVATE_KEY') ?? ''
+    const VAPID_PUBLIC = (Deno.env.get('VAPID_PUBLIC_KEY') ?? '').trim()
+    const VAPID_PRIVATE = (Deno.env.get('VAPID_PRIVATE_KEY') ?? '').trim()
     const VAPID_SUBJECT = Deno.env.get('VAPID_SUBJECT') ?? 'mailto:contato@example.com'
     if (!VAPID_PUBLIC || !VAPID_PRIVATE) {
       throw new Error('VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY não configuradas nas secrets da função.')
+    }
+    // Diagnóstico temporário: sem revelar a chave, mostra tamanho e se tem
+    // caractere fora do alfabeto base64url (isso é o que está quebrando o
+    // setVapidDetails logo abaixo — mais rápido descobrir por aqui do que
+    // adivinhando pelo valor mascarado no dashboard).
+    const b64urlOk = /^[A-Za-z0-9_-]+$/
+    if (!b64urlOk.test(VAPID_PUBLIC) || !b64urlOk.test(VAPID_PRIVATE)) {
+      const charsInvalidos = (s: string) => Array.from(new Set(s.replace(/[A-Za-z0-9_-]/g, '').split(''))).map((c) => c.codePointAt(0))
+      return new Response(JSON.stringify({
+        error: 'Chave VAPID com caractere inválido — diagnóstico (sem expor a chave):',
+        VAPID_PUBLIC_KEY: { tamanho: VAPID_PUBLIC.length, valido: b64urlOk.test(VAPID_PUBLIC), codigos_invalidos: charsInvalidos(VAPID_PUBLIC) },
+        VAPID_PRIVATE_KEY: { tamanho: VAPID_PRIVATE.length, valido: b64urlOk.test(VAPID_PRIVATE), codigos_invalidos: charsInvalidos(VAPID_PRIVATE) },
+        esperado: { VAPID_PUBLIC_KEY_tamanho: 87, VAPID_PRIVATE_KEY_tamanho: 43 },
+      }, null, 2), { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } })
     }
     webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE)
 

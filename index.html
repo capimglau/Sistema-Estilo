@@ -52227,21 +52227,28 @@ function Usuarios({ usuarioAtual, toast }) {
 
 function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, setTab, setOperacionalSubTab, C }) {
   var [q, setQ] = React.useState("");
+  var [fPlaca, setFPlaca] = React.useState("");
+  var [fCliente, setFCliente] = React.useState("");
+  var [fMes, setFMes] = React.useState("");
   var inputRef = React.useRef(null);
   React.useEffect(function() {
     // Foco tem que acontecer no MESMO ciclo do commit, sem setTimeout: no iOS
     // o teclado só sobe se o focus() rodar "colado" no gesto que abriu o
     // modal — um delay (mesmo de 120ms) quebra esse vínculo e o campo abre
     // sem teclado, dando a impressão de "não deixa digitar".
-    if (open && inputRef.current) { setQ(""); inputRef.current.focus(); }
+    if (open && inputRef.current) { setQ(""); setFPlaca(""); setFCliente(""); setFMes(""); inputRef.current.focus(); }
   }, [open]);
   if (!open) return null;
   // Sem acento: "consorcio" tem que achar "Consórcio" — o teclado do celular
   // corrige acento sozinho às vezes, e nem todo mundo digita acentuado.
   function semAcento(s) { return String(s||"").normalize("NFD").replace(/[̀-ͯ]/g, ""); }
   var lq = semAcento(q.trim().toLowerCase());
+  var lPlaca = semAcento(fPlaca.trim().toLowerCase());
+  var lCliente = semAcento(fCliente.trim().toLowerCase());
+  var hasQuery = lq.length >= 1;
+  var hasFiltro = hasQuery || !!lPlaca || !!lCliente || !!fMes;
   var results = [];
-  if (lq.length >= 1) {
+  if (hasFiltro) {
     // helper: busca parcial em qualquer campo string do objeto
     function match() {
       for (var i = 0; i < arguments.length; i++) {
@@ -52252,7 +52259,8 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, set
     // Contratos: agrupa os lançamentos (contratos) da mesma cadeia de
     // renovação (campo renovado_para) num único resultado, com um resumo
     // totalizador dos valores da cadeia inteira logo abaixo — em vez de
-    // espalhar cada renovação como um resultado solto.
+    // espalhar cada renovação como um resultado solto. Os filtros de
+    // placa/cliente/mês funcionam sozinhos, sem precisar de texto livre.
     var _chainRootCache = {};
     function chainRoot(c) {
       if (!c) return null;
@@ -52276,7 +52284,11 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, set
       var nm = cl ? cl.nome : "";
       var vei = (veiculos||[]).find(function(x){return String(x.id)===String(c.veiculo_id);});
       var pl = vei ? (vei.placa||"") : "";
-      if (match(nm, pl, c.id, c.status, c.status_pagamento, c.observacoes, c.previsao_pagamento, c.data_inicio, c.data_fim)) {
+      var okQuery = !hasQuery || match(nm, pl, c.id, c.status, c.status_pagamento, c.observacoes, c.previsao_pagamento, c.data_inicio, c.data_fim);
+      var okPlaca = !lPlaca || semAcento((pl||"").toLowerCase()).includes(lPlaca);
+      var okCliente = !lCliente || semAcento((nm||"").toLowerCase()).includes(lCliente);
+      var okMes = !fMes || (c.data_inicio||"").slice(0,7)===fMes || (c.data_fim||"").slice(0,7)===fMes || (c.previsao_pagamento||"").slice(0,7)===fMes;
+      if (okQuery && okPlaca && okCliente && okMes) {
         var root = chainRoot(c);
         if (matchedChainRoots.indexOf(root) === -1) matchedChainRoots.push(root);
       }
@@ -52306,19 +52318,21 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, set
         tab:"operacional", subtab:"contratos"
       });
     });
-    (clientes||[]).forEach(function(cl) {
+    // Cliente/veículo/multa: só entram na busca por texto livre — os filtros
+    // de placa/cliente/mês são específicos dos lançamentos (contratos) acima.
+    hasQuery && (clientes||[]).forEach(function(cl) {
       if (match(cl.nome, cl.cpf_cnpj, cl.telefone, cl.email, cl.endereco, cl.cidade, cl.cnh, cl.rg))
         // tab "clientes" (não "cadastro"): o router trata como alias que já entra
         // direto na sub-aba certa — "cadastro" sozinho deixava na sub-aba que
         // estava aberta antes (podia cair em Frota em vez de Clientes).
         results.push({ type:"cliente", id:cl.id, label:cl.nome||"", sub:(cl.cpf_cnpj||cl.telefone||cl.email||""), tab:"clientes", subtab:null });
     });
-    (veiculos||[]).forEach(function(v) {
+    hasQuery && (veiculos||[]).forEach(function(v) {
       var stEf = statusEfetivoVeiculo(v, contratos||[]);
       if (match(v.placa, v.marca, v.modelo, v.cor, v.ano, v.renavam, v.chassi, stEf))
         results.push({ type:"veiculo", id:v.id, label:(v.marca||"")+" "+(v.modelo||"")+(v.ano?" "+v.ano:""), sub:v.placa||"", tab:"frota", subtab:null });
     });
-    (multas||[]).forEach(function(m) {
+    hasQuery && (multas||[]).forEach(function(m) {
       var cl = (clientes||[]).find(function(x){return String(x.id)===String(m.cliente_id);});
       var nm = cl ? cl.nome : "";
       var vei = (veiculos||[]).find(function(x){return String(x.id)===String(m.veiculo_id);});
@@ -52335,13 +52349,22 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, set
   // Abaixo do dialog de confirmação global (999998), que deve continuar por
   // cima de qualquer coisa.
   return React.createElement('div', { style:{ position:"fixed",inset:0,zIndex:500000,background:"rgba(0,0,0,0.6)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"24px 16px" }, onClick:onClose },
-    React.createElement('div', { style:{ background:"var(--c-card)",borderRadius:24,padding:"18px 18px 22px",display:"flex",flexDirection:"column",gap:12,width:"min(640px,100%)",maxHeight:"78vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,0.35)" }, onClick:function(e){e.stopPropagation();} },
+    React.createElement('div', { style:{ background:"var(--c-card)",borderRadius:24,padding:"18px 18px 22px",display:"flex",flexDirection:"column",gap:12,width:"90vw",maxWidth:"90vw",height:"90vh",maxHeight:"90vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,0.35)" }, onClick:function(e){e.stopPropagation();} },
       React.createElement('div', { style:{ display:"flex",gap:10,alignItems:"center" } },
         React.createElement('input', { ref:inputRef, type:"search", autoFocus:true, placeholder:"Nome, placa, AIT, CPF, contrato, descrição…", value:q, onChange:function(e){setQ(e.target.value);},
           style:{ flex:1,padding:"12px 14px",borderRadius:12,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)",fontSize:16,outline:"none" } }),
         React.createElement('button', { onClick:onClose, style:{ padding:"8px 14px",borderRadius:10,border:"none",background:"rgba(120,120,128,0.12)",color:"var(--c-sub)",fontSize:14,fontWeight:600,cursor:"pointer" } }, "Fechar")
       ),
-      lq.length >= 1 && results.length === 0 && React.createElement('div', { style:{ color:"var(--c-sub)",textAlign:"center",padding:"20px 0",fontSize:14 } }, 'Nenhum resultado para "'+q+'"'),
+      React.createElement('div', { style:{ display:"flex",gap:8,flexWrap:"wrap" } },
+        React.createElement('input', { type:"text", list:"buscaGlobalPlacaDL", placeholder:"Placa", value:fPlaca, onChange:function(e){setFPlaca(e.target.value);},
+          style:{ flex:"1 1 140px",minWidth:0,padding:"9px 12px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)",fontSize:13,outline:"none" } }),
+        React.createElement('datalist', { id:"buscaGlobalPlacaDL" }, (veiculos||[]).map(function(v){ return React.createElement('option', { key:v.id, value:v.placa||"" }); })),
+        React.createElement('input', { type:"text", placeholder:"Cliente", value:fCliente, onChange:function(e){setFCliente(e.target.value);},
+          style:{ flex:"1 1 140px",minWidth:0,padding:"9px 12px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)",fontSize:13,outline:"none" } }),
+        React.createElement('input', { type:"month", value:fMes, onChange:function(e){setFMes(e.target.value);},
+          style:{ flex:"1 1 140px",minWidth:0,padding:"9px 12px",borderRadius:10,border:"1px solid var(--c-border)",background:"var(--c-bg)",color:"var(--c-text)",fontSize:13,outline:"none" } })
+      ),
+      hasFiltro && results.length === 0 && React.createElement('div', { style:{ color:"var(--c-sub)",textAlign:"center",padding:"20px 0",fontSize:14 } }, 'Nenhum resultado'+(q?' para "'+q+'"':"")),
       results.length > 0 && results.map(function(r,i) {
         function abrirContrato(id) {
           window.__ag_pending_open = { type: "contrato", id: id };
@@ -52399,7 +52422,7 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, set
           )
         );
       }),
-      lq.length < 1 && React.createElement('div', { style:{ color:"var(--c-sub)",textAlign:"center",padding:"10px 0",fontSize:13 } }, "Digite para buscar em contratos, clientes, veículos e multas")
+      !hasFiltro && React.createElement('div', { style:{ color:"var(--c-sub)",textAlign:"center",padding:"10px 0",fontSize:13 } }, "Digite para buscar em contratos, clientes, veículos e multas — ou use os filtros de placa/cliente/mês")
     )
   );
 }

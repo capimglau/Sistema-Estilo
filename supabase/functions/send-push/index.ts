@@ -100,6 +100,7 @@ Deno.serve(async (req: Request) => {
 
     let enviados = 0
     let removidos = 0
+    const falhas: any[] = []
     await Promise.all((subs || []).map(async (s: any) => {
       try {
         await webpush.sendNotification(
@@ -114,12 +115,17 @@ Deno.serve(async (req: Request) => {
           await supabase.from('push_subscriptions').delete().eq('id', s.id)
           removidos++
         } else {
-          console.warn('[send-push] falha ao enviar', s.id, err?.message || err)
+          // Diagnóstico temporário: statusCode + corpo da resposta do serviço
+          // de push (Apple/Google/Mozilla) — "Received unexpected response
+          // code" sozinho não diz o motivo, isso aqui diz.
+          const detalhe = { id: s.id, statusCode: err?.statusCode, body: err?.body, message: err?.message }
+          console.warn('[send-push] falha ao enviar', JSON.stringify(detalhe))
+          falhas.push(detalhe)
         }
       }
     }))
 
-    return new Response(JSON.stringify({ ok: true, enviados, removidos }), {
+    return new Response(JSON.stringify({ ok: true, enviados, removidos, falhas }), {
       headers: { ...CORS, 'Content-Type': 'application/json' },
     })
   } catch (err) {

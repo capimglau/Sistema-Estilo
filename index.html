@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="a1faa38"/>
+<meta name="ag-build" content="e30b123"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -23991,6 +23991,110 @@ function capSentence(s) {
 //   Usar para MEDIR "quanto retirei de lucro" e para a receita do orçamento pessoal.
 function isRetLucro(d) { var c = d.categoria || ""; return c === "Retirada de Lucro" || c === "Ajuste de Saldo"; }
 function isRetLucroPura(d) { return (d.categoria || "") === "Retirada de Lucro"; }
+
+/* ══ PARCELAS DE CARTÃO — o lançamento principal é sempre o alvo da edição ══
+
+   Compra parcelada no cartão vira N despesas separadas ("X — Parcela 1/6",
+   "X — Parcela 2/6"...), uma por mês. Elas NÃO têm coluna de vínculo no banco:
+   o único laço entre elas é a convenção da descrição, mais categoria/forma de
+   pagamento iguais. Estas funções reconstroem esse grupo a partir do que já
+   está gravado, sem exigir migração de schema nem mexer em dado existente.
+
+   Regra de negócio (pedido do usuário): editar QUALQUER parcela é editar a
+   compra inteira. Quem abre a parcela 3/6 edita o principal, e o que for salvo
+   vale para as seis. Sem isso, a edição de uma parcela deixava as outras cinco
+   com valor/descrição/categoria divergentes — e, pior, o fluxo antigo
+   transformava a parcela editada em "Parcela 1/N" e criava outras N, somando
+   parcelas duplicadas em vez de atualizar as que já existiam.
+
+   parcelaCC devolve {base, num, total} da descrição, ou null se não for
+   parcela. `base` é a descrição sem o sufixo — a identidade da compra. */
+function parcelaCC(descricao) {
+  var m = String(descricao == null ? "" : descricao).match(/^(.*) — Parcela (\d+)\/(\d+)$/);
+  if (!m) return null;
+  var num = parseInt(m[2], 10), total = parseInt(m[3], 10);
+  if (!(num >= 1) || !(total >= 1) || num > total) return null;
+  return { base: m[1], num: num, total: total };
+}
+/* Nº de parcelas embutido na forma de pagamento ("Cartao Credito 6x" → 6). */
+function numParcelasCC(formaPagamento) {
+  var m = String(formaPagamento == null ? "" : formaPagamento).match(/Cartao Credito (\d+)x/);
+  return m ? parseInt(m[1], 10) : 1;
+}
+/* Data em que a compra começou, deduzida a partir de uma parcela qualquer.
+   As parcelas são geradas somando 30 dias por mês (ver addMeses em
+   saveDespesa), então voltar 30*(num-1) dias recupera a data da parcela 1
+   exatamente igual para todas as irmãs — é isso que permite separar dois
+   parcelamentos distintos que por acaso tenham a mesma descrição. */
+function ancoraParcelaCC(d) {
+  var p = d && parcelaCC(d.descricao);
+  if (!p || !d.data) return null;
+  var dt = new Date(String(d.data) + "T12:00:00");
+  if (isNaN(dt.getTime())) return null;
+  dt.setDate(dt.getDate() - 30 * (p.num - 1));
+  return dt.getTime();
+}
+/* Todas as parcelas da mesma compra, ordenadas por número.
+   Lançamento que não é parcela devolve [ele mesmo] — quem chama trata os dois
+   casos pelo tamanho da lista, sem precisar saber se havia parcelamento. */
+function grupoParcelasCC(d, lista) {
+  if (!d) return [];
+  var p = parcelaCC(d.descricao);
+  if (!p) return [d];
+  var cands = (lista || []).filter(function(x) {
+    var px = parcelaCC(x && x.descricao);
+    return !!px && px.base === p.base && px.total === p.total
+      && (x.categoria || "") === (d.categoria || "")
+      && (x.forma_pagamento || "") === (d.forma_pagamento || "")
+      && String(x.manutencao_id || "") === String(d.manutencao_id || "");
+  });
+  if (!cands.some(function(x) { return x.id === d.id; })) cands = cands.concat([d]);
+  /* Só desempata pela âncora quando dois grupos realmente colidiram (o mesmo
+     número de parcela aparecendo duas vezes). Sem colisão, ficar só na
+     descrição é mais robusto: aguenta parcela com data ajustada na mão, que a
+     âncora sozinha jogaria pra fora do grupo. */
+  var porNum = {};
+  var colidiu = false;
+  cands.forEach(function(x) {
+    var n = parcelaCC(x.descricao).num;
+    if (porNum[n]) colidiu = true;
+    porNum[n] = true;
+  });
+  if (colidiu) {
+    var alvo = ancoraParcelaCC(d);
+    var melhor = {};
+    cands.forEach(function(x) {
+      var n = parcelaCC(x.descricao).num;
+      var a = ancoraParcelaCC(x);
+      var dist = (alvo == null || a == null) ? Infinity : Math.abs(a - alvo);
+      if (x.id === d.id) dist = -1; // a parcela aberta nunca é descartada
+      if (!melhor[n] || dist < melhor[n].dist) melhor[n] = { row: x, dist: dist };
+    });
+    cands = Object.keys(melhor).map(function(n) { return melhor[n].row; });
+  }
+  return cands.sort(function(a, b) { return parcelaCC(a.descricao).num - parcelaCC(b.descricao).num; });
+}
+/* O lançamento principal da compra: a parcela 1 (ou a de menor número que
+   sobrou, se a 1ª foi apagada). É ele que a tela de edição deve abrir. */
+function principalParcelaCC(d, lista) {
+  var g = grupoParcelasCC(d, lista);
+  return g.length ? g[0] : d;
+}
+/* Formulário da COMPRA INTEIRA a partir de uma parcela qualquer: descrição sem
+   sufixo, valor somado das parcelas e a forma de pagamento com o Nx do grupo
+   (e não o Nx que estava gravado na linha, que pode ter ficado defasado).
+   Assim o usuário edita "R$ 3.000 em 6x", não "R$ 500 da parcela 3". */
+function formPrincipalCC(d, lista) {
+  var g = grupoParcelasCC(d, lista);
+  if (g.length <= 1) return Object.assign({}, d);
+  var p = parcelaCC(g[0].descricao);
+  var total = g.reduce(function(s, x) { return s + (parseFloat(x.valor) || 0); }, 0);
+  return Object.assign({}, g[0], {
+    descricao: p.base,
+    valor: total.toFixed(2),
+    forma_pagamento: "Cartao Credito " + g.length + "x"
+  });
+}
 // Fatura de contrato realmente EMITIDA (ou além) — nunca considerar a receita "prevista" (placeholder
 // criado por criarFaturaPrevista) como já emitida. Único critério usado em TODOS os locais de emissão
 // do sistema (alertas, card de Contratos, agenda/ICS) para decidir se ainda falta emitir a fatura.
@@ -41341,17 +41445,33 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         manutencao_id: form.manutencao_id || null,
         contrato_id: form.contrato_id || null,
         forma_pagamento: form.forma_pagamento || null};
+      /* ── Editar parcelamento: sincroniza o GRUPO INTEIRO ──
+         O `edit` aqui é sempre o lançamento principal (openDesp resolve isso
+         antes de abrir o modal), e o form traz a compra cheia. Percorre as
+         parcelas que já existem atualizando uma a uma, cria as que faltarem e
+         apaga as que sobrarem quando o nº de parcelas diminui.
+
+         O fluxo antigo fazia outra coisa: transformava a linha editada em
+         "Parcela 1/N" e criava N-1 novas SEM olhar as existentes — editar a
+         parcela 3 de um 6x deixava 11 lançamentos no lugar de 6.
+
+         `status`/`data_pagamento` NÃO entram no payload das parcelas que já
+         existem: cada uma guarda a própria baixa, e sobrescrever isso apagaria
+         o histórico de pagamento de quem já foi quitado. O antigo forçava
+         "previsto" e zerava a data — desfazia baixa silenciosamente. */
+      var _grupoAtual = edit ? grupoParcelasCC((despesas||[]).find(function(x){ return x.id === edit; }) || { id: edit, descricao: form.descricao }, despesas) : [];
       if (edit && numParcelas > 1) {
-        var valorParc = (parseFloat(form.valor) / numParcelas).toFixed(2);
         var baseDesc  = (form.descricao || "").replace(/ — Parcela \d+\/\d+$/, "");
-        // Passo 1: atualiza o registro existente como parcela 1
-        var parc1Payload = {
-          descricao: baseDesc + " — Parcela 1/" + numParcelas,
+        /* Centavos inteiros: dividir em float deixa sobra (3000/7 = 428,57 x7 =
+           2999,99). A última parcela absorve o resto, como em criarParcelasCC. */
+        var _totCent  = Math.round((parseFloat(form.valor) || 0) * 100);
+        var _parcCent = Math.floor(_totCent / numParcelas);
+        /* Redata todas só se a data de início mudou. Se não mudou, cada parcela
+           mantém a data que tem — respeita ajuste manual de vencimento. */
+        var _ancoraAnt = _grupoAtual.length ? _grupoAtual[0].data : null;
+        var _redatar = !_ancoraAnt || _ancoraAnt !== form.data;
+        var _comuns = {
           categoria: payload.categoria,
-          valor: valorParc,
-          data: form.data,
-          status: "previsto",
-          data_pagamento: null,
           observacoes: payload.observacoes,
           recorrente: false,
           prazo_recorrencia: null,
@@ -41360,43 +41480,79 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           contrato_id: payload.contrato_id,
           forma_pagamento: form.forma_pagamento
         };
-        var u1;
-        try {
-          u1 = await db.patch("despesas", edit, parc1Payload);
-        } catch(ep) {
-          toast("Erro ao atualizar parcela 1: " + ep.message, "error");
-          setLoading(false); return;
-        }
-        setDespesas(p => p.map(d => d.id === edit ? Object.assign({}, d, u1) : d));
-        // Passos 2..N: cria as demais parcelas
-        var criadas = [];
-        for (var j = 1; j < numParcelas; j++) {
-          var pj = Object.assign({}, parc1Payload, {
-            valor: valorParc,
-            data: addMeses(form.data, j),
-            descricao: baseDesc + " — Parcela " + (j+1) + "/" + numParcelas
+        var _patchadas = [], _criadas = [];
+        for (var j = 0; j < numParcelas; j++) {
+          var _cent = (j === numParcelas - 1) ? (_totCent - _parcCent * (numParcelas - 1)) : _parcCent;
+          var _exist = _grupoAtual[j];
+          var _pl = Object.assign({}, _comuns, {
+            descricao: baseDesc + " — Parcela " + (j+1) + "/" + numParcelas,
+            valor: (_cent / 100).toFixed(2),
+            data: (_redatar || !_exist || !_exist.data) ? addMeses(form.data, j) : _exist.data
           });
           try {
-            var cj = await db.post("despesas", pj);
-            criadas.push(cj);
-          } catch(ep2) {
-            toast("Erro ao criar parcela " + (j+1) + ": " + ep2.message, "error");
+            if (_exist) {
+              var _u = await db.patch("despesas", _exist.id, _pl);
+              _patchadas.push({ id: _exist.id, dados: _u || _pl });
+            } else {
+              _pl.status = "previsto";
+              _pl.data_pagamento = null;
+              _criadas.push(await db.post("despesas", _pl));
+            }
+          } catch(ep) {
+            toast("Erro na parcela " + (j+1) + ": " + ep.message, "error");
             setLoading(false); return;
           }
         }
-        setDespesas(p => criadas.concat(p));
-        toast(numParcelas + "x de R$ " + parseFloat(valorParc).toLocaleString("pt-BR",{minimumFractionDigits:2}) + " criadas ✅");
+        /* Sobras: 6x → 3x apaga as parcelas 4..6, senão viravam lançamentos
+           órfãos que continuariam pesando no fluxo de caixa e nos painéis. */
+        var _removidas = _grupoAtual.slice(numParcelas);
+        for (var k = 0; k < _removidas.length; k++) {
+          try { await db.del("despesas", _removidas[k].id); } catch(ed) { console.warn("remover parcela extra", ed); }
+        }
+        var _idsFora = {};
+        _removidas.forEach(function(x){ _idsFora[x.id] = true; });
+        setDespesas(function(p){
+          var atualizado = (p||[]).filter(function(d){ return !_idsFora[d.id]; }).map(function(d){
+            var hit = _patchadas.find(function(z){ return z.id === d.id; });
+            return hit ? Object.assign({}, d, hit.dados) : d;
+          });
+          return _criadas.concat(atualizado);
+        });
+        toast(numParcelas + "x de R$ " + (_parcCent/100).toLocaleString("pt-BR",{minimumFractionDigits:2}) + " atualizadas ✅");
+      } else if (edit && _grupoAtual.length > 1) {
+        /* Caiu de parcelado para à vista (6x → Pix/1x): o principal absorve o
+           valor cheio e a descrição sem sufixo; as outras parcelas somem. Sem
+           isto sobravam 5 lançamentos órfãos ainda somando no fluxo de caixa. */
+        var _plUnico = Object.assign({}, payload, {
+          descricao: (form.descricao || "").replace(/ — Parcela \d+\/\d+$/, "")
+        });
+        var _uu = await db.patch("despesas", edit, _plUnico);
+        var _sobras = _grupoAtual.filter(function(x){ return x.id !== edit; });
+        for (var q = 0; q < _sobras.length; q++) {
+          try { await db.del("despesas", _sobras[q].id); } catch(ed2) { console.warn("remover parcela", ed2); }
+        }
+        var _fora = {};
+        _sobras.forEach(function(x){ _fora[x.id] = true; });
+        setDespesas(function(p){ return (p||[]).filter(function(d){ return !_fora[d.id]; }).map(function(d){ return d.id === edit ? Object.assign({}, d, _uu) : d; }); });
+        await _syncRetLucroOrc(Object.assign({}, _plUnico, _uu), edit);
+        toast("Parcelamento desfeito — lançamento único atualizado!");
       } else if (edit) {
         const u = await db.patch("despesas", edit, payload);
         setDespesas(p => p.map(d => d.id === edit ? Object.assign({}, d, u) : d));
         await _syncRetLucroOrc(Object.assign({}, payload, u), edit);
         toast("Atualizado!");
       } else if (numParcelas > 1) {
-        var valorParcela = (parseFloat(form.valor) / numParcelas).toFixed(2);
+        /* Mesma divisão em centavos inteiros usada na edição do grupo (acima):
+           em float, 7x de R$ 3.000 virava 428,57 sete vezes = R$ 2.999,99, e a
+           compra nascia um centavo menor do que foi lançada. A última parcela
+           absorve o resto. */
+        var _totCentNovo  = Math.round((parseFloat(form.valor) || 0) * 100);
+        var _parcCentNovo = Math.floor(_totCentNovo / numParcelas);
         var novas = [];
         for (var i = 0; i < numParcelas; i++) {
+          var _centI = (i === numParcelas - 1) ? (_totCentNovo - _parcCentNovo * (numParcelas - 1)) : _parcCentNovo;
           var payloadParc = Object.assign({}, payload, {
-            valor: valorParcela,
+            valor: (_centI / 100).toFixed(2),
             data: addMeses(form.data, i),
             descricao: (form.descricao || "") + " — Parcela " + (i+1) + "/" + numParcelas
           });
@@ -41733,7 +41889,17 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   var CATS_DESP = ["Retirada de Lucro","Ajuste de Saldo","Aluguel","Cartao de Credito","Combustivel","Contabilidade","Conta de Agua","Conta de Luz","Emplacamento","Estacionamento","Financiamento","Funilaria","Internet","Impostos","IPVA","Juros","Juridico","Lavagem","Licenciamento","Limpeza","Manutenção","Marketing","Multas","Outros","Pedagio","Prejuizo","Pneus","Salarios","Seguros","Telefone"].sort(function(a,b){ if(a==="Retirada de Lucro"||a==="Ajuste de Saldo") return -1; if(b==="Retirada de Lucro"||b==="Ajuste de Saldo") return 1; return a.localeCompare(b,"pt-BR"); });
   var CATS_REC = ["Deposito","Locacao","Multa Cobrada","Outros","Servico"].sort(function(a,b){return a.localeCompare(b,"pt-BR");});
 
-  function openDesp(d) { setForm(d ? Object.assign({}, d) : { data: _brNow().toISOString().split("T")[0], categoria: "Outros", status: "previsto" }); setEdit(d ? d.id : null); setModalTipo("despesa"); setModal(true); }
+  /* Editar uma parcela de cartão é editar a COMPRA INTEIRA (regra do usuário):
+     abrir a parcela 3/6 carrega o lançamento principal — descrição sem sufixo,
+     valor cheio, 6x — e o save propaga pras seis (ver saveDespesa). Sem isto o
+     usuário mexia numa parcela e as outras cinco ficavam divergentes.
+     Despesa que não é parcelada passa direto: grupoParcelasCC devolve só ela. */
+  function openDesp(d) {
+    var _alvo = d ? formPrincipalCC(d, despesas) : null;
+    setForm(_alvo || { data: _brNow().toISOString().split("T")[0], categoria: "Outros", status: "previsto" });
+    setEdit(_alvo ? _alvo.id : null);
+    setModalTipo("despesa"); setModal(true);
+  }
   function openRec(r) { setForm(r ? Object.assign({}, r) : { data: _brNow().toISOString().split("T")[0], categoria: "Locacao", forma_pagamento: "Pix", status: "previsto" }); setEdit(r ? r.id : null); setModalTipo("receita"); setModal(true); }
 
   var SC_CONTA = { pendente: C.orange, pago: C.green, vencido: C.red, cancelado: C.gray };

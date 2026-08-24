@@ -52033,6 +52033,24 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, set
       }
       return false;
     }
+    // Contratos: agrupa os lançamentos (contratos) da mesma cadeia de
+    // renovação (campo renovado_para) num único resultado, com um resumo
+    // totalizador dos valores da cadeia inteira logo abaixo — em vez de
+    // espalhar cada renovação como um resultado solto.
+    var _chainRootCache = {};
+    function chainRoot(c) {
+      if (!c) return null;
+      if (_chainRootCache[c.id] !== undefined) return _chainRootCache[c.id];
+      var cur = c, guard = 0;
+      while (guard++ < 50) {
+        var parent = (contratos||[]).find(function(p){ return p.renovado_para === cur.id; });
+        if (!parent) break;
+        cur = parent;
+      }
+      _chainRootCache[c.id] = cur.id;
+      return cur.id;
+    }
+    var matchedChainRoots = [];
     (contratos||[]).forEach(function(c) {
       // String(a)===String(b): o id às vezes vem número, às vezes texto — com
       // === estrito o cruzamento falha silenciosamente, nm fica vazio e o
@@ -52042,8 +52060,35 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, set
       var nm = cl ? cl.nome : "";
       var vei = (veiculos||[]).find(function(x){return String(x.id)===String(c.veiculo_id);});
       var pl = vei ? (vei.placa||"") : "";
-      if (match(nm, pl, c.id, c.status, c.status_pagamento, c.observacoes, c.previsao_pagamento, c.data_inicio, c.data_fim))
-        results.push({ type:"contrato", id:c.id, label:"Contrato #"+c.id, sub:nm+(pl?" · "+pl:"")+(c.status?" · "+c.status:""), tab:"operacional", subtab:"contratos" });
+      if (match(nm, pl, c.id, c.status, c.status_pagamento, c.observacoes, c.previsao_pagamento, c.data_inicio, c.data_fim)) {
+        var root = chainRoot(c);
+        if (matchedChainRoots.indexOf(root) === -1) matchedChainRoots.push(root);
+      }
+    });
+    matchedChainRoots.forEach(function(rootId) {
+      var cadeia = (contratos||[]).filter(function(c){ return chainRoot(c) === rootId; })
+        .sort(function(a,b){ return String(a.data_inicio||"").localeCompare(String(b.data_inicio||"")); });
+      if (!cadeia.length) return;
+      var first = cadeia[0], last = cadeia[cadeia.length-1];
+      var cl = (clientes||[]).find(function(x){return String(x.id)===String(first.cliente_id);});
+      var nm = cl ? cl.nome : "";
+      var vei = (veiculos||[]).find(function(x){return String(x.id)===String(last.veiculo_id);});
+      var pl = vei ? (vei.placa||"") : "";
+      var totalGeral = 0, totalRecebido = 0;
+      cadeia.forEach(function(c){
+        var vt = parseFloat(c.valor_total||0);
+        var pago = (c.status_pagamento === "pago" || c.status_pagamento === "isento") ? vt
+                 : c.status_pagamento === "parcial" ? parseFloat(c.valor_pago||0)
+                 : 0;
+        totalGeral += vt; totalRecebido += pago;
+      });
+      results.push({
+        type: "contrato_grupo", id: rootId,
+        label: cadeia.length > 1 ? "Contrato #"+numCt(first.id)+" → #"+numCt(last.id) : "Contrato #"+numCt(first.id),
+        sub: nm+(pl?" · "+pl:""),
+        cadeia: cadeia, totalGeral: totalGeral, totalRecebido: totalRecebido, totalReceber: Math.max(0, totalGeral-totalRecebido),
+        tab:"operacional", subtab:"contratos"
+      });
     });
     (clientes||[]).forEach(function(cl) {
       if (match(cl.nome, cl.cpf_cnpj, cl.telefone, cl.email, cl.endereco, cl.cidade, cl.cnh, cl.rg))
@@ -52082,13 +52127,46 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, set
       ),
       lq.length >= 1 && results.length === 0 && React.createElement('div', { style:{ color:"var(--c-sub)",textAlign:"center",padding:"20px 0",fontSize:14 } }, 'Nenhum resultado para "'+q+'"'),
       results.length > 0 && results.map(function(r,i) {
+        function abrirContrato(id) {
+          window.__ag_pending_open = { type: "contrato", id: id };
+          window.dispatchEvent(new CustomEvent('ag:open-item', { detail: { type: "contrato", id: id } }));
+          setTab(r.tab); if(r.subtab) setOperacionalSubTab(r.subtab); onClose();
+        }
+        if (r.type === "contrato_grupo") {
+          return React.createElement('div', { key:i, style:{ border:"1px solid var(--c-border)", borderRadius:12, background:"var(--c-bg)", overflow:"hidden" } },
+            React.createElement('div', { style:{ display:"flex",alignItems:"center",gap:12,padding:"10px 14px" } },
+              React.createElement('span', { style:{fontSize:20,flexShrink:0} }, "📋"),
+              React.createElement('div', { style:{flex:1,minWidth:0} },
+                React.createElement('div', { style:{fontSize:14,fontWeight:700,color:"var(--c-text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"} }, r.label),
+                React.createElement('div', { style:{fontSize:12,color:"var(--c-sub)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"} }, r.sub)
+              )
+            ),
+            React.createElement('div', { style:{ padding:"0 14px 10px" } },
+              r.cadeia.map(function(c,j){
+                return React.createElement('button', { key:j, onClick:function(){ abrirContrato(c.id); },
+                  style:{ display:"flex",justifyContent:"space-between",gap:8,width:"100%",background:"transparent",border:"none",borderTop:"1px solid var(--c-border)",padding:"8px 0",cursor:"pointer",textAlign:"left",color:"var(--c-text)",fontSize:12.5 } },
+                  React.createElement('span', { style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"} }, "#"+numCt(c.id)+" · "+fmtDate(c.data_inicio)+(c.data_fim?" – "+fmtDate(c.data_fim):"")+" · "+(c.status||"")),
+                  React.createElement('span', { style:{fontWeight:700,flexShrink:0} }, fmtBRL(c.valor_total||0))
+                );
+              }),
+              React.createElement('div', { style:{ display:"flex",justifyContent:"space-between",marginTop:8,paddingTop:8,borderTop:"1px solid var(--c-border)",fontSize:12.5,fontWeight:700,color:"var(--c-text)" } },
+                React.createElement('span', null, "Total"),
+                React.createElement('span', null, fmtBRL(r.totalGeral))
+              ),
+              React.createElement('div', { style:{ display:"flex",justifyContent:"space-between",fontSize:11.5,marginTop:2 } },
+                React.createElement('span', { style:{color:C.green,fontWeight:600} }, "Recebido: "+fmtBRL(r.totalRecebido)),
+                r.totalReceber > 0 && React.createElement('span', { style:{color:C.red,fontWeight:600} }, "A receber: "+fmtBRL(r.totalReceber))
+              )
+            )
+          );
+        }
         return React.createElement('button', { key:i, onClick:function(){
             // Mesmo mecanismo usado pelos alertas do painel Início: só trocar de
             // aba deixava o resultado perdido dentro da lista geral — o
             // "ag:open-item" abre direto o registro (contrato/cliente), e
             // __ag_pending_open cobre o caso do componente ainda não estar
             // montado (troca de aba e o listener só é registrado depois).
-            if ((r.type === "contrato" || r.type === "cliente") && r.id != null) {
+            if (r.type === "cliente" && r.id != null) {
               window.__ag_pending_open = { type: r.type, id: r.id };
               window.dispatchEvent(new CustomEvent('ag:open-item', { detail: { type: r.type, id: r.id } }));
             }

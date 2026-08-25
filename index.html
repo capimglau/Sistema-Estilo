@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="6cbc2bc"/>
+<meta name="ag-build" content="dbb9874"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -15739,10 +15739,14 @@ body.dark .sb3d-hub-sub { color: #4ade80; }
    coluna ocupa quase a tela inteira (não 1/3) — no mobile faz mais sentido
    ver um dia (ou "Atrasados") de cada vez e rolar pra DIREITA pro próximo,
    tipo carrossel, do que espremer 3 colunas finas lado a lado. scroll-snap
-   trava o arrasto no início de cada coluna, então nunca para "no meio" de
-   um dia. */
+   trava o arrasto no CENTRO de cada coluna (pedido do usuário — antes era
+   "start", coluna grudada na borda esquerda), com uma tirinha de ~6% do
+   próximo/anterior dia espiando dos dois lados, então nunca para "no meio"
+   de um dia. O "start" era herdado de um bug antigo (zoom do modal em tela
+   cheia, já removido — ver AGK2-V2 · vidro-fosco) que cortava o cartão ao
+   centralizar; sem o zoom, centralizar funciona normal. */
 .agk2-board-mobile{scroll-snap-type:x mandatory;}
-.agk2-board-mobile .agk2-day-col{flex-basis:88%; scroll-snap-align:start;}
+.agk2-board-mobile .agk2-day-col{flex-basis:88%; scroll-snap-align:center;}
 
 /* min-width:0 é obrigatório aqui: sem ele, um flex item com flex-shrink:0
    ainda pode ser EMPURRADO mais largo que o flex-basis quando o conteúdo tem
@@ -48856,17 +48860,58 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
      e "Hoje" só aparece rolando pra direita — quando "Atrasados" recolhe
      (ver atrasadosRecolhido acima) e "Hoje" devia tomar o lugar de destaque,
      sem rolar pra lá o carrossel fica parado mostrando só o cabeçalho
-     recolhido e um pedaço cortado da próxima coluna. inline:"start" (não
-     "center"): centralizar um card de ~88% de largura sem espaço de sobra
-     nas duas pontas é o que cortava a coluna pela metade antes — "start"
-     só alinha a borda esquerda dele com a da tela, sem empurrar o resto
-     pra fora. */
+     recolhido e um pedaço cortado da próxima coluna.
+     inline:"center" em toda parte (pedido do usuário — "hoje centralizado
+     na tela"), mesmo no mobile: o "start" de antes era pra contornar um bug
+     de corte que na verdade vinha do zoom:0.9 do modal em tela cheia (já
+     removido) combinado com a altura sem limite da fileira (já corrigida
+     acima, ver _boardH) — sem os dois, centralizar não corta mais nada. */
   var _hojeColRef = React.useRef(null);
   React.useEffect(function(){
     if (!mostrarBoard) return;
     var el = _hojeColRef.current;
-    if (el && el.scrollIntoView) el.scrollIntoView({ block:"nearest", inline: desktop ? "center" : "start" });
+    if (el && el.scrollIntoView) el.scrollIntoView({ block:"nearest", inline:"center" });
   }, [mostrarBoard, desktop, dias.length, atrasadosRecolhido]);
+
+  /* [AGK2-V2 · altura-da-coluna-ativa] Board mobile: a altura fixa (CSS,
+     min(70vh,70dvh) — ver .agk2-board-wrap:has(.agk2-board-mobile)) evita a
+     fileira crescer sem limite por causa de um dia cheio fora de tela, mas
+     sozinha ainda reservava ~70vh sempre, mesmo quando a coluna visível
+     (ex.: "Hoje" com 1 cartão) é bem mais baixa que isso — sobrava vazio
+     embaixo do cartão em vez do card "flutuar" no topo, centralizado na
+     tela. Aqui mede de verdade a coluna que está NA TELA (maior sobreposição
+     horizontal com o wrap) e ajusta a altura do wrap pra ela — só ela, nunca
+     as escondidas. Cada coluna continua com seu próprio scroll interno (CSS)
+     pro caso raro de ultrapassar os 70vh. Recalcula ao rolar (trocar de
+     coluna) e sempre que os dias mudam (mês, filtro, recolher Atrasados). */
+  var _boardWrapRef = React.useRef(null);
+  var _colElsRef = React.useRef({});
+  var _bhArr = React.useState(null); var _boardH = _bhArr[0], _setBoardH = _bhArr[1];
+  /* useLayoutEffect (não useEffect): mede e ajusta a altura ANTES do
+     navegador pintar a tela — sem isso, o primeiro quadro nasce com os
+     ~70vh do CSS (fallback) e só encolhe pro tamanho certo um instante
+     depois, dando um "pulo" visível toda vez que entra no board/troca
+     de coluna. */
+  React.useLayoutEffect(function(){
+    if (desktop || !mostrarBoard) { _setBoardH(null); return; }
+    var wrap = _boardWrapRef.current;
+    if (!wrap) return;
+    var _medir = function(){
+      var wrapRect = wrap.getBoundingClientRect();
+      var _els = _colElsRef.current, _best = null, _bestOverlap = -1;
+      Object.keys(_els).forEach(function(k){
+        var el = _els[k]; if (!el) return;
+        var r = el.getBoundingClientRect();
+        var overlap = Math.min(r.right, wrapRect.right) - Math.max(r.left, wrapRect.left);
+        if (overlap > _bestOverlap) { _bestOverlap = overlap; _best = el; }
+      });
+      if (_best) _setBoardH(Math.min(_best.scrollHeight, Math.round(window.innerHeight*0.7)));
+    };
+    _medir();
+    wrap.addEventListener('scroll', _medir, { passive:true });
+    window.addEventListener('resize', _medir);
+    return function(){ wrap.removeEventListener('scroll', _medir); window.removeEventListener('resize', _medir); };
+  }, [desktop, mostrarBoard, dias, atrasadosRecolhido]);
 
   /* Sem H e no mobile = agenda embutida no Dashboard: altura vem do conteúdo
      (ver .agk2-inline-auto no CSS). No modal (H:"100%") e no desktop a agenda
@@ -48934,7 +48979,8 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
           )
         )
       )
-      , React.createElement('div', { className:"agk2-board-wrap" }
+      , React.createElement('div', { className:"agk2-board-wrap", ref:_boardWrapRef,
+          style: _boardH!=null ? { height:_boardH+"px" } : null }
         , !dias.length
           ? React.createElement('div', { className:"agk2-day-empty", style:{ margin:"4px 20px" } }, "Sem eventos no período")
           : React.createElement('div', { className: mostrarBoard ? ("agk2-board"+(!desktop?" agk2-board-mobile":"")) : "agk2-timeline" }
@@ -49151,7 +49197,18 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                      empilhados, uma bolinha por dia sobre uma linha contínua
                      (agk2-timeline/agk2-tl-item). */
                   return mostrarBoard
-                    ? React.createElement('div', { key:c.isoD, ref: c.alvoCentral ? _hojeColRef : null, className:"agk2-day-col"+(isHoje?" agk2-today":"")+(isAtrasados?" agk2-atrasados":"") }, conteudo)
+                    ? React.createElement('div', {
+                        key:c.isoD,
+                        /* Registra o próprio elemento pra medição de altura da coluna
+                           ativa (ver _colElsRef/_boardH acima) e, quando é a coluna
+                           "hoje ou próximo evento", também no ref usado pra rolar até
+                           ela — os dois cabem num callback ref só. */
+                        ref: function(el){
+                          if (el) { _colElsRef.current[c.isoD] = el; if (c.alvoCentral) _hojeColRef.current = el; }
+                          else { delete _colElsRef.current[c.isoD]; }
+                        },
+                        className:"agk2-day-col"+(isHoje?" agk2-today":"")+(isAtrasados?" agk2-atrasados":"")
+                      }, conteudo)
                     : React.createElement('div', { key:c.isoD, className:"agk2-tl-item"+(isHoje?" agk2-tl-hoje":"")+(precisaAtencao?" agk2-tl-atencao":"")+(isAtrasados?" agk2-tl-atrasados":"") }
                         , React.createElement('span', { className:"agk2-tl-dot" })
                         /* Mesma classe agk2-today do board (cabeçalho tingido de azul +

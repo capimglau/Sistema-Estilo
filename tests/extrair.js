@@ -67,7 +67,8 @@ function extrair(marcadores) {
       situacaoMulta, multaEncerrada, painelMultasPendentes, GRUPOS_MULTA,
       parcelaCC, numParcelasCC, ancoraParcelaCC, grupoParcelasCC,
       principalParcelaCC, formPrincipalCC,
-      agk2CorteDias, AGK2_LIM_DIAS
+      agk2CorteDias, AGK2_LIM_DIAS,
+      mesDoLancamentoCt, lancamentosDoContrato, somaContratoBusca, resumoPorMesContratos
     };
   `);
   return Object.assign(escopo, fn());

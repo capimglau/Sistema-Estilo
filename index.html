@@ -24084,6 +24084,35 @@ function principalParcelaCC(d, lista) {
    sufixo, valor somado das parcelas e a forma de pagamento com o Nx do grupo
    (e não o Nx que estava gravado na linha, que pode ter ficado defasado).
    Assim o usuário edita "R$ 3.000 em 6x", não "R$ 500 da parcela 3". */
+/* ══ AGENDA DO DASHBOARD — corte dos primeiros cartões ══
+   O painel embutido no Início termina depois do 3º cartão; o resto (o que
+   sobra do dia em que a conta fecha MAIS os dias seguintes inteiros) fica
+   escondido no baralho do último cartão visível, e só aparece quando o
+   usuário toca nele. Sem o corte o painel listava a janela toda e voltava a
+   empurrar o painel de Boletos pra longe.
+
+   Devolve os dias a renderizar, quantos cartões mostrar em cada um, e a lista
+   achatada do que ficou escondido — é o tamanho dela que vira o "+N" do
+   baralho. O "+N" precisa ser GLOBAL: contar só o que sobrou do último dia
+   mentiria sobre quanto ainda há por ver.
+
+   `dias` nulo (agenda expandida, desktop ou modal) devolve o corte vazio —
+   quem chama usa a lista original nesse caso. */
+var AGK2_LIM_CARDS = 3;
+function agk2CorteCards(dias, limite) {
+  var vazio = { diasMostrar: [], cortePorDia: {}, ocultosLista: [] };
+  if (!dias) return vazio;
+  var lim = (limite > 0) ? limite : 0;
+  var resta = lim, vis = [], porDia = {}, ocultos = [];
+  dias.forEach(function(c) {
+    var evs = (c && c.evsDia) || [];
+    var n = Math.max(0, Math.min(resta, evs.length));
+    if (n > 0) { porDia[c.isoD] = n; vis.push(c); }
+    resta -= n;
+    ocultos = ocultos.concat(evs.slice(n));
+  });
+  return { diasMostrar: vis, cortePorDia: porDia, ocultosLista: ocultos };
+}
 function formPrincipalCC(d, lista) {
   var g = grupoParcelasCC(d, lista);
   if (g.length <= 1) return Object.assign({}, d);
@@ -48468,6 +48497,12 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
   /* Dias com o "monte" de cartões expandido (mais de 2 eventos, tocou pra ver
      todos) — chave é a data ISO do dia. */
   var _expArr = React.useState({}); var diasExpandidos = _expArr[0], setDiasExpandidos = _expArr[1];
+  /* Agenda embutida no Dashboard (mobile): o painel termina depois do TERCEIRO
+     cartão. Tudo o que vem depois — o resto do dia e os dias seguintes — fica
+     escondido no baralho, e só aparece quando o usuário toca nele. Sem isso o
+     painel listava a janela inteira e voltava a empurrar o Boletos pra longe,
+     que é justamente o que os ajustes anteriores tinham resolvido. */
+  var _tlArr = React.useState(false); var timelineCheia = _tlArr[0], setTimelineCheia = _tlArr[1];
   /* Coluna/item "Atrasados": toca no cabeçalho pra recolher (só o cabeçalho
      com a contagem fica visível) e liberar espaço pros próximos dias. */
   var _colArr = React.useState(false); var atrasadosRecolhido = _colArr[0], setAtrasadosRecolhido = _colArr[1];
@@ -48667,6 +48702,18 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
      (ver .agk2-inline-auto no CSS). No modal (H:"100%") e no desktop a agenda
      continua preenchendo a altura do contêiner e rolando por dentro. */
   var _autoH = !H && !desktop;
+  /* ── Corte dos 3 primeiros cartões (só no Dashboard mobile, recolhido) ──
+     Anda pelos dias somando cartões até chegar a AGK2_LIM_CARDS. O dia em que
+     a conta fecha entra pela metade; os dias seguintes nem são renderizados.
+     Tudo que sobrou vira UM número só, exibido no baralho do último cartão
+     visível — inclusive os cartões dos dias que ficaram de fora, senão o "+N"
+     mentiria sobre quanto ainda há por ver. */
+  var _truncar = _autoH && !timelineCheia;
+  var _corte = agk2CorteCards(_truncar ? dias : null, AGK2_LIM_CARDS);
+  var _diasMostrar = _truncar ? _corte.diasMostrar : dias;
+  var _cortePorDia = _corte.cortePorDia, _ocultosLista = _corte.ocultosLista;
+  var _ultimoDiaVis = _diasMostrar.length ? _diasMostrar[_diasMostrar.length - 1] : null;
+
   return React.createElement('div', { className:"agk2-inline"+(_autoH?" agk2-inline-auto":""), style: H ? { height:H } : null }
       , React.createElement('div', { className:"agk2-top" }
         /* Ícone oval em contorno, proporcional (mesma altura) ao filtro
@@ -48711,7 +48758,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
         , !dias.length
           ? React.createElement('div', { className:"agk2-day-empty", style:{ margin:"4px 20px" } }, "Sem eventos no período")
           : React.createElement('div', { className: desktop?"agk2-board":"agk2-timeline" }
-              , dias.map(function(c){
+              , _diasMostrar.map(function(c){
                   var isAtrasados = !!c.atrasados;
                   var isHoje = !isAtrasados && c.isoD===isoHoje;
                   /* Passado não gera mais coluna própria (virou "Atrasados", já
@@ -48729,8 +48776,18 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                      o resto no lugar do monte. */
                   var expandido = !!diasExpandidos[c.isoD];
                   var _maxVisiveis = desktop ? 3 : 2;
-                  var evsVisiveis = (expandido || c.evsDia.length<=_maxVisiveis) ? c.evsDia : c.evsDia.slice(0,_maxVisiveis);
-                  var evsOcultos = c.evsDia.length - evsVisiveis.length;
+                  /* Recolhido: quem manda é o corte dos 3 primeiros cartões, e o
+                     "+N" do baralho é GLOBAL (o que falta na agenda toda), não o
+                     que falta só neste dia. Ele mora no último cartão visível. */
+                  var _lim = _truncar ? _cortePorDia[c.isoD] : null;
+                  var evsVisiveis, evsOcultos;
+                  if (_lim != null) {
+                    evsVisiveis = c.evsDia.slice(0, _lim);
+                    evsOcultos = (c === _ultimoDiaVis) ? _ocultosLista.length : 0;
+                  } else {
+                    evsVisiveis = (expandido || c.evsDia.length<=_maxVisiveis) ? c.evsDia : c.evsDia.slice(0,_maxVisiveis);
+                    evsOcultos = c.evsDia.length - evsVisiveis.length;
+                  }
                   /* "Atrasados" recolhe/expande ao tocar no cabeçalho — é a
                      única coluna que pode acumular muitos eventos de vários
                      dias diferentes, então vale a pena poder escondê-los pra
@@ -48740,12 +48797,18 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                      pro monte empilhado — sem isso, uma vez expandido não
                      tinha como desfazer e o dia ficava "grudado" comprido. */
                   var atrasadosEstaRecolhido = isAtrasados && atrasadosRecolhido;
-                  var _headClicavel = isAtrasados || expandido;
+                  /* Com a agenda aberta, o cabeçalho de qualquer dia recolhe tudo de
+                     volta pros 3 primeiros cartões — sem isso, uma vez expandida não
+                     havia como voltar ao painel curto a não ser recarregando a tela. */
+                  var _podeRecolherTudo = _autoH && timelineCheia;
+                  var _headClicavel = isAtrasados || expandido || _podeRecolherTudo;
                   var _onHeadClick = isAtrasados
                     ? function(){ setAtrasadosRecolhido(function(v){ return !v; }); }
                     : expandido
                       ? function(){ setDiasExpandidos(function(m){ var n=Object.assign({},m); delete n[c.isoD]; return n; }); }
-                      : null;
+                      : _podeRecolherTudo
+                        ? function(){ setTimelineCheia(false); setDiasExpandidos({}); }
+                        : null;
                   var conteudo = [
                     React.createElement('div', {
                         key:"h", className:"agk2-day-col-head"+(_headClicavel?" agk2-day-col-head-clicavel":""),
@@ -48794,7 +48857,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                              escondidos (_baralhoIdx, avança a cada 3s — ver useEffect lá em
                              cima). O cartão tem altura fixa (66px) e overflow:hidden, então
                              trocar o texto não empurra nada abaixo. */
-                          var _rotArr = ehBaralho ? [ev].concat(c.evsDia.slice(evsVisiveis.length)) : null;
+                          var _rotArr = ehBaralho ? [ev].concat(_lim != null ? _ocultosLista : c.evsDia.slice(evsVisiveis.length)) : null;
                           var _evShow = ehBaralho ? _rotArr[_baralhoIdx % _rotArr.length] : ev;
                           var _toneShow = ehBaralho ? _agk2Tone(_evShow.tipo) : _tone;
                           /* animation-delay ancorado no relógio, não no momento em que o
@@ -48808,7 +48871,12 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
                               className:"agk2-ev-card"+(diaVencidoOuHoje?" agk2-ev-pulsa":"")+(ehBaralho?" agk2-ev-baralho":"")+(ehBaralho&&_baralhoFlipping?" is-flipping":""),
                               style:{ '--ev-l':_toneShow.l, '--ev-d':_toneShow.d, animationDelay:_pulseDelay||undefined },
                               onClick: ehBaralho
-                                ? function(){ setDiasExpandidos(function(m){ var n=Object.assign({},m); n[c.isoD]=true; return n; }); }
+                                ? (_lim != null
+                                    /* Recolhido: o baralho guarda o resto da agenda inteira,
+                                       então tocar nele abre tudo — é o único jeito de o painel
+                                       crescer, como pedido ("só expanda ao clicar nos cards"). */
+                                    ? function(){ setTimelineCheia(true); }
+                                    : function(){ setDiasExpandidos(function(m){ var n=Object.assign({},m); n[c.isoD]=true; return n; }); })
                                 /* Cartão com "acao" (renovar/baixar) resolvido: navega já levando um
                                    deep-link (ctDeepLink/finDeepLink, mesmo mecanismo que os KPIs da
                                    dashboard já usam) que a tela de destino usa pra abrir sozinha o MESMO

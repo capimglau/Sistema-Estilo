@@ -67,7 +67,7 @@ function extrair(marcadores) {
       situacaoMulta, multaEncerrada, painelMultasPendentes, GRUPOS_MULTA,
       parcelaCC, numParcelasCC, ancoraParcelaCC, grupoParcelasCC,
       principalParcelaCC, formPrincipalCC,
-      agk2CorteCards, AGK2_LIM_CARDS
+      agk2CorteDias, AGK2_LIM_DIAS
     };
   `);
   return Object.assign(escopo, fn());

@@ -645,6 +645,70 @@ grupo("Agenda do Dashboard — painel mostra 3 dias");
   eq("agenda vazia não quebra", F.agk2CorteDias([], 3).diasMostrar.length, 0);
 }
 
+grupo("Busca do Dock — lançamentos e resumo por mês do contrato");
+{
+  // Contrato 7: aluguel recorrente de R$ 1.000, três faturas mensais.
+  const ct = { id: 7, valor_total: "1000.00", status_pagamento: "pendente",
+               previsao_pagamento: "2026-01-10", data_inicio: "2026-01-01" };
+  const recs = [
+    { id: 1, ref_fatura: "fat_7_2026-01", valor: "1000.00", status: "recebido", data: "2026-01-10" },
+    { id: 2, ref_fatura: "fat_7_2026-02", valor: "1000.00", status: "emitida",  data: "2026-02-10" },
+    { id: 3, ref_fatura: "fat_7_2026-03", valor: "1000.00", status: "previsto", data: "2026-03-10" },
+    { id: 9, ref_fatura: "fat_99_2026-01", valor: "500.00", status: "recebido", data: "2026-01-10" },
+    { id: 10, valor: "80.00", status: "recebido", data: "2026-01-15" }, // avulsa, sem contrato
+  ];
+
+  eq("mês sai da competência do ref_fatura",
+    F.mesDoLancamentoCt({ ref_fatura: "fat_7_2026-02", data: "2026-05-01" }), "2026-02");
+  eq("parcela de cartão cai na data da receita",
+    F.mesDoLancamentoCt({ ref_fatura: "fat_7_cc_p2", data: "2026-04-09" }), "2026-04");
+
+  const lanc = F.lancamentosDoContrato(ct, recs);
+  eq("traz todos os lançamentos do contrato", lanc.length, 3);
+  eq("não puxa fatura de outro contrato", lanc.every((l) => l.previsto === 1000), true);
+  eq("vem ordenado por mês", lanc[0].mes, "2026-01");
+  eq("último mês é o mais recente", lanc[2].mes, "2026-03");
+
+  // O somatório é o dos lançamentos, não o valor_total cru (que é UM mês).
+  const soma = F.somaContratoBusca(ct, recs);
+  eq("somatório soma os três meses", soma.previsto, 3000);
+  eq("recebido conta só a fatura quitada", soma.recebido, 1000);
+  eq("a receber é o resto", soma.aReceber, 2000);
+
+  // Contrato ainda sem fatura emitida não pode sumir da busca.
+  {
+    const novoCt = { id: 8, valor_total: "2500.00", status_pagamento: "pendente", previsao_pagamento: "2026-06-05" };
+    const l = F.lancamentosDoContrato(novoCt, recs);
+    eq("contrato sem fatura vira um lançamento previsto", l.length, 1);
+    eq("no mês da previsão de pagamento", l[0].mes, "2026-06");
+    eq("com o valor do contrato", l[0].previsto, 2500);
+    eq("marcado como vindo do contrato", l[0].origem, "contrato");
+  }
+
+  // Parcial: previsto é o valor cheio, recebido é o valor_pago (CLAUDE.md).
+  {
+    const parc = { id: 11, valor_total: "1000.00", status_pagamento: "parcial", valor_pago: "300.00", previsao_pagamento: "2026-01-10" };
+    const l = F.lancamentosDoContrato(parc, [{ id: 20, ref_fatura: "fat_11_2026-01", valor: "1000.00", status: "parcial", data: "2026-01-10" }]);
+    eq("parcial mantém o previsto cheio", l[0].previsto, 1000);
+    eq("e recebe só a parcela paga", l[0].recebido, 300);
+  }
+
+  // Resumo POR MÊS da cadeia (substitui o resumo geral).
+  {
+    const ct2 = { id: 12, valor_total: "500.00", status_pagamento: "pendente", previsao_pagamento: "2026-02-20" };
+    const recs2 = recs.concat([{ id: 30, ref_fatura: "fat_12_2026-02", valor: "500.00", status: "recebido", data: "2026-02-20" }]);
+    const meses = F.resumoPorMesContratos([ct, ct2], recs2);
+    eq("um bloco por mês", meses.length, 3);
+    eq("meses em ordem", meses.map((m) => m.mes).join(","), "2026-01,2026-02,2026-03");
+    eq("fevereiro soma os dois contratos", meses[1].previsto, 1500);
+    eq("e o recebido do mês", meses[1].recebido, 500);
+    eq("falta o resto de fevereiro", meses[1].aReceber, 1000);
+    eq("janeiro fechado não deixa saldo", meses[0].aReceber, 0);
+  }
+
+  eq("cadeia vazia devolve resumo vazio", F.resumoPorMesContratos([], recs).length, 0);
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam
 // promessas de refresh e mensagens de WebSocket dublado. Por isso rodam por

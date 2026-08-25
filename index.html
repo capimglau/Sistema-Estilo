@@ -24109,6 +24109,77 @@ function agk2CorteDias(dias, limite) {
   dias.slice(lim).forEach(function(c) { ocultos = ocultos.concat((c && c.evsDia) || []); });
   return { diasMostrar: vis, ocultosLista: ocultos };
 }
+/* ══ BUSCA DO DOCK — lançamentos e resumo mensal de um contrato ══
+   Um contrato de locação não é um valor só: ele emite uma fatura por mês
+   (receita com ref_fatura "fat_{id}_{AAAA-MM}"), e é isso que o usuário chama
+   de lançamento. A busca mostrava só o valor_total do contrato uma vez, o que
+   escondia quantos meses ele já rendeu.
+
+   mesDoLancamentoCt: o mês vem do próprio ref_fatura quando ele carrega a
+   competência; parcela de cartão (fat_{id}_cc_p{n}) e formatos desconhecidos
+   caem na data da receita. Mesma regra de receitaDoMes, para os dois lugares
+   concordarem sobre em que mês cada lançamento cai. */
+function mesDoLancamentoCt(r) {
+  var m = String((r && r.ref_fatura) || "").match(/^fat_\d+_(\d{4}-\d{2})$/);
+  if (m) return m[1];
+  return String((r && r.data) || "").slice(0, 7);
+}
+/* Lançamentos de UM contrato, ordenados por mês.
+   Contrato sem nenhuma fatura emitida ainda não some da lista: ele mesmo vira
+   um lançamento previsto, senão um contrato novo apareceria zerado na busca. */
+function lancamentosDoContrato(c, receitas) {
+  if (!c) return [];
+  var pref = "fat_" + c.id + "_";
+  var lst = (receitas || []).filter(function(r) {
+    return r && r.ref_fatura && String(r.ref_fatura).indexOf(pref) === 0;
+  }).map(function(r) {
+    var prev = parseFloat(r.valor || 0) || 0;
+    /* Regra de contrato parcial (CLAUDE.md): previsto é o valor cheio; o
+       recebido da parcial vem do valor_pago do contrato, nunca do valor da
+       receita — sobrescrever o previsto com a parcela quebraria a sincronia
+       com a tela de Contratos. */
+    var receb = (r.status === "recebido") ? prev
+              : (r.status === "parcial" || c.status_pagamento === "parcial") ? (parseFloat(c.valor_pago || 0) || 0)
+              : 0;
+    return { id: r.id, mes: mesDoLancamentoCt(r), previsto: prev,
+             recebido: Math.min(receb, prev), status: r.status || "previsto", origem: "receita" };
+  });
+  if (!lst.length) {
+    var vt = parseFloat(c.valor_total || 0) || 0;
+    var pago = (c.status_pagamento === "pago" || c.status_pagamento === "isento") ? vt
+             : c.status_pagamento === "parcial" ? (parseFloat(c.valor_pago || 0) || 0) : 0;
+    lst = [{ id: null, mes: String(c.previsao_pagamento || c.data_inicio || "").slice(0, 7),
+             previsto: vt, recebido: Math.min(pago, vt),
+             status: c.status_pagamento || "pendente", origem: "contrato" }];
+  }
+  return lst.sort(function(a, b) { return String(a.mes).localeCompare(String(b.mes)); });
+}
+/* Somatório de um contrato — o total dos lançamentos dele, não o valor_total
+   cru (que é o valor de UM mês numa locação recorrente). */
+function somaContratoBusca(c, receitas) {
+  var prev = 0, receb = 0;
+  lancamentosDoContrato(c, receitas).forEach(function(l) { prev += l.previsto; receb += l.recebido; });
+  return { previsto: prev, recebido: receb, aReceber: Math.max(0, prev - receb) };
+}
+/* Resumo POR MÊS da cadeia inteira — substitui o resumo geral, que somava
+   tudo num número só e não dizia em que mês o dinheiro entra. */
+function resumoPorMesContratos(cadeia, receitas) {
+  var mapa = {};
+  (cadeia || []).forEach(function(c) {
+    lancamentosDoContrato(c, receitas).forEach(function(l) {
+      var k = l.mes || "—";
+      if (!mapa[k]) mapa[k] = { mes: k, previsto: 0, recebido: 0, n: 0 };
+      mapa[k].previsto += l.previsto;
+      mapa[k].recebido += l.recebido;
+      mapa[k].n += 1;
+    });
+  });
+  return Object.keys(mapa).sort().map(function(k) {
+    var m = mapa[k];
+    m.aReceber = Math.max(0, m.previsto - m.recebido);
+    return m;
+  });
+}
 function formPrincipalCC(d, lista) {
   var g = grupoParcelasCC(d, lista);
   if (g.length <= 1) return Object.assign({}, d);
@@ -52285,7 +52356,7 @@ function Usuarios({ usuarioAtual, toast }) {
   );
 }
 
-function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, setTab, setOperacionalSubTab, C }) {
+function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, receitas, setTab, setOperacionalSubTab, C }) {
   var [q, setQ] = React.useState("");
   var [fPlaca, setFPlaca] = React.useState("");
   var [fCliente, setFCliente] = React.useState("");
@@ -52362,19 +52433,15 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, set
       var nm = cl ? cl.nome : "";
       var vei = (veiculos||[]).find(function(x){return String(x.id)===String(last.veiculo_id);});
       var pl = vei ? (vei.placa||"") : "";
-      var totalGeral = 0, totalRecebido = 0;
-      cadeia.forEach(function(c){
-        var vt = parseFloat(c.valor_total||0);
-        var pago = (c.status_pagamento === "pago" || c.status_pagamento === "isento") ? vt
-                 : c.status_pagamento === "parcial" ? parseFloat(c.valor_pago||0)
-                 : 0;
-        totalGeral += vt; totalRecebido += pago;
-      });
+      /* Sem mais totalGeral/totalRecebido da cadeia: o resumo agora é POR MÊS
+         (pedido do usuário). O somatório que sobra é o de cada contrato, ao pé
+         dos lançamentos dele. */
       results.push({
         type: "contrato_grupo", id: rootId,
         label: cadeia.length > 1 ? "Contrato #"+numCt(first.id)+" → #"+numCt(last.id) : "Contrato #"+numCt(first.id),
         sub: nm+(pl?" · "+pl:""),
-        cadeia: cadeia, totalGeral: totalGeral, totalRecebido: totalRecebido, totalReceber: Math.max(0, totalGeral-totalRecebido),
+        cadeia: cadeia,
+        porMes: resumoPorMesContratos(cadeia, receitas),
         tab:"operacional", subtab:"contratos"
       });
     });
@@ -52441,23 +52508,54 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, set
               )
             ),
             React.createElement('div', { style:{ padding:"0 14px 10px" } },
+              /* Cada contrato da cadeia abre TODOS os seus lançamentos (as
+                 faturas mensais) e fecha com o somatório dele. Antes aparecia
+                 só o valor_total uma vez por contrato, o que numa locação
+                 recorrente é o valor de UM mês — escondia quantos meses o
+                 contrato já rendeu. */
               r.cadeia.map(function(c,j){
-                var corValor = (c.status_pagamento === "pago" || c.status_pagamento === "isento") ? C.green
-                             : c.status_pagamento === "parcial" ? C.orange
-                             : C.red;
-                return React.createElement('button', { key:j, onClick:function(){ abrirContrato(c.id); },
-                  style:{ display:"flex",justifyContent:"space-between",gap:8,width:"100%",background:"transparent",border:"none",borderTop:"1px solid var(--c-border)",padding:"8px 0",cursor:"pointer",textAlign:"left",color:"var(--c-text)",fontSize:12.5 } },
-                  React.createElement('span', { style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"} }, "#"+numCt(c.id)+" · "+fmtDate(c.data_inicio)+(c.data_fim?" – "+fmtDate(c.data_fim):"")+" · "+(c.status||"")),
-                  React.createElement('span', { style:{fontWeight:700,flexShrink:0,color:corValor} }, fmtBRL(c.valor_total||0))
+                var _lanc = lancamentosDoContrato(c, receitas);
+                var _soma = somaContratoBusca(c, receitas);
+                return React.createElement('div', { key:j, style:{ borderTop:"1px solid var(--c-border)", paddingTop:8, marginTop:8 } },
+                  React.createElement('button', { onClick:function(){ abrirContrato(c.id); },
+                    style:{ display:"flex",justifyContent:"space-between",gap:8,width:"100%",background:"transparent",border:"none",padding:0,cursor:"pointer",textAlign:"left",color:"var(--c-text)",fontSize:12.5,fontWeight:700 } },
+                    React.createElement('span', { style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"} }, "#"+numCt(c.id)+" · "+fmtDate(c.data_inicio)+(c.data_fim?" – "+fmtDate(c.data_fim):"")+" · "+(c.status||"")),
+                    React.createElement('span', { style:{flexShrink:0,color:"var(--c-sub)",fontWeight:600} }, _lanc.length+(_lanc.length===1?" lanç.":" lanç."))
+                  ),
+                  _lanc.map(function(l,k){
+                    var cor = l.recebido >= l.previsto && l.previsto > 0 ? C.green
+                            : l.recebido > 0 ? C.orange
+                            : C.red;
+                    return React.createElement('div', { key:k, style:{ display:"flex",justifyContent:"space-between",gap:8,padding:"3px 0 3px 10px",fontSize:12 } },
+                      React.createElement('span', { style:{color:"var(--c-sub)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"} },
+                        (l.mes ? fmtComp(l.mes) : "sem mês") + (l.origem==="contrato" ? " · previsto" : "")),
+                      React.createElement('span', { style:{fontWeight:600,flexShrink:0,color:cor} }, fmtBRL(l.previsto))
+                    );
+                  }),
+                  React.createElement('div', { style:{ display:"flex",justifyContent:"space-between",gap:8,marginTop:4,paddingLeft:10,fontSize:12,fontWeight:700 } },
+                    React.createElement('span', { style:{color:"var(--c-text)"} }, "Somatório do contrato"),
+                    React.createElement('span', { style:{color:"var(--c-text)"} }, fmtBRL(_soma.previsto))
+                  ),
+                  React.createElement('div', { style:{ display:"flex",justifyContent:"space-between",gap:8,paddingLeft:10,fontSize:11.5 } },
+                    React.createElement('span', { style:{color:C.green,fontWeight:600} }, "Recebido: "+fmtBRL(_soma.recebido)),
+                    _soma.aReceber > 0 && React.createElement('span', { style:{color:C.red,fontWeight:600} }, "A receber: "+fmtBRL(_soma.aReceber))
+                  )
                 );
               }),
-              React.createElement('div', { style:{ display:"flex",justifyContent:"space-between",marginTop:8,paddingTop:8,borderTop:"1px solid var(--c-border)",fontSize:12.5,fontWeight:700,color:"var(--c-text)" } },
-                React.createElement('span', null, "Total"),
-                React.createElement('span', null, fmtBRL(r.totalGeral))
-              ),
-              React.createElement('div', { style:{ display:"flex",justifyContent:"space-between",fontSize:11.5,marginTop:2 } },
-                React.createElement('span', { style:{color:C.green,fontWeight:600} }, "Recebido: "+fmtBRL(r.totalRecebido)),
-                r.totalReceber > 0 && React.createElement('span', { style:{color:C.red,fontWeight:600} }, "A receber: "+fmtBRL(r.totalReceber))
+              /* Resumo POR MÊS no lugar do resumo geral: um número só não dizia
+                 em que mês o dinheiro entra. */
+              (r.porMes||[]).length > 0 && React.createElement('div', { style:{ marginTop:10,paddingTop:8,borderTop:"2px solid var(--c-border)" } },
+                React.createElement('div', { style:{ fontSize:11,fontWeight:700,color:"var(--c-sub)",textTransform:"uppercase",letterSpacing:0.5,marginBottom:4 } }, "Resumo por mês"),
+                r.porMes.map(function(m,k){
+                  return React.createElement('div', { key:k, style:{ display:"flex",justifyContent:"space-between",gap:8,padding:"3px 0",fontSize:12 } },
+                    React.createElement('span', { style:{color:"var(--c-text)",fontWeight:600,flexShrink:0} }, m.mes==="—" ? "Sem mês" : fmtComp(m.mes)),
+                    React.createElement('span', { style:{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"flex-end"} },
+                      React.createElement('span', { style:{color:"var(--c-sub)"} }, fmtBRL(m.previsto)),
+                      React.createElement('span', { style:{color:C.green,fontWeight:600} }, "receb. "+fmtBRL(m.recebido)),
+                      m.aReceber > 0 && React.createElement('span', { style:{color:C.red,fontWeight:600} }, "falta "+fmtBRL(m.aReceber))
+                    )
+                  );
+                })
               )
             )
           );
@@ -54457,7 +54555,7 @@ function App() {
       , erroTela && React.createElement('div', { onClick: function(){ setErroTela(""); }, style: { position: "fixed", top: 10, left: 10, right: 10, background: "#FF3B30", color: "#fff", padding: "10px 14px", borderRadius: 12, fontSize: 11, fontWeight: 600, zIndex: 100000, boxShadow: "0 4px 16px rgba(0,0,0,.35)", maxHeight: "40vh", overflowY: "auto", lineHeight: 1.4 } }, "⚠️ ERRO JS (toque para fechar): " + erroTela)
       , React.createElement(Toast, { msg: toastState.msg, type: toastState.type, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3233}} )
       , React.createElement(UndoToast, { data: undoToastData, onDismiss: dismissUndoToast })
-      , React.createElement(BuscaGlobal, { open: buscaOpen, onClose: function(){ setBuscaOpen(false); }, contratos: contratos, clientes: clientes, veiculos: veiculos, multas: multas, setTab: navTab, setOperacionalSubTab: setOperacionalSubTab, C: C })
+      , React.createElement(BuscaGlobal, { open: buscaOpen, onClose: function(){ setBuscaOpen(false); }, contratos: contratos, clientes: clientes, veiculos: veiculos, multas: multas, receitas: receitas, setTab: navTab, setOperacionalSubTab: setOperacionalSubTab, C: C })
       , React.createElement(EnviarModal, { open: enviarOpen, onClose: function(){ setEnviarOpen(false); setEnviarPreset(null); }, contratos: contratos, clientes: clientes, veiculos: veiculos, multas: multas, empresa: empresa, C: C, preset: enviarPreset })
       /* Barra estendida 140px acima de y=0: cobre o topo por inteiro sem
          depender da precisão do safe-area. Sem box-shadow — o desfoque dela
@@ -54649,7 +54747,7 @@ function App() {
         )
       , React.createElement(Toast, { msg: toastState.msg, type: toastState.type, __self: this, __source: {fileName: _jsxFileName, lineNumber: 3247}} )
       , React.createElement(UndoToast, { data: undoToastData, onDismiss: dismissUndoToast })
-      , React.createElement(BuscaGlobal, { open: buscaOpen, onClose: function(){ setBuscaOpen(false); }, contratos: contratos, clientes: clientes, veiculos: veiculos, multas: multas, setTab: navTab, setOperacionalSubTab: setOperacionalSubTab, C: C })
+      , React.createElement(BuscaGlobal, { open: buscaOpen, onClose: function(){ setBuscaOpen(false); }, contratos: contratos, clientes: clientes, veiculos: veiculos, multas: multas, receitas: receitas, setTab: navTab, setOperacionalSubTab: setOperacionalSubTab, C: C })
       , React.createElement(EnviarModal, { open: enviarOpen, onClose: function(){ setEnviarOpen(false); setEnviarPreset(null); }, contratos: contratos, clientes: clientes, veiculos: veiculos, multas: multas, empresa: empresa, C: C, preset: enviarPreset })
       , React.createElement(ClaudeAssistant, Object.assign({}, props, { mobile: false }))
       , React.createElement(AgConfirmModal, { dlg: _agDlg, onResult: _agHandleResult })

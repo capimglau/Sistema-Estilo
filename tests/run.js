@@ -601,6 +601,48 @@ grupo("Parcelas de cartão — grupo e lançamento principal");
     F.grupoParcelasCC(outraCompra[3], duplo).some((x) => x.id === outraCompra[3].id));
 }
 
+grupo("Agenda do Dashboard — painel termina no 3º cartão");
+{
+  const dia = (iso, n) => ({ isoD: iso, evsDia: Array.from({ length: n }, (_, i) => ({ id: iso + "-" + i })) });
+
+  eq("o limite do painel é 3 cartões", F.AGK2_LIM_CARDS, 3);
+
+  // Um dia só, com mais cartões que o limite: corta no 3º.
+  {
+    const c = F.agk2CorteCards([dia("2026-08-24", 7)], 3);
+    eq("mostra um dia só", c.diasMostrar.length, 1);
+    eq("com 3 cartões", c.cortePorDia["2026-08-24"], 3);
+    eq("os outros 4 ficam ocultos", c.ocultosLista.length, 4);
+  }
+
+  // O corte atravessa dias: 2 + 1 fecha a conta, o 3º dia não é renderizado.
+  {
+    const c = F.agk2CorteCards([dia("d1", 2), dia("d2", 4), dia("d3", 5)], 3);
+    eq("renderiza só os dias que couberam", c.diasMostrar.length, 2);
+    eq("primeiro dia inteiro", c.cortePorDia["d1"], 2);
+    eq("segundo dia entra pela metade", c.cortePorDia["d2"], 1);
+    eq("dia que não coube não é renderizado", c.cortePorDia["d3"], undefined);
+    // 3 de d2 + 5 de d3 — o "+N" tem que contar o dia inteiro que ficou de fora
+    eq("os ocultos somam o resto da agenda toda", c.ocultosLista.length, 8);
+  }
+
+  // Menos cartões que o limite: nada oculto, nada de baralho.
+  {
+    const c = F.agk2CorteCards([dia("d1", 1), dia("d2", 1)], 3);
+    eq("cabe tudo, mostra tudo", c.diasMostrar.length, 2);
+    eq("sem nada oculto", c.ocultosLista.length, 0);
+  }
+
+  // Agenda expandida / desktop / modal: sem corte.
+  {
+    const c = F.agk2CorteCards(null, 3);
+    eq("sem corte quando expandido", c.diasMostrar.length, 0);
+    eq("e sem ocultos", c.ocultosLista.length, 0);
+  }
+
+  eq("agenda vazia não quebra", F.agk2CorteCards([], 3).diasMostrar.length, 0);
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam
 // promessas de refresh e mensagens de WebSocket dublado. Por isso rodam por

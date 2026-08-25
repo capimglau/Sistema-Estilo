@@ -66,7 +66,8 @@ function extrair(marcadores) {
       manutencaoAindaPendente, painelManutencoesPendentes, avariaDoContrato,
       situacaoMulta, multaEncerrada, painelMultasPendentes, GRUPOS_MULTA,
       parcelaCC, numParcelasCC, ancoraParcelaCC, grupoParcelasCC,
-      principalParcelaCC, formPrincipalCC
+      principalParcelaCC, formPrincipalCC,
+      agk2CorteCards, AGK2_LIM_CARDS
     };
   `);
   return Object.assign(escopo, fn());

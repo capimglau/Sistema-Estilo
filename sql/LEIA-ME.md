@@ -6,6 +6,7 @@ Cole no **Supabase → SQL Editor**, **nesta ordem**:
 2. `02-seguranca.sql` — RLS por perfil, auditoria por trigger, `updated_at`/`deleted_at`
 3. `04-agenda-adiamentos.sql` — tabela dos cartões da Agenda adiados/resolvidos
 4. `05-push-notificacoes.sql` — tabela das inscrições de notificação push
+5. `06-lembretes.sql` — tabela dos lembretes manuais (atalho "Novo → Lembrete")
 
 Todos são idempotentes: rodar de novo não duplica nada nem perde dado.
 
@@ -18,6 +19,10 @@ Configurações some/falha silenciosamente, mas o resto do app funciona normal.
 Rodando, ainda faltam os passos fora do SQL Editor descritos no fim do
 próprio arquivo (gerar/configurar as chaves VAPID, deploy da Edge Function
 `send-push` e agendar o disparo diário).
+
+O `06` **não é opcional** da mesma forma: sem a tabela, o lembrete criado
+aparece na Agenda só até a página recarregar (fica em memória, não é
+persistido). Rode o `06` para os lembretes valerem de verdade.
 
 ## Antes de rodar o 02
 

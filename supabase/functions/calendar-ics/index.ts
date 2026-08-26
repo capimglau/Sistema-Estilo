@@ -20,6 +20,7 @@ Deno.serve(async (_req) => {
     { data: despesas = [] },
     { data: orcItens = [] },
     { data: reservas = [] },
+    { data: lembretes = [] },
   ] = await Promise.all([
     supabase.from("contratos").select("*").limit(5000),
     supabase.from("clientes").select("*"),
@@ -30,6 +31,10 @@ Deno.serve(async (_req) => {
     supabase.from("despesas").select("*"),
     supabase.from("orcamento_pessoal").select("*"),
     supabase.from("reservas").select("*"),
+    // Tabela opcional (06-lembretes.sql): se ainda não rodou nesse banco, o
+    // select volta com `data: null` (erro de "tabela não existe"), tratado
+    // como lista vazia pelo `|| []` de cada uso abaixo — sem quebrar o resto.
+    supabase.from("lembretes").select("*"),
   ]);
 
   const hoje = new Date().toISOString().split("T")[0];
@@ -202,6 +207,15 @@ Deno.serve(async (_req) => {
       data, tipo: "orcamento", emoji: isDespesa ? "🏠" : "💵",
       titulo: (isDespesa ? "Pessoal · " : "Receita Pessoal · ") + (it.descricao || "--") + " · " + fmtV(it.valor),
       sub: (it.categoria || "") + (it.recorrente ? " · ↻ Recorrente" : ""),
+    });
+  });
+
+  // Lembretes manuais
+  (lembretes || []).forEach((l: any) => {
+    if (!l.data) return;
+    evs.push({
+      data: l.data, tipo: "lembrete", emoji: "🔔",
+      titulo: "Lembrete · " + (l.texto || "--"),
     });
   });
 

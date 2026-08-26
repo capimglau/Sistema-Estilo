@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="54070c5"/>
+<meta name="ag-build" content="7c41dbb"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -26513,6 +26513,20 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
   const [pmFPState, setPmFPState] = React.useState("todos");  // painel multas: filtro pagamento
   const [pmCarIdx, setPmCarIdx] = React.useState(0);
   // (tlMultaSel removed - painel substituido)
+  /* agAdiaMapa() (adiado/resolvido dos cartões da Agenda) é lido direto por
+     buildAgendaEventos sem passar por props — o calendário secundário
+     embutido aqui (_m4AgendaEventos, mais abaixo) só recalcula quando o
+     Início re-renderiza. Este estado força esse re-render quando o mapa
+     muda em qualquer lugar da página ou em outra instância (Safari × PWA
+     instalado, ver _agAdiaBump). */
+  const [, _setAdiaVersaoInicio] = React.useState(0);
+  React.useEffect(function() {
+    var vivo = true;
+    agAdiaCarregar().then(function(){ if (vivo) _setAdiaVersaoInicio(function(v){ return v+1; }); });
+    function onSync() { if (vivo) _setAdiaVersaoInicio(function(v){ return v+1; }); }
+    document.addEventListener("ag:adia-sync", onSync);
+    return function(){ vivo = false; document.removeEventListener("ag:adia-sync", onSync); };
+  }, []);
   const mesSeguinte = (() => { var d = new Date(dashMes + "-15"); d.setMonth(d.getMonth() + 1); return d.toISOString().slice(0, 7); })();
   function prevDashMes() { var d = new Date(dashMes + "-15"); d.setMonth(d.getMonth() - 1); setDashMes(d.toISOString().slice(0,7)); }
   function nextDashMes() { var d = new Date(dashMes + "-15"); d.setMonth(d.getMonth() + 1); setDashMes(d.toISOString().slice(0,7)); }
@@ -48133,6 +48147,17 @@ function agAdiaMapa() {
   if (!_agAdiaMapa) _agAdiaMapa = _agAdiaLerLocal();
   return _agAdiaMapa;
 }
+/* Avisa quem estiver com um cartão de Agenda na tela que o mapa de
+   adiados/resolvidos mudou. Sem isso, resolver um lembrete (ou qualquer
+   cartão sem baixa própria — CNH, documento etc.) numa aba/instalação só
+   some ali: o Safari e o PWA instalado são dois runtimes JS separados, cada
+   um com seu próprio `_agAdiaMapa` carregado uma vez na abertura, e
+   `agenda_adiamentos` nunca fez parte do AG_RT_TABELAS (tempo real/polling)
+   — então o outro continuava mostrando o cartão já resolvido em outro lugar
+   até o usuário dar F5 na mão. */
+function _agAdiaBump() {
+  try { document.dispatchEvent(new CustomEvent("ag:adia-sync")); } catch(e) {}
+}
 /* Instante atual em horário de parede de São Paulo, no mesmo formato do
    <input type="datetime-local"> ("YYYY-MM-DDTHH:MM") — assim a comparação com
    o horário escolhido é só comparação de string, sem fuso pra errar. */
@@ -48159,8 +48184,10 @@ async function agAdiaCarregar() {
       mapa[l.chave] = { ate: l.adiado_para || null, resolvido: !!l.resolvido, id: l.id };
     });
   } catch(e) { console.warn("agAdiaCarregar", e); }
+  var mudou = JSON.stringify(mapa) !== JSON.stringify(_agAdiaMapa);
   _agAdiaMapa = mapa;
   _agAdiaGravarLocal(mapa);
+  if (mudou) _agAdiaBump();
   return mapa;
 }
 
@@ -48173,6 +48200,7 @@ async function agAdiaDefinir(chave, reg) {
   if (reg) mapa[chave] = { ate: reg.ate || null, resolvido: !!reg.resolvido, id: anterior && anterior.id };
   else delete mapa[chave];
   _agAdiaGravarLocal(mapa);
+  _agAdiaBump();
   /* Banco em segundo plano: se a tabela não existe (SQL não rodado) ou a rede
      caiu, o adiamento já valeu localmente e o app não trava por isso. */
   try {
@@ -48742,7 +48770,12 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
   React.useEffect(function(){
     var vivo = true;
     agAdiaCarregar().then(function(){ if (vivo) setAdiaVersao(function(v){ return v+1; }); });
-    return function(){ vivo = false; };
+    /* Reage a qualquer resolução/adiamento gravado em qualquer lugar da
+       página (inclusive pelo ciclo de sincronização entre instâncias — ver
+       agAdiaCarregar/_agAdiaBump), não só ao que este componente mesmo fez. */
+    function onSync() { if (vivo) setAdiaVersao(function(v){ return v+1; }); }
+    document.addEventListener("ag:adia-sync", onSync);
+    return function(){ vivo = false; document.removeEventListener("ag:adia-sync", onSync); };
   }, []);
   /* Painel de adiamento aberto dentro da janela do cartão, e o horário
      escolhido nele ("YYYY-MM-DDTHH:MM", do <input type="datetime-local">). */
@@ -49530,6 +49563,19 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   React.useEffect(function() {
     if (orcItensProp != null) return; // já recebido do App, não buscar novamente
     db.get("orcamento_pessoal").then(function(d) { setOrcItens(d || []); }).catch(function() {});
+  }, []);
+
+  /* Mapa de adiados/resolvidos (agAdiaMapa) é lido direto por buildAgendaEventos
+     sem passar por props — precisa de um gatilho próprio pra re-renderizar
+     quando ele muda em outro lugar da página ou em outra instância (ver
+     _agAdiaBump em agAdiaDefinir/agAdiaCarregar). */
+  var _av = React.useState(0); var adiaVersao = _av[0], setAdiaVersao = _av[1];
+  React.useEffect(function() {
+    var vivo = true;
+    agAdiaCarregar().then(function(){ if (vivo) setAdiaVersao(function(v){ return v+1; }); });
+    function onSync() { if (vivo) setAdiaVersao(function(v){ return v+1; }); }
+    document.addEventListener("ag:adia-sync", onSync);
+    return function(){ vivo = false; document.removeEventListener("ag:adia-sync", onSync); };
   }, []);
 
   var ano = mesBase.getFullYear();
@@ -54374,6 +54420,14 @@ function App() {
           } catch(e) { /* falha de rede num ciclo não quebra os próximos */ }
         }
         _syncMarcaRef.current = maior;
+        /* agenda_adiamentos não entra no AG_RT_TABELAS (não é uma lista com
+           setState próprio, é o mapa module-level lido por agAdiaMapa()) —
+           por isso pendura aqui, no mesmo ciclo/cadência e nos mesmos
+           gatilhos de "voltar pro app" (visibilitychange/focus/pageshow) que
+           já existem pra tudo mais. Sem isso, resolver um cartão da Agenda
+           (lembrete, CNH, documento…) numa aba só some ali; a outra
+           instância (ex.: PWA instalado, rodando à parte) ficava sem saber. */
+        await agAdiaCarregar();
       } finally { rodando = false; }
     }
 

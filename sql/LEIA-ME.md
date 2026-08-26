@@ -8,6 +8,7 @@ Cole no **Supabase → SQL Editor**, **nesta ordem**:
 4. `05-push-notificacoes.sql` — tabela das inscrições de notificação push
 5. `06-lembretes.sql` — tabela dos lembretes manuais (atalho "Novo → Lembrete")
 6. `07-agenda-adiamentos-colunas.sql` — corrige colunas faltando em `agenda_adiamentos`
+7. `08-lembretes-alarme.sql` — hora do alarme + controle de notificação em `lembretes`
 
 Todos são idempotentes: rodar de novo não duplica nada nem perde dado.
 
@@ -31,6 +32,12 @@ rodado. Rode o `06` antes de usar o atalho de Lembrete pela primeira vez.
 
 O `07` corrige o mesmo problema em `agenda_adiamentos` (criada pelo `04` só
 com colunas em português) — rode-o mesmo que já tenha rodado o `04` antes.
+
+O `08` é **opcional**: sem ele, o campo "Hora" do lembrete some do modal e
+tudo continua funcionando como antes (só cartão na Agenda, sem alarme).
+Rodando, e com o `05` já configurado (chaves VAPID, notificações ativadas),
+falta só o deploy da Edge Function `send-push-lembretes` e o Cron a cada
+minuto — passos descritos no fim do próprio `08-lembretes-alarme.sql`.
 
 ## Antes de rodar o 02
 

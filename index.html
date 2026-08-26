@@ -48718,11 +48718,11 @@ function buildAgendaEventos(ctx) {
       data: l.data, tipo: "lembrete",
       cor: l.data < hoje ? "#FF3B30" : "#FFCC00",
       emoji: "🔔",
-      titulo: "Lembrete · " + (l.texto||"--"),
-      sub: "",
+      titulo: "Lembrete · " + (l.texto||"--") + (l.hora ? " · " + l.hora : ""),
+      sub: l.hora ? ("⏰ " + l.hora) : "",
       chave: "lembrete|" + l.id,
       quem: l.texto||"--",
-      detalhe: "",
+      detalhe: l.hora ? ("⏰ " + l.hora) : "",
       valor: null, fluxo: null,
       tab: null, id: l.id
     });
@@ -49422,7 +49422,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
       } else if (reg.ate) {
         var novaData = String(reg.ate).slice(0,10);
         setLembretes(function(p){ return p.map(function(l){ return l.id===ev.id ? Object.assign({},l,{data:novaData}) : l; }); });
-        db.patch("lembretes", ev.id, { data: novaData }).catch(function(e){ console.warn("adiar lembrete", e); });
+        db.patch("lembretes", ev.id, { data: novaData, notificado_em: null }).catch(function(e){ console.warn("adiar lembrete", e); });
       }
       return;
     }
@@ -49866,7 +49866,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     acaoLembrete && React.createElement(Modal, { open: true, onClose: function(){ setAcaoLembrete(null); }, title: "🔔 Lembrete" }
       , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } }
         , React.createElement('div', { style: { fontSize: 14, color: "var(--c-text)", lineHeight: 1.45 } }, acaoLembrete.quem)
-        , React.createElement('div', { style: { fontSize: 12.5, color: "var(--c-sub)" } }, fmtD(acaoLembrete.data))
+        , React.createElement('div', { style: { fontSize: 12.5, color: "var(--c-sub)" } }, fmtD(acaoLembrete.data) + (acaoLembrete.sub ? " · " + acaoLembrete.sub : ""))
         , React.createElement('button', {
             className: bCls(Btn(C.green)), style: Object.assign({}, bStyle(Btn(C.green)), { width: "100%", textAlign: "center" }),
             onClick: function(){ concluirLembrete(acaoLembrete); }
@@ -53007,10 +53007,11 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, rec
 function LembreteModal({ open, onClose, onSalvar }) {
   var [texto, setTexto] = React.useState("");
   var [data, setData] = React.useState("");
+  var [hora, setHora] = React.useState("");
   var [salvando, setSalvando] = React.useState(false);
 
   React.useEffect(function() {
-    if (open) { setTexto(""); setData(_brNow().toISOString().split("T")[0]); setSalvando(false); }
+    if (open) { setTexto(""); setData(_brNow().toISOString().split("T")[0]); setHora(""); setSalvando(false); }
   }, [open]);
 
   if (!open) return null;
@@ -53018,7 +53019,13 @@ function LembreteModal({ open, onClose, onSalvar }) {
   async function salvar() {
     if (!texto.trim() || !data || salvando) return;
     setSalvando(true);
-    try { await onSalvar({ texto: texto.trim(), data: data }); onClose(); }
+    /* hora é opcional: sem ela o lembrete só aparece na Agenda, como sempre.
+       Com ela, a Edge Function send-push-lembretes (cron de 1 em 1 minuto)
+       manda um push exatamente nesse horário — como o alarme de um app de
+       lembretes de verdade. notificado_em fica de fora do payload de
+       propósito: começa null no banco (default), e só quem marca é a
+       própria função depois de disparar, nunca o cliente. */
+    try { await onSalvar({ texto: texto.trim(), data: data, hora: hora || null }); onClose(); }
     finally { setSalvando(false); }
   }
 
@@ -53031,8 +53038,16 @@ function LembreteModal({ open, onClose, onSalvar }) {
             placeholder: "Ex.: Ligar para o cliente sobre a devolução", autoFocus: true
           })
       )
-      , React.createElement(Lbl, { label: "📅 Data" }
-        , React.createElement('input', { style: FI, type: "date", value: data, onChange: function(e){ setData(e.target.value); } })
+      , React.createElement('div', { style: { display: "flex", gap: 10 } }
+        , React.createElement(Lbl, { label: "📅 Data", flex: 1 }
+          , React.createElement('input', { style: FI, type: "date", value: data, onChange: function(e){ setData(e.target.value); } })
+        )
+        , React.createElement(Lbl, { label: "⏰ Hora (opcional)", flex: 1 }
+          , React.createElement('input', { style: FI, type: "time", value: hora, onChange: function(e){ setHora(e.target.value); } })
+        )
+      )
+      , hora && React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)", lineHeight: 1.4 } }
+        , "Com hora marcada, você recebe uma notificação push nesse horário — mesmo com o app fechado, se as notificações estiverem ativadas em Configurações."
       )
       , React.createElement('button', {
           className: bCls(Btn(C.blue)), disabled: !texto.trim() || !data || salvando,

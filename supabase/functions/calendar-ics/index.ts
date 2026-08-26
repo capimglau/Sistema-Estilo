@@ -215,7 +215,7 @@ Deno.serve(async (_req) => {
     if (!l.data) return;
     evs.push({
       data: l.data, tipo: "lembrete", emoji: "🔔",
-      titulo: "Lembrete · " + (l.texto || "--"),
+      titulo: "Lembrete · " + (l.texto || "--") + (l.hora ? " · " + l.hora : ""),
     });
   });
 

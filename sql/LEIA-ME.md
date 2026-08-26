@@ -7,6 +7,7 @@ Cole no **Supabase → SQL Editor**, **nesta ordem**:
 3. `04-agenda-adiamentos.sql` — tabela dos cartões da Agenda adiados/resolvidos
 4. `05-push-notificacoes.sql` — tabela das inscrições de notificação push
 5. `06-lembretes.sql` — tabela dos lembretes manuais (atalho "Novo → Lembrete")
+6. `07-agenda-adiamentos-colunas.sql` — corrige colunas faltando em `agenda_adiamentos`
 
 Todos são idempotentes: rodar de novo não duplica nada nem perde dado.
 
@@ -20,9 +21,16 @@ Rodando, ainda faltam os passos fora do SQL Editor descritos no fim do
 próprio arquivo (gerar/configurar as chaves VAPID, deploy da Edge Function
 `send-push` e agendar o disparo diário).
 
-O `06` **não é opcional** da mesma forma: sem a tabela, o lembrete criado
-aparece na Agenda só até a página recarregar (fica em memória, não é
-persistido). Rode o `06` para os lembretes valerem de verdade.
+O `06` **não é opcional** — e não só pelo motivo de sempre (sem a tabela, o
+lembrete some ao recarregar a página). As colunas `updated_at`/`deleted_at`
+são obrigatórias em **inglês** porque o app inteiro (não só lembretes) espera
+esses nomes em qualquer tabela sincronizada: sem elas, a primeira leitura de
+`lembretes` desliga a exclusão reversível ("Desfazer") **em todas as
+tabelas do sistema**, não só nesta, até o app ser recarregado depois do SQL
+rodado. Rode o `06` antes de usar o atalho de Lembrete pela primeira vez.
+
+O `07` corrige o mesmo problema em `agenda_adiamentos` (criada pelo `04` só
+com colunas em português) — rode-o mesmo que já tenha rodado o `04` antes.
 
 ## Antes de rodar o 02
 

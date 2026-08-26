@@ -27818,7 +27818,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                    No desktop nada muda: lá o board tem colunas e continua preenchendo a
                    altura do painel (flex:1 dentro da altura fixa do ag-dash-panel). */
                 return React.createElement('div', { style: desktop ? { flex:1, minHeight:0, display:"flex", flexDirection:"column" } : { display:"flex", flexDirection:"column" } }
-                  , React.createElement(CalendarioKanban2, { contratos:contratos, multas:multas, veiculos:veiculos, clientes:clientes, contas:contas, despesas:despesas, receitas:receitas, reservas:reservas, manutencoes:manutencoes, orcItens:orcItens, lembretes:lembretes, hoje:hoje, setTab:setTab, desktop:desktop, dashMes:dashMes, mesAtual:mesAtual, setCtDeepLink:setCtDeepLink, setFinDeepLink:setFinDeepLink, setMtDeepLink:setMtDeepLink })
+                  , React.createElement(CalendarioKanban2, { contratos:contratos, multas:multas, veiculos:veiculos, clientes:clientes, contas:contas, despesas:despesas, receitas:receitas, reservas:reservas, manutencoes:manutencoes, orcItens:orcItens, lembretes:lembretes, setLembretes:setLembretes, hoje:hoje, setTab:setTab, desktop:desktop, dashMes:dashMes, mesAtual:mesAtual, setCtDeepLink:setCtDeepLink, setFinDeepLink:setFinDeepLink, setMtDeepLink:setMtDeepLink })
                 );
                 /* ── gráfico 3 meses: anterior · atual · próximo ── */
                 function _lastDayOf(m){var d=new Date(m+"-01");d.setMonth(d.getMonth()+1);d.setDate(0);return d.getDate();}
@@ -48743,7 +48743,7 @@ function buildAgendaEventos(ctx) {
    embutido no painel do Dashboard. Usa buildAgendaEventos (mesma fonte da aba
    Agenda) pra nunca divergir do que aparece nos outros calendários do sistema
    (regra de cobertura de dados). */
-function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, lembretes, hoje, setTab, H, desktop, dashMes, mesAtual, setCtDeepLink, setFinDeepLink, setMtDeepLink }) {
+function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, lembretes, setLembretes, hoje, setTab, H, desktop, dashMes, mesAtual, setCtDeepLink, setFinDeepLink, setMtDeepLink }) {
   var _flArr = React.useState("todos"); var filtro = _flArr[0], setFiltro = _flArr[1];
   /* Dias com o "monte" de cartões expandido (mais de 2 eventos, tocou pra ver
      todos) — chave é a data ISO do dia. */
@@ -49390,7 +49390,33 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
      circulação até o próximo ciclo do documento, e essa é a única porta de
      volta — não há tela pra listar o que foi resolvido. */
   function _agk2Marcar(ev, reg) {
-    if (!ev || !ev.chave) return;
+    if (!ev) return;
+    /* Lembrete não usa agenda_adiamentos: some de vez apagando a linha em
+       `lembretes`, tabela que já está no AG_RT_TABELAS e por isso propaga em
+       tempo real (WebSocket) pras outras abas/instalações na hora — nada de
+       esperar o ciclo de polling, e sem o risco de a "chave" ainda apontar
+       pro id temporário de uma criação otimista em voo. */
+    if (ev.tipo === "lembrete") {
+      var _atual = (lembretes||[]).find(function(l){ return l.id === ev.id; });
+      if (reg.resolvido) {
+        setLembretes(function(p){ return p.filter(function(l){ return l.id !== ev.id; }); });
+        db.del("lembretes", ev.id).catch(function(e){ console.warn("resolver lembrete", e); });
+        if (window._agUndo && _atual) {
+          window._agUndo("Lembrete concluído", function(){
+            setLembretes(function(p){ return [_atual].concat(p); });
+            db.post("lembretes", { texto: _atual.texto, data: _atual.data }).then(function(nova){
+              if (nova && nova.id) setLembretes(function(p){ return p.map(function(l){ return l.id === _atual.id ? nova : l; }); });
+            }).catch(function(e){ console.warn(e); });
+          });
+        }
+      } else if (reg.ate) {
+        var novaData = String(reg.ate).slice(0,10);
+        setLembretes(function(p){ return p.map(function(l){ return l.id===ev.id ? Object.assign({},l,{data:novaData}) : l; }); });
+        db.patch("lembretes", ev.id, { data: novaData }).catch(function(e){ console.warn("adiar lembrete", e); });
+      }
+      return;
+    }
+    if (!ev.chave) return;
     agAdiaDefinir(ev.chave, reg).then(function(){ setAdiaVersao(function(v){ return v+1; }); });
     setAdiaVersao(function(v){ return v+1; });
     var msg = reg.resolvido
@@ -49549,7 +49575,7 @@ function _agk2ModalAcao(o) {
   );
 }
 
-function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, manutencoes, setTab, orcItens: orcItensProp, lembretes }) {
+function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, receitas, reservas, manutencoes, setTab, orcItens: orcItensProp, lembretes, setLembretes }) {
   var hoje = _brNow().toISOString().split("T")[0];
   var now = new Date();
 
@@ -49577,6 +49603,34 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
     document.addEventListener("ag:adia-sync", onSync);
     return function(){ vivo = false; document.removeEventListener("ag:adia-sync", onSync); };
   }, []);
+
+  /* Lembrete não tem tela própria pra "Abrir em" (ev.tab vem null de
+     buildAgendaEventos) — clicar nele tinha que abrir uma ação de verdade,
+     não só navegar. Concluir apaga a linha da tabela `lembretes` (em vez de
+     gravar em agenda_adiamentos, como os cartões sem baixa própria de CNH/
+     documento): assim o cartão some via o MESMO canal de tempo real que já
+     existe pra despesas/contratos/etc. — sem depender do ciclo de
+     sincronização mais lento nem do id temporário de uma criação otimista
+     ainda em voo. */
+  var _alm = React.useState(null); var acaoLembrete = _alm[0], setAcaoLembrete = _alm[1];
+  function concluirLembrete(ev) {
+    var atual = (lembretes||[]).find(function(l){ return l.id === ev.id; });
+    setLembretes(function(p){ return p.filter(function(l){ return l.id !== ev.id; }); });
+    setAcaoLembrete(null);
+    db.del("lembretes", ev.id).catch(function(e){ console.warn("concluirLembrete", e); });
+    if (window._agUndo && atual) {
+      window._agUndo("Lembrete concluído", function(){
+        setLembretes(function(p){ return [atual].concat(p); });
+        db.post("lembretes", { texto: atual.texto, data: atual.data }).then(function(nova){
+          if (nova && nova.id) setLembretes(function(p){ return p.map(function(l){ return l.id === atual.id ? nova : l; }); });
+        }).catch(function(e){ console.warn(e); });
+      });
+    }
+  }
+  function abrirEvento(ev) {
+    if (ev.tipo === "lembrete") setAcaoLembrete(ev);
+    else setTab(ev.tab);
+  }
 
   var ano = mesBase.getFullYear();
   var mes = mesBase.getMonth();
@@ -49762,7 +49816,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
       evsDia.length === 0
         ? React.createElement('div', { style: { color: "#8E8E93", fontSize: 14, textAlign: "center", padding: "16px 0" } }, "Nenhum evento neste dia ✅")
         : evsDia.map(function(ev, i) {
-            return React.createElement('div', { key: i, onClick: function() { setTab(ev.tab); },
+            return React.createElement('div', { key: i, onClick: function() { abrirEvento(ev); },
               style: { display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: i < evsDia.length-1 ? "0.5px solid " + C.border : "none", cursor: "pointer" }
             },
               React.createElement('div', { style: { flex: 1, minWidth: 0 } },
@@ -49786,7 +49840,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
                 isHoje2 ? "HOJE · " + strData(item.data) : strData(item.data) + " · " + diasSemana[new Date(item.data + "T12:00:00").getDay()]
               ),
               item.evs.map(function(ev, i) {
-                return React.createElement('div', { key: i, onClick: function() { setTab(ev.tab); },
+                return React.createElement('div', { key: i, onClick: function() { abrirEvento(ev); },
                   style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, background: C.border, marginBottom: 4, cursor: "pointer", borderLeft: "3px solid " + ev.cor }
                 },
                   React.createElement('div', { style: { flex: 1, minWidth: 0 } },
@@ -49797,6 +49851,17 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
               })
             );
           })
+    ),
+
+    acaoLembrete && React.createElement(Modal, { open: true, onClose: function(){ setAcaoLembrete(null); }, title: "🔔 Lembrete" }
+      , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } }
+        , React.createElement('div', { style: { fontSize: 14, color: "var(--c-text)", lineHeight: 1.45 } }, acaoLembrete.quem)
+        , React.createElement('div', { style: { fontSize: 12.5, color: "var(--c-sub)" } }, fmtD(acaoLembrete.data))
+        , React.createElement('button', {
+            className: bCls(Btn(C.green)), style: Object.assign({}, bStyle(Btn(C.green)), { width: "100%", textAlign: "center" }),
+            onClick: function(){ concluirLembrete(acaoLembrete); }
+          }, "Concluir")
+      )
     )
   );
 }
@@ -54749,7 +54814,7 @@ function App() {
       if (financeiroSubTab === "rentabilidade") return React.createElement(RentabilidadeVeiculos, { veiculos: veiculos, contratos: contratos, despesas: despesas, manutencoes: manutencoes, receitas: receitas });
       if (financeiroSubTab === "gestao") {
         if (gestaoSubTab === "linha_do_tempo") return React.createElement(LinhaDoTempo, { contratos: contratos, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, reservas: reservas, veiculos: veiculos, clientes: clientes, setTab: navTab });
-        if (gestaoSubTab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens, lembretes: lembretes });
+        if (gestaoSubTab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens, lembretes: lembretes, setLembretes: setLembretes });
         if (gestaoSubTab === "previsao_caixa") return React.createElement(PrevisaoCaixa, { contratos: contratos, veiculos: veiculos, clientes: clientes, despesas: despesas, receitas: receitas, manutencoes: manutencoes });
         return React.createElement(Relatorios, { ...props });
       }
@@ -54760,7 +54825,7 @@ function App() {
     if (tab === "gestao") {
       if (gestaoSubTab === "simulador") return React.createElement(Simulador, { veiculos: veiculos, contratos: contratos, despesas: despesas, manutencoes: manutencoes, multas: multas, receitas: receitas, toast: toast });
       if (gestaoSubTab === "linha_do_tempo") return React.createElement(LinhaDoTempo, { contratos: contratos, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, reservas: reservas, veiculos: veiculos, clientes: clientes, setTab: navTab });
-      if (gestaoSubTab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens, lembretes: lembretes });
+      if (gestaoSubTab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens, lembretes: lembretes, setLembretes: setLembretes });
       if (gestaoSubTab === "previsao_caixa") return React.createElement(PrevisaoCaixa, { contratos: contratos, veiculos: veiculos, clientes: clientes, despesas: despesas, receitas: receitas, manutencoes: manutencoes });
       return React.createElement(Relatorios, { ...props });
     }
@@ -54770,7 +54835,7 @@ function App() {
       if (configSubTab === "importar") return React.createElement(ImportarDados, { veiculos: veiculos, setVeiculos: setVeiculos, clientes: clientes, setClientes: setClientes, contratos: contratos, setContratos: setContratos, despesas: despesas, setDespesas: setDespesas, receitas: receitas, setReceitas: setReceitas, toast: toast });
       return React.createElement(Config, { empresa: empresa, setEmpresa: setEmpresa, toast: toast, darkMode: darkMode, toggleDark: toggleDark, setThemeDirect: setThemeDirect, temaList: TEMA_LIST, temaKeys: TEMA_KEYS, usuarioAtual: usuarioAtual, lgpdConsent: lgpdConsent, setLgpdConsent: setLgpdConsent, modPrivacidade: modPrivacidade, setModPrivacidade: setModPrivacidade, onLogout: handleLogout });
     }
-    if (tab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens, lembretes: lembretes });
+    if (tab === "calendario") return React.createElement(Calendario, { contratos: contratos, multas: multas, veiculos: veiculos, clientes: clientes, contas: contas, despesas: despesas, receitas: receitas, reservas: reservas, manutencoes: manutencoes, setTab: setTab, orcItens: orcItens, lembretes: lembretes, setLembretes: setLembretes });
     if (tab === "linha_do_tempo") return React.createElement(LinhaDoTempo, { contratos: contratos, multas: multas, manutencoes: manutencoes, despesas: despesas, receitas: receitas, reservas: reservas, veiculos: veiculos, clientes: clientes, setTab: navTab });
     // usuarios agora é sub-aba de config — mantido para compatibilidade
     return null;

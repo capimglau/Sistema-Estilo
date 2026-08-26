@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="dc1f398"/>
+<meta name="ag-build" content="ab1ca4e"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -61,6 +61,11 @@ input,select,textarea{-webkit-user-select:text;user-select:text}
    Vale pra todos os botões do app — os do cabeçalho, os de mês do dashboard
    e qualquer outro com fundo rgba + border-radius:50%. */
 button{-webkit-appearance:none;appearance:none}
+/* Suprime animações (ex: slide-in de troca de aba) enquanto o boot do PWA
+   força reflows sucessivos no #root — sem isso, cada hide/show do #root
+   reinicia a animação CSS do conteúdo, fazendo a tela "deslizar" 3-4 vezes
+   seguidas até o viewport do iOS assentar. Ver scheduleReflow(). */
+.ag-boot-noanim, .ag-boot-noanim *{animation:none !important;}
 ::-webkit-scrollbar{width:5px}
 ::-webkit-scrollbar-thumb{background:rgba(120,120,128,.3);border-radius:3px}
 input[type=file]{display:none}
@@ -16580,9 +16585,19 @@ body.midnight .agk2-ev-atraso, body.onix .agk2-ev-atraso{
     try { window.scrollTo(0, 0); } catch(e) {}
   }
   function scheduleReflow(){
+    /* Cada forceReflow() esconde/reexibe o #root — isso reinicia qualquer
+       animação CSS do conteúdo (ex: slide-in da aba). Como aqui rodamos até
+       3 reflows em sequência, a tela deslizava várias vezes seguidas no
+       launch. Suprimimos as animações enquanto os reflows acontecem e só
+       liberamos de novo depois do último, quando o viewport já assentou. */
+    var html = document.documentElement;
+    html.classList.add("ag-boot-noanim");
     raf(forceReflow);
     setTimeout(forceReflow, 200);
-    setTimeout(forceReflow, 600);
+    setTimeout(function(){
+      forceReflow();
+      html.classList.remove("ag-boot-noanim");
+    }, 600);
   }
   window.addEventListener("load", scheduleReflow);
   /* pageshow cobre o retorno do app do background (bfcache). */
@@ -16604,8 +16619,16 @@ body.midnight .agk2-ev-atraso, body.onix .agk2-ev-atraso{
     var sc = window.__agScroller();
     var keepTop = sc ? sc.scrollTop : 0;
     var root = document.getElementById('root');
-    /* display none→'' força o WebKit a recompor o webview (destrava toques). */
-    if (root) { root.style.display = 'none'; void root.offsetHeight; root.style.display = ''; }
+    /* display none→'' força o WebKit a recompor o webview (destrava toques).
+       Também reinicia qualquer animação CSS em andamento no conteúdo — por
+       isso suprimimos as animações durante essa troca (ver .ag-boot-noanim),
+       senão a aba "desliza" de novo toda vez que o app volta do background. */
+    if (root) {
+      var html = document.documentElement;
+      html.classList.add("ag-boot-noanim");
+      root.style.display = 'none'; void root.offsetHeight; root.style.display = '';
+      html.classList.remove("ag-boot-noanim");
+    }
     if (sc) { try { sc.scrollTop = keepTop; } catch(e){} }
     /* Re-render do React + reavaliação de viewport, sem mudar de tela. */
     try { window.dispatchEvent(new Event('resize')); } catch(e){}

@@ -42,6 +42,13 @@ Quando o usuário enviar uma imagem como anexo para usar como ícone PWA:
 
 > **Nota iOS:** O iOS faz cache agressivo do ícone PWA. Para ver o novo ícone, o usuário precisa: Remover Favorito → abrir no Safari → Compartilhar → Adicionar à Tela de Início.
 
+## SQL de migração — sempre mostrar para copiar
+
+Sempre que uma tarefa criar ou alterar um arquivo em `sql/` (nova tabela, coluna,
+policy etc.), colar o conteúdo completo do SQL na resposta ao usuário, em um bloco
+de código pronto para copiar — mesmo que o arquivo já tenha sido salvo no repositório.
+Nunca assumir que o usuário vai abrir o arquivo sozinho para rodar no Supabase.
+
 ## Branch de desenvolvimento
 
 Branch ativo: `claude/placeholder-task-nsnXx`

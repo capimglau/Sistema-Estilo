@@ -15,7 +15,7 @@
  * activate apaga os caches antigos — é isso que evita o app velho grudado.
  */
 
-const BUILD = "2026-08-28-05";
+const BUILD = "2026-08-28-06";
 const CACHE = "autogest-" + BUILD;
 
 /* Só o essencial para abrir offline. O resto entra conforme for usado —

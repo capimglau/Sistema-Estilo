@@ -15,7 +15,7 @@
  * activate apaga os caches antigos — é isso que evita o app velho grudado.
  */
 
-const BUILD = "__BUILD_SHA__";
+const BUILD = "2026-08-28-02";
 const CACHE = "autogest-" + BUILD;
 
 /* Só o essencial para abrir offline. O resto entra conforme for usado —
@@ -27,7 +27,7 @@ const SHELL = [
   "./pwa-icon-180.png",
 ];
 
-const NAV_TIMEOUT_MS = 4000;
+const NAV_TIMEOUT_MS = 12000;
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

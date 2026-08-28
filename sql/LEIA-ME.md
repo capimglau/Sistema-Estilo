@@ -9,6 +9,7 @@ Cole no **Supabase → SQL Editor**, **nesta ordem**:
 5. `06-lembretes.sql` — tabela dos lembretes manuais (atalho "Novo → Lembrete")
 6. `07-agenda-adiamentos-colunas.sql` — corrige colunas faltando em `agenda_adiamentos`
 7. `08-lembretes-alarme.sql` — hora do alarme + controle de notificação em `lembretes`
+8. `09-storage-documentos.sql` — cria o bucket `documentos` (Storage) e libera upload para usuário autenticado
 
 Todos são idempotentes: rodar de novo não duplica nada nem perde dado.
 
@@ -38,6 +39,13 @@ tudo continua funcionando como antes (só cartão na Agenda, sem alarme).
 Rodando, e com o `05` já configurado (chaves VAPID, notificações ativadas),
 falta só o deploy da Edge Function `send-push-lembretes` e o Cron a cada
 minuto — passos descritos no fim do próprio `08-lembretes-alarme.sql`.
+
+O `09` corrige o erro "Upload falhou. Verifique o bucket 'documentos' no
+Supabase Storage." — aparece em qualquer upload do app (logo da empresa,
+ícone claro/escuro da PWA, assinatura de contrato, foto de vistoria) quando
+o bucket `documentos` não existe ou existe sem policy liberando o usuário
+autenticado. Sem ele, nenhum upload funciona; rodando, tudo volta a
+funcionar sem precisar mexer manualmente no painel Storage.
 
 ## Antes de rodar o 02
 

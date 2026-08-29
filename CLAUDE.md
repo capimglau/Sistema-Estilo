@@ -156,11 +156,21 @@ Sempre que registrar uma baixa parcial/total de contrato (`confirmarParcialCt`, 
 
 ## Espaçamento entre painéis do Dashboard (Início) — PADRÃO PERMANENTE
 
-O wrapper que envolve TODAS as seções do Dashboard (`inicio-fade-top`, dentro de `Inicio`) já aplica `gap:14` entre cada seção (cada item do array retornado por `Inicio`). Esse `gap:14` sozinho é o espaçamento MÍNIMO — várias seções (ex.: cabeçalho "Receitas e Despesas Mensais", linha ~28990) somam um `marginTop:21` próprio por cima desse gap pra marcar visualmente o início de uma nova seção/grupo de painéis. Sem esse `marginTop` extra, a seção nova fica visivelmente mais "colada" na anterior do que o padrão usado no resto do Dashboard — foi exatamente o bug corrigido nos painéis "Despesas por Categoria"/"Receitas por Cliente" (ficaram com `marginTop:0`, relando só no gap:14, e destoaram do resto).
+Grid de 8pt, dois níveis só — **nunca inventar um terceiro valor**:
 
-**Regra obrigatória:** toda vez que uma seção/painel do Dashboard (`Inicio`) for criada, movida ou tiver seu container raiz alterado, aplicar `marginTop:21` (mesmo valor usado no resto do Dashboard) no elemento raiz retornado pela seção — nunca deixar `marginTop:0` "porque o gap do wrapper já resolve". Exceção: quando o pedido explícito do usuário for aproximar duas seções especificamente (ex.: "Saldo nas contas hoje" logo abaixo da Agenda usa `marginTop:-20` de propósito, a pedido do usuário) — nesse caso documentar o motivo inline, como já é feito lá.
+- **24px entre SEÇÕES distintas** do Dashboard (de um painel/grupo temático pro próximo — ex.: da Agenda pro bloco de Saldo, do bloco de pendências pros painéis de Despesas/Receitas, etc.).
+- **16px entre PAINÉIS de um mesmo grupo** (painéis lado a lado ou empilhados dentro da mesma seção — ex.: os dois cards "Despesas por Categoria"/"Receitas por Cliente" lado a lado, a grade de Multas/Despesas/Renovações/Recebimentos/Manutenções).
 
-Antes de declarar qualquer alteração no Dashboard como concluída, **comparar visualmente o espaçamento da seção alterada com as seções vizinhas** (a de cima e a de baixo) — não assumir que "sem marginTop = igual às outras", porque o padrão real inclui o `marginTop:21` extra.
+Antes deste padrão o código tinha pelo menos 5 valores diferentes fazendo o mesmo papel (`gap:14`, `marginTop:21`, `gap:12`, `rowGap:40`, `marginTop:28`) — resultado visualmente inconsistente entre painéis vizinhos (bug reportado por print: painéis "Despesas por Categoria"/"Receitas por Cliente" mais apertados que o resto).
+
+**Implementação:**
+- O wrapper que envolve TODAS as seções do Dashboard (`inicio-fade-top`, dentro de `Inicio`) aplica `gap:24` entre cada item direto do array retornado por `Inicio` — isso já cobre a separação padrão entre seções, **sem precisar de `marginTop` extra** no elemento raiz de cada seção.
+- Só use `marginTop:24` explícito quando o título/card não for filho direto do wrapper (ex.: dois elementos dentro do mesmo `React.Fragment` — o `gap` do wrapper não alcança elementos dentro de um Fragment, só entre os próprios Fragments/itens do array).
+- Dentro de uma seção (grade, dois painéis lado a lado, lista de cards), use `gap:16` (ou `columnGap:16, rowGap:16` em grid).
+- **Nunca** deixar uma seção nova com `marginTop:0` relando só no gap do wrapper "porque parece suficiente" — comparar visualmente com as seções vizinhas antes de declarar concluído.
+- Exceção documentada: "Saldo nas contas hoje" logo abaixo da Agenda usa `marginTop:-20` de propósito (pedido explícito do usuário pra aproximar bem mais essas duas seções específicas) — qualquer exceção ao padrão 16/24 precisa desse tipo de comentário inline explicando o motivo.
+
+Antes de declarar qualquer alteração no Dashboard como concluída, **comparar visualmente o espaçamento da seção alterada com as seções vizinhas** (a de cima e a de baixo) usando esse padrão 16/24 como referência.
 
 ## Fluxo de trabalho Git
 

@@ -42,6 +42,36 @@ Quando o usuário enviar uma imagem como anexo para usar como ícone PWA:
 
 > **Nota iOS:** O iOS faz cache agressivo do ícone PWA. Para ver o novo ícone, o usuário precisa: Remover Favorito → abrir no Safari → Compartilhar → Adicionar à Tela de Início.
 
+## Ícone da PWA escurecer no modo escuro do iOS — CONCLUSÃO PERMANENTE
+
+Investigação longa (múltiplas rodadas de tentativa e erro) até chegar na causa raiz e na solução que funcionou de verdade. Registrado aqui pra não repetir o mesmo caminho errado numa próxima vez.
+
+### O que NÃO funciona (testado e descartado)
+
+- **`<link rel="apple-touch-icon" media="(prefers-color-scheme: dark)">`** — o atributo `media` **não tem suporte confiável no iOS** pra esse tipo de `<link>` (confirmado nos fóruns de desenvolvedor da Apple). O iOS não troca sozinho entre um `<link>` claro e um escuro por causa disso.
+- **`manifest.json` com dois ícones (claro/escuro)** — o **Safari ignora completamente o `manifest.json`** para o ícone da Tela de Início; ele só lê a tag `<link rel="apple-touch-icon">`. Dois ícones no manifest só têm efeito em Android/Chrome, nunca no iOS.
+- **Reagir a `focus`/`visibilitychange`/`pageshow`/`matchMedia('change')` pra trocar o ícone enquanto o app está aberto** — não adianta. Um ícone **já salvo** na Tela de Início não é um elemento vivo da página: o iOS não reage a mudanças no `<link>` depois de capturado. Ficar reaplicando isso só aumenta o risco de mexer no `<head>` bem no instante em que o usuário está no meio de "Adicionar à Tela de Início".
+- **Remover e recriar os elementos `<link rel="apple-touch-icon">` em runtime** — deixa uma janela em que nenhum ícone existe no DOM; se o iOS capturar o ícone bem nesse instante, o resultado é imprevisível. Sempre **atualizar o `href` de elementos que já existem**, nunca apagar pra recriar depois.
+- **Compor a imagem sobre fundo sólido via `<canvas>`** (pra "consertar" um PNG transparente em tempo real) — funciona em teoria, mas depende de o host da imagem liberar CORS pro `<canvas>`, e some a garantia se isso falhar. Abandonado a pedido do usuário em favor de manter o código simples.
+
+### O que É verdade sobre o comportamento do iOS
+
+- **O ícone salvo na Tela de Início é uma FOTO tirada no instante em que o usuário toca "Adicionar à Tela de Início"** — o `href` que a tag `<link rel="apple-touch-icon">` tiver **nesse exato momento** é o que fica salvo. Depois de instalado, **não muda mais sozinho** — nem com o app reaberto, nem alternando o modo claro/escuro do sistema depois. Pra ver a troca, o usuário **precisa remover o ícone atual e adicionar de novo**, com o aparelho já no modo desejado.
+- **Href relativo pode falhar** — há relatos de devs de o iOS não resolver corretamente um `apple-touch-icon` com caminho relativo. Resolver sempre pra **URL absoluta** via `new URL(arquivo, document.baseURI).href` (nunca hardcodar um `/arquivo.png` fixo — este projeto roda num subcaminho do GitHub Pages, `/Sistema-Estilo/`, então um path absoluto fixo apontaria pra raiz errada do domínio).
+- **Um PNG transparente normalmente vira ícone com fundo branco no iOS** (comportamento documentado) — mas no teste final desta investigação, com o ícone devidamente **reescalado pra caber na safe area** (ver seção acima, ~53% de largura do canvas de 1024px, igual ao `apple-touch-icon.png` oficial), o usuário confirmou que o ícone transparente (`logo-estilo-icon-transparente.png`) **funcionou e alternou corretamente** entre claro/escuro. Não fica 100% claro por que — pode ser uma particularidade da versão de iOS do aparelho testado — mas é o comportamento confirmado neste projeto: **não presumir que transparente sempre falha sem testar primeiro**.
+- **Escala importa**: um logo ocupando perto do limite máximo da safe area (~80% do canvas) sai visualmente "grande/deformado" na Tela de Início, mesmo estando tecnicamente dentro da regra. Usar a mesma proporção do ícone oficial (~53% de largura) como referência.
+
+### Solução atual em produção (`index.html`)
+
+- Ícone claro/escuro decidido **uma única vez**, de forma síncrona, via `window.matchMedia('(prefers-color-scheme: dark)').matches` — sem listener, sem reagir a nada depois.
+- Aplicado tanto no `<script>` síncrono do `<head>` (assim que a página carrega, antes de qualquer chance de "Adicionar à Tela de Início") quanto em `pwaApplyIconLinks` (chamada uma vez em `LoginScreen` e uma vez em `App`, quando os dados carregam).
+- `pwaApplyIconLinks` usa direto `logo-estilo-icon-transparente.png` (repositório) pro claro e pro escuro — **não usa mais `pwa_icon_url`/`pwa_icon_dark_url` de Config/Supabase** (pedido explícito do usuário; os campos continuam existindo na tela de Config, só não são mais lidos por este código).
+- Se um dia isso for revisitado: **não repetir as abordagens da lista "o que NÃO funciona" acima** sem uma razão nova e testada.
+
+### Causa raiz separada, mas relevante: cache do Service Worker mascarando os testes
+
+Boa parte das rodadas de "não resolveu" desta investigação eram, na real, o aparelho do usuário preso numa versão antiga em cache — não um problema no código do ícone em si. Achado: `sw.js` tinha uma busca "network-first" que chamava `fetch(request)` puro (modo de cache **default**), que podia ser respondida por um cache HTTP do navegador/CDN sem nunca ir na rede de verdade, mesmo rotulada como "vai na rede". Corrigido forçando `{ cache: "no-store" }` nas buscas de navegação e de revalidação de estáticos. **Ao investigar qualquer bug de PWA que "não reflete a mudança" mesmo após o deploy, suspeitar de cache antes de suspeitar do código** — confirmar a versão em Config → Versão do app.
+
 ## SQL de migração — sempre mostrar para copiar
 
 Sempre que uma tarefa criar ou alterar um arquivo em `sql/` (nova tabela, coluna,

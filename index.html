@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="2026-08-29-07"/>
+<meta name="ag-build" content="2026-08-29-08"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -24885,12 +24885,17 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
      3 faces: 0 = Resultado Previsto, 1 = Despesas do mês (previsto x a
      pagar), 2 = Manutenções do mês (prevista x paga). */
   const [resPrevFace, setResPrevFace] = React.useState(0);
-  // Card "Saldo nas contas" (abaixo da Agenda): alterna entre o saldo de
-  // hoje e o saldo projetado (depois de pagar/receber tudo previsto no mês)
-  // sozinho a cada 6s — toque também alterna na hora.
-  const [saldoHojeFace, setSaldoHojeFace] = React.useState(0);
+  // Cards "Saldo nas contas"/"Despesas de hoje" (abaixo da Agenda): um
+  // único "tick" sincroniza os dois — soma 1 a cada 6s (ou no toque em
+  // qualquer um dos dois cards). Saldo tem 2 faces (hoje/projetado),
+  // Despesas tem 3 (previstas/pagas/a pagar) — cada card deriva sua face
+  // do MESMO contador (tick % nº de faces), então os dois sempre trocam
+  // juntos, ainda que nem sempre mostrem a face "correspondente".
+  const [dashCardTick, setDashCardTick] = React.useState(0);
+  const saldoHojeFace = dashCardTick % 2;
+  const despesasHojeFace = dashCardTick % 3;
   React.useEffect(function(){
-    var t = setInterval(function(){ setSaldoHojeFace(function(v){ return v===0?1:0; }); }, 6000);
+    var t = setInterval(function(){ setDashCardTick(function(v){ return v+1; }); }, 6000);
     return function(){ clearInterval(t); };
   }, []);
   const [catFiltro, setCatFiltro] = React.useState("previstas");
@@ -27721,13 +27726,19 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       var _hojeMaisUm = (function(){ var x=new Date(hoje+'T12:00:00'); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); })();
       var _saldoAtual = saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _hojeMaisUm);
       var _mesHoje = hoje.slice(0,7);
-      var _despHojeList = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), _mesHoje)
-        .filter(function(d){ return (d.data||'')===hoje && d.status!=='pago' && !d.data_pagamento; });
-      var _manHojeList = filtrarManParaBarras(manutencoes, despesas, _mesHoje)
-        .filter(function(m){ return (m.data_previsao_pagamento||m.data_entrada||'')===hoje && m.status_financeiro!=='pago' && !m.data_pagamento; });
-      var _despHoje = _despHojeList.reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0)
-        + _manHojeList.reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);
-      var _saldoLivre = _saldoAtual - _despHoje;
+      /* Todas as despesas/manutenções de HOJE (não só as pendentes) — base
+         única pra derivar previstas/pagas/a pagar do card "Despesas de
+         hoje", sem duplicar a resolução de recorrência em 3 filtros soltos. */
+      var _despHojeTodasList = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), _mesHoje)
+        .filter(function(d){ return (d.data||'')===hoje; });
+      var _manHojeTodasList = filtrarManParaBarras(manutencoes, despesas, _mesHoje)
+        .filter(function(m){ return (m.data_previsao_pagamento||m.data_entrada||'')===hoje; });
+      var _despHojePrevisto = _despHojeTodasList.reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0)
+        + _manHojeTodasList.reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);
+      var _despHojePago = _despHojeTodasList.filter(function(d){ return d.status==='pago'||!!d.data_pagamento; }).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0)
+        + _manHojeTodasList.filter(function(m){ return m.status_financeiro==='pago'||!!m.data_pagamento; }).reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);
+      var _despHojeAPagar = Math.max(0, _despHojePrevisto - _despHojePago);
+      var _saldoLivre = _saldoAtual - _despHojeAPagar;
       /* Face 2 do card "Saldo nas contas" (toque pra alternar): saldo
          projetado depois de pagar/receber tudo previsto no mês — mesmos
          totais já calculados pro card "Resultado Previsto" (prevMes/recMes/
@@ -27748,7 +27759,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
       var _lbl = { fontSize: desktop?9:10.5, fontWeight:700, color:'var(--c-sub)', textTransform:'uppercase', letterSpacing:0.5, marginBottom: desktop?4:5 };
       var _big = function(v,cor){ return React.createElement('div', { style:{ fontSize: desktop?15:16.5, fontWeight:700, color:cor||'var(--c-text)', letterSpacing:-0.5, lineHeight:1, fontVariantNumeric:'tabular-nums' } }, fmtBRLint(v)); };
       return React.createElement('div', { style:{ display:'flex', flexDirection:'column', gap:21 } }
-        , React.createElement('div', { className:"ag-kpi-card", style:Object.assign({},_cardBase,{cursor:'pointer'}), onClick:function(){ setSaldoHojeFace(function(v){ return v===0?1:0; }); } }
+        , React.createElement('div', { className:"ag-kpi-card", style:Object.assign({},_cardBase,{cursor:'pointer'}), onClick:function(){ setDashCardTick(function(v){ return v+1; }); } }
           , saldoHojeFace===0
             ? React.createElement('div', { key:'hoje', className:'ag-corner-drag-in' }
                 , React.createElement('div', { style:_lbl }, 'Saldo nas contas hoje')
@@ -27763,9 +27774,21 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
                   , 'depois de pagar e receber tudo previsto em '+new Date(_mesHoje+"-15").toLocaleString("pt-BR",{month:"long"}))
               )
         )
-        , React.createElement('div', { className:"ag-kpi-card", style:_cardBase }
-          , React.createElement('div', { style:_lbl }, 'Despesas de hoje')
-          , _big(_despHoje, C.red)
+        , React.createElement('div', { className:"ag-kpi-card", style:Object.assign({},_cardBase,{cursor:'pointer'}), onClick:function(){ setDashCardTick(function(v){ return v+1; }); } }
+          , despesasHojeFace===0
+            ? React.createElement('div', { key:'prev', className:'ag-corner-drag-in' }
+                , React.createElement('div', { style:_lbl }, 'Despesas previstas hoje')
+                , _big(_despHojePrevisto, C.red)
+              )
+            : despesasHojeFace===1
+            ? React.createElement('div', { key:'pago', className:'ag-corner-drag-in' }
+                , React.createElement('div', { style:_lbl }, 'Despesas pagas hoje')
+                , _big(_despHojePago, C.green)
+              )
+            : React.createElement('div', { key:'apagar', className:'ag-corner-drag-in' }
+                , React.createElement('div', { style:_lbl }, 'Despesas a pagar hoje')
+                , _big(_despHojeAPagar, C.red)
+              )
         )
       );
     })()
@@ -47415,16 +47438,13 @@ function CalendarioKanban2({ contratos, multas, veiculos, clientes, contas, desp
      (ver .agk2-inline-auto no CSS). No modal (H:"100%") e no desktop a agenda
      continua preenchendo a altura do contêiner e rolando por dentro. */
   var _autoH = !H && !desktop;
-  /* ── Corte nos 3 primeiros dias — DESLIGADO (pedido do usuário) ──
-     Antes, no Dashboard mobile "recolhido", só os 3 primeiros dias eram
-     renderizados e o resto virava um "+N" escondido no baralho do último dia
-     visível — datas futuras (ex.: 29, 30...) só apareciam tocando ali. O
-     usuário queria rolar a lista e já ver as datas futuras direto, sem esse
-     passo extra. Com `_truncar` sempre falso, `_diasMostrar` vira a lista
-     `dias` inteira (ver uso logo abaixo) e o teto de altura do CSS
-     (.agk2-inline-auto .agk2-board-wrap, max-height:70vh) assume sozinho a
-     rolagem por dentro quando o conteúdo não cabe. */
-  var _truncar = false;
+  /* ── Corte nos 3 primeiros dias — RELIGADO (pedido do usuário) ──
+     No Dashboard mobile "recolhido", só os 3 primeiros dias são
+     renderizados; o resto vira um "+N" empilhado/oculto atrás do baralho do
+     último dia visível — datas futuras (ex.: 29, 30...) só aparecem
+     tocando ali. (Já existiu desligado por um período — o usuário pediu de
+     volta.) */
+  var _truncar = true;
   var _corte = agk2CorteDias(_truncar ? dias : null, AGK2_LIM_DIAS);
   var _diasMostrar = _truncar ? _corte.diasMostrar : dias;
   var _ocultosLista = _corte.ocultosLista;

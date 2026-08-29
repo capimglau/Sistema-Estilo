@@ -11,11 +11,11 @@
  *  - Supabase e qualquer API: nunca passa pelo cache. Dado financeiro velho
  *    servido como se fosse atual é pior do que erro de rede.
  *
- * O CACHE muda de nome a cada deploy (o workflow substitui 716e81e), e o
+ * O CACHE muda de nome a cada deploy (o workflow substitui c907b42), e o
  * activate apaga os caches antigos — é isso que evita o app velho grudado.
  */
 
-const BUILD = "2026-08-29-01";
+const BUILD = "2026-08-29-02";
 const CACHE = "autogest-" + BUILD;
 
 /* Só o essencial para abrir offline. O resto entra conforme for usado —
@@ -59,12 +59,22 @@ function ehApi(url) {
          url.pathname.includes("/functions/v1/");
 }
 
-/** Rede com prazo: passado o timeout, devolve o que estiver em cache. */
+/** Rede com prazo: passado o timeout, devolve o que estiver em cache.
+ *
+ * "no-store" é o ponto que faltava: um fetch(request) puro, dentro do
+ * worker, usa o modo de cache DEFAULT — que ainda pode servir uma resposta
+ * do cache HTTP do próprio navegador (ou de um CDN no meio do caminho) se
+ * ela ainda estiver "fresca" pelos headers, mesmo essa busca sendo chamada
+ * de "network-first". Isso fazia o app ficar preso numa versão velha
+ * mesmo depois de reload manual ("🔄 Buscar atualização") e de vários
+ * deploys novos — o app achava que tinha ido pra rede, mas só bateu num
+ * cache HTTP no meio do caminho. Forçando "no-store" aqui, ignora
+ * qualquer cache nessa camada e busca a rede de verdade sempre. */
 function redeComTimeout(request, ms) {
   return new Promise((resolve, reject) => {
     let pronto = false;
     const timer = setTimeout(() => { if (!pronto) reject(new Error("timeout")); }, ms);
-    fetch(request).then((r) => {
+    fetch(request.url, { cache: "no-store" }).then((r) => {
       pronto = true; clearTimeout(timer); resolve(r);
     }).catch((e) => {
       pronto = true; clearTimeout(timer); reject(e);
@@ -99,9 +109,14 @@ self.addEventListener("fetch", (event) => {
   }
 
   // Estáticos próprios: responde do cache na hora e atualiza em segundo plano.
+  // "no-store" na busca de revalidação: sem isso, a atualização em segundo
+  // plano podia bater num cache HTTP do navegador/CDN em vez de ir na rede
+  // de verdade — o cache do worker ficava "revalidando" pra sempre com o
+  // mesmo byte velho (ex.: apple-touch-icon-dark.png nunca virava o arquivo
+  // novo, mesmo depois de vários deploys).
   event.respondWith(
     caches.match(req).then((cacheado) => {
-      const naRede = fetch(req).then((resp) => {
+      const naRede = fetch(req.url, { cache: "no-store" }).then((resp) => {
         if (resp && resp.status === 200 && resp.type === "basic") {
           const copia = resp.clone();
           caches.open(CACHE).then((c) => c.put(req, copia)).catch(() => {});

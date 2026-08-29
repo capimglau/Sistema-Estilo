@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="2026-08-29-13"/>
+<meta name="ag-build" content="2026-08-29-14"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -43,12 +43,14 @@
      por CSS media query não funciona de verdade no ícone da Tela de Início).
      Por isso decide aqui na hora, via JS puro, qual arquivo usar — de forma
      síncrona, assim que a página carrega, antes de qualquer chance de
-     "Adicionar à Tela de Início" acontecer. O componente App (autenticado)
-     repete essa mesma escolha toda vez que o app volta ao primeiro plano e
-     toda vez que o sistema muda de aparência (ver o efeito com matchMedia
-     'change' + visibilitychange/focus/pageshow), então o ícone da empresa
-     acompanha o modo escuro do aparelho enquanto o app é usado — não é só
-     uma decisão travada no instante de instalar.
+     "Adicionar à Tela de Início" acontecer. Decisão ÚNICA, sem reagir a
+     focus/visibilitychange/pageshow/mudança de aparência depois: um ícone
+     já instalado na Tela de Início não é elemento vivo da página — o iOS
+     não reage a mudanças no <link> depois de capturado, então ficar
+     reaplicando isso não ajuda e só arrisca mexer no <head> bem no
+     instante em que o usuário está adicionando um novo (ver
+     pwaApplyIconLinks, mesmo critério, chamada uma única vez quando os
+     dados da empresa chegam).
 
      href ABSOLUTO (não relativo): relatos de devs no fórum da Apple e em
      outros lugares dizem que o iOS pode falhar em resolver um
@@ -48291,102 +48293,39 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
 }
 
 
-/* Ícone da PWA na Tela de Início (iOS): o atributo "media" no <link
-   rel="apple-touch-icon"> NÃO tem suporte confiável no iOS (confirmado nos
-   fóruns de desenvolvedor da Apple — a troca automática claro/escuro por
-   media query não funciona de verdade no ícone salvo). O que REALMENTE
-   funciona: o ícone é uma FOTO tirada no instante em que o usuário toca
-   "Adicionar à Tela de Início" — o href que a tag <link> tiver NESSE
-   momento é o que fica salvo, e não muda mais sozinho depois (é preciso
-   remover e adicionar de novo pra trocar). Por isso decide aqui, na hora,
-   qual dos dois usar, checando o modo escuro do APARELHO diretamente — sem
-   depender do TEMA interno do app (darkMode), que é outra coisa. Usada
-   tanto na tela de login (LoginScreen) quanto no app autenticado (App).
+/* Ícone da PWA na Tela de Início (iOS): o iOS trata o apple-touch-icon como
+   um recurso que ele CAPTURA no instante em que o usuário toca "Adicionar
+   à Tela de Início" — não como um elemento vivo da página. Não há suporte
+   confiável a troca automática depois de instalado (nem via atributo
+   "media" no <link>, nem via nenhum outro gancho) — confirmado nos fóruns
+   de desenvolvedor da Apple. Por isso a única coisa que faz sentido fazer
+   em JS é decidir, UMA VEZ, qual dos dois arquivos (claro/escuro) usar,
+   checando o modo escuro do APARELHO diretamente — sem depender do TEMA
+   interno do app (darkMode), que é outra coisa — e sem ficar reagindo a
+   focus/visibilitychange/pageshow/mudança de aparência depois: isso não
+   atualiza um ícone já instalado (o iOS ignora) e só arrisca mexer no
+   <head> bem no momento em que o usuário está adicionando um novo.
 
-   Ícone enviado pela empresa em Config → Ícone PWA pode ter fundo
-   TRANSPARENTE (o usuário confirmou: o arquivo no Supabase Storage é um
-   PNG transparente) — nesse caso o iOS preenche o transparente com branco
-   por conta própria, e o "ícone escuro" nunca parece escuro de verdade,
-   mesmo escolhido certo. Por isso compõe a imagem sobre um fundo sólido
-   (branco no claro, quase-preto no escuro) num <canvas> antes de salvar
-   como ícone — funciona com qualquer arquivo, transparente ou não. Se a
-   composição falhar (CORS do storage, imagem não carrega etc.), cai pro
-   comportamento antigo (usa a URL original direto). */
-function _pwaComposeIconBg(url, bgColor) {
-  return new Promise(function(resolve){
-    try {
-      var img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = function(){
-        try {
-          var w = img.naturalWidth || 512, h = img.naturalHeight || 512;
-          var size = Math.max(w, h);
-          var cv = document.createElement("canvas");
-          cv.width = size; cv.height = size;
-          var ctx = cv.getContext("2d");
-          ctx.fillStyle = bgColor;
-          ctx.fillRect(0, 0, size, size);
-          ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
-          resolve(cv.toDataURL("image/png"));
-        } catch(e){ resolve(url); }
-      };
-      img.onerror = function(){ resolve(url); };
-      img.src = url;
-    } catch(e){ resolve(url); }
-  });
-}
-async function pwaApplyIconLinks(lightUrl, darkUrl) {
+   pwa_icon_url (claro) e pwa_icon_dark_url (escuro) continuam campos
+   separados — nunca combinados num só. Sem fundo sólido enviado pela
+   empresa, o resultado é o que o arquivo tiver (transparente inclusive);
+   a orientação de subir os arquivos já com fundo sólido fica no aviso da
+   tela de Config, não é mais compensada em runtime.
+
+   Atualiza o href de <link> que JÁ EXISTEM no <head> (nunca remove pra
+   recriar depois) — os das linhas 38-40 cobrem os três tamanhos usados.
+   Usada tanto na tela de login (LoginScreen) quanto no app autenticado
+   (App), cada um chamando isso uma única vez quando os dados chegam. */
+function pwaApplyIconLinks(lightUrl, darkUrl) {
   if (!lightUrl) return;
   var sysDark = false;
   try { sysDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch(e){}
-  /* BUG que o usuário pegou: sem darkUrl (empresa não configurou ícone
-     escuro, ou o upload falhou), isto forçava o ícone CLARO da empresa
-     mesmo no modo escuro — sobrescrevendo o ícone escuro PADRÃO do
-     repositório (apple-touch-icon-dark.png, aplicado pelo <script> síncrono
-     do <head>) que já alternava certo sozinho. Agora, sem ícone escuro
-     dedicado da empresa, cai no padrão do repositório em vez do claro da
-     empresa — nunca perde a troca claro/escuro por falta de configuração. */
-  var rawUrl = sysDark ? (darkUrl || "apple-touch-icon-dark.png") : lightUrl;
-  // href absoluto (não relativo) — mesmo motivo do <script> síncrono do
-  // <head>: relatos de que o iOS pode falhar em resolver um
-  // apple-touch-icon relativo ao "Adicionar à Tela de Início". Não afeta
-  // lightUrl/darkUrl vindos do Supabase (já são absolutos — new URL só
-  // devolve a mesma URL de volta nesse caso).
-  try { rawUrl = new URL(rawUrl, document.baseURI).href; } catch(e){}
-  var iconUrl = await _pwaComposeIconBg(rawUrl, sysDark ? "#121214" : "#FFFFFF");
-  /* Nada mudou desde a última vez (mesmo ícone calculado) — não mexe no
-     <head>. Essa função roda de novo a cada foco/visibilitychange/pageshow;
-     sem essa saída, ela reconstruía os links toda vez, à toa, mesmo quando
-     o resultado ia ser idêntico. */
-  if (window.__agLastIconUrl === iconUrl) return;
-  window.__agLastIconUrl = iconUrl;
-  /* Atualiza o href dos links que JÁ EXISTEM em vez de apagar tudo e
-     recriar — <head> removeu (via querySelectorAll(...).forEach(remove))
-     e só depois recriava, deixando uma janela em que NENHUM
-     apple-touch-icon existe no DOM. Como esta função é assíncrona
-     (espera a composição no canvas) e também é disparada de novo por
-     visibilitychange — inclusive o próprio ato de abrir a folha de
-     compartilhamento do iOS pode disparar isso — havia risco real de o
-     iOS capturar o ícone bem nesse buraco. Atualizar em vez de recriar
-     garante que sempre existe pelo menos um link válido no <head>. */
-  [["apple-touch-icon",""],["apple-touch-icon","180x180"],["apple-touch-icon","152x152"],["apple-touch-icon","120x120"],["icon",""]].forEach(function(pair){
-    var sel = 'link[rel="'+pair[0]+'"]'+(pair[1] ? '[sizes="'+pair[1]+'"]' : ':not([sizes])');
-    var l = document.querySelector(sel);
-    if (!l) {
-      l = document.createElement("link");
-      l.rel = pair[0];
-      if (pair[1]) l.setAttribute("sizes", pair[1]);
-      document.head.appendChild(l);
-    }
-    l.href = iconUrl;
-  });
-  // Remove duplicados que tenham sobrado de versões antigas deste código
-  // (que apagava/recriava) — mantém só o primeiro de cada combinação rel+sizes.
-  var vistos = {};
-  document.querySelectorAll('link[rel="apple-touch-icon"], link[rel="icon"]').forEach(function(el){
-    var chave = el.rel + '|' + (el.getAttribute('sizes')||'');
-    if (vistos[chave]) { el.remove(); } else { vistos[chave] = true; }
-  });
+  var rawUrl = sysDark ? (darkUrl || lightUrl) : lightUrl;
+  var iconUrl = rawUrl;
+  try { iconUrl = new URL(rawUrl, document.baseURI).href; } catch(e){}
+  document.querySelectorAll('link[rel="apple-touch-icon"]').forEach(function(l){ l.href = iconUrl; });
+  var fav = document.querySelector('link[rel="icon"]');
+  if (fav) fav.href = iconUrl;
 }
 
 function LoginScreen({ onLogin }) {

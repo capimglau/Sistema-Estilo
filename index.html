@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="2026-08-29-11"/>
+<meta name="ag-build" content="2026-08-29-12"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -48354,13 +48354,38 @@ async function pwaApplyIconLinks(lightUrl, darkUrl) {
   // devolve a mesma URL de volta nesse caso).
   try { rawUrl = new URL(rawUrl, document.baseURI).href; } catch(e){}
   var iconUrl = await _pwaComposeIconBg(rawUrl, sysDark ? "#121214" : "#FFFFFF");
-  document.querySelectorAll('link[rel="apple-touch-icon"], link[rel="icon"]').forEach(function(el){ el.remove(); });
+  /* Nada mudou desde a última vez (mesmo ícone calculado) — não mexe no
+     <head>. Essa função roda de novo a cada foco/visibilitychange/pageshow;
+     sem essa saída, ela reconstruía os links toda vez, à toa, mesmo quando
+     o resultado ia ser idêntico. */
+  if (window.__agLastIconUrl === iconUrl) return;
+  window.__agLastIconUrl = iconUrl;
+  /* Atualiza o href dos links que JÁ EXISTEM em vez de apagar tudo e
+     recriar — <head> removeu (via querySelectorAll(...).forEach(remove))
+     e só depois recriava, deixando uma janela em que NENHUM
+     apple-touch-icon existe no DOM. Como esta função é assíncrona
+     (espera a composição no canvas) e também é disparada de novo por
+     visibilitychange — inclusive o próprio ato de abrir a folha de
+     compartilhamento do iOS pode disparar isso — havia risco real de o
+     iOS capturar o ícone bem nesse buraco. Atualizar em vez de recriar
+     garante que sempre existe pelo menos um link válido no <head>. */
   [["apple-touch-icon",""],["apple-touch-icon","180x180"],["apple-touch-icon","152x152"],["apple-touch-icon","120x120"],["icon",""]].forEach(function(pair){
-    var l = document.createElement("link");
-    l.rel = pair[0];
-    if (pair[1]) l.setAttribute("sizes", pair[1]);
+    var sel = 'link[rel="'+pair[0]+'"]'+(pair[1] ? '[sizes="'+pair[1]+'"]' : ':not([sizes])');
+    var l = document.querySelector(sel);
+    if (!l) {
+      l = document.createElement("link");
+      l.rel = pair[0];
+      if (pair[1]) l.setAttribute("sizes", pair[1]);
+      document.head.appendChild(l);
+    }
     l.href = iconUrl;
-    document.head.appendChild(l);
+  });
+  // Remove duplicados que tenham sobrado de versões antigas deste código
+  // (que apagava/recriava) — mantém só o primeiro de cada combinação rel+sizes.
+  var vistos = {};
+  document.querySelectorAll('link[rel="apple-touch-icon"], link[rel="icon"]').forEach(function(el){
+    var chave = el.rel + '|' + (el.getAttribute('sizes')||'');
+    if (vistos[chave]) { el.remove(); } else { vistos[chave] = true; }
   });
 }
 

@@ -154,6 +154,14 @@ A receita vinculada (`ref_fatura`) reflete o `valor_total` como `valor` (previst
 
 Sempre que registrar uma baixa parcial/total de contrato (`confirmarParcialCt`, `confirmarBaixarCt`, fluxos inline), **patchar também a receita vinculada** para manter status e valor consistentes.
 
+## Espaçamento entre painéis do Dashboard (Início) — PADRÃO PERMANENTE
+
+O wrapper que envolve TODAS as seções do Dashboard (`inicio-fade-top`, dentro de `Inicio`) já aplica `gap:14` entre cada seção (cada item do array retornado por `Inicio`). Esse `gap:14` sozinho é o espaçamento MÍNIMO — várias seções (ex.: cabeçalho "Receitas e Despesas Mensais", linha ~28990) somam um `marginTop:21` próprio por cima desse gap pra marcar visualmente o início de uma nova seção/grupo de painéis. Sem esse `marginTop` extra, a seção nova fica visivelmente mais "colada" na anterior do que o padrão usado no resto do Dashboard — foi exatamente o bug corrigido nos painéis "Despesas por Categoria"/"Receitas por Cliente" (ficaram com `marginTop:0`, relando só no gap:14, e destoaram do resto).
+
+**Regra obrigatória:** toda vez que uma seção/painel do Dashboard (`Inicio`) for criada, movida ou tiver seu container raiz alterado, aplicar `marginTop:21` (mesmo valor usado no resto do Dashboard) no elemento raiz retornado pela seção — nunca deixar `marginTop:0` "porque o gap do wrapper já resolve". Exceção: quando o pedido explícito do usuário for aproximar duas seções especificamente (ex.: "Saldo nas contas hoje" logo abaixo da Agenda usa `marginTop:-20` de propósito, a pedido do usuário) — nesse caso documentar o motivo inline, como já é feito lá.
+
+Antes de declarar qualquer alteração no Dashboard como concluída, **comparar visualmente o espaçamento da seção alterada com as seções vizinhas** (a de cima e a de baixo) — não assumir que "sem marginTop = igual às outras", porque o padrão real inclui o `marginTop:21` extra.
+
 ## Fluxo de trabalho Git
 
 Após cada push:

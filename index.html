@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="2026-08-29-04"/>
+<meta name="ag-build" content="2026-08-29-05"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -27694,16 +27694,26 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
     })()
 
     /* ══ Saldo nas contas (logo abaixo da Agenda) ══
-       Reaproveita saldoCaixaAte (mesma fórmula da linha azul do gráfico/
-       fluxo de caixa) e os totais do mês já calculados pro card "Resultado
-       Previsto" (recMes/prevMes/_despTotalKpi/_despPagoKpi/_manTotalKpi/
-       _manPagoKpi/_despAPagarKpi/_manAPagarKpi) — regra de consistência do
-       CLAUDE.md: nunca duplicar a fórmula em outro lugar do painel. */
+       "Saldo nas contas hoje" reaproveita saldoCaixaAte (mesma fórmula da
+       linha azul do gráfico/fluxo de caixa). "Despesas de hoje" — mesmo
+       rótulo, tem que ser mesmo escopo: só o que vence HOJE, não o mês
+       inteiro (_despAPagarKpi/_manAPagarKpi do card "Resultado Previsto"
+       são do MÊS — errado usar aqui). Resolve a mesma base de
+       resolverDespesasDoMes/filtrarManParaBarras já usada pro card do mês
+       (regra de consistência do CLAUDE.md), só filtrando pela data exata
+       de hoje em vez do mês todo, pra não duplicar a fórmula de resolução
+       de recorrência num critério novo. */
     , (() => {
       var _hojeMaisUm = (function(){ var x=new Date(hoje+'T12:00:00'); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); })();
       var _saldoAtual = saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _hojeMaisUm);
-      var _aPagarMes = _despAPagarKpi + _manAPagarKpi;
-      var _saldoLivre = _saldoAtual - _aPagarMes;
+      var _mesHoje = hoje.slice(0,7);
+      var _despHojeList = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), _mesHoje)
+        .filter(function(d){ return (d.data||'')===hoje && d.status!=='pago' && !d.data_pagamento; });
+      var _manHojeList = filtrarManParaBarras(manutencoes, despesas, _mesHoje)
+        .filter(function(m){ return (m.data_previsao_pagamento||m.data_entrada||'')===hoje && m.status_financeiro!=='pago' && !m.data_pagamento; });
+      var _despHoje = _despHojeList.reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0)
+        + _manHojeList.reduce(function(s,m){ return s+parseFloat(m.custo||0); }, 0);
+      var _saldoLivre = _saldoAtual - _despHoje;
       /* Mesmo tamanho/altura dos cards de KPI do banner "Faturamento ×
          Resultado Previsto" logo acima (ag-kpi-card, rótulo 10.5px, valor
          16.5/15px, texto de apoio 9/10.5px) — pedido do usuário depois de o
@@ -27724,7 +27734,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
         )
         , React.createElement('div', { className:"ag-kpi-card", style:_cardBase }
           , React.createElement('div', { style:_lbl }, 'Despesas de hoje')
-          , _big(_aPagarMes, C.red)
+          , _big(_despHoje, C.red)
         )
       );
     })()

@@ -168,7 +168,7 @@ Antes deste padrão o código tinha pelo menos 5 valores diferentes fazendo o me
 - Só use `marginTop:24` explícito quando o título/card não for filho direto do wrapper (ex.: dois elementos dentro do mesmo `React.Fragment` — o `gap` do wrapper não alcança elementos dentro de um Fragment, só entre os próprios Fragments/itens do array).
 - Dentro de uma seção (grade, dois painéis lado a lado, lista de cards), use `gap:16` (ou `columnGap:16, rowGap:16` em grid).
 - **Nunca** deixar uma seção nova com `marginTop:0` relando só no gap do wrapper "porque parece suficiente" — comparar visualmente com as seções vizinhas antes de declarar concluído.
-- Exceção documentada: "Saldo nas contas hoje" logo abaixo da Agenda usa `marginTop:-20` de propósito (pedido explícito do usuário pra aproximar bem mais essas duas seções específicas) — qualquer exceção ao padrão 16/24 precisa desse tipo de comentário inline explicando o motivo.
+- Exceção documentada: "Saldo nas contas hoje" logo abaixo da Agenda usa `marginTop:-12` de propósito (pedido explícito do usuário pra aproximar essas duas seções específicas, ajustado de -20 pra -12 pra o espaço Agenda→Saldo ficar igual ao espaço interno Saldo→Despesas) — qualquer exceção ao padrão 16/24 precisa desse tipo de comentário inline explicando o motivo.
 
 Antes de declarar qualquer alteração no Dashboard como concluída, **comparar visualmente o espaçamento da seção alterada com as seções vizinhas** (a de cima e a de baixo) usando esse padrão 16/24 como referência.
 

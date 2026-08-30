@@ -25542,6 +25542,7 @@ function Inicio({ veiculos, clientes, contratos, setContratos, reservas, multas,
           , React.createElement(PessoalDash, {
               orcItens: _orcFresh,
               desktop: desktop,
+              setTab: setTab,
               orcCats: _orcCats, setOrcCats: _setOrcCats,
               orcCatsMod: _orcCatsMod, setOrcCatsMod: _setOrcCatsMod,
               contratos: contratos, despesas: despesas, receitas: receitas,
@@ -36184,7 +36185,7 @@ function computePrevisaoPessoal(itens, despesas, opts){
 //  com previsão de despesas e receitas
 // ═══════════════════════════════════════════════════════════════════
 function PessoalDash({
-  orcItens, contratos, despesas, receitas, manutencoes, multas, desktop,
+  orcItens, contratos, despesas, receitas, manutencoes, multas, desktop, setTab,
   dashMes, setDashMes, mesAtual, prevDashMes, nextDashMes,
   prevBannerTouch, prevBannerWheel,
   pModal, setPModal, pForm, setPForm,
@@ -36214,9 +36215,6 @@ function PessoalDash({
   function _F(k,v)    { setPForm(function(p){ return Object.assign({},p,{[k]:v}); }); }
   function _nomMesOf(m){ var s=new Date(m+'-15').toLocaleString('pt-BR',{month:'long',year:'numeric'}); return s.charAt(0).toUpperCase()+s.slice(1); }
   function _projDate(dt,m){ var dia=parseInt(dt.slice(8,10),10); var aN=parseInt(m.slice(0,4),10),mN=parseInt(m.slice(5,7),10); var ult=new Date(aN,mN,0).getDate(); return m+'-'+(Math.min(dia,ult)<10?'0':'')+Math.min(dia,ult); }
-  var [recDetOpen, setRecDetOpen] = React.useState(false);
-  var [despDetOpen, setDespDetOpen] = React.useState(false);
-  var [_agShowPastPD, _agSetShowPastPD] = React.useState(false);
 
   function _vis(it,m){
     var em=it.data?it.data.slice(0,7):it.mes;
@@ -36272,19 +36270,6 @@ function PessoalDash({
   var _tendRecPct=_totRecPrev>0?Math.round((_totRec-_totRecPrev)/Math.abs(_totRecPrev)*100):0;
   var _tendSaldoPct=_saldoPrev!==0?Math.round((_saldo-_saldoPrev)/Math.abs(_saldoPrev)*100):0;
 
-  // ── 6 meses para o gráfico (Template 4) ─────────────────────────────────
-  var _m6=[]; for(var _bi=-2;_bi<=3;_bi++) _m6.push(_addM(_mes,_bi));
-  var _d6=_m6.map(function(m){
-    var extraRec=_itSrc.filter(function(it){return _vis(it,m)&&it.tipo==='receita';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-    var rec=Math.max(0,retiradaLucroDoMes(despesas,m))+extraRec;
-    var dep=_itSrc.filter(function(it){return _vis(it,m)&&it.tipo==='despesa';}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-    var nm=new Date(m+'-15').toLocaleString('pt-BR',{month:'short'}).replace('.','').toUpperCase().slice(0,3);
-    return {m:m,rec:rec,dep:dep,luc:rec-dep,nm:nm};
-  });
-  var _maxRD=Math.max.apply(null,_d6.map(function(d){return Math.max(d.rec,d.dep,1);}));
-  var _idxSel=_m6.indexOf(_mes); if(_idxSel<0)_idxSel=2;
-  var _dSel=_d6[_idxSel]||{rec:_totRec,dep:_totDes,luc:_saldo};
-
   // Categorias
   var catMap={};
   _desps.forEach(function(it){var c=it.categoria||'Outros';catMap[c]=(catMap[c]||0)+parseFloat(it.valor||0);});
@@ -36326,9 +36311,6 @@ function PessoalDash({
       )
   );
 
-  /* itens visíveis do mês corrente — usados pela Agenda ao lado do 1o gráfico */
-  var _todosVisP = _itSrc.filter(function(it){ return _vis(it,_mes); }).map(function(it){ return _projetar(it,_mes); });
-
   return React.createElement(React.Fragment,null
     ,_modalEl
 
@@ -36364,539 +36346,55 @@ function PessoalDash({
     )
 
 
-    /* ══ Gráfico de Linhas + Barras Pessoal + Agenda ══ */
-    ,React.createElement('div',{style:{display:'flex',flexDirection:desktop?'row':'column',gap:12,alignItems:desktop?'flex-start':'stretch'}}
-      ,React.createElement('div',{style:desktop?{flex:1,minWidth:0}:{}}
-      ,(function(){
-      var [selOrc, setSelOrc] = React.useState(null);
-      var [_pesDaySheet, _setPesDaySheet] = React.useState(null);
-      var _pesScrollRef = React.useRef(null);
-      var _pesScrollTarget = React.useRef(0);
-      var _lpSaldoPState = React.useState(null); var _lpSaldoP = _lpSaldoPState[0]; var _setLpSaldoP = _lpSaldoPState[1];
-      var _lpTimerP = React.useRef(null); var _lpFiredP = React.useRef(false);
-      function _lpStartP(){ _lpFiredP.current=false; _lpTimerP.current=setTimeout(function(){ _lpFiredP.current=true; if(window._agVibe)window._agVibe(10); _setLpSaldoP(true); },500); }
-      function _lpEndP(){ clearTimeout(_lpTimerP.current); _lpTimerP.current=null; _setLpSaldoP(null); }
-      React.useEffect(function(){ var el=_pesScrollRef.current; if(el) el.scrollLeft=_pesScrollTarget.current; }, [_mes]);
-      /* ── dados dos 3 meses: anterior · atual · próximo ── */
-      var _mesAntChart = _addM(_mes,-1);
-      var _mesProxChart = _addM(_mes,1);
-      function _lastDayOfP(m){var d=new Date(m+'-01');d.setMonth(d.getMonth()+1);d.setDate(0);return d.getDate();}
-      var _prevLD=_lastDayOfP(_mesAntChart),_curLD=_lastDayOfP(_mes),_nextLD=_lastDayOfP(_mesProxChart);
-      var _pxPerDay=38, padB=18, padT=20;
+    /* ══ Agenda — mesmo componente CalendarioKanban2 do Dashboard da locadora,
+       alimentado só com orcItens; os demais arrays de dados da locadora vão
+       vazios/undefined para que buildAgendaEventos gere eventos SOMENTE a
+       partir do bloco "ORÇAMENTO PESSOAL" que já existe dentro dele — mesmo
+       visual e mesmo componente da Dashboard, sem duplicar nenhuma lógica de
+       agenda (pedido do usuário: "coloque a agenda idêntica a que existe na
+       Dashboard"). O gráfico de linhas SVG (Template 4) que tornava esta
+       tela muito diferente da Dashboard foi removido a pedido do usuário. ══ */
+    ,React.createElement('div',{style: desktop ? {flex:1,minHeight:0,display:'flex',flexDirection:'column'} : {display:'flex',flexDirection:'column'}}
+      ,React.createElement(CalendarioKanban2,{
+        contratos:[],multas:[],veiculos:[],clientes:[],contas:[],
+        despesas:[],receitas:[],reservas:[],manutencoes:[],
+        orcItens:_oi,lembretes:[],setLembretes:function(){},
+        hoje:_hoje,setTab:setTab,desktop:desktop,dashMes:dashMes,mesAtual:mesAtual,
+        setCtDeepLink:function(){},setFinDeepLink:function(){},setMtDeepLink:function(){}
+      })
+    )
 
-      /* Monta mapa dia→{rec,desp} para um mês pessoal */
-      function _mkPesMap(m){
-        var map={};
-        /* retirada de lucro: usa o mesmo mês m (lançamento registrado com data real) */
-        var _retItems=resolverDespesasDoMes(despesas||[],m).filter(isRetLucroPura);
-        _retItems.forEach(function(d){
-          var _dd=d.data_pagamento||d.data||'';
-          var day=parseInt(_dd.slice(8,10),10)||1;
-          if(!map[day])map[day]={rec:0,recPg:0,desp:0,despPg:0};
-          var val=parseFloat(d.valor||0);
-          map[day].rec+=val;
-          map[day].recPg+=val;
-        });
-        _itSrc.filter(function(it){return _vis(it,m);}).map(function(it){return _projetar(it,m);}).forEach(function(it){
-          var dt=it.data||(it.mes?it.mes+'-01':'');
-          var day=parseInt((dt||'').slice(8,10),10)||15;
-          if(!map[day])map[day]={rec:0,recPg:0,desp:0,despPg:0};
-          var val=parseFloat(it.valor||0);
-          var pago=it.status==='pago'||it.status==='recebido';
-          if(it.tipo==='receita'){map[day].rec+=val;if(pago)map[day].recPg+=val;}
-          else{map[day].desp+=val;if(pago)map[day].despPg+=val;}
-        });
-        return map;
-      }
-
-      var _mapPrev=_mkPesMap(_mesAntChart);
-      var _mapCur=_mkPesMap(_mes);
-      var _mapNext=_mkPesMap(_mesProxChart);
-
-      /* ── escala X comprimida: só dias com lançamento + âncoras (1, último, hoje); vazios somem ── */
-      function _slotDaysP(map,ld,mes){
-        var s={};
-        Object.keys(map).forEach(function(d){var n=parseInt(d,10);if(n>=1&&n<=ld)s[n]=1;});
-        s[1]=1;s[ld]=1;
-        if(mes===mesAtual){var _t=parseInt(_hoje.slice(8,10),10);if(_t>=1&&_t<=ld)s[_t]=1;}
-        return Object.keys(s).map(Number).sort(function(a,b){return a-b;});
-      }
-      var _slotsPrevP=_slotDaysP(_mapPrev,_prevLD,_mesAntChart);
-      var _slotsCurP=_slotDaysP(_mapCur,_curLD,_mes);
-      var _slotsNextP=_slotDaysP(_mapNext,_nextLD,_mesProxChart);
-      var _slotXP={},_siP=0;
-      function _regSlotsP(mes,days){days.forEach(function(d){_slotXP[mes+"-"+d]=(_siP+0.5)*_pxPerDay;_siP++;});}
-      _regSlotsP(_mesAntChart,_slotsPrevP);var _sepIdx1P=_siP;
-      _regSlotsP(_mes,_slotsCurP);var _sepIdx2P=_siP;
-      _regSlotsP(_mesProxChart,_slotsNextP);
-      var W=Math.max(_siP,1)*_pxPerDay;
-      var _xSep1=_sepIdx1P*_pxPerDay,_xSep2=_sepIdx2P*_pxPerDay;
-      var _xCal=function(mes,day){
-        var k=mes+"-"+day; if(_slotXP[k]!=null)return _slotXP[k];
-        var arr=mes===_mesAntChart?_slotsPrevP:(mes===_mes?_slotsCurP:_slotsNextP);
-        if(!arr.length)return 0;
-        var lo=null,hi=null;
-        for(var i=0;i<arr.length;i++){if(arr[i]<=day)lo=arr[i];if(arr[i]>=day&&hi==null)hi=arr[i];}
-        if(lo==null)return _slotXP[mes+"-"+arr[0]];
-        if(hi==null)return _slotXP[mes+"-"+arr[arr.length-1]];
-        if(lo===hi)return _slotXP[mes+"-"+lo];
-        var x0=_slotXP[mes+"-"+lo],x1=_slotXP[mes+"-"+hi];
-        return x0+(x1-x0)*((day-lo)/(hi-lo));
-      };
-
-      /* escala Y — baseada no acumulado máximo mensal */
-      var _maxRacc=0,_maxDacc=0;
-      [_mapPrev,_mapCur,_mapNext].forEach(function(mp){
-        var _sr=0,_sd=0;
-        Object.keys(mp).sort(function(a,b){return a-b;}).forEach(function(k){_sr+=(mp[k].rec||0);_sd+=(mp[k].desp||0);});
-        if(_sr>_maxRacc)_maxRacc=_sr;if(_sd>_maxDacc)_maxDacc=_sd;
-      });
-      var maxR=Math.max(_maxRacc,1)*1.18;
-      var maxD=Math.max(_maxDacc,1)*1.18;
-      var halfH=Math.round(Math.max(90,Math.floor(window.innerHeight*0.13))*1.1);
-      var midY=halfH+padT;
-      var H=(halfH*2)+padT+padB;
-      var yCt=function(v){return midY-(v/maxR)*halfH;};
-      var yDp=function(v){return midY+(v/maxD)*halfH;};
-
-      /* Pontos para linhas — Y acumulado, label = valor do dia */
-      function _mkPesPts(map,off,mes){
-        var _td=parseInt(_hoje.slice(8,10),10);
-        var _racc=0;
-        var rp=Object.keys(map).map(Number).sort(function(a,b){return a-b;}).filter(function(d){return (map[d].rec||0)>0;}).map(function(d){
-          var _dayv=map[d].rec||0;_racc+=_dayv;var _pg=map[d].recPg||0;
-          return{x:_xCal(mes,d),y:yCt(_racc),val:_racc,dayVal:_dayv,pg:_pg,isPaid:_pg>=_dayv*0.99,isHoje:mes===mesAtual&&d===_td,day:d,mes:mes};
-        });
-        var _dacc=0;
-        var dp=Object.keys(map).map(Number).sort(function(a,b){return a-b;}).filter(function(d){return (map[d].desp||0)>0;}).map(function(d){
-          var _dayv=map[d].desp||0;_dacc+=_dayv;var _pg=map[d].despPg||0;
-          return{x:_xCal(mes,d),y:yDp(_dacc),val:_dacc,dayVal:_dayv,pg:_pg,isPaid:_pg>=_dayv*0.99,isHoje:mes===mesAtual&&d===_td,day:d,mes:mes};
-        });
-        return{rp:rp,dp:dp};
-      }
-      var _pp=_mkPesPts(_mapPrev,0,_mesAntChart);
-      var _pc=_mkPesPts(_mapCur,_prevLD,_mes);
-      var _pn=_mkPesPts(_mapNext,_prevLD+_curLD,_mesProxChart);
-      var rPts=_pp.rp.concat(_pc.rp).concat(_pn.rp);
-      var dPts=_pp.dp.concat(_pc.dp).concat(_pn.dp);
-
-      function _mkSmP(pts){if(!pts.length)return'';if(pts.length===1)return'M'+pts[0].x.toFixed(1)+','+pts[0].y.toFixed(1);var d='M'+pts[0].x.toFixed(1)+','+pts[0].y.toFixed(1);for(var i=1;i<pts.length;i++){var p0=pts[i-1],p1=pts[i],cx=((p0.x+p1.x)/2).toFixed(1);d+=' C'+cx+','+p0.y.toFixed(1)+' '+cx+','+p1.y.toFixed(1)+' '+p1.x.toFixed(1)+','+p1.y.toFixed(1);}return d;}
-      var rLineD=_mkSmP(rPts);
-      var dLineD=_mkSmP(dPts);
-      var rPaidD=_mkSmP(rPts.filter(function(p){return p.isPaid;}));
-      var dPaidD=_mkSmP(dPts.filter(function(p){return p.isPaid;}));
-      var rAreaD=rPts.length>0?rLineD+' L'+rPts[rPts.length-1].x.toFixed(1)+','+midY+' L'+rPts[0].x.toFixed(1)+','+midY+' Z':'';
-      var dAreaD=dPts.length>0?dLineD+' L'+dPts[dPts.length-1].x.toFixed(1)+','+midY+' L'+dPts[0].x.toFixed(1)+','+midY+' Z':'';
-
-      /* ── Linha azul: saldo de caixa acumulado (igual à locadora) ── */
-      var _bPesRunBal=0; var bPesPts=[];
-      [{cmap:_mapPrev,off:0,ld:_prevLD,mes:_mesAntChart},
-       {cmap:_mapCur,off:_prevLD,ld:_curLD,mes:_mes},
-       {cmap:_mapNext,off:_prevLD+_curLD,ld:_nextLD,mes:_mesProxChart}
-      ].forEach(function(m){
-        for(var d=1;d<=m.ld;d++){
-          var _slot=m.cmap[d];
-          if(_slot){
-            _bPesRunBal+=(_slot.rec||0)-(_slot.desp||0);
-            bPesPts.push({x:_xCal(m.mes,d),bal:_bPesRunBal,day:d,mes:m.mes});
-          }
-        }
-      });
-      var _maxAbsBalP=Math.max.apply(null,bPesPts.map(function(p){return Math.abs(p.bal);})) || 1;
-      var _yBalP=function(v){return midY-(v/_maxAbsBalP)*halfH*0.78;};
-      bPesPts=bPesPts.map(function(p){return{x:p.x,y:_yBalP(p.bal),bal:p.bal,day:p.day,mes:p.mes};});
-      var _bTodayMesP=_hoje.slice(0,7); var _bTodayDayP=parseInt(_hoje.slice(8,10),10);
-      var bPesReal=bPesPts.filter(function(p){return p.mes<_bTodayMesP||(p.mes===_bTodayMesP&&p.day<=_bTodayDayP);});
-      var bPesFut=bPesPts.filter(function(p){return p.mes>_bTodayMesP||(p.mes===_bTodayMesP&&p.day>_bTodayDayP);});
-      var bPesFutConn=bPesReal.length>0&&bPesFut.length>0?[bPesReal[bPesReal.length-1]].concat(bPesFut):bPesFut;
-      var bPesRealD=_mkSmP(bPesReal);
-      var bPesFutD=_mkSmP(bPesFutConn);
-      function _fvBalP(v){var a=Math.abs(v);var s=v<0?'-':'';if(a>=1000){var k=a/1000;var r=Math.round(k*10)/10;return s+(r===Math.floor(r)?r+'k':r.toFixed(1).replace('.',',')+' k');}return s+Math.round(a);}
-
-      _pesScrollTarget.current=Math.max(0,_xSep1-4);
-      var _isPkDark=document.body.classList.contains('dark')||document.body.classList.contains('dim')||document.body.classList.contains('indigo')||document.body.classList.contains('midnight');
-      var _cRNeon=_isPkDark?"#00FFB2":"#00C272";
-      var _cDNeon=_isPkDark?"#FF3A6E":"#FF2055";
-      var _cBNeon=_isPkDark?"#3D9EFF":"#0066FF";
-      var _glowGNeon="0 0 6px "+_cRNeon+", 0 0 2px "+_cRNeon;
-      var _glowRNeon="0 0 6px "+_cDNeon+", 0 0 2px "+_cDNeon;
-      var _todayDay=parseInt(_hoje.slice(8,10),10);
-      var _todayX=(mesAtual===_mesAntChart||mesAtual===_mes||mesAtual===_mesProxChart)?_xCal(mesAtual,_todayDay):-1;
-      function _fML2(ms){return new Date(ms+'-15').toLocaleDateString('pt-BR',{month:'short'}).replace('.','');}
-      function _fvP(v){if(v>=1000){var k=v/1000;var r=Math.round(k*10)/10;return r===Math.floor(r)?r+'k':r.toFixed(1).replace('.',',')+' k';}return Math.round(v);}
-
-      /* x labels */
-      var xLabels=[];
-      [{mes:_mesAntChart,map:_mapPrev,slots:_slotsPrevP},{mes:_mes,map:_mapCur,slots:_slotsCurP},{mes:_mesProxChart,map:_mapNext,slots:_slotsNextP}].forEach(function(seg){
-        seg.slots.forEach(function(day){
-          var isHj=seg.mes===mesAtual&&day===_todayDay;
-          var isR=!!(seg.map[day]&&seg.map[day].rec>0),isD=!!(seg.map[day]&&seg.map[day].desp>0);
-          var fc=isHj?_cBNeon:(isR&&isD?C.sub:isR?_cRNeon:isD?_cDNeon:C.sub);
-          xLabels.push(React.createElement('text',{key:'pl'+seg.mes+day,x:_xCal(seg.mes,day).toFixed(1),y:H-2,textAnchor:'middle',fontSize:11,fill:fc,fontWeight:isHj?'800':'600'},String(day)));
-        });
-      });
-
-      var _hasData=rPts.length>0||dPts.length>0;
-
-      /* ── Barras horizontais pessoal ── */
-      var _recPgBarra = (_recLoc>0?_recLoc:0)
-        + _itens.filter(function(it){return it.tipo==='receita'&&(it.status==='pago'||it.status==='recebido');}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-      var _recTotal = _totRec;
-      var _despPgBarra = _desPg;
-      var _despTotal = _totDes;
-      var _diasMesP = _curLD;
-      var _hojeDP = _mes === mesAtual ? parseInt(_hoje.slice(8,10),10) : -1;
-      var _hojeXP = _hojeDP>0 ? Math.min(Math.max((_hojeDP-1)/(_diasMesP-1),0),1)*100 : 7;
-      var _recGradP = 'linear-gradient(90deg,#15803d 0%,#22c55e '+_hojeXP.toFixed(1)+'%, #4ade80 '+Math.min(_hojeXP+12,60).toFixed(1)+'%, #bbf7d0 '+Math.min(_hojeXP+30,80).toFixed(1)+'%, rgba(240,253,244,0.12) 100%)';
-      var _despGradP = 'linear-gradient(90deg,#15803d 0%,#22c55e '+_hojeXP.toFixed(1)+'%, #fbbf24 '+Math.min(_hojeXP+10,40).toFixed(1)+'%, #f87171 '+Math.min(_hojeXP+24,58).toFixed(1)+'%, rgba(254,226,226,0.18) 100%)';
-      var _pctRecPg = _recTotal>0?Math.min(_recPgBarra/_recTotal*100,100):0;
-      var _pctDespPg = _despTotal>0?Math.min(_despPgBarra/_despTotal*100,100):0;
-      var BARRA_H_P=3.9;
-      var _todoPagoD=_despTotal>0&&_despPgBarra>=_despTotal;
-
-      function _fmtBI(v){var a=Math.abs(parseFloat(v)||0);if(a>=1000)return'R$'+(Math.round(a/100)/10).toFixed(1).replace('.',',')+'k';return'R$'+Math.round(a);}
-
-      return React.createElement('div',{style:{background:C.card,borderRadius:22,border:'1px solid '+C.border,padding:'14px 16px 14px',overflow:'hidden',marginTop:10,boxShadow:'0 2px 16px rgba(0,0,0,0.06)'}},
-        /* ── gráfico de linhas ── */
-        _hasData && React.createElement('div',{ref:_pesScrollRef,style:{overflowX:'auto',overflowY:'hidden',WebkitOverflowScrolling:'touch',width:'100%',scrollbarWidth:'none',msOverflowStyle:'none',marginBottom:16}},
-          React.createElement('svg',{viewBox:'0 0 '+W+' '+H,style:{width:W,minWidth:W,height:H,display:'block',overflow:'visible',shapeRendering:'geometricPrecision'},shapeRendering:'geometricPrecision',onMouseDown:_lpStartP,onMouseUp:_lpEndP,onMouseLeave:_lpEndP,onTouchStart:_lpStartP,onTouchEnd:_lpEndP,onContextMenu:function(e){e.preventDefault();},onClickCapture:function(e){if(_lpFiredP.current){_lpFiredP.current=false;e.stopPropagation();e.preventDefault();}}},
-            React.createElement('defs',null,
-              React.createElement('linearGradient',{id:'pesRecGrad',x1:'0',y1:'1',x2:'0',y2:'0'},
-                React.createElement('stop',{offset:'0%',stopColor:_cRNeon,stopOpacity:_isPkDark?'0.03':'0.04'}),
-                React.createElement('stop',{offset:'100%',stopColor:_cRNeon,stopOpacity:_isPkDark?'0.32':'0.24'})
-              ),
-              React.createElement('linearGradient',{id:'pesDespGrad',x1:'0',y1:'0',x2:'0',y2:'1'},
-                React.createElement('stop',{offset:'0%',stopColor:_cDNeon,stopOpacity:'0.02'}),
-                React.createElement('stop',{offset:'100%',stopColor:_cDNeon,stopOpacity:_isPkDark?'0.28':'0.20'})
-              ),
-              React.createElement('filter',{id:'peNeonR',x:'-15%',y:'-40%',width:'130%',height:'180%'},
-                React.createElement('feGaussianBlur',{in:'SourceGraphic',stdDeviation:'2.5',result:'b'}),
-                React.createElement('feComposite',{in:'SourceGraphic',in2:'b',operator:'over'})
-              ),
-              React.createElement('filter',{id:'peNeonB',x:'-15%',y:'-40%',width:'130%',height:'180%'},
-                React.createElement('feGaussianBlur',{in:'SourceGraphic',stdDeviation:'2',result:'b'}),
-                React.createElement('feComposite',{in:'SourceGraphic',in2:'b',operator:'over'})
-              )
-            ),
-            /* fundo mês atual */
-            React.createElement('rect',{x:_xSep1,y:0,width:(_xSep2-_xSep1),height:H,fill:C.blue,opacity:0.025}),
-            /* linha zero */
-            React.createElement('line',{x1:0,y1:midY,x2:W,y2:midY,stroke:C.border,strokeWidth:0.8}),
-            /* separadores mês */
-            React.createElement('line',{x1:_xSep1,y1:padT-10,x2:_xSep1,y2:H-padB,stroke:C.border,strokeWidth:1,strokeDasharray:'3,2',opacity:0.5}),
-            React.createElement('line',{x1:_xSep2,y1:padT-10,x2:_xSep2,y2:H-padB,stroke:C.border,strokeWidth:1,strokeDasharray:'3,2',opacity:0.5}),
-            /* labels mês — início de cada seção */
-            React.createElement('text',{x:'4',y:padT-5,textAnchor:'start',fontSize:11,fill:(_mesAntChart<mesAtual?C.red:_mesAntChart>mesAtual?C.green:C.blue),fontWeight:700,opacity:0.9},_fML2(_mesAntChart)),
-            (function(){var _lx=_xSep1+4,_tw=_fML2(_mes).length*6.5+14,_cm=(_mes<mesAtual?C.red:_mes>mesAtual?C.green:C.blue);return React.createElement('g',null,React.createElement('rect',{x:_lx.toFixed(1),y:(padT-17).toFixed(1),width:_tw,height:14,rx:7,fill:_cm,opacity:0.15}),React.createElement('text',{x:(_lx+_tw/2).toFixed(1),y:(padT-6).toFixed(1),textAnchor:'middle',fontSize:11,fill:_cm,fontWeight:800},_fML2(_mes)));}()),
-            React.createElement('text',{x:(_xSep2+4).toFixed(1),y:padT-5,textAnchor:'start',fontSize:11,fill:(_mesProxChart<mesAtual?C.red:_mesProxChart>mesAtual?C.green:C.blue),fontWeight:700,opacity:0.9},_fML2(_mesProxChart)),
-            /* linha hoje */
-            _todayX>=0 && React.createElement('g',null,React.createElement('line',{x1:_todayX.toFixed(1),y1:padT,x2:_todayX.toFixed(1),y2:H-padB,stroke:C.blue,strokeWidth:1.4,strokeDasharray:'3,2',opacity:0.55,vectorEffect:'non-scaling-stroke'}),React.createElement('text',{x:_todayX.toFixed(1),y:padT+9,textAnchor:'middle',fontSize:10,fill:C.blue,fontWeight:800,opacity:0.85},'hoje')),
-            /* áreas */
-            rAreaD && React.createElement('path',{d:rAreaD,fill:'url(#pesRecGrad)'}),
-            dAreaD && React.createElement('path',{d:dAreaD,fill:'url(#pesDespGrad)'}),
-            /* linhas — neon (mesmo estilo da locadora) */
-            (function(){
-              return React.createElement('g',null
-                ,rPaidD && React.createElement('path',{d:rPaidD,fill:'none',stroke:_cRNeon,strokeWidth:_isPkDark?9:7,strokeLinejoin:'round',strokeLinecap:'round',opacity:_isPkDark?0.18:0.13,filter:'url(#peNeonR)',vectorEffect:'non-scaling-stroke'})
-                ,dPaidD && React.createElement('path',{d:dPaidD,fill:'none',stroke:_cDNeon,strokeWidth:_isPkDark?9:7,strokeLinejoin:'round',strokeLinecap:'round',opacity:_isPkDark?0.18:0.13,filter:'url(#peNeonR)',vectorEffect:'non-scaling-stroke'})
-                ,bPesRealD && React.createElement('path',{d:bPesRealD,fill:'none',stroke:_cBNeon,strokeWidth:_isPkDark?7:6,strokeLinejoin:'round',strokeLinecap:'round',opacity:_isPkDark?0.16:0.11,filter:'url(#peNeonB)',vectorEffect:'non-scaling-stroke'})
-                ,rLineD && React.createElement('path',{d:rLineD,fill:'none',stroke:_cRNeon,strokeWidth:1.1,opacity:0.75,strokeLinejoin:'round',strokeLinecap:'round',vectorEffect:'non-scaling-stroke'})
-                ,rPaidD && React.createElement('path',{d:rPaidD,fill:'none',stroke:_cRNeon,strokeWidth:2.0,strokeLinejoin:'round',strokeLinecap:'round',filter:'url(#peNeonR)',vectorEffect:'non-scaling-stroke'})
-                ,dLineD && React.createElement('path',{d:dLineD,fill:'none',stroke:_cDNeon,strokeWidth:1.1,opacity:0.75,strokeLinejoin:'round',strokeLinecap:'round',vectorEffect:'non-scaling-stroke'})
-                ,dPaidD && React.createElement('path',{d:dPaidD,fill:'none',stroke:_cDNeon,strokeWidth:2.0,strokeLinejoin:'round',strokeLinecap:'round',strokeDasharray:'5,3',filter:'url(#peNeonR)',vectorEffect:'non-scaling-stroke'})
-                ,bPesRealD && React.createElement('path',{d:bPesRealD,fill:'none',stroke:_cBNeon,strokeWidth:1.7,strokeLinejoin:'round',strokeLinecap:'round',opacity:0.95,filter:'url(#peNeonB)',vectorEffect:'non-scaling-stroke'})
-                ,bPesFutD && React.createElement('path',{d:bPesFutD,fill:'none',stroke:_cBNeon,strokeWidth:_lpSaldoP?1.4:1.2,strokeLinejoin:'round',strokeLinecap:'round',opacity:_lpSaldoP?0.85:0.72,filter:'url(#peNeonB)',vectorEffect:'non-scaling-stroke'})
-              );
-            })(),
-            /* dots saldo azul pessoal */
-            (function(){
-              var _lbxP=-999,_lbLvlP=0;
-              return bPesPts.map(function(p,i){
-                var isFutP3=p.mes>_bTodayMesP||(p.mes===_bTodayMesP&&p.day>_bTodayDayP);
-                var balColP=p.bal<0?'#FF3B30':'#007AFF';
-                var _lvl=(p.x-_lbxP<32)?(_lbLvlP?0:1):0;_lbxP=p.x;_lbLvlP=_lvl;
-                var isAboveP=p.y<midY;
-                var _ly=(isAboveP?(p.y-7):(p.y+12))+(isAboveP?-1:1)*_lvl*12;
-                return React.createElement('g',{key:'bpg'+i,opacity:isFutP3?(_lpSaldoP?1:0.55):1},
-                  React.createElement('circle',{cx:p.x.toFixed(1),cy:p.y.toFixed(1),r:isFutP3&&_lpSaldoP?'2.5':'1.5',fill:balColP,opacity:isFutP3&&_lpSaldoP?1:0.7}),
-                  React.createElement('text',{x:p.x.toFixed(1),y:_ly.toFixed(1),textAnchor:'middle',fontSize:10,fontWeight:800,fill:balColP,stroke:'var(--c-card,#fff)',strokeWidth:2.0,paintOrder:'stroke',strokeLinejoin:'round',fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif',opacity:isFutP3?(_lpSaldoP?1:0.7):0.8},_fvBalP(p.bal))
-                );
-              });
-            })(),
-            /* dots receita — com filtro de distância mínima */
-            (function(){var _lrx=-999,_lrLvl=0;var _todMs=_hoje.slice(0,7);var _todD=parseInt(_hoje.slice(8,10),10);return rPts.map(function(p,i){
-              var isFutP=p.mes>_todMs||(p.mes===_todMs&&p.day>_todD);
-              var dc=p.isHoje?C.blue:(!p.isPaid?C.orange:_cRNeon);
-              var _pd=p.day;var _pm=p.mes;
-              var _lvl=(p.x-_lrx<30)?(_lrLvl?0:1):0;_lrx=p.x;_lrLvl=_lvl;
-              return React.createElement('g',{key:'prg'+i,opacity:isFutP?(_lpSaldoP?1:0.45):1,onClick:function(){_setPesDaySheet({day:_pd,mes:_pm});},style:{cursor:'pointer'}},
-                React.createElement('rect',{x:(p.x-16).toFixed(1),y:(p.y-34).toFixed(1),width:32,height:44,fill:'transparent'}),
-                React.createElement('circle',{cx:p.x.toFixed(1),cy:p.y.toFixed(1),r:'3.5',fill:p.isPaid?dc:'transparent',stroke:dc,strokeWidth:'1.5',vectorEffect:'non-scaling-stroke'}),
-                React.createElement('text',{x:p.x.toFixed(1),y:(p.y-8-_lvl*12).toFixed(1),textAnchor:'middle',fontSize:10,fontWeight:800,fill:dc,stroke:'var(--c-card,#fff)',strokeWidth:2.0,paintOrder:'stroke',strokeLinejoin:'round',fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif',opacity:isFutP?(_lpSaldoP?1:0.70):0.9},_fvP(p.dayVal))
-              );
-            });})(),
-            /* dots despesa — com filtro de distância mínima */
-            (function(){var _ldx=-999,_ldLvl=0;var _todMs2=_hoje.slice(0,7);var _todD2=parseInt(_hoje.slice(8,10),10);return dPts.map(function(p,i){
-              var isFutP2=p.mes>_todMs2||(p.mes===_todMs2&&p.day>_todD2);
-              var dc=p.isHoje?C.blue:(!p.isPaid?C.orange:_cDNeon);
-              var _pd2=p.day;var _pm2=p.mes;
-              var _lvl=(p.x-_ldx<30)?(_ldLvl?0:1):0;_ldx=p.x;_ldLvl=_lvl;
-              return React.createElement('g',{key:'pdg'+i,opacity:isFutP2?(_lpSaldoP?1:0.45):1,onClick:function(){_setPesDaySheet({day:_pd2,mes:_pm2});},style:{cursor:'pointer'}},
-                React.createElement('rect',{x:(p.x-16).toFixed(1),y:(p.y-10).toFixed(1),width:32,height:44,fill:'transparent'}),
-                React.createElement('circle',{cx:p.x.toFixed(1),cy:p.y.toFixed(1),r:'3.5',fill:p.isPaid?dc:'transparent',stroke:dc,strokeWidth:'1.5',vectorEffect:'non-scaling-stroke'}),
-                React.createElement('text',{x:p.x.toFixed(1),y:(p.y+14+_lvl*12).toFixed(1),textAnchor:'middle',fontSize:10,fontWeight:800,fill:dc,stroke:'var(--c-card,#fff)',strokeWidth:2.0,paintOrder:'stroke',strokeLinejoin:'round',fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif',opacity:isFutP2?(_lpSaldoP?1:0.70):0.9},_fvP(p.dayVal))
-              );
-            });})(),
-            /* x labels */
-            xLabels
-          )
-        ),
-
-        /* ── Barras horizontais — Receitas + Despesas ── */
-        React.createElement('div',{style:{marginTop:20}},
-          /* ── RECEITAS ── */
-          React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:2}},
-            React.createElement('div',{style:{display:'flex',alignItems:'center',gap:5}},
-              React.createElement('span',{style:{width:5,height:5,borderRadius:'50%',background:C.green,display:'inline-block',flexShrink:0}}),
-              React.createElement('span',{style:{fontSize:9,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:0.9}},'Receitas')
-            )
-          ),
-          React.createElement('div',{style:{position:'relative',height:8,marginBottom:0,overflow:'visible'}},
-            _hojeDP>0 && React.createElement('div',{style:{position:'absolute',left:_hojeXP+'%',top:'50%',transform:'translate(-50%,-50%)',width:14,height:14,borderRadius:'50%',background:C.blue,border:'2px solid var(--c-card,#fff)',boxShadow:'0 1px 6px rgba(59,130,246,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:2}},
-              React.createElement('span',{style:{fontSize:6,color:'#fff',fontWeight:800,lineHeight:1}},String(_hojeDP))
-            )
-          ),
-          /* barra receita — rail + neon */
-          React.createElement('div',{style:{position:'relative',height:10,marginBottom:4}},
-            React.createElement('div',{style:{position:'absolute',left:0,right:0,top:'50%',transform:'translateY(-50%)',height:2,borderRadius:3,background:C.green,opacity:0.22}}),
-            _pctRecPg>0 && React.createElement('div',{style:{position:'absolute',left:0,top:'50%',transform:'translateY(-50%)',height:3,width:_pctRecPg+'%',borderRadius:3,background:_cRNeon,boxShadow:_glowGNeon}}),
-            _hojeDP>0 && React.createElement('div',{style:{position:'absolute',left:_hojeXP+'%',top:1,bottom:1,width:2,background:C.blue,opacity:0.8,transform:'translateX(-50%)'}}),
-            React.createElement('div',{style:{position:'absolute',left:_pctRecPg+'%',top:'50%',transform:'translate(-50%,-50%)',width:8,height:8,borderRadius:'50%',background:_cRNeon,border:'2px solid var(--c-card,#fff)',boxShadow:_glowGNeon+',0 1px 4px rgba(0,0,0,0.22)',zIndex:2}})
-          ),
-          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
-            React.createElement('div',{onClick:function(){setSelOrc(selOrc==='rec_pg'?null:'rec_pg');},style:{display:'flex',alignItems:'center',gap:4,cursor:'pointer',opacity:selOrc&&selOrc!=='rec_pg'?0.45:1,transition:'opacity .15s'}},
-              _recPgBarra>0 && React.createElement('span',{style:{fontSize:12,fontWeight:700,color:C.green}},'✓'),
-              React.createElement('span',{style:{fontSize:12,fontWeight:700,color:C.green,letterSpacing:-0.3}},_recPgBarra>0?_fmtBI(_recPgBarra):'—'),
-              React.createElement('span',{style:{fontSize:11,fontWeight:600,letterSpacing:0.3,textTransform:'lowercase',color:C.green}},'recebido')
-            ),
-            React.createElement('div',{onClick:function(){setSelOrc(selOrc==='rec_ap'?null:'rec_ap');},style:{display:'flex',alignItems:'center',gap:4,cursor:'pointer',opacity:selOrc&&selOrc!=='rec_ap'?0.45:1,transition:'opacity .15s'}},
-              React.createElement('span',{style:{fontSize:12,fontWeight:700,color:C.orange,letterSpacing:-0.3}},(_recTotal-_recPgBarra)>0?_fmtBI(_recTotal-_recPgBarra):'—'),
-              React.createElement('span',{style:{fontSize:11,fontWeight:600,letterSpacing:0.3,textTransform:'lowercase',color:C.orange}},'a receber')
-            )
-          ),
-          _recTotal>0 && React.createElement('div',{style:{fontSize:10,color:C.sub,marginTop:3,marginBottom:14,textAlign:'right'}},'Previsto: '+_fmtBI(_recTotal)),
-          /* ── DESPESAS ── */
-          React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:2}},
-            React.createElement('div',{style:{display:'flex',alignItems:'center',gap:5}},
-              React.createElement('span',{style:{width:5,height:5,borderRadius:'50%',background:_todoPagoD?C.green:C.red,display:'inline-block',flexShrink:0}}),
-              React.createElement('span',{style:{fontSize:9,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:0.9}},'Despesas')
-            )
-          ),
-          React.createElement('div',{style:{position:'relative',height:8,marginBottom:0,overflow:'visible'}},
-            _hojeDP>0 && React.createElement('div',{style:{position:'absolute',left:_hojeXP+'%',top:'50%',transform:'translate(-50%,-50%)',width:14,height:14,borderRadius:'50%',background:C.blue,border:'2px solid var(--c-card,#fff)',boxShadow:'0 1px 6px rgba(59,130,246,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:2}},
-              React.createElement('span',{style:{fontSize:6,color:'#fff',fontWeight:800,lineHeight:1}},String(_hojeDP))
-            )
-          ),
-          /* barra despesa — rail + neon */
-          React.createElement('div',{style:{position:'relative',height:10,marginBottom:4}},
-            React.createElement('div',{style:{position:'absolute',left:0,right:0,top:'50%',transform:'translateY(-50%)',height:2,borderRadius:3,background:_todoPagoD?C.green:C.red,opacity:0.22}}),
-            _pctDespPg>0 && React.createElement('div',{style:{position:'absolute',left:0,top:'50%',transform:'translateY(-50%)',height:3,width:_pctDespPg+'%',borderRadius:3,background:_todoPagoD?_cRNeon:_cDNeon,boxShadow:_todoPagoD?_glowGNeon:_glowRNeon}}),
-            _hojeDP>0 && React.createElement('div',{style:{position:'absolute',left:_hojeXP+'%',top:1,bottom:1,width:2,background:C.blue,opacity:0.8,transform:'translateX(-50%)'}}),
-            React.createElement('div',{style:{position:'absolute',left:_pctDespPg+'%',top:'50%',transform:'translate(-50%,-50%)',width:8,height:8,borderRadius:'50%',background:_todoPagoD?_cRNeon:_cDNeon,border:'2px solid var(--c-card,#fff)',boxShadow:(_todoPagoD?_glowGNeon:_glowRNeon)+',0 1px 4px rgba(0,0,0,0.22)',zIndex:2}})
-          ),
-          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
-            React.createElement('div',{onClick:function(){setSelOrc(selOrc==='dep_pg'?null:'dep_pg');},style:{display:'flex',alignItems:'center',gap:4,cursor:'pointer',opacity:selOrc&&selOrc!=='dep_pg'?0.45:1,transition:'opacity .15s'}},
-              _despPgBarra>0 && React.createElement('span',{style:{fontSize:12,fontWeight:700,color:_todoPagoD?C.green:C.red}},'✓'),
-              React.createElement('span',{style:{fontSize:12,fontWeight:700,color:_todoPagoD?C.green:C.red,letterSpacing:-0.3}},_despPgBarra>0?_fmtBI(_despPgBarra):'—'),
-              React.createElement('span',{style:{fontSize:11,fontWeight:600,letterSpacing:0.3,textTransform:'lowercase',color:_todoPagoD?C.green:C.red}},'pago')
-            ),
-            React.createElement('div',{onClick:function(){setSelOrc(selOrc==='dep_ap'?null:'dep_ap');},style:{display:'flex',alignItems:'center',gap:4,cursor:'pointer',opacity:selOrc&&selOrc!=='dep_ap'?0.45:1,transition:'opacity .15s'}},
-              React.createElement('span',{style:{fontSize:12,fontWeight:700,color:C.red,letterSpacing:-0.3}},(_despTotal-_despPgBarra)>0?_fmtBI(_despTotal-_despPgBarra):'—'),
-              React.createElement('span',{style:{fontSize:11,fontWeight:600,letterSpacing:0.3,textTransform:'lowercase',color:C.red}},'a pagar')
-            )
-          ),
-          _despTotal>0 && React.createElement('div',{style:{fontSize:10,color:C.sub,marginTop:3,textAlign:'right'}},'Previsto: '+_fmtBI(_despTotal)),
-          /* ── painel de detalhes ao clicar ── */
-          selOrc && React.createElement('div',{style:{marginTop:10,borderTop:'1px solid '+C.border,paddingTop:10}}
-            ,React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}
-              ,React.createElement('span',{style:{fontSize:10,fontWeight:700,color:C.sub,textTransform:'uppercase',letterSpacing:.8}},
-                selOrc==='rec_pg'?'Recebido':selOrc==='rec_ap'?'A Receber':selOrc==='dep_pg'?'Pago':'A Pagar'
-              )
-              ,React.createElement('span',{onClick:function(){setSelOrc(null);},style:{fontSize:18,color:C.sub,cursor:'pointer',lineHeight:1,padding:'0 4px'}},'×')
-            )
-            ,(function(){
-              var _col=selOrc==='rec_pg'?C.green:selOrc==='rec_ap'?C.orange:selOrc==='dep_pg'?C.green:C.red;
-              var items;
-              if(selOrc==='rec_pg'){
-                items=_itens.filter(function(it){return it.tipo==='receita'&&(it.status==='pago'||it.status==='recebido');});
-                if(_recLocItems.length>0) items=_recLocItems.map(function(d,i){return{id:'__recloc'+i,descricao:d.descricao||d.categoria||'Retirada de lucro',valor:parseFloat(d.valor||0),data:d.data||d.data_pagamento||(_mesAnt+'-01'),tipo:'receita',status:'recebido'};}).concat(items);
-                else if(_recLoc>0) items=[{id:'__recloc',descricao:'Retirada de lucro (locadora)',valor:_recLoc,data:_mes+'-01',tipo:'receita',status:'recebido'}].concat(items);
-              } else if(selOrc==='rec_ap') items=_itens.filter(function(it){return it.tipo==='receita'&&it.status!=='pago'&&it.status!=='recebido';});
-              else if(selOrc==='dep_pg') items=_itens.filter(function(it){return it.tipo==='despesa'&&it.status==='pago';});
-              else items=_itens.filter(function(it){return it.tipo==='despesa'&&it.status!=='pago';});
-              items=items.slice().sort(function(a,b){return (a.data||a.mes||'').localeCompare(b.data||b.mes||'');});
-              if(items.length===0) return React.createElement('div',{style:{fontSize:12,color:C.sub,textAlign:'center',padding:'8px 0'}},'Nenhum item');
-              var _mAbr=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
-              function _fDt2(s){if(!s)return '';var d=new Date(s.slice(0,10)+'T00:00:00');return d.getDate()+' '+_mAbr[d.getMonth()];}
-              return React.createElement('div',null
-                ,items.map(function(it,i){
-                  var dt=it.data||it.mes;
-                  var dtLbl=dt?_fDt2(dt):'';
-                  return React.createElement('div',{key:it.id||i,style:{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:i<items.length-1?'1px solid '+C.border+'22':'none'}}
-                    ,dtLbl&&React.createElement('span',{style:{fontSize:10,color:C.sub,fontWeight:600,minWidth:34,flexShrink:0}},dtLbl)
-                    ,React.createElement('span',{style:{fontSize:12,color:'var(--c-text)',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},it.descricao||it.categoria||'Item')
-                    ,React.createElement('span',{style:{fontSize:12,fontWeight:700,color:_col,marginLeft:4,flexShrink:0}},_fmtBI(parseFloat(it.valor||0)))
-                  );
-                })
-              );
-            })()
-          )
+    /* ══ "Saldo do orçamento" / "Despesas de hoje" — mesma estrutura visual
+       (classe ag-kpi-card, layout de duas colunas/linhas, BRLValue) dos
+       cards "Saldo nas contas hoje"/"Despesas de hoje" do Dashboard da
+       locadora (ver Inicio), adaptada pros dados de orçamento pessoal já
+       calculados acima (_saldo, _desps) — nenhum cálculo novo, só reuso. ══ */
+    ,(function(){
+      var _despsHojeP = _desps.filter(function(it){ return it.data===_hoje; });
+      var _despHojeTotalP = _despsHojeP.reduce(function(s,it){ return s+parseFloat(it.valor||0); },0);
+      var _despHojePagoP = _despsHojeP.filter(function(it){ return it.status==='pago'; }).reduce(function(s,it){ return s+parseFloat(it.valor||0); },0);
+      var _despHojeAPagarP = Math.max(0,_despHojeTotalP-_despHojePagoP);
+      var _ultimoDiaMesP = new Date(parseInt(_mes.slice(0,4),10), parseInt(_mes.slice(5,7),10), 0).getDate();
+      var _cardBaseP = { padding: desktop?'15px 14px':'12.5px 13px', background:'var(--c-card)' };
+      var _lblP = { fontSize: desktop?11.5:13, fontWeight:600, color:'var(--c-sub)', marginBottom: desktop?5:6 };
+      return React.createElement('div',{style:{display:'flex',flexDirection:desktop?'row':'column',gap:16}}
+        ,React.createElement('div',{className:'ag-kpi-card',style:Object.assign({},_cardBaseP,desktop?{flex:1}:null)}
+          ,React.createElement('div',{style:_lblP},'Saldo do orçamento')
+          ,React.createElement(BRLValue,{v:_saldo,size:desktop?15:16.5,weight:700,color:_saldo>=0?C.green:C.red})
+          ,React.createElement('div',{style:{fontSize:desktop?9:10.5,color:C.sub,fontWeight:700,marginTop:3}},'Saldo previsto para '+_ultimoDiaMesP+' de '+_mesNome)
         )
-      , _pesDaySheet !== null && React.createElement(Modal, { wide:true,open:true,onClose:function(){_setPesDaySheet(null);},title:'Dia '+(_pesDaySheet&&_pesDaySheet.day)+' \xb7 '+((_pesDaySheet&&new Date(_pesDaySheet.mes+'-15').toLocaleString('pt-BR',{month:'long'}))||'')}
-          ,(function(){
-            if(!_pesDaySheet) return null;
-            var _ds=_pesDaySheet;
-            var _dsItens=_itSrc.filter(function(it){return _vis(it,_ds.mes);}).map(function(it){return _projetar(it,_ds.mes);}).filter(function(it){var dt=it.data||(it.mes?it.mes+'-01':'');return dt&&parseInt(dt.slice(8,10),10)===_ds.day;});
-            /* retirada de lucro registrada neste dia específico (mesma premissa: usa mês real do lançamento) */
-            var _recLocDay=resolverDespesasDoMes(despesas||[],_ds.mes).filter(isRetLucroPura).filter(function(d){var _dd=d.data_pagamento||d.data||'';return parseInt(_dd.slice(8,10),10)===_ds.day;}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
-            var _recDay=_dsItens.filter(function(it){return it.tipo==='receita';});
-            var _despDay=_dsItens.filter(function(it){return it.tipo==='despesa';});
-            var _totR=_recLocDay+_recDay.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-            var _totD=_despDay.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
-            return React.createElement('div',{style:{paddingBottom:8}},
-              React.createElement('div',{style:{display:'flex',justifyContent:'space-between',padding:'8px 16px 12px',borderBottom:'1px solid '+C.border}},
-                React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:2}},
-                  React.createElement('span',{style:{fontSize:9,fontWeight:700,color:C.green,textTransform:'uppercase',letterSpacing:0.8}},'Receitas'),
-                  React.createElement('span',{style:{fontSize:16,fontWeight:800,color:C.green,letterSpacing:-0.5}},_totR>0?fmtBRL(_totR).split(',')[0]:'—')
-                ),
-                React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}},
-                  React.createElement('span',{style:{fontSize:9,fontWeight:700,color:C.red,textTransform:'uppercase',letterSpacing:0.8}},'Despesas'),
-                  React.createElement('span',{style:{fontSize:16,fontWeight:800,color:C.red,letterSpacing:-0.5}},_totD>0?fmtBRL(_totD).split(',')[0]:'—')
-                )
-              ),
-              _recLocDay>0 && React.createElement('div',null,
-                React.createElement('div',{style:{padding:'8px 16px 4px',fontSize:10,fontWeight:700,color:C.green,textTransform:'uppercase',letterSpacing:0.8}},'Retirada Locadora'),
-                React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'9px 16px',borderTop:'1px solid '+C.border}},
-                  React.createElement('div',null,
-                    React.createElement('div',{style:{fontSize:13,fontWeight:600,color:'var(--c-text)'}},'✅ Retirada de lucro'),
-                    React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:1}},'Locadora \xb7 recebido')
-                  ),
-                  React.createElement('div',{style:{fontWeight:700,fontSize:13,color:C.green}},fmtBRL(_recLocDay).split(',')[0])
-                )
-              ),
-              _recDay.length>0 && React.createElement('div',null,
-                React.createElement('div',{style:{padding:'8px 16px 4px',fontSize:10,fontWeight:700,color:C.green,textTransform:'uppercase',letterSpacing:0.8}},'Receitas ('+_recDay.length+')'),
-                _recDay.map(function(it,i){var pago=it.status==='pago'||it.status==='recebido';return React.createElement('div',{key:it.id||'r'+i,style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'9px 16px',borderTop:'1px solid '+C.border}},React.createElement('div',null,React.createElement('div',{style:{fontSize:13,fontWeight:600,color:'var(--c-text)'}},(pago?'✅ ':'⏳ ')+(it.descricao||it.categoria||'Receita')),React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:1}},(it.categoria||'')+(pago?' \xb7 recebido':' \xb7 a receber'))),React.createElement('div',{style:{fontWeight:700,fontSize:13,color:pago?C.green:C.orange}},fmtBRL(it.valor||0).split(',')[0]));})
-              ),
-              _despDay.length>0 && React.createElement('div',null,
-                React.createElement('div',{style:{padding:'8px 16px 4px',fontSize:10,fontWeight:700,color:C.red,textTransform:'uppercase',letterSpacing:0.8}},'Despesas ('+_despDay.length+')'),
-                _despDay.map(function(it,i){var pago=it.status==='pago';return React.createElement('div',{key:it.id||'d'+i,style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'9px 16px',borderTop:'1px solid '+C.border}},React.createElement('div',null,React.createElement('div',{style:{fontSize:13,fontWeight:600,color:'var(--c-text)'}},(pago?'✅ ':'💸 ')+(it.descricao||it.categoria||'Despesa')),React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:1}},(it.categoria||'')+(pago?' \xb7 paga':' \xb7 pendente'))),React.createElement('div',{style:{fontWeight:700,fontSize:13,color:pago?C.green:C.red}},fmtBRL(it.valor||0).split(',')[0]));})
-              ),
-              _totR===0&&_totD===0 && React.createElement('div',{style:{padding:'24px 16px',textAlign:'center',color:C.sub,fontSize:13}},'Nenhum lan\xe7amento neste dia')
-            );
-          })()
+        ,React.createElement('div',{className:'ag-kpi-card',style:Object.assign({},_cardBaseP,desktop?{flex:1}:null)}
+          ,React.createElement('div',{style:_lblP},'Despesas de hoje')
+          ,React.createElement(BRLValue,{v:_despHojeTotalP,size:desktop?15:16.5,weight:700,color:C.red})
+          ,React.createElement('div',{style:{fontSize:desktop?9:10.5,color:_despHojeAPagarP>0?C.red:C.green,fontWeight:700,marginTop:3}}
+            ,_despHojeTotalP>0
+              ? (_despHojeAPagarP>0
+                  ? [React.createElement(BRLValue,{key:'a',v:_despHojeAPagarP,size:desktop?9:10.5,weight:700,color:C.red}),' a pagar · ',React.createElement(BRLValue,{key:'b',v:_despHojePagoP,size:desktop?9:10.5,weight:700,color:C.red}),' já pago']
+                  : [React.createElement(BRLValue,{key:'c',v:_despHojePagoP,size:desktop?9:10.5,weight:700,color:C.green}),' — tudo pago'])
+              : 'Nenhuma despesa prevista hoje')
         )
       );
     })()
-      )
-      ,React.createElement('div',{style:desktop?{flex:'0 0 340px',minWidth:0,display:'flex',flexDirection:'column',position:'sticky',top:12}:{}}
-        /* ══ Agenda Pessoal — dot timeline (ao lado do 1o gráfico) ══ */
-        , (function(){
-          var _agHojeP=_hoje;
-          var _mAbrP=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
-          function _fmtDtP(s){var d=new Date(s+'T00:00:00');return d.getDate()+' '+_mAbrP[d.getMonth()];}
-          var _agMapP={};
-          _todosVisP.forEach(function(it){
-            var dt = it.data || (it.mes ? it.mes+'-01' : null);
-            if(!dt||dt.slice(0,7)!==_mes) return;
-            var isPaidP=(it.status==='pago'||it.status==='recebido');
-            if(!_agMapP[dt]) _agMapP[dt]=[];
-            _agMapP[dt].push({type:it.tipo,label:it.descricao||it.categoria||'Item',value:parseFloat(it.valor||0),paid:isPaidP,id:it.id,_raw:it});
-          });
-          var _isCurMesP=_mes===_brNow().toISOString().slice(0,7);
-          if(_isCurMesP&&!_agMapP[_agHojeP]) _agMapP[_agHojeP]=[];
-          var _allDaysP=Object.keys(_agMapP).sort();
-          var _pastDaysP=_allDaysP.filter(function(d){return d<_agHojeP;});
-          var _futureDaysP=_allDaysP.filter(function(d){return d>=_agHojeP;});
-          if(_allDaysP.length===0) return null;
-          var _daysP=_agShowPastPD?_allDaysP:_futureDaysP;
-          var _t7P=new Date(_agHojeP+'T00:00:00');_t7P.setDate(_t7P.getDate()+7);var _t7sP=_t7P.toISOString().slice(0,10);
-          var _totalEvsP=_daysP.reduce(function(s,d){return s+Math.max(1,(_agMapP[d]||[]).length);},0);
-          return React.createElement('div',{style:Object.assign({background:C.card,borderRadius:22,border:'1px solid '+C.border,padding:'14px 16px 16px',boxShadow:'0 2px 16px rgba(0,0,0,0.06)'},desktop?{display:'flex',flexDirection:'column'}:{})}
-            ,React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexShrink:0}}
-              ,React.createElement('span',{style:{fontSize:11,fontWeight:500,color:C.sub}},_totalEvsP+' lançamento'+(_totalEvsP===1?'':'s'))
-              ,React.createElement('span',{style:{fontSize:9,fontWeight:600,color:C.sub,letterSpacing:.8,textTransform:'uppercase'}},'Agenda')
-            )
-            ,React.createElement('div',{style:Object.assign({position:'relative'},desktop?{overflowY:'auto',maxHeight:'calc(100vh - 160px)',paddingRight:4}:{overflowY:'auto',maxHeight:'50vh'})}
-              ,React.createElement('div',{style:{position:'absolute',left:9,top:4,bottom:4,width:1.5,background:C.blue+'44',borderRadius:1}})
-              ,(function(){
-                var _resultP=[];
-                if(_pastDaysP.length>0){
-                  _resultP.push(React.createElement('div',{key:'__agp_past_btn__',
-                    onClick:function(){_agSetShowPastPD(!_agShowPastPD);},
-                    style:{cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',paddingBottom:8,paddingLeft:20,color:C.sub,fontSize:11,fontWeight:600,userSelect:'none',opacity:0.75}
-                  },_agShowPastPD?'↓ ocultar anteriores':'↑ '+_pastDaysP.length+' dia'+(_pastDaysP.length===1?'':'s')+' anterior'+(_pastDaysP.length===1?'':'es')));
-                }
-                var _insertedSepP=false;
-                _daysP.forEach(function(date){
-                  var evsP=_agMapP[date]||[];
-                  if(_agShowPastPD&&_pastDaysP.length>0&&!_insertedSepP&&date>=_agHojeP){_insertedSepP=true;_resultP.push(React.createElement('div',{key:'__pp_sep__',style:{borderTop:'1px solid '+C.borderSoft,margin:'4px 0 10px 20px'}}));}
-                  var isTodayP=date===_agHojeP;
-                  var isPastP=date<_agHojeP;
-                  var isFutureFarP=date>_t7sP;
-                  if(evsP.length===0){
-                    var dotTdP=React.createElement('div',{style:{width:14,height:14,borderRadius:'50%',border:'2px solid '+C.blue,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 0 0 3px '+C.blue+'22'}},React.createElement('div',{style:{width:6,height:6,borderRadius:'50%',background:C.blue}}));
-                    _resultP.push(React.createElement('div',{key:date,style:{display:'flex',alignItems:'flex-start',marginBottom:10,opacity:1}}
-                      ,React.createElement('div',{style:{width:20,display:'flex',justifyContent:'center',paddingTop:8,flexShrink:0}},dotTdP)
-                      ,React.createElement('div',{style:{flex:1,padding:'5px 10px',marginLeft:6}}
-                        ,React.createElement('div',{style:{fontSize:12,fontWeight:600,color:C.blue}},'Hoje · '+_fmtDtP(date))
-                        ,React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:1}},'Sem lançamentos hoje')
-                      )
-                    ));
-                    return;
-                  }
-                  evsP.forEach(function(ev,ei){
-                    var rowKeyP=date+':'+ev.id;
-                    var isRecP=ev.type==='receita';
-                    var dotColorP=isTodayP?C.blue:ev.paid?C.green:C.orange;
-                    var opacityP=(isPastP&&!ev.paid&&!isTodayP)?0.6:1;
-                    var _totVP=ev.value;
-                    var _dsP=_totVP>3000?12:_totVP>800?9:7;var _dpP=Math.round((13-_dsP)/2);
-                    var dotElP=isTodayP&&ei===0
-                      ?React.createElement('div',{style:{width:14,height:14,borderRadius:'50%',border:'2px solid '+C.blue,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 0 0 3px '+C.blue+'22'}},React.createElement('div',{style:{width:6,height:6,borderRadius:'50%',background:C.blue}}))
-                      :React.createElement('div',{style:{width:_dsP,height:_dsP,borderRadius:'50%',background:dotColorP,opacity:isFutureFarP?0.4:1,border:'1.5px solid var(--c-card,#1c1c1e)',flexShrink:0,marginTop:_dpP}});
-                    var _canSwipeP=!ev.paid;
-                    var _editFnP=function(){var _it=_itSrc.find(function(x){return x.id===ev.id;});if(_it){setPForm(Object.assign({},_it));setPEdit(_it.id);setPModal(true);}};
-                    var dateLblP=(ei===0||(evsP[ei-1]&&evsP[ei-1].id!==ev.id))?( isTodayP?'Hoje · '+_fmtDtP(date):_fmtDtP(date) ):null;
-                    var _valFmtP=fmtBRL(ev.value).split(',')[0];
-                    var subP=isRecP
-                      ?_valFmtP+' '+(ev.paid?'recebido':(isFutureFarP?'a receber previsto':'a receber'))
-                      :'−'+_valFmtP+' '+(ev.paid?'pago':(isFutureFarP?'a pagar previsto':'a pagar'));
-                    var _rowContentP=React.createElement('div',{onClick:_editFnP,style:{display:'flex',alignItems:'flex-start',padding:'4px 0',cursor:'pointer',opacity:opacityP}}
-                      ,React.createElement('div',{style:{width:20,display:'flex',justifyContent:'center',paddingTop:8,flexShrink:0}},dotElP)
-                      ,React.createElement('div',{style:{flex:1,padding:'4px 10px',marginLeft:6}}
-                        ,React.createElement('div',{style:{fontSize:12,fontWeight:isTodayP&&ei===0?600:500,color:isTodayP&&ei===0?C.blue:'var(--c-text)'}},
-                          (dateLblP?dateLblP+' · ':'')+ev.label
-                        )
-                        ,React.createElement('div',{style:{fontSize:11,color:ev.paid?C.green:C.sub,marginTop:1,opacity:isFutureFarP?.65:1}},
-                          subP
-                        )
-                      )
-                    );
-                    _resultP.push(
-                      _canSwipeP
-                        ? React.createElement(SwipeRow,{key:rowKeyP,onBaixar:function(){pBaixar(ev._raw);},baixarLabel:isRecP?'✅ Receber':'💸 Baixar',onEdit:_editFnP,wrapStyle:{marginBottom:8}},_rowContentP)
-                        : React.createElement('div',{key:rowKeyP,style:{marginBottom:8}},_rowContentP)
-                    );
-                  });
-                });
-                return _resultP;
-              })()
-            )
-          );
-        })()
-      )
-      )
 
     /* ══ Despesas por Categoria / Receitas — mesmo componente FunnelBars do
        Dashboard da locadora ("Despesas por Categoria"/"Receitas por Cliente"),

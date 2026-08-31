@@ -92,12 +92,21 @@ Deno.serve(async (_req) => {
     });
   });
 
-  // Contratos — emissão de fatura (20 dias antes)
+  // Contratos — emissão de fatura (20 dias antes). Uma receita "prevista" já
+  // pode existir vinculada via ref_fatura antes da emissão de fato (criada de
+  // antemão pro contrato) — isso NÃO conta como emitida, senão o evento nunca
+  // aparece. Só considera emitida com um marcador real de emissão, mesmo
+  // critério de faturaContratoEmitida() no index.html.
+  function faturaContratoEmitida(refKey: string): boolean {
+    return (receitas || []).some((r: any) =>
+      r.ref_fatura === refKey && (r.status === "emitida" || r.status === "recebido" || r.status === "parcial" || r.status === "isento" || !!r.numero_fatura || !!r.data_emissao)
+    );
+  }
   (contratos || []).forEach((c: any) => {
     if (!c.previsao_pagamento || c.status === "cancelado") return;
     if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return;
     const refKey = "fat_" + c.id + "_" + c.previsao_pagamento.slice(0, 7);
-    if ((receitas || []).some((r: any) => r.ref_fatura === refKey)) return;
+    if (faturaContratoEmitida(refKey)) return;
     const dtE = new Date(c.previsao_pagamento + "T12:00:00");
     dtE.setDate(dtE.getDate() - 20);
     const cl = (clientes || []).find((x: any) => x.id == c.cliente_id);

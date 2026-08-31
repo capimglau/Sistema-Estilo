@@ -53,6 +53,9 @@ Deno.serve(async (req: Request) => {
     ])
 
     if (!lembretes || lembretes.length === 0) {
+      // Sem console.log aqui de propósito: o Cron chama isto a cada minuto,
+      // e "nada pendente" é o caso comum — logar toda vez enche os Logs de
+      // ruído e esconde o que interessa (quando de fato tenta enviar).
       return new Response(JSON.stringify({ ok: true, enviados: 0, motivo: 'nenhum lembrete no horário' }), {
         headers: { ...CORS, 'Content-Type': 'application/json' },
       })
@@ -65,6 +68,7 @@ Deno.serve(async (req: Request) => {
       await supabase.from('lembretes')
         .update({ notificado_em: new Date().toISOString() })
         .in('id', lembretes.map((l: any) => l.id))
+      console.warn('[send-push-lembretes] lembrete(s) vencido(s) sem nenhuma inscrição push:', lembretes.map((l: any) => l.id))
       return new Response(JSON.stringify({ ok: true, enviados: 0, motivo: 'sem inscrições' }), {
         headers: { ...CORS, 'Content-Type': 'application/json' },
       })
@@ -92,7 +96,15 @@ Deno.serve(async (req: Request) => {
             await supabase.from('push_subscriptions').delete().eq('id', s.id)
             removidos++
           } else {
-            falhas.push({ lembreteId: l.id, subId: s.id, statusCode: err?.statusCode, message: err?.message })
+            var detalhe = { lembreteId: l.id, subId: s.id, statusCode: err?.statusCode, body: err?.body, message: err?.message }
+            falhas.push(detalhe)
+            // Logado na hora (não só devolvido no JSON): a chamada real
+            // vem do Cron, ninguém está olhando a resposta em tempo real —
+            // sem isto, um envio que falha silenciosamente (403 VAPID,
+            // p.ex.) só aparece se alguém disparar "Test" no instante
+            // exato em que existe um lembrete vencido, o que quase nunca
+            // acontece. Aqui fica registrado pra sempre na aba Logs.
+            console.warn('[send-push-lembretes] falha ao enviar:', JSON.stringify(detalhe))
           }
         }
       }))
@@ -103,6 +115,7 @@ Deno.serve(async (req: Request) => {
       await supabase.from('lembretes').update({ notificado_em: new Date().toISOString() }).eq('id', l.id)
     }
 
+    console.log('[send-push-lembretes] resultado:', JSON.stringify({ lembretes: lembretes.length, enviados, removidos, falhas: falhas.length }))
     return new Response(JSON.stringify({ ok: true, lembretes: lembretes.length, enviados, removidos, falhas }), {
       headers: { ...CORS, 'Content-Type': 'application/json' },
     })

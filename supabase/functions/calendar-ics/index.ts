@@ -21,6 +21,7 @@ Deno.serve(async (_req) => {
     { data: orcItens = [] },
     { data: reservas = [] },
     { data: lembretes = [] },
+    { data: manutencoes = [] },
   ] = await Promise.all([
     supabase.from("contratos").select("*").limit(5000),
     supabase.from("clientes").select("*"),
@@ -35,9 +36,12 @@ Deno.serve(async (_req) => {
     // select volta com `data: null` (erro de "tabela não existe"), tratado
     // como lista vazia pelo `|| []` de cada uso abaixo — sem quebrar o resto.
     supabase.from("lembretes").select("*"),
+    supabase.from("manutencoes").select("*"),
   ]);
 
   const hoje = new Date().toISOString().split("T")[0];
+  const anoAtual = new Date().getFullYear();
+  const mesAtualIdx = new Date().getMonth();
   // RFC 5545 DTSTAMP: current UTC time in basic format
   const dtstamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
 
@@ -88,12 +92,21 @@ Deno.serve(async (_req) => {
     });
   });
 
-  // Contratos — emissão de fatura (20 dias antes)
+  // Contratos — emissão de fatura (20 dias antes). Uma receita "prevista" já
+  // pode existir vinculada via ref_fatura antes da emissão de fato (criada de
+  // antemão pro contrato) — isso NÃO conta como emitida, senão o evento nunca
+  // aparece. Só considera emitida com um marcador real de emissão, mesmo
+  // critério de faturaContratoEmitida() no index.html.
+  function faturaContratoEmitida(refKey: string): boolean {
+    return (receitas || []).some((r: any) =>
+      r.ref_fatura === refKey && (r.status === "emitida" || r.status === "recebido" || r.status === "parcial" || r.status === "isento" || !!r.numero_fatura || !!r.data_emissao)
+    );
+  }
   (contratos || []).forEach((c: any) => {
     if (!c.previsao_pagamento || c.status === "cancelado") return;
     if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return;
     const refKey = "fat_" + c.id + "_" + c.previsao_pagamento.slice(0, 7);
-    if ((receitas || []).some((r: any) => r.ref_fatura === refKey)) return;
+    if (faturaContratoEmitida(refKey)) return;
     const dtE = new Date(c.previsao_pagamento + "T12:00:00");
     dtE.setDate(dtE.getDate() - 20);
     const cl = (clientes || []).find((x: any) => x.id == c.cliente_id);
@@ -117,15 +130,46 @@ Deno.serve(async (_req) => {
     });
   });
 
-  // Multas
+  // Contratos — renovação incompleta (pai concluído aponta para filho que não existe mais)
+  (contratos || []).forEach((c: any) => {
+    if (c.status !== "concluido" || !c.renovado_para || byId[c.renovado_para]) return;
+    const hoje14 = new Date(hoje + "T12:00:00");
+    hoje14.setDate(hoje14.getDate() - 14);
+    const hoje14str = hoje14.toISOString().split("T")[0];
+    if (!c.data_fim || c.data_fim < hoje14str) return;
+    const cl = (clientes || []).find((x: any) => x.id == c.cliente_id);
+    evs.push({
+      data: c.data_fim, tipo: "renovacao_orfa", emoji: "⚠️",
+      titulo: "Renovação incompleta · Contrato " + renLabel(c) + " · " + (cl?.nome || "--"),
+      sub: "Encerrou em " + fmtD(c.data_fim) + " sem contrato de continuidade",
+    });
+  });
+
+  // Multas — vencimento
   (multas || []).forEach((m: any) => {
-    if (!m.vencimento || m.status === "pago") return;
+    const st = String(m.status || "").toLowerCase();
+    if (!m.vencimento || st === "cancelada" || st === "cancelado" || m.cobrado_cliente === "pago") return;
     const ve = (veiculos || []).find((x: any) => x.id == m.veiculo_id);
     const cl = (clientes || []).find((x: any) => x.id == m.cliente_id);
     evs.push({
       data: m.vencimento, tipo: "multa", emoji: "⚠️",
       titulo: "Multa " + (m.tipo || "") + " · " + (ve?.placa || "--") + " · " + fmtV(m.valor),
       sub: (cl?.nome || "--") + (m.ait ? " · AIT " + m.ait : ""),
+    });
+  });
+
+  // Multas — prazo de indicação de condutor ao órgão
+  (multas || []).forEach((m: any) => {
+    if (m.status === "cancelada" || m.status === "cancelado") return;
+    if (m.status_notificacao === "notificado" || m.status_notificacao === "nao_localizou" || m.status_notificacao === "nao_notificado") return;
+    const prazo = m.prazo_notificacao_orgao || m.vencimento || "";
+    if (!prazo) return;
+    const ve = (veiculos || []).find((x: any) => x.id == m.veiculo_id);
+    const cl = (clientes || []).find((x: any) => x.id == m.cliente_id);
+    evs.push({
+      data: prazo, tipo: "multa_notif", emoji: "🏛️",
+      titulo: "Prazo notificação ao órgão · " + (m.tipo || "Multa") + " · " + (ve?.placa || "--"),
+      sub: (cl?.nome || "--") + " · indique o condutor até " + fmtD(prazo),
     });
   });
 
@@ -156,9 +200,11 @@ Deno.serve(async (_req) => {
     });
   });
 
-  // Contas
+  // Contas — a pagar / a receber (mesmo filtro do Dashboard: status pago/cancelado/
+  // recebido ou já com data_pagamento não voltam a aparecer como pendência).
   (contas || []).forEach((c: any) => {
-    if (!c.vencimento || c.status === "pago") return;
+    if (!c.vencimento) return;
+    if (c.status === "pago" || c.status === "cancelado" || c.status === "recebido" || c.data_pagamento) return;
     const isRec = c.tipo === "receber";
     evs.push({
       data: c.vencimento, tipo: "conta", emoji: isRec ? "📥" : "📤",
@@ -167,13 +213,89 @@ Deno.serve(async (_req) => {
     });
   });
 
-  // Despesas operacionais
-  (despesas || []).forEach((d: any) => {
-    if (!d.data || d.status === "pago") return;
+  // Despesas operacionais — expande recorrentes pros próximos meses igual ao
+  // Dashboard (resolverDespesasDoMes), senão uma despesa recorrente só aparece
+  // uma vez no calendário assinado, na data do registro original.
+  function despesaDoMes(d: any, mes: string): boolean {
+    if (!d || !mes) return false;
+    if (d.recorrencia_origem_id) return (d.data || "").slice(0, 7) === mes;
+    if (!d.recorrente) {
+      if (d.data_pagamento) return d.data_pagamento.slice(0, 7) === mes;
+      return (d.data || "").slice(0, 7) === mes;
+    }
+    const dataMes = (d.data || "").slice(0, 7);
+    if (dataMes === mes) return true;
+    if (dataMes && dataMes < mes) {
+      if (d.prazo_recorrencia) {
+        const ini = new Date(dataMes + "-01"), fim = new Date(mes + "-01");
+        const diff = (fim.getFullYear() - ini.getFullYear()) * 12 + (fim.getMonth() - ini.getMonth());
+        if (diff > parseInt(d.prazo_recorrencia)) return false;
+      }
+      return true;
+    }
+    return false;
+  }
+  function resolverDespesasDoMes(lista: any[], mes: string): any[] {
+    const filhasDoMes = lista.filter((d: any) => d.recorrencia_origem_id && (d.data || "").slice(0, 7) === mes);
+    const idsComFilha = new Set(filhasDoMes.map((d: any) => String(d.recorrencia_origem_id)));
+    const resultado: any[] = [];
+    lista.forEach((d: any) => {
+      if (!despesaDoMes(d, mes) && !(d.recorrencia_origem_id && (d.data || "").slice(0, 7) === mes)) return;
+      if (d.recorrente && idsComFilha.has(String(d.id))) return;
+      if (d.recorrente && (d.data || "").slice(0, 7) !== mes) {
+        const dia = (d.data || "").slice(8, 10);
+        const pagouEsteMes = d.data_pagamento && d.data_pagamento.slice(0, 7) === mes;
+        resultado.push(Object.assign({}, d, { status: pagouEsteMes ? d.status : "previsto", data_pagamento: pagouEsteMes ? d.data_pagamento : null, data: mes + "-" + dia }));
+      } else {
+        resultado.push(d);
+      }
+    });
+    return resultado;
+  }
+  const mesesParaResolver: string[] = [];
+  for (let mi = -1; mi <= 2; mi++) {
+    const dt = new Date(anoAtual, mesAtualIdx + mi, 1);
+    mesesParaResolver.push(dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0"));
+  }
+  const despesasJaAdicionadas = new Set<string>();
+  const manutIdsComDespesa = new Set<string>();
+  mesesParaResolver.forEach((mesStr) => {
+    resolverDespesasDoMes(despesas || [], mesStr).forEach((d: any) => {
+      if (!d.data || d.status === "pago" || d.data_pagamento) return;
+      const chave = (d.id || d.data + (d.descricao || "")) + "_" + mesStr;
+      if (despesasJaAdicionadas.has(chave)) return;
+      despesasJaAdicionadas.add(chave);
+      if (d.manutencao_id) manutIdsComDespesa.add(String(d.manutencao_id));
+      evs.push({
+        data: d.data, tipo: "despesa", emoji: "📤",
+        titulo: "Despesa · " + (d.descricao || "--") + " · " + fmtV(d.valor),
+        sub: (d.categoria || "") + (d.recorrente ? " · ↻ Recorrente" : "") + (d.observacoes ? " · " + d.observacoes : ""),
+      });
+    });
+  });
+
+  // Manutenções — previsão/atraso de pagamento sem despesa vinculada
+  (manutencoes || []).forEach((m: any) => {
+    if (m.status_financeiro === "pago" || m.data_pagamento) return;
+    if (manutIdsComDespesa.has(String(m.id))) return;
+    const dt = m.data_previsao_pagamento || m.data_entrada;
+    if (!dt) return;
+    const ve = (veiculos || []).find((x: any) => x.id == m.veiculo_id);
     evs.push({
-      data: d.data, tipo: "despesa", emoji: "📤",
-      titulo: "Despesa · " + (d.descricao || "--") + " · " + fmtV(d.valor),
-      sub: (d.categoria || "") + (d.observacoes ? " · " + d.observacoes : ""),
+      data: dt, tipo: "manutencao", emoji: "🔧",
+      titulo: "Manutenção · " + (ve?.placa || "--") + " · " + (m.tipo || "Manutenção") + " · " + fmtV(m.custo),
+      sub: fmtD(dt),
+    });
+  });
+
+  // Manutenções — prazo de saída vencido, veículo ainda em oficina
+  (manutencoes || []).forEach((m: any) => {
+    if (m.status !== "em_andamento" || !m.data_saida || m.data_saida >= hoje) return;
+    const ve = (veiculos || []).find((x: any) => x.id == m.veiculo_id);
+    evs.push({
+      data: m.data_saida, tipo: "manutencao_prazo", emoji: "🔧",
+      titulo: "Manutenção com prazo vencido · " + (ve?.placa || "--") + " · " + (m.tipo || "Manutenção"),
+      sub: "Previsão de saída " + fmtD(m.data_saida),
     });
   });
 
@@ -201,7 +323,7 @@ Deno.serve(async (_req) => {
   // Orçamento pessoal
   (orcItens || []).forEach((it: any) => {
     const data = it.data || (it.mes ? it.mes + "-01" : null);
-    if (!data || it.status === "pago" || it.status === "recebido") return;
+    if (!data || it.status === "pago" || it.status === "recebido" || it.data_pagamento) return;
     const isDespesa = it.tipo === "despesa" || !it.tipo;
     evs.push({
       data, tipo: "orcamento", emoji: isDespesa ? "🏠" : "💵",

@@ -11,7 +11,7 @@
  *  - Supabase e qualquer API: nunca passa pelo cache. Dado financeiro velho
  *    servido como se fosse atual é pior do que erro de rede.
  *
- * O CACHE muda de nome a cada deploy (o workflow substitui bed8a1f), e o
+ * O CACHE muda de nome a cada deploy (o workflow substitui 0665a96), e o
  * activate apaga os caches antigos — é isso que evita o app velho grudado.
  */
 

@@ -34177,6 +34177,18 @@ function getStepDate(m, idx) {
   }
 }
 
+/* Fase macro do processo, pra exibir no card sem obrigar o usuário a entender
+   as 8-9 etapas do pipeline: até notificar o órgão é "Notificação"; do boleto
+   em diante (pedir, receber, pagar, cobrar do cliente) é tudo "Pagamento".
+   Por id da etapa, não por índice — o pipeline muda de tamanho quando o
+   cliente recusa assinar (ver getEffectivePipeline). */
+var _FASE_MULTA_PAGAMENTO_IDS = { boleto_solic:1, boleto_rec:1, pago_orgao:1, cobrado_cli:1, encerrada:1 };
+function faseMulta(stepId) {
+  return _FASE_MULTA_PAGAMENTO_IDS[stepId]
+    ? { emoji: "💰", label: "Pagamento", cor: "#5a8a63" }
+    : { emoji: "🔔", label: "Notificação", cor: "#8a6b8f" };
+}
+
 /* ── De quem é a bola em cada multa ──────────────────────────────────────
    O pipeline acima diz em que etapa a multa está. Pra decidir o que fazer
    hoje, o que importa é outra coisa: quem tem que agir agora. Uma multa
@@ -35302,17 +35314,12 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         var vencida = !isPago && m.vencimento && m.vencimento < hoje;
         var stepIdx = getEffectivePipelineStep(m); var _pipeline = getEffectivePipeline(m);
         var nextAct = getNextAction(m, cl, ve);
-        // Status Locadora (a locadora paga a multa ao órgão?)
-        var locStatus = isPago ? "pago" : (isContestado ? "contestado" : (vencida ? "vencida" : "a_pagar"));
-        var locCor = _flagCorPastel(locStatus === "pago" ? C.green : (locStatus === "contestado" ? C.purple : (locStatus === "vencida" ? C.red : C.orange)));
-        var locLabel = locStatus === "pago" ? "Locadora PAGOU" : (locStatus === "contestado" ? "Em recurso" : (locStatus === "vencida" ? "VENCIDA" : "A PAGAR"));
-        // Status Cliente (foi cobrado do cliente?)
+        // Status Cliente (foi cobrado do cliente?) — usado só pra atraso; o
+        // detalhe completo (Locadora→Órgão, Cliente→Reembolso) mora na linha
+        // do tempo expansível, não duplica mais no resumo do card.
         var cc = m.cobrado_cliente || "nao";
         var _30d = new Date(_brNowMs()-30*86400000).toISOString().split("T")[0];
         var cobCliAtrasado = cc === "pendente" && ((m.vencimento && m.vencimento < hoje) || (m.data_cobranca_cliente && m.data_cobranca_cliente < _30d));
-        var cliCor = _flagCorPastel(cc === "pago" ? C.green : (cobCliAtrasado ? C.red : (cc === "pendente" ? C.orange : C.gray)));
-        var cliLabel = cc === "pago" ? "Cliente PAGOU" : (cobCliAtrasado ? "COBRANÇA EM ATRASO" : (cc === "pendente" ? "Cliente: AGUARDANDO PAGAMENTO" : "Cliente: NÃO COBRADO"));
-        var valorCli = m.valor_cobrado ? m.valor_cobrado : null;
         var _temAtraso = vencida || cobCliAtrasado;
         var _pipeLen = _pipeline.length; var _bCor = _temAtraso ? C.red : ((stepIdx >= _pipeLen - 2) ? C.green : stepIdx >= (_pipeLen - 4) ? C.orange : (isContestado ? C.purple : C.orange));
         var isExpanded = expandedMulId === m.id;
@@ -35355,41 +35362,47 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
               , m.pontos && React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 4 } }, "🔴 " + m.pontos + " pontos")
             )
           )
-          /* Status atual + próximo passo — largura total do card */
-          , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 6 } }
-            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, background: _pipeline[stepIdx].cor+"18", borderRadius: 10, padding: "5px 10px", flex: 1 } }
-              , React.createElement('span', { style: { fontSize: 18, lineHeight: 1 } }, _pipeline[stepIdx].emoji)
-              , React.createElement('div', null
-                , React.createElement('div', { style: { fontSize: 8, fontWeight: 800, color: _pipeline[stepIdx].cor, textTransform: "uppercase", letterSpacing: 0.5, lineHeight: 1, marginBottom: 2 } }, "ETAPA ATUAL")
-                , React.createElement('div', { style: { fontSize: 12, fontWeight: 800, color: _pipeline[stepIdx].cor, lineHeight: 1.2 } }, _pipeline[stepIdx].short)
-              )
-            )
-            , stepIdx < _pipeline.length - 1 && React.createElement('div', { style: { display: "inline-flex", alignItems: "center", gap: 5, background: C.bg, borderRadius: 10, padding: "5px 9px" } }
-              , React.createElement('span', { style: { fontSize: 10, color: C.sub, fontWeight: 700 } }, "→")
-              , React.createElement('span', { style: { fontSize: 15 } }, _pipeline[stepIdx+1].emoji)
-              , React.createElement('div', { style: { fontSize: 11, fontWeight: 600, color: C.sub } }, _pipeline[stepIdx+1].short)
-            )
-          )
-          /* Grid de status: Locadora + Cliente — chips compactos */
-          , React.createElement('div', { style: { display: "flex", gap: 7, margin: "8px 0 2px", flexWrap: "wrap" } }
-            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 7, background: locCor+"14", border: "1.5px solid "+locCor+"40", borderRadius: 10, padding: "6px 11px", flex: "1 1 auto", minWidth: 0 } }
-              , React.createElement('span', { style: { fontSize: 16, lineHeight: 1, flexShrink: 0 } }, locStatus==="pago"?"✅":locStatus==="contestado"?"⚖️":locStatus==="vencida"?"🚨":"⏳")
-              , React.createElement('div', { style: { minWidth: 0 } }
-                , React.createElement('div', { style: { fontSize: 9, color: C.sub, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, lineHeight: 1, marginBottom: 2 } }, "Locadora → Órgão")
-                , React.createElement('div', { style: { fontSize: 12, fontWeight: 800, color: locCor, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, locLabel)
-                , (isPago && m.data_pagamento ? "Pago em "+fmtDateShort(m.data_pagamento) : m.vencimento ? "Venc. "+fmtDateShort(m.vencimento) : "") && React.createElement('div', { style: { fontSize: 9, color: C.sub, marginTop: 1 } }, isPago && m.data_pagamento ? "Pago em "+fmtDateShort(m.data_pagamento) : "Venc. "+fmtDateShort(m.vencimento))
-              )
-            )
-            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 7, background: cliCor+"14", border: "1.5px solid "+cliCor+(cobCliAtrasado?"80":"40"), borderRadius: 10, padding: "6px 11px", flex: "1 1 auto", minWidth: 0 } }
-              , React.createElement('span', { style: { fontSize: 16, lineHeight: 1, flexShrink: 0 } }, cc==="pago"?"💵":cobCliAtrasado?"🚨":cc==="pendente"?"⏳":"⚠️")
-              , React.createElement('div', { style: { minWidth: 0 } }
-                , React.createElement('div', { style: { fontSize: 9, color: C.sub, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, lineHeight: 1, marginBottom: 2 } }, "Cliente → Reembolso")
-                , React.createElement('div', { style: { fontSize: 12, fontWeight: 800, color: cliCor, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, cliLabel)
-                , valorCli && React.createElement('div', { style: { fontSize: 9, color: C.sub, marginTop: 1 } }, cc==="pago" ? "Recebido " : "A receber ", React.createElement(BRLValue,{v:valorCli,size:9,weight:400,color:C.sub}))
-                , cobCliAtrasado && m.data_cobranca_cliente && React.createElement('div', { style: { fontSize: 9, color: C.red, marginTop: 1, fontWeight: 700 } }, "Cobrado em "+fmtDateShort(m.data_cobranca_cliente)+" · sem retorno")
-              )
-            )
-          )
+          /* Fase (Notificação/Pagamento) + etapa atual → próxima etapa — a
+             única informação que precisa estar sempre visível sem expandir:
+             em que fase geral o processo está e o que fazer a seguir. Os
+             chips separados de "Locadora → Órgão" / "Cliente → Reembolso"
+             saíram daqui (viravam ruído repetindo o que a etapa já diz) —
+             quem quiser esse detalhe abre "detalhes" e vê a linha do tempo
+             completa, com histórico e valores. */
+          , (function(){
+              var fase = faseMulta(_pipeline[stepIdx].id);
+              var temProx = stepIdx < _pipeline.length - 1;
+              return React.createElement('div', { style: { marginBottom: 6 } }
+                , React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, gap: 8 } }
+                  , React.createElement('span', { style: Object.assign({}, Badge(fase.cor), { fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.4, fontSize: 10 }) }, fase.emoji + " " + fase.label)
+                  , _temAtraso
+                    ? React.createElement('span', { style: { fontSize: 10, fontWeight: 800, color: C.red } }, "⚠️ EM ATRASO")
+                    : (temProx && _nextPrazoTxt) && React.createElement('span', { style: { fontSize: 10, fontWeight: 700, color: C.sub } }, "Prazo: " + _nextPrazoTxt)
+                )
+                , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, background: C.bg, border: "1px solid " + C.border, borderRadius: 12, padding: "9px 10px" } }
+                  , React.createElement('div', { style: { flex: 1, minWidth: 0 } }
+                    , React.createElement('div', { style: { fontSize: 9, fontWeight: 800, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "Etapa atual")
+                    , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0 } }
+                      , React.createElement('span', { style: { fontSize: 16, lineHeight: 1, flexShrink: 0 } }, _pipeline[stepIdx].emoji)
+                      , React.createElement('span', { style: { fontSize: 13, fontWeight: 800, color: _pipeline[stepIdx].cor, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, _pipeline[stepIdx].short)
+                    )
+                  )
+                  , temProx && React.createElement('span', { style: { fontSize: 15, color: C.sub, fontWeight: 700, flexShrink: 0 } }, "→")
+                  , temProx && React.createElement('div', { style: { flex: 1, minWidth: 0 } }
+                    , React.createElement('div', { style: { fontSize: 9, fontWeight: 800, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 } }, "Próxima etapa")
+                    , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0 } }
+                      , React.createElement('span', { style: { fontSize: 16, lineHeight: 1, flexShrink: 0 } }, _pipeline[stepIdx+1].emoji)
+                      , React.createElement('span', { style: { fontSize: 13, fontWeight: 800, color: "var(--c-text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, _pipeline[stepIdx+1].short)
+                    )
+                  )
+                  , nextAct && React.createElement('button', {
+                      className: bCls(Btn(nextAct.color)),
+                      style: Object.assign({}, bStyle(Btn(nextAct.color)), { fontSize: 11, fontWeight: 800, padding: "7px 12px", whiteSpace: "nowrap", flexShrink: 0 }),
+                      onClick: function(e){ e.stopPropagation(); nextAct.action(e); }
+                    }, "✓ Concluir")
+                )
+              );
+            })()
           /* Pipeline — dinâmico por multa — só expande ao tocar */
           , isExpanded && React.createElement('div', { ref: function(el){ if(el){ var cur=el.querySelector('[data-pipeline-cur]'); if(cur){ var off=cur.offsetLeft; var w=el.offsetWidth; el.scrollLeft=off - w/2 + cur.offsetWidth/2; } } }, style: { overflowX: "auto", WebkitOverflowScrolling: "touch", margin: "12px 0 10px", paddingBottom: 6, scrollBehavior:"smooth" } }
             , React.createElement('div', { style: { display: "flex", alignItems: "flex-start", minWidth: "max-content" } }

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="85ba138"/>
+<meta name="ag-build" content="1314bdc"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -17219,6 +17219,17 @@ function _agSessPersistir(usuario, tok) {
     }));
   } catch(e) {}
 }
+/* Atualiza só o `usuario` da sessão persistida (perfil/permissões mudaram em
+   tempo real) sem mexer nos tokens — usado quando outro dispositivo edita o
+   próprio usuário logado ou o perfil dele, para o F5 não voltar com dado velho. */
+function _agSessAtualizarUsuario(usuario) {
+  try {
+    var s = JSON.parse(localStorage.getItem(_AG_SESS_STORE) || "null");
+    if (!s) return;
+    s.usuario = usuario;
+    localStorage.setItem(_AG_SESS_STORE, JSON.stringify(s));
+  } catch(e) {}
+}
 function _agTokenAtual() { return String(HDR.Authorization || "").replace(/^Bearer\s+/, ""); }
 function _agLogado() { var t = _agTokenAtual(); return !!t && t !== SB_KEY; }
 
@@ -17294,9 +17305,59 @@ async function _agFetchAuth(url, opts, ms) {
    fica rápido. Assim o app atualiza sozinho nos dois cenários. */
 /* Tabelas que a tela sincroniza sozinha. É a mesma lista usada pelo WebSocket,
    pelo polling e pelo SQL que popula a publication — deixá-las divergindo faria
-   uma tabela atualizar sozinha em um caminho e não no outro. */
+   uma tabela atualizar sozinha em um caminho e não no outro.
+   As 11 primeiras têm estado no topo do app (setterPor, no efeito de sync) e
+   são aplicadas direto na tela. As demais (fornecedores, sinistros, orcamentos,
+   orcamento_pessoal, ocupacao_historico, config, usuarios, perfis) não têm
+   estado global — a mudança é emitida como evento 'ag:rt:<tabela>' no
+   document, e cada componente que mantém sua própria lista local escuta o
+   evento e aplica (ver _agRtBusEmitir). audit_log fica de fora de propósito:
+   é log de auditoria, só é lido sob demanda numa tela de admin, e manter um
+   histórico que só cresce em estado vivo não traria benefício nenhum. */
 var AG_RT_TABELAS = ["veiculos", "clientes", "contratos", "reservas", "multas",
-                     "manutencao", "despesas", "receitas", "contas", "usos", "lembretes"];
+                     "manutencao", "despesas", "receitas", "contas", "usos", "lembretes",
+                     "fornecedores", "sinistros", "orcamentos", "orcamento_pessoal",
+                     "ocupacao_historico", "config", "usuarios", "perfis"];
+/* Tabelas sem estado global (todas as de AG_RT_TABELAS exceto as 11 primeiras).
+   Mudanças nelas viram evento 'ag:rt:<tabela>' em vez de setState direto. */
+var AG_RT_TABELAS_SEM_ESTADO_GLOBAL = ["fornecedores", "sinistros", "orcamentos",
+                     "ocupacao_historico", "usuarios", "perfis"];
+/* Emite a mudança de uma tabela sem estado global como CustomEvent no
+   document — qualquer componente com lista própria (useState local) escuta
+   'ag:rt:<tabela>' e aplica via _agRtMergeLocal, sem precisar içar o estado
+   pro topo do app. */
+function _agRtBusEmitir(tabela, tipo, linha) {
+  try {
+    document.dispatchEvent(new CustomEvent("ag:rt:" + tabela, { detail: { tipo: tipo, linha: linha } }));
+  } catch(_) {}
+}
+/* Aplica uma linha (INSERT/UPDATE/DELETE) numa lista local mantida por
+   useState — mesma lógica de merge por id que o efeito de sync do topo usa,
+   só que num array já pronto em vez de dentro de um setState updater.
+   Usada pelos componentes que escutam 'ag:rt:<tabela>' via _agRtUseSincronia. */
+function _agRtMergeLocal(lista, tipo, linha) {
+  if (!linha || linha.id == null) return lista;
+  var arr = (lista || []).slice();
+  var idx = -1;
+  for (var i = 0; i < arr.length; i++) { if (String(arr[i].id) === String(linha.id)) { idx = i; break; } }
+  if (tipo === "DELETE" || linha.deleted_at) {
+    if (idx !== -1) arr.splice(idx, 1);
+    return arr;
+  }
+  if (idx === -1) arr.unshift(linha); else arr[idx] = Object.assign({}, arr[idx], linha);
+  return arr;
+}
+/* Hook de conveniência: assina 'ag:rt:<tabela>' e aplica direto no setState
+   local via _agRtMergeLocal. Um useEffect só, chamado no componente que
+   mantém a lista — cobre WebSocket e polling ao mesmo tempo, porque os dois
+   passam pelo mesmo _agRtBusEmitir no efeito de sync do topo do app. */
+function _agRtUseSincronia(tabela, setLista) {
+  React.useEffect(function() {
+    function h(e) { var d = e.detail || {}; setLista(function(atual){ return _agRtMergeLocal(atual, d.tipo, d.linha); }); }
+    document.addEventListener("ag:rt:" + tabela, h);
+    return function(){ document.removeEventListener("ag:rt:" + tabela, h); };
+  }, [tabela]);
+}
 var _AG_RT_TOPICO = "realtime:autogest";
 var _agRtEstado = {
   ws: null, ref: 0, hb: null, tentativa: 0, reconn: null, prazo: null,
@@ -28419,7 +28480,20 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 setReceitas(function(p){ return [nova, ...p]; });
               }
               toast(num+" emitida!");
-            } catch(e){ toast("Erro ao emitir."); throw e; }
+            } catch(e){
+              // Conflito de trava otimista = outro dispositivo (ex.: mobile) já emitiu
+              // essa mesma fatura um instante antes. Não é erro de verdade: só
+              // sincroniza o registro atualizado e avisa, sem assustar o usuário.
+              if (e && e.conflito && e.registroAtual) {
+                var _ra = e.registroAtual;
+                setReceitas(function(p){ return p.some(function(r){return r.id===_ra.id;}) ? p.map(function(r){return r.id===_ra.id?_ra:r;}) : [_ra].concat(p); });
+                toast("Essa fatura já tinha sido emitida em outro dispositivo — tela atualizada.");
+              } else {
+                console.error("Erro ao emitir fatura:", e);
+                toast("Erro ao emitir: " + (e&&e.message || "falha desconhecida"));
+                throw e;
+              }
+            }
           })();
         };
         /* clique no boleto "a emitir" já emite a fatura exata (se ainda não emitida)
@@ -35992,6 +36066,7 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
   React.useEffect(function(){
     db.getAll("fornecedores").then(function(d){ setFornecedoresLista(d || []); }).catch(function(){});
   }, []);
+  _agRtUseSincronia("fornecedores", setFornecedoresLista);
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({});
   const [edit, setEdit] = useState(null);
@@ -38888,6 +38963,7 @@ function OrcamentosClientes({ veiculos, clientes, empresa, toast }) {
   React.useEffect(function() {
     db.get("orcamentos").then(function(d) { setLista(d || []); }).catch(function() { setLista([]); }).then(function() { setLoading(false); });
   }, []);
+  _agRtUseSincronia("orcamentos", setLista);
 
   function F(k, v) { setForm(function(p) { var np = Object.assign({}, p); np[k] = v; return np; }); }
 
@@ -39368,7 +39444,16 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         setReceitas(p => [novaFat].concat(p));
       }
       toast(num + " emitida!");
-    } catch(e) { toast("Erro ao emitir."); }
+    } catch(e) {
+      if (e && e.conflito && e.registroAtual) {
+        var _ra = e.registroAtual;
+        setReceitas(p => p.some(r => r.id === _ra.id) ? p.map(r => r.id === _ra.id ? _ra : r) : [_ra].concat(p));
+        toast("Essa fatura já tinha sido emitida em outro dispositivo — tela atualizada.");
+      } else {
+        console.error("Erro ao emitir fatura:", e);
+        toast("Erro ao emitir: " + (e&&e.message || "falha desconhecida"));
+      }
+    }
   }
   useEffect(function() {
     if (!finDeepLink || finDeepLink.subTab !== "faturas") return;
@@ -42087,7 +42172,16 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             setReceitas(function(p){ return [nova, ...p]; });
           }
           toast(num + " emitida!");
-        } catch(e) { toast("Erro ao emitir."); }
+        } catch(e) {
+          if (e && e.conflito && e.registroAtual) {
+            var _ra = e.registroAtual;
+            setReceitas(function(p){ return p.some(function(r){return r.id===_ra.id;}) ? p.map(function(r){return r.id===_ra.id?_ra:r;}) : [_ra].concat(p); });
+            toast("Essa fatura já tinha sido emitida em outro dispositivo — tela atualizada.");
+          } else {
+            console.error("Erro ao emitir fatura:", e);
+            toast("Erro ao emitir: " + (e&&e.message || "falha desconhecida"));
+          }
+        }
       }
 
       async function marcarPaga(fat) {
@@ -43322,6 +43416,19 @@ function OcupacaoHistorico() {
       setDados((d || []).slice().reverse());
     }).catch(function(e){ setErro("Tabela ocupacao_historico não encontrada. Rode o SQL em Config."); });
   }, []);
+  // `dados` fica em ordem cronológica (mais antigo primeiro) — o merge genérico
+  // só insere no início, então aqui reordena por `dia` depois de cada evento.
+  React.useEffect(function() {
+    function h(e) {
+      var det = e.detail || {};
+      setDados(function(atual) {
+        var novo = _agRtMergeLocal(atual || [], det.tipo, det.linha);
+        return novo.slice().sort(function(a,b){ return (a.dia||"").localeCompare(b.dia||""); });
+      });
+    }
+    document.addEventListener("ag:rt:ocupacao_historico", h);
+    return function(){ document.removeEventListener("ag:rt:ocupacao_historico", h); };
+  }, []);
   if (erro) return React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, { color: C.sub, fontSize: 13 }) }, erro);
   if (!dados) return React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, { color: C.sub, fontSize: 13 }) }, "Carregando...");
   if (!dados.length) return React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, { color: C.sub, fontSize: 13 }) }, "Sem histórico. Retornem amanhã para ver tendência (1 snapshot por dia).");
@@ -43975,8 +44082,9 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
             sql += "-- Sem isto o WebSocket ate conecta, mas o banco nao empurra evento\n";
             sql += "-- nenhum: o app cai no polling e a alteracao do colega leva alguns\n";
             sql += "-- segundos para aparecer em vez de aparecer na hora.\n";
-            sql += "-- Sao publicadas so as tabelas que a tela sincroniza (audit_log,\n";
-            sql += "-- config e afins ficam de fora para nao gerar WAL a toa).\n";
+            sql += "-- Sao publicadas so as tabelas que a tela sincroniza (audit_log fica\n";
+            sql += "-- de fora de proposito: e log, so lido sob demanda, nao precisa empurrar\n";
+            sql += "-- evento e so geraria WAL a toa).\n";
             sql += "-- ===================================================================\n";
             sql += "do $do$\n";
             sql += "declare\n";
@@ -49514,6 +49622,7 @@ function Sinistros({ veiculos, clientes, contratos, toast }) {
     setCarregando(false);
   }
   React.useEffect(function(){ carregar(); }, []);
+  _agRtUseSincronia("sinistros", setLista);
 
   function F(k, v) { setForm(function(p){ return Object.assign({}, p, { [k]: v }); }); }
   function veDe(s){ return (veiculos||[]).find(function(v){ return String(v.id) === String(s.veiculo_id); }); }
@@ -50896,6 +51005,38 @@ function Usuarios({ usuarioAtual, toast }) {
   var isAdmin = usuarioAtual && usuarioAtual.perfil && usuarioAtual.perfil.nome === "Administrador";
 
   React.useEffect(function() { carregarTudo(); }, []);
+  // "usrs" carrega o perfil já embutido (u.perfil), então o merge genérico não
+  // serve puro: uma mudança em "perfis" precisa re-casar com quem já tem esse
+  // perfil embutido, e uma mudança em "usuarios" precisa buscar o perfil atual.
+  React.useEffect(function() {
+    function hUsuarios(e) {
+      var det = e.detail || {};
+      setUsrs(function(atual) {
+        var novo = _agRtMergeLocal(atual, det.tipo, det.linha);
+        return novo.map(function(u) {
+          if (String(u.id) !== String(det.linha && det.linha.id)) return u;
+          var p = pfs.find(function(pf){ return pf.id === u.perfil_id; }) || null;
+          return Object.assign({}, u, { perfil: p });
+        });
+      });
+    }
+    function hPerfis(e) {
+      var det = e.detail || {};
+      setPfs(function(atual) { return _agRtMergeLocal(atual, det.tipo, det.linha); });
+      setUsrs(function(atual) {
+        return atual.map(function(u) {
+          if (!det.linha || u.perfil_id !== det.linha.id) return u;
+          return Object.assign({}, u, { perfil: det.tipo === "DELETE" ? null : det.linha });
+        });
+      });
+    }
+    document.addEventListener("ag:rt:usuarios", hUsuarios);
+    document.addEventListener("ag:rt:perfis", hPerfis);
+    return function(){
+      document.removeEventListener("ag:rt:usuarios", hUsuarios);
+      document.removeEventListener("ag:rt:perfis", hPerfis);
+    };
+  }, [pfs]);
 
   async function carregarTudo() {
     setLd(true);
@@ -52209,6 +52350,45 @@ function App() {
     // populava os painéis depois de um refresh manual (F5/Ctrl+R) da página.
     setRefreshTick(function(t){ return t + 1; });
   }
+  /* Permissão do usuário logado precisa reagir em tempo real: se um admin
+     desativa a conta ou muda o perfil dela em outro aparelho, este aqui não
+     pode continuar operando com a permissão antiga até o próximo F5 — tanto
+     por segurança (revogar acesso deveria valer na hora) quanto porque
+     _agPodeEscrever lê de __agUsuarioAtual, que só era tocado no login. */
+  React.useEffect(function() {
+    if (!logado || !usuarioAtual) return;
+    function atualizarUsuarioAtual(camposUsuario, novoPerfil) {
+      setUsuarioAtual(function(atual) {
+        if (!atual) return atual;
+        var u = Object.assign({}, atual, camposUsuario || {});
+        if (novoPerfil !== undefined) u.perfil = novoPerfil;
+        __agSetUsuario(u);
+        _agSessAtualizarUsuario(u);
+        return u;
+      });
+    }
+    function hUsuarios(e) {
+      var det = e.detail || {};
+      if (!det.linha || String(det.linha.id) !== String(usuarioAtual.id)) return;
+      if (det.tipo === "DELETE" || det.linha.deleted_at || det.linha.ativo === false) {
+        toast("Seu acesso foi desativado por um administrador.");
+        handleLogout();
+        return;
+      }
+      atualizarUsuarioAtual(det.linha);
+    }
+    function hPerfis(e) {
+      var det = e.detail || {};
+      if (!det.linha || !usuarioAtual.perfil || String(det.linha.id) !== String(usuarioAtual.perfil.id)) return;
+      atualizarUsuarioAtual(null, det.tipo === "DELETE" ? null : det.linha);
+    }
+    document.addEventListener("ag:rt:usuarios", hUsuarios);
+    document.addEventListener("ag:rt:perfis", hPerfis);
+    return function(){
+      document.removeEventListener("ag:rt:usuarios", hUsuarios);
+      document.removeEventListener("ag:rt:perfis", hPerfis);
+    };
+  }, [logado, usuarioAtual]);
   function handleLogout() {
     var s = _readSess();
     setLogado(false); setUsuarioAtual(null);
@@ -52885,10 +53065,14 @@ function App() {
       veiculos: setVeiculos, clientes: setClientes, contratos: setContratos,
       reservas: setReservas, multas: setMultas, manutencao: setManutencoes,
       despesas: setDespesas, receitas: setReceitas, contas: setContas,
-      usos: setUsos, lembretes: setLembretes
+      usos: setUsos, lembretes: setLembretes,
+      orcamento_pessoal: setOrcItens
     };
-    var tabelas = AG_RT_TABELAS.filter(function(n){ return !!setterPor[n]; })
-                               .map(function(n){ return [n, setterPor[n]]; });
+    /* Todas as tabelas de AG_RT_TABELAS entram no WebSocket e no polling — não
+       só as que têm setState no topo. "config" é tratada à parte (linha única,
+       não lista); as de AG_RT_TABELAS_SEM_ESTADO_GLOBAL viram evento
+       'ag:rt:<tabela>' para quem tiver lista local (ver _agRtBusEmitir). */
+    var tabelas = AG_RT_TABELAS.slice();
     if (!_syncMarcaRef.current) _syncMarcaRef.current = new Date(Date.now() - 120000).toISOString();
     var vivo = true;
     var timer = null;
@@ -52941,6 +53125,25 @@ function App() {
       _syncMarcaRef.current = maior;
     }
 
+    /* Aplica um lote de linhas mudadas de UMA tabela, decidindo o caminho:
+       "config" é linha única (objeto, não lista) e mescla direto no estado
+       `empresa`; tabela com setState no topo usa o merge por id de `aplicar`;
+       o resto (sem estado global) vira evento 'ag:rt:<tabela>' para quem
+       estiver com a lista local aberta (_agRtUseSincronia). */
+    function aplicarMudancas(tabela, linhas) {
+      if (!linhas || !linhas.length) return;
+      if (tabela === "config") {
+        var ultima = linhas[linhas.length - 1];
+        if (ultima && !ultima.deleted_at) setEmpresa(function(atual){ return Object.assign({}, atual, ultima); });
+        return;
+      }
+      var setter = setterPor[tabela];
+      if (setter) { aplicar(setter, linhas.map(function(r){ return enxugar(tabela, r); })); return; }
+      if (AG_RT_TABELAS_SEM_ESTADO_GLOBAL.indexOf(tabela) !== -1) {
+        linhas.forEach(function(r){ _agRtBusEmitir(tabela, r.deleted_at ? "DELETE" : "UPDATE", r); });
+      }
+    }
+
     async function ciclo() {
       // Aba em segundo plano ou offline: não gasta requisição nem bateria.
       if (!vivo || rodando || document.hidden || navigator.onLine === false || !_agCap.updatedAt) return;
@@ -52951,10 +53154,10 @@ function App() {
         for (var i = 0; i < tabelas.length; i++) {
           if (!vivo) return;
           try {
-            var nome = tabelas[i][0];
+            var nome = tabelas[i];
             var linhas = await db.getMudancas(nome, _syncMarcaRef.current);
             if (linhas.length) {
-              aplicar(tabelas[i][1], linhas.map(function(r){ return enxugar(nome, r); }));
+              aplicarMudancas(nome, linhas);
               linhas.forEach(function(r){ if (r.updated_at && r.updated_at > maior) maior = r.updated_at; });
             }
           } catch(e) { /* falha de rede num ciclo não quebra os próximos */ }
@@ -52980,17 +53183,16 @@ function App() {
 
     // ── 1. Tempo real ──
     _agRtIniciar({
-      tabelas: tabelas.map(function(par){ return par[0]; }),
+      tabelas: tabelas,
       onChange: function(tabela, tipo, linha) {
-        if (!vivo) return;
-        var setter = setterPor[tabela];
-        if (!setter || !linha || linha.id == null) return;
-        /* DELETE físico não traz deleted_at; `aplicar` remove pela marca, então
-           é ela que sintetizamos aqui — a linha some da tela do mesmo jeito. */
+        if (!vivo || !linha || linha.id == null) return;
+        /* DELETE físico não traz deleted_at; `aplicar`/o evento removem pela
+           marca, então é ela que sintetizamos aqui — a linha some do mesmo
+           jeito nos dois caminhos (estado global ou lista local). */
         var row = (tipo === "DELETE")
           ? Object.assign({}, linha, { deleted_at: linha.deleted_at || new Date().toISOString() })
-          : enxugar(tabela, linha);
-        aplicar(setter, [row]);
+          : linha;
+        aplicarMudancas(tabela, [row]);
         avancarMarca([row]);
       },
       onStatus: function(inscrito) {

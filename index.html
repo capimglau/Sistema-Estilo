@@ -18143,8 +18143,13 @@ function _hojeISO() { return _brNow().toISOString().split("T")[0]; }
 function _addDiasISO(iso, n) { var x = new Date(iso + "T12:00:00Z"); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().split("T")[0]; }
 function fmtComp(d) { if (!d) return ""; return d.slice(5,7) + "/" + d.slice(2,4); }
 /* maximumFractionDigits é obrigatório: sem ele o toLocaleString usa 3 casas por
-   padrão, e uma diária de 2800/30 saía "R$ 93,333" no contrato impresso. */
-function fmtBRL(v) { if (v === null || v === undefined || v === "") return "--"; return "R$ " + parseFloat(v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+   padrão, e uma diária de 2800/30 saía "R$ 93,333" no contrato impresso.
+   Mesmo com essas opções, alguns navegadores/WebViews com ICU reduzido
+   ignoram minimumFractionDigits/maximumFractionDigits e caem no default de
+   3 casas mesmo assim (voltava a aparecer um "0" indevido depois dos
+   centavos) — por isso arredonda primeiro com toFixed(2), que não depende
+   do Intl, e só usa toLocaleString pra formatar a parte inteira (milhar). */
+function fmtBRL(v) { if (v === null || v === undefined || v === "") return "--"; var fixed = Math.abs(parseFloat(v || 0)).toFixed(2); var p = fixed.split("."); return (parseFloat(v || 0) < 0 ? "-" : "") + "R$ " + parseInt(p[0], 10).toLocaleString("pt-BR") + "," + p[1]; }
 /* Antes arredondava e cortava os centavos (Math.round + sem casas decimais).
    Padronizado pra nunca esconder centavos em lugar nenhum do sistema — agora é
    só um alias de fmtBRL, mantido pelo nome por causa dos ~20 call-sites que já
@@ -18158,7 +18163,13 @@ function BRLValue({ v, size, weight, color, centOpacity, centSize, style }) {
   if (v === null || v === undefined || v === "") return React.createElement('span', { style: Object.assign({ fontSize: size, fontWeight: weight, color: color }, style) }, "--");
   var num = parseFloat(v || 0);
   var neg = num < 0;
-  var partes = Math.abs(num).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split(",");
+  // toFixed(2) primeiro: arredonda a exatamente 2 casas sem depender do
+  // Intl.NumberFormat pra isso — em alguns navegadores/WebViews com ICU
+  // reduzido, o toLocaleString ignora minimumFractionDigits/maximumFractionDigits
+  // e cai no default (3 casas), o que mostrava um "0" indevido depois dos
+  // centavos (ex.: 293.47 com resíduo de ponto flutuante virava "293,470").
+  var fixed = Math.abs(num).toFixed(2);
+  var partes = [parseInt(fixed.split(".")[0], 10).toLocaleString("pt-BR"), fixed.split(".")[1]];
   // centSize: override opcional do tamanho dos centavos (default: 58% do tamanho
   // principal, arredondado) — usado quando um painel específico pede um ajuste
   // fino (ex.: "aumente 1px só nos centavos") sem mexer no padrão dos outros.
@@ -34519,6 +34530,8 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   const [viewMode, setViewMode] = useState("lista");
   const [notifModal, setNotifModal] = useState(null);
   const [notifData, setNotifData] = useState("");
+  const [acaoModal, setAcaoModal] = useState(null);
+  const [acaoModalData, setAcaoModalData] = useState("");
   const [aitDiag, setAitDiag] = useState(null); // diagnóstico da última extração de AIT (banner no modal)
 
   React.useEffect(function() {
@@ -34811,12 +34824,25 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       setMultas(p => [restaurado].concat(p));
     });
   }
-  async function pagar(m) {
-    var dt = prompt("Data do pagamento (AAAA-MM-DD):", _brNow().toISOString().split("T")[0]);
-    if (!dt) return;
+  /* Ações de conclusão de etapa (pagar/solicitar boleto/receber boleto/cobrar
+     cliente) usavam window.prompt() pra pedir a data. window.prompt() não é
+     confiável em vários contextos de execução (PWA instalado, WebViews
+     embutidos) — em vários deles a chamada simplesmente não faz nada
+     (nenhum diálogo aparece), fazendo o botão "Concluir" parecer quebrado.
+     Substituído por um mini-modal próprio (mesmo padrão já usado em
+     abrirNotifModal/fecharNotifModal para o registro de notificação). */
+  function abrirAcaoModal(m, cfg) {
+    setAcaoModal(Object.assign({ multa: m }, cfg));
+    setAcaoModalData(_brNow().toISOString().split("T")[0]);
+  }
+  function fecharAcaoModal() { setAcaoModal(null); }
+  async function confirmarPagar(m, dt) {
     await db.patch("multas", m.id, { status: "pago", data_pagamento: dt });
     setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, { status: "pago", data_pagamento: dt }) : x));
     toast("✅ Multa paga!");
+  }
+  function pagar(m) {
+    abrirAcaoModal(m, { titulo: "Registrar Pagamento ao Órgão", emoji: "💰", cor: "#5a8a63", campoLabel: "📅 Data do pagamento", onConfirm: function(dt){ return confirmarPagar(m, dt); } });
   }
   async function reverterMulta(m) {
     if (!confirm("Reverter pagamento desta multa?")) return;
@@ -34824,26 +34850,29 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, { status: "pendente", data_pagamento: null }) : x));
     toast("↩ Revertido");
   }
-  async function solicitarBoleto(m) {
-    var dt = prompt("Data da solicitação do boleto ao órgão:", _brNow().toISOString().split("T")[0]);
-    if (!dt) return;
+  async function confirmarSolicitarBoleto(m, dt) {
     await db.patch("multas", m.id, { boleto_orgao_solicitado: true, data_solicitacao_boleto: dt });
     setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, { boleto_orgao_solicitado: true, data_solicitacao_boleto: dt }) : x));
     toast("📋 Boleto solicitado registrado!");
   }
-  async function receberBoleto(m) {
-    var dt = prompt("Data de recebimento do boleto:", _brNow().toISOString().split("T")[0]);
-    if (!dt) return;
+  function solicitarBoleto(m) {
+    abrirAcaoModal(m, { titulo: "Registrar Boleto Solicitado", emoji: "📋", cor: "#B8915A", campoLabel: "📅 Data da solicitação do boleto ao órgão", onConfirm: function(dt){ return confirmarSolicitarBoleto(m, dt); } });
+  }
+  async function confirmarReceberBoleto(m, dt) {
     await db.patch("multas", m.id, { boleto_orgao_recebido: true, data_boleto_recebido: dt });
     setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, { boleto_orgao_recebido: true, data_boleto_recebido: dt }) : x));
     toast("💳 Boleto recebido registrado!");
   }
-  async function cobrarCliente(m) {
-    var dt = prompt("Data da cobrança ao cliente:", _brNow().toISOString().split("T")[0]);
-    if (!dt) return;
+  function receberBoleto(m) {
+    abrirAcaoModal(m, { titulo: "Registrar Boleto Recebido", emoji: "💳", cor: "#B8915A", campoLabel: "📅 Data de recebimento do boleto", onConfirm: function(dt){ return confirmarReceberBoleto(m, dt); } });
+  }
+  async function confirmarCobrarCliente(m, dt) {
     await db.patch("multas", m.id, { cobrado_cliente: "pendente", data_cobranca_cliente: dt });
     setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, { cobrado_cliente: "pendente", data_cobranca_cliente: dt }) : x));
     toast("📬 Cobrança ao cliente registrada!");
+  }
+  function cobrarCliente(m) {
+    abrirAcaoModal(m, { titulo: "Registrar Cobrança ao Cliente", emoji: "📬", cor: "#8AABCC", campoLabel: "📅 Data da cobrança ao cliente", onConfirm: function(dt){ return confirmarCobrarCliente(m, dt); } });
   }
   async function clientePagou(m) {
     if (!confirm("Confirmar recebimento do pagamento do cliente?")) return;
@@ -35820,6 +35849,28 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
           )
         );
       })()
+    /* Mini-modal: ações de conclusão de etapa (pagar, solicitar/receber boleto, cobrar cliente) */
+    , acaoModal && (function() {
+        var mA = acaoModal.multa;
+        return React.createElement(Modal, { open: true, onClose: fecharAcaoModal, title: acaoModal.titulo }
+          , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } }
+            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 10, background: acaoModal.cor + "18", border: "1.5px solid " + acaoModal.cor + "55", borderRadius: 10, padding: "10px 14px" } }
+              , React.createElement('span', { style: { fontSize: 22 } }, acaoModal.emoji)
+              , React.createElement('div', null
+                , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: "var(--c-sub)", textTransform: "uppercase", letterSpacing: 0.5 } }, "AIT " + (mA.ait || "—"))
+                , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: acaoModal.cor } }, acaoModal.titulo)
+              )
+            )
+            , React.createElement(Lbl, { label: acaoModal.campoLabel }
+              , React.createElement('input', { style: FI, type: "date", value: acaoModalData, onChange: function(e){ setAcaoModalData(e.target.value); } })
+            )
+            , React.createElement('div', { style: { display: "flex", gap: 10, justifyContent: "flex-end" } }
+              , React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: fecharAcaoModal }, "Cancelar")
+              , React.createElement('button', { className: bCls(Btn(C.green)), style: bStyle(Btn(C.green)), onClick: async function(){ if (!acaoModalData) return; await acaoModal.onConfirm(acaoModalData); fecharAcaoModal(); } }, acaoModal.emoji + " Confirmar")
+            )
+          )
+        );
+      })()
     /* Input oculto para seleção de arquivo pelo atalho "Multa + AIT" */
     , React.createElement('input', { ref: aitFileInputRef, type: "file", accept: "image/*,.pdf", style: { display: "none" }, onChange: async function(e) {
         var file = e.target.files[0]; if (!file) return;
@@ -36626,8 +36677,8 @@ function PessoalDash({
   var CAT_CL = {Moradia:'#8A87CF',Alimentacao:'#E8B875',Transporte:'#7BAAD2',Saude:'#D98A9A',Lazer:'#7CC9A0',Educacao:'#B89DD4',Investimento:'#72B8C0',Vestuario:'#D4977A',Servicos:'#B8A080',Outros:'#A0A0A8'};
 
   function fmtShort(v){ var a=Math.abs(parseFloat(v)||0); if(a>=1e6)return 'R$'+(v/1e6).toFixed(1).replace('.',',')+'M'; if(a>=1000)return 'R$'+(Math.round(a/100)/10).toFixed(1).replace('.',',')+'k'; return 'R$'+Math.round(a); }
-  function fmtBRL(v)  { return 'R$ '+(Math.abs(parseFloat(v)||0)).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
-  function fmtFull(v) { return 'R$ '+(Math.abs(parseFloat(v)||0)).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  function fmtBRL(v)  { var f=Math.abs(parseFloat(v)||0).toFixed(2); var p=f.split("."); return 'R$ '+parseInt(p[0],10).toLocaleString('pt-BR')+','+p[1]; }
+  function fmtFull(v) { return fmtBRL(v); }
   function _addM(b,n) { var d=new Date(b+'-15'); d.setMonth(d.getMonth()+n); return d.toISOString().slice(0,7); }
   function _F(k,v)    { setPForm(function(p){ return Object.assign({},p,{[k]:v}); }); }
   function _nomMesOf(m){ var s=new Date(m+'-15').toLocaleString('pt-BR',{month:'long',year:'numeric'}); return s.charAt(0).toUpperCase()+s.slice(1); }

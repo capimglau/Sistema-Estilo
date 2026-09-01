@@ -17939,7 +17939,7 @@ function Ico(nome, t, style) {
    do banco. Status desconhecido cai num fallback que ao menos capitaliza e
    troca "_" por espaço, em vez de sumir. */
 var _AG_ROTULO_STATUS = {
-  disponivel: "Disponível", alugado: "Alugado", manutencao: "Manutenção", inativo: "Inativo",
+  disponivel: "Disponível", alugado: "Alugado", manutencao: "Manutenção", inativo: "Inativo", vendido: "Vendido",
   ativo: "Ativo", concluido: "Concluído", cancelado: "Cancelado",
   pendente: "Pendente", pago: "Pago", parcial: "Parcial", isento: "Isento", contestado: "Contestado",
   previsto: "Previsto", prevista: "Prevista", emitida: "Emitida", paga: "Paga", vencida: "Vencida",
@@ -24992,8 +24992,8 @@ function shareWhatsApp(ct, cl, ve, emp) {
 // -- INICIO ----------------------------------------------------------------─
 // Status efetivo do veículo derivado dos contratos (fonte da verdade)
 function statusEfetivoVeiculo(veiculo, contratos) {
-  // Manutenção e inativo têm prioridade absoluta (únicos valores persistidos no banco)
-  if (veiculo.status === "manutencao" || veiculo.status === "inativo") return veiculo.status;
+  // Manutenção, inativo e vendido têm prioridade absoluta (únicos valores persistidos no banco)
+  if (veiculo.status === "manutencao" || veiculo.status === "inativo" || veiculo.status === "vendido") return veiculo.status;
   // alugado/disponivel: SEMPRE calculado pelos contratos — ignora veiculo.status
   var temAtivo = (contratos || []).some(function(c) {
     if (String(c.veiculo_id) !== String(veiculo.id)) return false;
@@ -25266,7 +25266,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   const emManut = veiculos.filter(v => v.status === "manutencao").length;
   // Frota operacional: veiculo "inativo" está fora de frota e não pode entrar no
   // denominador da ocupação — senão inativar um carro derruba a taxa artificialmente.
-  const totalFrota = veiculos.filter(v => v.status !== "inativo").length;
+  const totalFrota = veiculos.filter(v => v.status !== "inativo" && v.status !== "vendido").length;
   const taxaOcup = totalFrota > 0 ? Math.round((alugados / totalFrota) * 100) : 0;
 
   const ctsMes = contratos.filter(c => {
@@ -25485,9 +25485,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   const revisaoKmProxima  = veiculos.filter(function(v){ var s = statusRevisaoKm(v); return s && s.proxima; });
   const pneusVencidos     = veiculos.filter(function(v){ var s = statusPneus(v); return s && s.vencido; });
   const pneusProximos     = veiculos.filter(function(v){ var s = statusPneus(v); return s && s.proximo; });
-  const docsVencidos = veiculos.filter(v => [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao].some(d => d && d < hoje));
-  const docsCriticos = veiculos.filter(v => { var dts = [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao]; return dts.some(d => d && d >= hoje && d <= str7doc) && !dts.some(d => d && d < hoje); });
-  const docsVencendo = veiculos.filter(v => { var dts = [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao]; return dts.some(d => d && d > str7doc && d <= str30doc) && !dts.some(d => d && d < hoje) && !dts.some(d => d && d >= hoje && d <= str7doc); });
+  const veiculosDocAtivos = veiculos.filter(v => v.status !== "inativo" && v.status !== "vendido");
+  const docsVencidos = veiculosDocAtivos.filter(v => [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao].some(d => d && d < hoje));
+  const docsCriticos = veiculosDocAtivos.filter(v => { var dts = [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao]; return dts.some(d => d && d >= hoje && d <= str7doc) && !dts.some(d => d && d < hoje); });
+  const docsVencendo = veiculosDocAtivos.filter(v => { var dts = [v.venc_ipva, v.venc_seguro, v.venc_licenciamento, v.venc_revisao]; return dts.some(d => d && d > str7doc && d <= str30doc) && !dts.some(d => d && d < hoje) && !dts.some(d => d && d >= hoje && d <= str7doc); });
   // Reservas — pendentes e com retirada próxima (7 dias)
   var str7res = new Date(_brNowMs() + 7*864e5).toISOString().split("T")[0];
   const reservasPendentes = (reservas||[]).filter(function(r){ return r.status === "pendente"; });
@@ -26260,6 +26261,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         }; }, "multa_notif|"+m.id+"|"+prazo);
       });
       (veiculos||[]).forEach(function(v){
+        if (v.status === "inativo" || v.status === "vendido") return;
         [
           {campo:v.venc_ipva,emoji:"📄",nome:"IPVA"},
           {campo:v.venc_seguro,emoji:"🛡️",nome:"Seguro"},
@@ -29759,7 +29761,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     return best;
   }
   React.useEffect(function(){
-    var active = (veiculos||[]).filter(function(v){ return v.status!=='inativo'; });
+    var active = (veiculos||[]).filter(function(v){ return v.status!=='inativo' && v.status!=='vendido'; });
     if(!active.length) return;
     var init = {};
     active.forEach(function(v){ init[v.id]={loading:true}; });
@@ -29840,7 +29842,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
   }, [veiculos, fipeRefresh]);
 
   // Despesas gerais (sem vínculo a veículo) — filtradas pelo mês quando apurado
-  var nVeicAtivos = Math.max(1, (veiculos||[]).filter(function(v){ return v.status!=='inativo'; }).length);
+  var nVeicAtivos = Math.max(1, (veiculos||[]).filter(function(v){ return v.status!=='inativo' && v.status!=='vendido'; }).length);
 
   // Categorias de custo individual por veículo (não entram no rateio geral)
   var CATS_VEIC = ['IPVA','Licenciamento','Emplacamento'];
@@ -30702,7 +30704,7 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
   const [search, setSearch] = useState("");
   const [sortFrota, setSortFrota] = useState("placa_asc");
   const [loading, setLoading] = useState(false);
-  const SC = { disponivel: C.green, alugado: C.blue, manutencao: C.purple, inativo: C.red };
+  const SC = { disponivel: C.green, alugado: C.blue, manutencao: C.purple, inativo: C.red, vendido: C.gray };
   const [veicSheet, setVeicSheet] = useState(null); // Effect 12: veículo selecionado para a janela de detalhe
   const [veicContratosView, setVeicContratosView] = useState(null); // veículo com o modal "Ver contratos" aberto
   var _abrirNovoVeiculoRef = React.useRef(null);
@@ -30870,6 +30872,7 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
               );
             })()
           , (() => {
+            if (v.status === "vendido") return null;
             var hoje2 = _brNow().toISOString().split("T")[0];
             var str30 = new Date(_brNowMs() + 30*864e5).toISOString().split("T")[0];
             var docs = [
@@ -30962,19 +30965,23 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
                 // statusEfetivoVeiculo() sempre recalcula alugado/disponivel a partir dos
                 // contratos quando o campo bruto não é manutencao/inativo.
                 var stEf = edit ? statusEfetivoVeiculo((veiculos||[]).find(function(x){return x.id===edit;})||{}, contratos||[]) : "disponivel";
-                var valorSel = (stBanco === "manutencao" || stBanco === "inativo") ? stBanco : "disponivel";
+                var valorSel = (stBanco === "manutencao" || stBanco === "inativo" || stBanco === "vendido") ? stBanco : "disponivel";
                 return React.createElement('div', null,
                   React.createElement('select', { style: FI, value: valorSel,
                     onChange: function(e){ F("status", e.target.value); }
                   },
                     React.createElement('option', { value: "disponivel" }, stEf === "alugado" ? "Alugado (automático)" : "Disponivel (automático)"),
                     React.createElement('option', { value: "manutencao" }, "Manutencao"),
-                    React.createElement('option', { value: "inativo" }, "Inativo")
+                    React.createElement('option', { value: "inativo" }, "Inativo"),
+                    React.createElement('option', { value: "vendido" }, "Vendido")
                   )
                 );
               })()
             )
         )
+        , (form.status === "vendido") && React.createElement(Lbl, { label: "Dados da venda (comprador, data, valor...)" },
+            React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 60 }), value: form.observacoes || "", onChange: e => F("observacoes", e.target.value), placeholder: "Ex: Vendido em 01/09/2026 para João Silva, CPF 000.000.000-00, tel (11) 90000-0000, por R$ 45.000" })
+          )
         , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 566}}
           , React.createElement(Lbl, { label: "Mensal (R$)", flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 566}}, React.createElement('input', { style: FI, type: "number", step: "1", value: form.valor_mensal || "", onChange: e => F("valor_mensal", e.target.value), placeholder: "Ex: 2500", __self: this, __source: {fileName: _jsxFileName, lineNumber: 566}} ))
         )
@@ -32127,8 +32134,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   function F(k, v) { setForm(p => Object.assign({}, p, { [k]: v })); }
   function veicsDisponiveis() {
     return veiculos.filter(function(v) {
-      // Inativo (fora de frota) nunca entra, independente do período
-      if (v.status === "inativo") return false;
+      // Inativo/vendido (fora de frota) nunca entra, independente do período
+      if (v.status === "inativo" || v.status === "vendido") return false;
       var ctsFiltrar = contratos.filter(function(c) {
         return c.status === "ativo" && String(c.veiculo_id) == String(v.id);
       });
@@ -39406,7 +39413,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
       /* ── Rateio automático: Seguros sem veículo → divide entre todos os ativos ── */
       var isRateioSeguro = form.categoria === "Seguros" && !form.veiculo_id;
-      var veiculosAtivos = (veiculos||[]).filter(function(v){ return v.status !== "inativo"; });
+      var veiculosAtivos = (veiculos||[]).filter(function(v){ return v.status !== "inativo" && v.status !== "vendido"; });
       if (isRateioSeguro && veiculosAtivos.length > 1) {
         var valorPorVeic = (parseFloat(form.valor) / veiculosAtivos.length).toFixed(2);
         var criados = [];
@@ -42124,7 +42131,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             , React.createElement('span', { style: { fontSize: 16 } }, "🛡️")
             , React.createElement('div', null
               , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: C.blue } }, "Rateio automático por veículo")
-              , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "Ao salvar, o valor será dividido entre os "+veiculos.filter(function(v){ return v.status !== "inativo"; }).length+" veículos ativos (R$ "+(veiculos.filter(function(v){ return v.status !== "inativo"; }).length > 0 ? (parseFloat(form.valor||0) / veiculos.filter(function(v){ return v.status !== "inativo"; }).length).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}) : "0,00")+" cada)")
+              , React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 2 } }, "Ao salvar, o valor será dividido entre os "+veiculos.filter(function(v){ return v.status !== "inativo" && v.status !== "vendido"; }).length+" veículos ativos (R$ "+(veiculos.filter(function(v){ return v.status !== "inativo" && v.status !== "vendido"; }).length > 0 ? (parseFloat(form.valor||0) / veiculos.filter(function(v){ return v.status !== "inativo" && v.status !== "vendido"; }).length).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}) : "0,00")+" cada)")
             )
           )
           , React.createElement(Lbl, { label: "Observacoes", __self: this, __source: {fileName: _jsxFileName, lineNumber: 2534}}, React.createElement('input', { style: FI, value: form.observacoes || "", onChange: e => F("observacoes", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 2534}} ))
@@ -42209,7 +42216,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   var custoMan = manutencoes.reduce((s, m) => s + parseFloat(m.custo || 0), 0);
   var totalDesp = despesas.filter(d => !d.manutencao_id && !isRetLucro(d)).reduce((s, d) => s + parseFloat(d.valor || 0), 0);
   var lucro = receita - totalDesp - custoMan;
-  var porStatus = ["disponivel", "alugado", "manutencao", "inativo"].map(st => ({ label: st, count: veiculos.filter(v => statusEfetivoVeiculo(v, contratos) === st).length }));
+  var porStatus = ["disponivel", "alugado", "manutencao", "inativo", "vendido"].map(st => ({ label: st, count: veiculos.filter(v => statusEfetivoVeiculo(v, contratos) === st).length }));
 
   var _hojeRelat = _brNow().toISOString().split("T")[0];
   var _fatList = (contratos || []).filter(function(c){ return c.status !== "cancelado"; }).map(function(c) {
@@ -42634,7 +42641,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
       var ocupMeses = meses12.map(function(mes) {
         var diasMes = new Date(parseInt(mes.slice(0,4)), parseInt(mes.slice(5,7)), 0).getDate();
         // Só a frota operacional entra no denominador (inativo = fora de frota)
-        var totalVeicDias = veiculos.filter(function(v){ return v.status !== "inativo"; }).length * diasMes;
+        var totalVeicDias = veiculos.filter(function(v){ return v.status !== "inativo" && v.status !== "vendido"; }).length * diasMes;
         if (totalVeicDias === 0) return { mes: mes, label: nomeMesG(mes), pct: 0 };
         var diasAlugados = contratos.filter(function(c){ return c.status !== "cancelado"; }).reduce(function(s,c){
           if (!c.data_inicio||!c.data_fim) return s;
@@ -45568,7 +45575,7 @@ function RentabilidadeVeiculos({ veiculos, contratos, despesas, manutencoes, rec
   }
   var range = getRange();
   var ini = range.ini, fim = range.fim;
-  var metrics = (veiculos||[]).filter(function(v){ return v.status !== "inativo"; }).map(function(ve) {
+  var metrics = (veiculos||[]).filter(function(v){ return v.status !== "inativo" && v.status !== "vendido"; }).map(function(ve) {
     var vConts = (contratos||[]).filter(function(c){ return String(c.veiculo_id)===String(ve.id) && c.status !== "cancelado" && c.data_inicio <= fim && (c.data_fim||"9999") >= ini; });
     var receita = vConts.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); }, 0);
     receita += (receitas||[]).filter(function(r){ return String(r.veiculo_id)===String(ve.id) && !r.ref_fatura && r.data >= ini && r.data <= fim; }).reduce(function(s,r){ return s+parseFloat(r.valor||0); }, 0);
@@ -46231,6 +46238,7 @@ function buildAgendaEventos(ctx) {
 
   // VEÍCULOS — documentos
   veiculos.forEach(function(v) {
+    if (v.status === "inativo" || v.status === "vendido") return;
     [
       { campo: v.venc_ipva,          emoji: "📄", nome: "IPVA",          cor: "#AF52DE" },
       { campo: v.venc_seguro,        emoji: "🛡️", nome: "Seguro",         cor: "#32ADE6" },
@@ -48318,7 +48326,7 @@ function Simulador({ veiculos, contratos, despesas, manutencoes, multas, receita
       var ref = (m.data_previsao_pagamento || m.data_pagamento || m.data_entrada || "").slice(0,7);
       if (meses.includes(ref)) { total += parseFloat(m.custo)||0; count++; }
     });
-    var nV = Math.max(1, veiculos.filter(function(v){ return v.status!=="inativo"; }).length);
+    var nV = Math.max(1, veiculos.filter(function(v){ return v.status!=="inativo" && v.status!=="vendido"; }).length);
     return n > 0 ? total / n / nV : 0;
   }, [manutencoes, veiculos, mesesBase]);
 
@@ -48344,7 +48352,7 @@ function Simulador({ veiculos, contratos, despesas, manutencoes, multas, receita
         total += parseFloat(d.valor) || 0;
       }
     });
-    var nV = Math.max(1, veiculos.filter(function(v){ return v.status !== "inativo"; }).length);
+    var nV = Math.max(1, veiculos.filter(function(v){ return v.status !== "inativo" && v.status !== "vendido"; }).length);
     return { total: n > 0 ? total / n : 0, porVeiculo: n > 0 ? total / n / nV : 0, nVeiculos: nV };
   }, [despesas, veiculos, mesesBase]);
 
@@ -48368,7 +48376,7 @@ function Simulador({ veiculos, contratos, despesas, manutencoes, multas, receita
         total += val;
       }
     });
-    var nV = Math.max(1, veiculos.filter(function(v){ return v.status!=="inativo"; }).length);
+    var nV = Math.max(1, veiculos.filter(function(v){ return v.status!=="inativo" && v.status!=="vendido"; }).length);
     return n > 0 ? total / n / nV : 0;
   }, [multas, veiculos, mesesBase]);
 
@@ -52437,7 +52445,7 @@ function App() {
         // Também é fetch cru: sem o guard, perfil sem permissão de criar tenta
         // gravar o snapshot a cada carregamento e leva 403 do RLS toda vez.
         if (lastSnap !== hojeIso && veics.length && podeCriar()) {
-          var total = veics.filter(function(v){ return v.status !== "inativo"; }).length;
+          var total = veics.filter(function(v){ return v.status !== "inativo" && v.status !== "vendido"; }).length;
           var alug = veics.filter(function(v){ return statusEfetivoVeiculo(v, cts) === "alugado"; }).length;
           var man  = veics.filter(function(v){ return statusEfetivoVeiculo(v, cts) === "manutencao"; }).length;
           var disp = veics.filter(function(v){ return statusEfetivoVeiculo(v, cts) === "disponivel"; }).length;

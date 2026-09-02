@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="036d2f0"/>
+<meta name="ag-build" content="6ccea59"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -17445,9 +17445,26 @@ async function _agFetchAuth(url, opts, ms) {
 var AG_RT_TABELAS = ["veiculos", "clientes", "contratos", "reservas", "multas",
                      "manutencao", "despesas", "receitas", "contas", "usos", "lembretes",
                      "fornecedores", "sinistros", "orcamentos", "orcamento_pessoal",
-                     "ocupacao_historico", "config", "usuarios", "perfis"];
-/* Tabelas sem estado global (todas as de AG_RT_TABELAS exceto as 11 primeiras).
-   Mudanças nelas viram evento 'ag:rt:<tabela>' em vez de setState direto. */
+                     "ocupacao_historico", "config", "usuarios", "perfis",
+                     /* agenda_adiamentos (adiar/resolver cartão da Agenda) era a
+                        ÚNICA alteração de dado do app fora do tempo real: só era
+                        recarregada de tabela cheia no fim de cada ciclo de
+                        polling. Como o ciclo cai para 30s justamente quando o
+                        WebSocket ESTÁ inscrito (LENTO), resolver um cartão no
+                        celular levava até meio minuto para sumir no PC — e ficava
+                        mais lento quanto MELHOR estivesse o tempo real, que é o
+                        contrário do esperado. Tem id/updated_at/deleted_at (ver
+                        sql/04 + sql/07), então atende aos dois caminhos; o SQL da
+                        publication é gerado desta mesma lista e pula tabela que
+                        não existe, então entrar aqui é seguro num banco que nunca
+                        rodou o 04. */
+                     "agenda_adiamentos"];
+/* Tabelas sem estado global: mudanças nelas viram evento 'ag:rt:<tabela>' em
+   vez de setState direto. NÃO é "todas menos as 11 primeiras" (era o que dizia
+   aqui, e está errado): das que sobram em AG_RT_TABELAS, `orcamento_pessoal`
+   tem setter no topo (setOrcItens), `config` é linha única tratada à parte e
+   `agenda_adiamentos` alimenta o mapa de agAdiaMapa(). Ao mexer nesta lista,
+   conferir contra `setterPor` e os casos especiais de aplicarMudancas. */
 var AG_RT_TABELAS_SEM_ESTADO_GLOBAL = ["fornecedores", "sinistros", "orcamentos",
                      "ocupacao_historico", "usuarios", "perfis"];
 /* Emite a mudança de uma tabela sem estado global como CustomEvent no
@@ -17685,6 +17702,8 @@ try {
   var _capSalvo = JSON.parse(localStorage.getItem("ag_cap_v2") || "null");
   if (_capSalvo) _agCap = Object.assign(_agCap, _capSalvo);
 } catch(e) {}
+/* Tabelas que responderam 42703 em updated_at nesta sessão — ver getMudancas. */
+var _AG_SEM_UPDATED_AT = Object.create(null);
 function _agCapOff(nome) {
   if (!_agCap[nome]) return;
   _agCap[nome] = false;
@@ -18059,13 +18078,24 @@ const db = {
      poder sumir da tela — filtrando deleted_at ela seria invisível e ficaria
      na lista para sempre. */
   async getMudancas(t, desde) {
-    if (!_agCap.updatedAt) return [];
+    /* A marca "não tem updated_at" é POR TABELA, não global. Antes, uma única
+       tabela sem a coluna desligava o `updatedAt` de TODAS — o mesmo estrago
+       que o comentário de _agCap descreve para lembretes/agenda_adiamentos, e
+       que voltaria a acontecer agora que agenda_adiamentos entrou no ciclo de
+       sincronia: num banco com o 04 rodado e o 07 não, a primeira varredura
+       derrubaria a sincronia incremental do sistema inteiro. Marcando só a
+       tabela que falhou, um schema antigo custa uma requisição perdida por
+       tabela (uma vez) em vez de matar o tempo real de todo o resto. */
+    if (!_agCap.updatedAt || _AG_SEM_UPDATED_AT[t]) return [];
     var url = SB_URL + "/rest/v1/" + t + "?updated_at=gt." + encodeURIComponent(desde) +
               "&order=updated_at.asc&limit=500";
     var r = await _agFetchAuth(url, { headers: HDR }, 15000);
     if (!r.ok) {
       var txt = await r.text().catch(function(){ return ""; });
-      if (_agErroColuna(txt)) _agCapOff("updatedAt");
+      if (_agErroColuna(txt)) {
+        _AG_SEM_UPDATED_AT[t] = true;
+        console.warn("[db] '" + t + "' sem updated_at — sincronia incremental desligada só para ela; rode o SQL em Config.");
+      }
       return [];
     }
     var rows = await r.json().catch(function(){ return []; });
@@ -46603,6 +46633,25 @@ function agAdiaOculto(chave, agora) {
    [] tanto pra tabela vazia quanto pra tabela inexistente, e é justamente por
    isso que o local nunca é descartado: num banco sem a tabela, o [] não pode
    apagar o que o aparelho já sabia. */
+/* Aplica linhas de agenda_adiamentos vindas do tempo real/polling no mapa em
+   memória + localStorage. Devolve true se algo mudou (pra só então avisar a
+   tela). Mesma normalização de agAdiaCarregar, num lugar só, pra os dois
+   caminhos não divergirem. */
+function agAdiaAplicarLinhas(linhas) {
+  if (!linhas || !linhas.length) return false;
+  var mapa = agAdiaMapa();
+  var antes = JSON.stringify(mapa);
+  linhas.forEach(function(l) {
+    if (!l || !l.chave) return;
+    if (l.deleted_at) { delete mapa[l.chave]; return; }
+    mapa[l.chave] = { ate: l.adiado_para || null, resolvido: !!l.resolvido, id: l.id };
+  });
+  if (JSON.stringify(mapa) === antes) return false;
+  _agAdiaMapa = mapa;
+  _agAdiaGravarLocal(mapa);
+  return true;
+}
+
 async function agAdiaCarregar() {
   var mapa = _agAdiaLerLocal();
   try {
@@ -53281,6 +53330,17 @@ function App() {
       if (tabela === "config") {
         var ultima = linhas[linhas.length - 1];
         if (ultima && !ultima.deleted_at) setEmpresa(function(atual){ return Object.assign({}, atual, ultima); });
+        return;
+      }
+      /* Adiamentos não são uma lista com setState: são o mapa module-level lido
+         por agAdiaMapa(). Aplica linha a linha (chave → registro) e avisa quem
+         tem cartão de Agenda na tela pelo mesmo _agAdiaBump() de sempre.
+         A remoção acontece SÓ com DELETE/deleted_at explícito — nunca por
+         ausência: agAdiaCarregar mescla o banco POR CIMA do localStorage de
+         propósito, pra que um adiamento feito offline (ou com o SQL não
+         rodado) não seja varrido antes de conseguir subir. */
+      if (tabela === AG_ADIA_TABELA) {
+        if (agAdiaAplicarLinhas(linhas)) _agAdiaBump();
         return;
       }
       var setter = setterPor[tabela];

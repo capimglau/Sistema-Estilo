@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="e2b13de"/>
+<meta name="ag-build" content="c177100"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -32953,6 +32953,13 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       // Remove campos que nao existem no banco
       var _form = Object.assign({}, form);
       delete _form.tipo_locacao;
+      // Campos internos do cliente (convenção: prefixo "_") nunca são coluna
+      // de verdade — ex.: "_edicaoParcial", injetado em setForm() na ação
+      // "editar_parcial" (ver onSheetAction) só pra sinalizar o modal. Sem
+      // isso o PostgREST rejeita o payload INTEIRO com "Could not find the
+      // '_edicaoParcial' column of 'contratos'" (mesma classe de bug já
+      // vista em Financeiro > Receitas com "_catManual").
+      Object.keys(_form).forEach(function(k){ if (k.charAt(0) === "_") delete _form[k]; });
       // Sanitiza campos numericos: string vazia → null (evita erro "invalid input syntax for type numeric")
       var _numericFields = ["km_inicial","km_final","km_franquia","valor_km_excedente","desconto","acrescimo","valor_pago","seguro_franquia_valor","participacao_danos","participacao_roubo_furto","participacao_perda_total","valor_mensal","multa_meses"];
       _numericFields.forEach(function(k) {
@@ -40571,7 +40578,19 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     if (!form.descricao || !form.valor || !form.data) return toast("Descricao, valor e data obrigatorios", "error");
     setLoading(true);
     try {
-      var payload = Object.assign({}, form, { prazo_recorrencia: form.recorrente ? (form.prazo_recorrencia || null) : null });
+      // form pode carregar campos que existem só no cliente — nunca colunas de
+      // verdade da tabela `receitas` — e o PostgREST rejeita o payload INTEIRO
+      // se alguma chave não bater com uma coluna: "_catManual" (F(), marca que
+      // o usuário escolheu a categoria manualmente, pra desligar a
+      // auto-categorização) e "_valorPago" (injetado em recFiltradas pra
+      // receitas vinculadas a contrato parcial) são exemplos — se o usuário
+      // editar uma dessas receitas, esses campos entram no form e quebram o
+      // salvamento (erro "Could not find the '_catManual' column..." era
+      // esse). Convenção do app: campo interno = prefixo "_" — nunca sobe
+      // pro banco.
+      var formSemInternos = {};
+      Object.keys(form).forEach(function(k){ if (k.charAt(0) !== "_") formSemInternos[k] = form[k]; });
+      var payload = Object.assign({}, formSemInternos, { prazo_recorrencia: form.recorrente ? (form.prazo_recorrencia || null) : null });
       if (edit) { const u = await db.patch("receitas", edit, payload); setReceitas(p => p.map(r => r.id === edit ? Object.assign({}, r, u) : r)); toast("Atualizado!"); }
       else { const c = await db.post("receitas", payload); setReceitas(p => [c].concat(p)); toast("Registrado!"); }
       setModal(false);

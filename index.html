@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="f0e17f8"/>
+<meta name="ag-build" content="e26b946"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -25786,7 +25786,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   // do usuário, só para esse card), Despesas continua no intervalo original
   // de 6s. Cada card também soma 1 no próprio tick ao ser tocado.
   const [saldoHojeTick, setSaldoHojeTick] = React.useState(0);
-  const saldoHojeFace = saldoHojeTick % 2;
+  // 3 faces: 0 "Hoje" (Estilo), 1 "Projetado" (Estilo), 2 "Pessoal" (Orçamento
+  // Pessoal — pedido do usuário: alternar pro saldo/despesas pessoais do dia
+  // no mesmo card, com fundo diferenciado).
+  const saldoHojeFace = saldoHojeTick % 3;
   React.useEffect(function(){
     var t = setInterval(function(){ setSaldoHojeTick(function(v){ return v+1; }); }, 15000);
     return function(){ clearInterval(t); };
@@ -28889,46 +28892,76 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var _pathProj = _projDias.map(function(p,i){ return (i===0?'M':'L') + _scaleXProj(p.dia) + ',' + _scaleYProj(p.saldo); }).join(' ');
       var _pathProjFinal = 'M'+_scaleXProj(_ultimoEventoDia)+','+_scaleYProj(_projDias[_projDias.length-1].saldo)+' L '+_scaleXProj(_ultimoDiaMesHoje)+','+_scaleYProj(_saldoProjetado);
 
+      /* Face 2 "Pessoal" (pedido do usuário): mesmo card, mesmas duas colunas,
+         mas com os números do Orçamento Pessoal — nunca somados aos da Estilo
+         (CLAUDE.md: são saldos completamente distintos). Fundo em gradiente
+         cinza discreto (color-mix sobre --c-sub, funciona em qualquer tema)
+         só nessa face, pra ficar óbvio que não é mais dado da locadora. */
+      var _orcCalcHoje = calcSaldoOrcPessoalMes(orcItens, despesas, _mesHoje);
+      var _despHojeListP = _orcCalcHoje.despesasDoMes.filter(function(d){ return (d.data||'') === hoje; });
+      var _despHojeTotalP = _despHojeListP.reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
+      var _despHojePagoP = _despHojeListP.filter(function(d){ return d.status==='pago'; }).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
+      var _despHojeAPagarP = Math.max(0, _despHojeTotalP - _despHojePagoP);
+      var _bgPessoal = { background: 'linear-gradient(160deg, color-mix(in srgb, var(--c-sub) 20%, var(--c-card)) 0%, color-mix(in srgb, var(--c-sub) 9%, var(--c-card)) 100%)' };
+
       return React.createElement('div', { className:"ag-kpi-card", style:Object.assign({},_cardBase,{cursor:'pointer',padding:0,overflow:'hidden'}), onClick:function(){ setSaldoHojeTick(function(v){ return v+1; }); } }
         , React.createElement('div', { style:{ display:'flex' } }
-          , React.createElement('div', { style:Object.assign({},_cardBase,{flex:1,borderRight:'1px solid var(--c-border)'}) }
+          , React.createElement('div', { style:Object.assign({},_cardBase,saldoHojeFace===2?_bgPessoal:null,{flex:1,borderRight:'1px solid var(--c-border)'}) }
             , saldoHojeFace===0
               ? React.createElement('div', { key:'hoje', className:'ag-kpi-flip' }
-                  , React.createElement('div', { style:_lbl }, 'Saldo nas contas hoje')
+                  , React.createElement('div', { style:_lbl }, 'Saldo nas contas Estilo')
                   , _big(_saldoAtual)
                   , React.createElement('div', { style:{ fontSize: _supFs, color: _saldoLivre>=0?C.green:C.red, fontWeight:700, marginTop:3 } }
                     , _despHojeAPagar>0
                         ? ['~', React.createElement(BRLValue,{key:'v',v:_saldoLivre,size:_supFs,weight:700,color:_saldoLivre>=0?C.green:C.red}), ' após pagar hoje']
                         : 'Nenhuma despesa hoje')
                 )
-              : React.createElement('div', { key:'proj', className:'ag-kpi-flip' }
+              : saldoHojeFace===1
+              ? React.createElement('div', { key:'proj', className:'ag-kpi-flip' }
                   , React.createElement('div', { style:_lbl }, 'Saldo projetado')
                   , _big(_saldoProjetado)
                   , React.createElement('div', { style:{ fontSize: _supFs, color:C.green, fontWeight:700, marginTop:3 } }
                     , 'para '+_ultimoDiaMesHoje+' de '+new Date(_mesHoje+"-15").toLocaleString("pt-BR",{month:"long"}))
                 )
+              : React.createElement('div', { key:'pessoal-saldo', className:'ag-kpi-flip' }
+                  , React.createElement('div', { style:_lbl }, 'Saldo de contas Pessoal')
+                  , _big(_orcCalcHoje.saldo, _orcCalcHoje.saldo>=0?C.green:C.red)
+                  , React.createElement('div', { style:{ fontSize: _supFs, color:C.sub, fontWeight:700, marginTop:3 } }
+                    , 'previsto para '+new Date(_mesHoje+"-15").toLocaleString("pt-BR",{month:"long"}))
+                )
           )
-          , React.createElement('div', { style:Object.assign({},_cardBase,{flex:1}) }
+          , React.createElement('div', { style:Object.assign({},_cardBase,saldoHojeFace===2?_bgPessoal:null,{flex:1}) }
             , saldoHojeFace===0
               ? React.createElement('div', { key:'desp', className:'ag-kpi-flip' }
-                  , React.createElement('div', { style:_lbl }, 'Despesas de hoje')
+                  , React.createElement('div', { style:_lbl }, 'Despesas Estilo')
                   , _big(_despHojePrevisto, C.red)
                   , React.createElement('div', { style:{ fontSize: _supFs, color:_despHojeAPagar>0?C.red:C.green, fontWeight:700, marginTop:3 } }
                     , _despHojeAPagar>0
                         ? [React.createElement(BRLValue,{key:'a',v:_despHojeAPagar,size:_supFs,weight:700,color:C.red}), ' a pagar']
                         : 'tudo pago')
                 )
-              : React.createElement('div', { key:'atraso', className:'ag-kpi-flip' }
+              : saldoHojeFace===1
+              ? React.createElement('div', { key:'atraso', className:'ag-kpi-flip' }
                   , React.createElement('div', { style:_lbl }, 'Faturas em atraso')
                   , _big(_faturasAtraso, C.red)
                   , React.createElement('div', { style:{ fontSize: _supFs, color:C.sub, fontWeight:700, marginTop:3 } }
                     , 'vencidas e não pagas')
                 )
+              : React.createElement('div', { key:'pessoal-desp', className:'ag-kpi-flip' }
+                  , React.createElement('div', { style:_lbl }, 'Despesas pessoais do dia')
+                  , _big(_despHojeTotalP, C.red)
+                  , React.createElement('div', { style:{ fontSize: _supFs, color:_despHojeAPagarP>0?C.red:C.green, fontWeight:700, marginTop:3 } }
+                    , _despHojeTotalP>0
+                        ? (_despHojeAPagarP>0
+                            ? [React.createElement(BRLValue,{key:'a',v:_despHojeAPagarP,size:_supFs,weight:700,color:C.red}), ' a pagar']
+                            : 'tudo pago')
+                        : 'Nenhuma despesa hoje')
+                )
           )
         )
         /* Rodapé SEMPRE presente (nunca null) — trava o card no tamanho do
            maior estado, sem salto de altura ao alternar. */
-        , React.createElement('div', { style:{ padding:'4px 14px 10px' } }
+        , React.createElement('div', { style:Object.assign({ padding:'4px 14px 10px' }, saldoHojeFace===2?_bgPessoal:null) }
           , saldoHojeFace===0
               ? React.createElement(React.Fragment, { key:'g-hoje' }
                   , React.createElement('svg', { viewBox:'0 0 '+_chartW+' '+_chartH, width:'100%', height:44, preserveAspectRatio:'none' }
@@ -28937,7 +28970,8 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                     )
                   , React.createElement('div', { style:{fontSize:9,color:C.sub,marginTop:2} }, 'últimos '+_janelaRecente+' dia'+(_janelaRecente>1?'s':'')+' de caixa realizado')
                 )
-              : React.createElement(React.Fragment, { key:'g-proj' }
+              : saldoHojeFace===1
+              ? React.createElement(React.Fragment, { key:'g-proj' }
                   , React.createElement('svg', { viewBox:'0 0 '+_chartW+' '+_chartH, width:'100%', height:44, preserveAspectRatio:'none' }
                       , React.createElement('path', { d:_pathProj, fill:'none', stroke:C.green, strokeWidth:2.2, strokeLinecap:'round' })
                       , React.createElement('path', { d:_pathProjFinal, fill:'none', stroke:C.green, strokeWidth:2, strokeDasharray:'4,4', strokeLinecap:'round' })
@@ -28945,6 +28979,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                       , React.createElement('circle', { cx:_scaleXProj(_ultimoDiaMesHoje), cy:_scaleYProj(_saldoProjetado), r:3, fill:'none', stroke:C.green, strokeWidth:1.6 })
                     )
                   , React.createElement('div', { style:{fontSize:9,color:C.sub,marginTop:2} }, _eventosFuturos.length+' vencimento'+(_eventosFuturos.length===1?'':'s')+' até o fim do mês')
+                )
+              : React.createElement('div', { key:'g-pessoal', style:{ height:44, display:'flex', alignItems:'center', justifyContent:'center' } }
+                  , React.createElement('div', { style:{fontSize:9,color:C.sub} }, '👤 Orçamento Pessoal — toque para voltar pra Estilo')
                 )
         )
       );
@@ -37401,6 +37438,39 @@ function computePrevisaoPessoal(itens, despesas, opts){
           saldoAte:_saldoAte, nextDay:_nd};
 }
 
+
+// Mesma fórmula de "Saldo do orçamento" já usada em PessoalDash (_saldo =
+// _totRec - _totDes do mês, com recorrência projetada e retirada de lucro
+// somada) — extraída aqui pra o card "Saldo nas contas Estilo"/"Despesas
+// Estilo" do Início poder alternar e mostrar os números do Orçamento
+// Pessoal também (pedido do usuário), sem duplicar a lógica de
+// recorrência/retirada de lucro numa segunda cópia solta.
+function calcSaldoOrcPessoalMes(orcItens, despesas, mes) {
+  var _puraRetIds = new Set((despesas||[]).filter(isRetLucroPura).map(function(d){return String(d.id);}));
+  var _itSrc = (orcItens||[]).filter(function(it){ var _rid=_retLocDespId(it); return !_rid || _puraRetIds.has(_rid); });
+  function _vis(it,m){
+    var em=it.data?it.data.slice(0,7):it.mes;
+    if(em===m) return true;
+    if(it.recorrente&&em&&em<m){
+      return !_itSrc.some(function(x){return String(x.recorrencia_origem_id)===String(it.id)&&(x.data?x.data.slice(0,7):x.mes)===m;});
+    }
+    return false;
+  }
+  function _projDate(dt,m){ var dia=parseInt(dt.slice(8,10),10); var aN=parseInt(m.slice(0,4),10),mN=parseInt(m.slice(5,7),10); var ult=new Date(aN,mN,0).getDate(); return m+'-'+(Math.min(dia,ult)<10?'0':'')+Math.min(dia,ult); }
+  function _projetar(it,m){
+    var em=it.data?it.data.slice(0,7):it.mes;
+    if(em===m) return it;
+    var dtProj=it.data?_projDate(it.data,m):m+'-01';
+    return Object.assign({},it,{data:dtProj,status:'previsto',data_pagamento:null});
+  }
+  var _recLoc = retiradaLucroDoMes(despesas, mes);
+  var _itens  = _itSrc.filter(function(it){return _vis(it,mes);}).map(function(it){return _projetar(it,mes);});
+  var _recs   = _itens.filter(function(it){return it.tipo==='receita';});
+  var _desps  = _itens.filter(function(it){return it.tipo==='despesa';});
+  var _totRec = _recLoc + _recs.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  var _totDes = _desps.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+  return { saldo: _totRec-_totDes, totRec:_totRec, totDes:_totDes, despesasDoMes:_desps };
+}
 
 // ═══════════════════════════════════════════════════════════════════
 //  PessoalDash v5 — Template 4 (header gradient) + Template 5 (timeline)

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="f52a881"/>
+<meta name="ag-build" content="95c961e"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -25754,6 +25754,13 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
     if (card) card.scrollIntoView({ behavior:'smooth', block:'nearest', inline:'center' });
   }, [dashMultaSel]);
   const [_orcFresh,   _setOrcFresh]   = React.useState(null);
+  /* orcItens (prop de App, o que a Agenda/CalendarioKanban2 lê) e _orcFresh
+     (estado local daqui, o que PessoalDash lê) são duas cópias separadas
+     da mesma tabela — sincronizar só uma fazia o item "persistir" na
+     Agenda mesmo já baixado/editado/excluído na tela do Orçamento Pessoal
+     (bug já visto e corrigido pro caminho da Agenda; pSave/pDel/pBaixar,
+     usados pela tela do Orçamento Pessoal em si, tinham o mesmo problema). */
+  function _syncOrc(updater){ _setOrcFresh(updater); if (setOrcItens) setOrcItens(updater); }
   const [_orcCats,    _setOrcCats]    = React.useState([]);
   const [_orcCatsMod, _setOrcCatsMod] = React.useState(false);
   React.useEffect(function(){db.get('orcamento_categorias').then(function(d){_setOrcCats(d||[]);}).catch(function(){});}, []);
@@ -26410,15 +26417,15 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 _setPSaving(true);
                 try{
                   var payload={descricao:_pForm.descricao,valor:parseFloat(_pForm.valor)||0,tipo:_pForm.tipo||'despesa',categoria:_pForm.categoria||'Outros',mes:(_pForm.data&&_pForm.data.length>=7)?_pForm.data.slice(0,7):dashMes,data:_pForm.data||null,status:_pForm.status||'previsto',recorrente:!!_pForm.recorrente};
-                  if(_pEdit){var u=await db.patch("orcamento_pessoal",_pEdit,payload);_setOrcFresh(function(p){return(p||[]).map(function(it){return it.id===_pEdit?Object.assign({},it,u):it;});});}
-                  else{var c=await db.post("orcamento_pessoal",payload);_setOrcFresh(function(p){return[c].concat(p||[]);});}
+                  if(_pEdit){var u=await db.patch("orcamento_pessoal",_pEdit,payload);_syncOrc(function(p){return(p||[]).map(function(it){return it.id===_pEdit?Object.assign({},it,u):it;});});}
+                  else{var c=await db.post("orcamento_pessoal",payload);_syncOrc(function(p){return[c].concat(p||[]);});}
                   _setPModal(false);_setPEdit(null);_setPForm({tipo:'despesa',categoria:'Moradia'});
                 }catch(e){console.error(e);}
                 _setPSaving(false);
               },
               pDel: async function(id){
                 if(!window.confirm('Excluir lançamento?'))return;
-                try{await db.del("orcamento_pessoal",id);_setOrcFresh(function(p){return(p||[]).filter(function(it){return it.id!==id;});});}catch(e){}
+                try{await db.del("orcamento_pessoal",id);_syncOrc(function(p){return(p||[]).filter(function(it){return it.id!==id;});});}catch(e){}
               },
               pBaixar: async function(it){
                 var dt=_brNow().toISOString().split('T')[0];
@@ -26433,10 +26440,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                     var dtProj=dashMes+'-'+(d<10?'0':'')+d;
                     var payload={descricao:it.descricao,categoria:it.categoria,valor:it.valor,tipo:it.tipo,mes:dashMes,data:dtProj,status:st,data_pagamento:dt,recorrente:false,recorrencia_origem_id:it.id};
                     var c=await db.post("orcamento_pessoal",payload);
-                    _setOrcFresh(function(p){return[c].concat(p||[]);});
+                    _syncOrc(function(p){return[c].concat(p||[]);});
                   }else{
                     var u=await db.patch("orcamento_pessoal",it.id,{status:st,data_pagamento:dt});
-                    _setOrcFresh(function(p){return(p||[]).map(function(x){return x.id===it.id?Object.assign({},x,u):x;});});
+                    _syncOrc(function(p){return(p||[]).map(function(x){return x.id===it.id?Object.assign({},x,u):x;});});
                   }
                 }catch(e){console.error('Baixar:',e);}
               }
@@ -27105,15 +27112,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 return React.createElement('div', { style: desktop ? { flex:1, minHeight:0, display:"flex", flexDirection:"column" } : { display:"flex", flexDirection:"column" } }
                   , React.createElement(CalendarioKanban2, { contratos:contratos, multas:multas, veiculos:veiculos, setVeiculos:setVeiculos, clientes:clientes, contas:contas, despesas:despesas, receitas:receitas, reservas:reservas, manutencoes:manutencoes, orcItens:orcItens, lembretes:lembretes, setLembretes:setLembretes, hoje:hoje, setTab:setTab, desktop:desktop, dashMes:dashMes, mesAtual:mesAtual, setCtDeepLink:setCtDeepLink, setFinDeepLink:setFinDeepLink, setMtDeepLink:setMtDeepLink, toast:toast,
                       onOrcAtualizado: function(info){
-                        /* orcItens (prop de App, o que CalendarioKanban2 lê) e _orcFresh
-                           (estado local daqui, o que PessoalDash lê) são DUAS cópias
-                           separadas da mesma tabela — sem atualizar as duas, a baixa
-                           gravava no banco certo mas a Agenda continuava mostrando o
-                           cartão antigo até um reload (bug reportado: "insiste em
-                           permanecer mesmo baixado"). */
-                        function _applyOrc(p){ p = p || []; return info.novo ? [info.novo].concat(p) : p.map(function(x){ return x.id === info.id ? Object.assign({}, x, info.patch) : x; }); }
-                        _setOrcFresh(_applyOrc);
-                        if (setOrcItens) setOrcItens(_applyOrc);
+                        _syncOrc(function(p){ p = p || []; return info.novo ? [info.novo].concat(p) : p.map(function(x){ return x.id === info.id ? Object.assign({}, x, info.patch) : x; }); });
                       } })
                 );
                 /* ── gráfico 3 meses: anterior · atual · próximo ── */

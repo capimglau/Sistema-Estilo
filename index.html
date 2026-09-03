@@ -27103,7 +27103,8 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                    No desktop nada muda: lá o board tem colunas e continua preenchendo a
                    altura do painel (flex:1 dentro da altura fixa do ag-dash-panel). */
                 return React.createElement('div', { style: desktop ? { flex:1, minHeight:0, display:"flex", flexDirection:"column" } : { display:"flex", flexDirection:"column" } }
-                  , React.createElement(CalendarioKanban2, { contratos:contratos, multas:multas, veiculos:veiculos, setVeiculos:setVeiculos, clientes:clientes, contas:contas, despesas:despesas, receitas:receitas, reservas:reservas, manutencoes:manutencoes, orcItens:orcItens, lembretes:lembretes, setLembretes:setLembretes, hoje:hoje, setTab:setTab, desktop:desktop, dashMes:dashMes, mesAtual:mesAtual, setCtDeepLink:setCtDeepLink, setFinDeepLink:setFinDeepLink, setMtDeepLink:setMtDeepLink })
+                  , React.createElement(CalendarioKanban2, { contratos:contratos, multas:multas, veiculos:veiculos, setVeiculos:setVeiculos, clientes:clientes, contas:contas, despesas:despesas, receitas:receitas, reservas:reservas, manutencoes:manutencoes, orcItens:orcItens, lembretes:lembretes, setLembretes:setLembretes, hoje:hoje, setTab:setTab, desktop:desktop, dashMes:dashMes, mesAtual:mesAtual, setCtDeepLink:setCtDeepLink, setFinDeepLink:setFinDeepLink, setMtDeepLink:setMtDeepLink, toast:toast,
+                      onOrcAtualizado: function(info){ _setOrcFresh(function(p){ p = p || []; return info.novo ? [info.novo].concat(p) : p.map(function(x){ return x.id === info.id ? Object.assign({}, x, info.patch) : x; }); }); } })
                 );
                 /* ── gráfico 3 meses: anterior · atual · próximo ── */
                 function _lastDayOf(m){var d=new Date(m+"-01");d.setMonth(d.getMonth()+1);d.setDate(0);return d.getDate();}
@@ -48158,7 +48159,7 @@ function buildAgendaEventos(ctx) {
    embutido no painel do Dashboard. Usa buildAgendaEventos (mesma fonte da aba
    Agenda) pra nunca divergir do que aparece nos outros calendários do sistema
    (regra de cobertura de dados). */
-function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, lembretes, setLembretes, hoje, setTab, H, desktop, dashMes, mesAtual, setCtDeepLink, setFinDeepLink, setMtDeepLink }) {
+function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, lembretes, setLembretes, hoje, setTab, H, desktop, dashMes, mesAtual, setCtDeepLink, setFinDeepLink, setMtDeepLink, toast, onOrcAtualizado }) {
   var _flArr = React.useState("todos"); var filtro = _flArr[0], setFiltro = _flArr[1];
   /* Dias com o "monte" de cartões expandido (mais de 2 eventos, tocou pra ver
      todos) — chave é a data ISO do dia. */
@@ -49090,16 +49091,48 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
     if (!ev) return;
     /* Pendência do Orçamento Pessoal (ev.tab==="pessoal"): nunca vai pro
        Financeiro da Locadora — são saldos/telas completamente separados.
-       Orçamento Pessoal não tem aba própria hoje (vive dentro de Início, modo
-       "pessoal"), então a navegação é: ir pra Início + avisar o Início pra
-       trocar de modo (mesmo evento "ag:open-pessoal" que o atalho do topbar
-       usa) — levando junto o id do item, pra abrir já em cima dele, editável
-       e com a opção de baixar (aba "Atrasados" do Orçamento Pessoal). Só
-       baixa direto (sem abrir a tela) quando o usuário já confirmou aqui no
-       cartão — mesma regra de despesa/receita logo abaixo. */
+       Quando o usuário AINDA NÃO confirmou (toque simples/"Ir para"), navega
+       pra Início + avisa pra trocar pro modo "pessoal" (evento
+       "ag:open-pessoal", mesmo do atalho do topbar), levando o id pra abrir
+       já em cima do item. Quando JÁ confirmou aqui no cartão, a baixa é
+       executada DIRETO, sem trocar de tela/modo — trocar o Dashboard inteiro
+       de modo só por causa de uma gravação em segundo plano forçava o
+       usuário pro Orçamento Pessoal sem pedir, e coincidia com a Agenda
+       ocasionalmente renderizando em branco logo depois (bug reportado). */
     if (ev.tab === "pessoal") {
-      if (setTab) setTab("inicio");
-      window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id, acao: confirmado ? "baixar" : null } }));
+      if (!confirmado) {
+        if (setTab) setTab("inicio");
+        window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id } }));
+        return;
+      }
+      (async function() {
+        var _hjPs = _brNow().toISOString().slice(0, 10);
+        var _mesAtualPs = _hjPs.slice(0, 7);
+        var _itPs = (orcItens || []).find(function(x){ return x.id === ev.id; });
+        if (!_itPs) return;
+        var _stPs = _itPs.tipo === 'receita' ? 'recebido' : 'pago';
+        var _emPs = _itPs.data ? _itPs.data.slice(0, 7) : _itPs.mes;
+        var _isProjetadoPs = !!(_itPs.recorrente && _emPs && _emPs !== _mesAtualPs);
+        try {
+          if (_isProjetadoPs) {
+            var _diaPs = _itPs.data ? parseInt(_itPs.data.slice(8, 10), 10) : 1;
+            var _anoNPs = parseInt(_mesAtualPs.slice(0, 4), 10), _mesNPs = parseInt(_mesAtualPs.slice(5, 7), 10);
+            var _ultPs = new Date(_anoNPs, _mesNPs, 0).getDate();
+            var _diaProjPs = Math.min(_diaPs, _ultPs);
+            var _dtProjPs = _mesAtualPs + '-' + (_diaProjPs < 10 ? '0' + _diaProjPs : String(_diaProjPs));
+            var _novoPs = await db.post("orcamento_pessoal", {
+              descricao: _itPs.descricao, categoria: _itPs.categoria, valor: _itPs.valor, tipo: _itPs.tipo,
+              mes: _mesAtualPs, data: _dtProjPs, status: _stPs, data_pagamento: _hjPs,
+              recorrente: false, recorrencia_origem_id: _itPs.id
+            });
+            if (onOrcAtualizado) onOrcAtualizado({ novo: _novoPs });
+          } else {
+            var _updPs = await db.patch("orcamento_pessoal", _itPs.id, { status: _stPs, data_pagamento: _hjPs });
+            if (onOrcAtualizado) onOrcAtualizado({ id: _itPs.id, patch: _updPs || { status: _stPs, data_pagamento: _hjPs } });
+          }
+          if (toast) toast('💸 Baixado!');
+        } catch(e) { if (toast) toast('Erro ao salvar', 'error'); }
+      })();
       return;
     }
     /* Cartão sem ação (documento, CNH, reserva…) e cartão sem id: "Abrir em"
@@ -49147,10 +49180,15 @@ function _agk2ModalAcao(o) {
      pneus, reserva…): não há baixa a fazer, então a ação principal vira
      "dar por resolvido". */
   var semAcao = !ev.acao;
+  /* ev.tipo é a CATEGORIA do cartão ("orcamento" pros pessoais, por exemplo)
+     — pra saber se é entrada ou saída de dinheiro (título/rótulo/data certos
+     no sheet) usa ev.fluxo ("in"/"out", já vem de buildAgendaEventos em todo
+     tipo financeiro), não só o match direto com "receita". */
+  var ehReceitaFin = ev.tipo === "receita" || ev.fluxo === "in";
   var titulo = semAcao ? (M4_CAT_LABEL[ev.tipo] || "Pendência")
              : ehRenovar ? "Renovar contrato"
              : ev.tipo === "pagamento" ? "Receber contrato"
-             : ev.tipo === "receita" ? "Baixar receita" : "Baixar despesa";
+             : ehReceitaFin ? "Baixar receita" : "Baixar despesa";
   var rotuloOk = semAcao ? "Marcar como resolvido"
                : ehRenovar ? "Renovar"
                : ev.tipo === "pagamento" ? "Receber" : "Baixar";
@@ -49179,7 +49217,7 @@ function _agk2ModalAcao(o) {
       )
       /* Renovar não tem data a escolher: a renovação é sempre a partir do fim
          do contrato atual, como no fluxo da tela de Contratos. */
-      , (!ehRenovar && !semAcao && !o.adiarAberto) && React.createElement(Lbl, { label: ev.tipo === "despesa" ? "📅 Data do pagamento" : "📅 Data do recebimento" }
+      , (!ehRenovar && !semAcao && !o.adiarAberto) && React.createElement(Lbl, { label: ehReceitaFin ? "📅 Data do recebimento" : "📅 Data do pagamento" }
         , React.createElement('input', { style:FI, type:"date", value:o.data, onChange:function(e){ o.setData(e.target.value); } })
       )
       , (ehRenovar && !o.adiarAberto) && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }

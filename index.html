@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="eadd085"/>
+<meta name="ag-build" content="9a9996e"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -47886,34 +47886,42 @@ function buildAgendaEventos(ctx) {
   // resultado da ÚLTIMA baixa real (pode ser de meses atrás) — usar esse
   // status direto pra decidir "pago ou não" faz uma recorrente vencida
   // sumir da Agenda (e do "Atrasados") se ela já foi paga alguma vez no
-  // passado, mesmo com o ciclo do mês atual ainda pendente. Mesmo bug (e
-  // mesma correção) já aplicada em App()/_orcAgendaPendente pro pulso do
-  // logo: só confia no status cru quando o item já é do mês atual (ou já
-  // existe um lançamento-filho concreto pro mês atual); sem isso, projeta
-  // a data pro mês atual e trata como pendente. Roda uma vez só (não
-  // depende de ano/mes — buildAgendaEventos é chamada uma vez por mês da
-  // janela, mas o evento projetado é sempre o mesmo, então o dedup por
-  // `chave` de mais abaixo cuida de não duplicar entre as passadas).
-  var _mesAtualOrc = hoje.slice(0, 7);
+  // passado, mesmo com o ciclo do mês atual ainda pendente.
+  // [orc-um-card-por-mes-devido] buildAgendaEventos é chamada UMA VEZ POR MÊS
+  // da janela de lookback (ver mesesCobertos em CalendarioKanban2/AGK2:
+  // AGK2_LOOKBACK_ATRASO=6 meses pra trás quando o mês selecionado é o atual)
+  // — cada chamada recebe `ano`/`mes` dizendo qual mês esta passada representa
+  // (`_refMes`). Uma recorrente pendente há 3 meses (jul/ago/set nunca pagos)
+  // tem que virar 3 CARDS distintos, um por mês em aberto — não um só,
+  // sempre reprojetado pro mês real de hoje (bug reportado: "só mostra
+  // atrasados desse mês", os meses anteriores sumiam por trás do card único
+  // do mês atual). Por isso cada passada projeta pro SEU PRÓPRIO `_refMes`,
+  // não pro mês real — `chave` inclui a data, então os cards de meses
+  // diferentes não colidem no dedup de CalendarioKanban2.
   function _orcEmOf(it) { return it.data ? it.data.slice(0, 7) : it.mes; }
+  var _refMesOrc = (ano != null && mes != null) ? (ano + "-" + String(mes + 1).padStart(2, "0")) : hoje.slice(0, 7);
   orcItens.forEach(function(it) {
     var em = _orcEmOf(it);
     var data, jaPago;
-    if (!it.recorrente || em === _mesAtualOrc) {
+    if (!it.recorrente) {
       data = it.data || (it.mes ? it.mes + "-01" : null);
       if (!data) return;
       jaPago = it.status === "pago" || it.status === "recebido" || it.data_pagamento;
-    } else if (em && em < _mesAtualOrc) {
-      var temFilhoNoMesOrc = orcItens.some(function(x) { return String(x.recorrencia_origem_id) === String(it.id) && _orcEmOf(x) === _mesAtualOrc; });
-      if (temFilhoNoMesOrc) return; // o filho concreto do mês atual já gera o próprio evento
+    } else if (!em || em > _refMesOrc) {
+      return; // item ainda não existia nesse mês da janela
+    } else if (em === _refMesOrc) {
+      data = it.data || (it.mes ? it.mes + "-01" : null);
+      if (!data) return;
+      jaPago = it.status === "pago" || it.status === "recebido" || it.data_pagamento;
+    } else {
+      var temFilhoNoMesOrc = orcItens.some(function(x) { return String(x.recorrencia_origem_id) === String(it.id) && _orcEmOf(x) === _refMesOrc; });
+      if (temFilhoNoMesOrc) return; // o filho concreto desse mês já gera o próprio evento
       var diaOrc = it.data ? parseInt(it.data.slice(8, 10), 10) : 1;
-      var anoOrc = parseInt(_mesAtualOrc.slice(0, 4), 10), mesNOrc = parseInt(_mesAtualOrc.slice(5, 7), 10);
+      var anoOrc = parseInt(_refMesOrc.slice(0, 4), 10), mesNOrc = parseInt(_refMesOrc.slice(5, 7), 10);
       var ultimoDiaOrc = new Date(anoOrc, mesNOrc, 0).getDate();
       var diaProjOrc = Math.min(diaOrc, ultimoDiaOrc);
-      data = _mesAtualOrc + "-" + (diaProjOrc < 10 ? "0" + diaProjOrc : String(diaProjOrc));
+      data = _refMesOrc + "-" + (diaProjOrc < 10 ? "0" + diaProjOrc : String(diaProjOrc));
       jaPago = false;
-    } else {
-      return; // origem no futuro — não deveria acontecer
     }
     if (jaPago) return;
     var isDespesa = it.tipo === "despesa" || !it.tipo;

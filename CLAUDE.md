@@ -135,6 +135,15 @@ Isso inclui, mas não se limita a:
 
 Ao implementar ou corrigir qualquer painel financeiro, **verificar explicitamente** se `receitas` avulsas (`!r.ref_fatura`), `despesas` avulsas e contratos parciais estão incluídos em TODAS as fontes de dados daquele painel. Nunca assumir que "está coberto" — checar o código.
 
+## Receita "a receber" sempre com opção de gerar fatura — PREMISSA PERMANENTE
+
+**Toda receita a receber — com ou sem contrato vinculado — precisa ter a opção de gerar fatura.** Isso já valia pra receitas ligadas a contrato (`ref_fatura`, tela de Faturas); receita **avulsa** (standalone, sem contrato) não tinha nenhuma forma de gerar fatura — bug reportado pelo usuário.
+
+- Implementação: `_buildFaturaAvulsaBody`/`printFaturaAvulsa` (perto de `_buildFaturaBody`/`printFatura` em `index.html`) — mesmo CSS/visual da fatura de locação, mas com um único item (a própria receita) em vez da linha "Locação — X a Y" (período/km/extras não existem numa receita avulsa).
+- Botão "Fatura" na lista de Receitas (Financeiro): usa o slot `onRight` do `SwipeRow` (**nunca `action2`** — `action2` ocupa o MESMO slot de swipe que `onDelete`/Estornar, um substitui o outro; usar `action2` ali some com a opção de excluir).
+- Se a receita tiver `contrato_id` preenchido (campo "Contrato (opcional)" do formulário), a fatura puxa cliente/veículo de lá; senão usa `veiculo_id`/`cliente_id` diretos da receita, se houver. Sem nenhum dos dois, a fatura sai só com a descrição/valor — ainda assim válida.
+- **Qualquer novo tipo de "a receber"** que apareça no sistema (nova categoria de receita, nova tela) precisa seguir essa mesma regra — nunca deixar um lançamento pendente sem opção de emitir fatura.
+
 ## Sincronização de baixas — PREMISSA PERMANENTE
 
 **Toda baixa (pagamento/recebimento) de despesa, receita ou contrato DEVE sincronizar automaticamente com TUDO que estiver relacionado.** Uma baixa nunca pode atualizar só o registro tocado — precisa refletir em:

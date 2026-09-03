@@ -47833,10 +47833,40 @@ function buildAgendaEventos(ctx) {
   });
 
   // ORÇAMENTO PESSOAL
+  // [orc-recorrente-status-cru] Item recorrente carrega no `status` cru o
+  // resultado da ÚLTIMA baixa real (pode ser de meses atrás) — usar esse
+  // status direto pra decidir "pago ou não" faz uma recorrente vencida
+  // sumir da Agenda (e do "Atrasados") se ela já foi paga alguma vez no
+  // passado, mesmo com o ciclo do mês atual ainda pendente. Mesmo bug (e
+  // mesma correção) já aplicada em App()/_orcAgendaPendente pro pulso do
+  // logo: só confia no status cru quando o item já é do mês atual (ou já
+  // existe um lançamento-filho concreto pro mês atual); sem isso, projeta
+  // a data pro mês atual e trata como pendente. Roda uma vez só (não
+  // depende de ano/mes — buildAgendaEventos é chamada uma vez por mês da
+  // janela, mas o evento projetado é sempre o mesmo, então o dedup por
+  // `chave` de mais abaixo cuida de não duplicar entre as passadas).
+  var _mesAtualOrc = hoje.slice(0, 7);
+  function _orcEmOf(it) { return it.data ? it.data.slice(0, 7) : it.mes; }
   orcItens.forEach(function(it) {
-    var data = it.data || (it.mes ? it.mes + "-01" : null);
-    if (!data) return;
-    if (it.status === "pago" || it.status === "recebido" || it.data_pagamento) return;
+    var em = _orcEmOf(it);
+    var data, jaPago;
+    if (!it.recorrente || em === _mesAtualOrc) {
+      data = it.data || (it.mes ? it.mes + "-01" : null);
+      if (!data) return;
+      jaPago = it.status === "pago" || it.status === "recebido" || it.data_pagamento;
+    } else if (em && em < _mesAtualOrc) {
+      var temFilhoNoMesOrc = orcItens.some(function(x) { return String(x.recorrencia_origem_id) === String(it.id) && _orcEmOf(x) === _mesAtualOrc; });
+      if (temFilhoNoMesOrc) return; // o filho concreto do mês atual já gera o próprio evento
+      var diaOrc = it.data ? parseInt(it.data.slice(8, 10), 10) : 1;
+      var anoOrc = parseInt(_mesAtualOrc.slice(0, 4), 10), mesNOrc = parseInt(_mesAtualOrc.slice(5, 7), 10);
+      var ultimoDiaOrc = new Date(anoOrc, mesNOrc, 0).getDate();
+      var diaProjOrc = Math.min(diaOrc, ultimoDiaOrc);
+      data = _mesAtualOrc + "-" + (diaProjOrc < 10 ? "0" + diaProjOrc : String(diaProjOrc));
+      jaPago = false;
+    } else {
+      return; // origem no futuro — não deveria acontecer
+    }
+    if (jaPago) return;
     var isDespesa = it.tipo === "despesa" || !it.tipo;
     var atrasada = data < hoje;
     eventos.push({

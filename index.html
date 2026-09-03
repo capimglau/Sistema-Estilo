@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="23ba77a"/>
+<meta name="ag-build" content="258e0da"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -24178,7 +24178,16 @@ function UploadField({ label, value, onChange, accept, pasta, nome, onSelect }) 
    — daí o problema "voltar" mesmo depois do fix anterior. Guarda a Promise em
    andamento para que chamadas concorrentes (vários documentos impressos em
    sequência) reaproveitem o mesmo carregamento em vez de disparar N vezes. */
-var _logoEmbed = { url: null, data: null, promise: null, w: 0, h: 0 };
+// [logo-embed-multi] Virou um MAPA (url -> {data,w,h,promise}), não mais um
+// slot único: o cabeçalho da fatura passou a combinar DOIS arquivos ao mesmo
+// tempo (ícone + wordmark "Estilo/RENT A CAR", ver buildHeader) — com um
+// slot só, embutir o 2º sobrescrevia o cache do 1º antes do buildHeader ler
+// os dois. _logoEmbedGet(url) devolve a entrada (ou null) já resolvida.
+var _logoEmbedCache = {};
+function _logoEmbedGet(url) {
+  var e = _logoEmbedCache[url];
+  return (e && e.data) ? e : null;
+}
 function preloadLogoEmbed(url) {
   ensureLogoEmbed(url);
 }
@@ -24199,10 +24208,29 @@ function _estiloLogoIconUrl() {
   var rel = "logo-estilo-icon-transparente.png?v=" + v;
   try { return new URL(rel, document.baseURI).href; } catch(e) { return rel; }
 }
+/* [logo-wordmark] "Estilo" (carvão) + "RENT A CAR" (dourado) recortados da
+   marca-mestra que o usuário enviou (fundo transparente, letra/kerning
+   originais — não mais reconstruído como texto HTML aproximado). Só serve
+   pra fundo CLARO (fatura/contrato/vistoria/relatórios) — o recorte é
+   carvão sobre transparente, não lê sobre o banner navy do orçamento pro
+   cliente, que continua usando "Estilo" em branco via texto HTML mesmo. */
+function _estiloWordmarkUrl() {
+  var rel = "logo-estilo-wordmark.png?v=1";
+  try { return new URL(rel, document.baseURI).href; } catch(e) { return rel; }
+}
+// Preload conjunto de ícone + wordmark antes de qualquer buildHeader()/
+// buildOrcamentoHtml() — os dois arquivos, sempre juntos, pra não esquecer
+// de um novo call site só embutindo um dos dois (buildOrcamentoHtml não usa
+// o wordmark hoje, mas preloadar os dois de qualquer forma é barato e evita
+// duas funções quase iguais).
+function _preloadEstiloHeaderLogo() {
+  return Promise.all([ensureLogoEmbed(_estiloLogoIconUrl()), ensureLogoEmbed(_estiloWordmarkUrl())]);
+}
 function ensureLogoEmbed(url) {
   if (!url) return Promise.resolve(null);
-  if (_logoEmbed.url === url && _logoEmbed.data) return Promise.resolve(_logoEmbed.data);
-  if (_logoEmbed.url === url && _logoEmbed.promise) return _logoEmbed.promise;
+  var _existing = _logoEmbedCache[url];
+  if (_existing && _existing.data) return Promise.resolve(_existing.data);
+  if (_existing && _existing.promise) return _existing.promise;
   var p = fetch(url, { mode: "cors" }).then(function(resp) {
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     return resp.blob();
@@ -24254,14 +24282,14 @@ function ensureLogoEmbed(url) {
       img.src = objUrl;
     });
   }).then(function(res) {
-    _logoEmbed = { url: url, data: res.data, promise: null, w: res.w, h: res.h };
+    _logoEmbedCache[url] = { data: res.data, promise: null, w: res.w, h: res.h };
     return res.data;
   }).catch(function(e) {
     console.warn("Falha ao embutir logo:", e);
-    if (_logoEmbed.url === url) _logoEmbed = { url: null, data: null, promise: null, w: 0, h: 0 };
+    delete _logoEmbedCache[url];
     return null;
   });
-  _logoEmbed = { url: url, data: null, promise: p, w: 0, h: 0 };
+  _logoEmbedCache[url] = { data: null, promise: p, w: 0, h: 0 };
   return p;
 }
 
@@ -24589,37 +24617,39 @@ var VARS_CLAUSULAS = "PARTES: {{cliente_completo}} (nome + CNPJ/CPF + endereço)
   + "CONDUTOR: {{condutor_nome}} · {{condutor_cpf}} · {{condutor_cnh}} · {{condutor_categoria}} · {{condutor_validade_cnh}} · {{condutor_telefone}}\n"
   + "ASSINATURA: {{cidade_assinatura}} · {{data_assinatura}} · {{canal_privacidade}}";
 
+// Calcula width/height exatos (em JS, não CSS) a partir da proporção NATURAL
+// guardada por ensureLogoEmbed — mesmo motivo de sempre: object-fit/
+// background-size:contain não são respeitados de forma confiável pelo
+// html2canvas, então a única forma de garantir proporção certa no PDF é não
+// sobrar nenhum cálculo de fit pra ele errar.
+function _logoImgSize(url, targetH, fallbackW, fallbackH) {
+  var e = _logoEmbedGet(url);
+  if (e && e.w > 0 && e.h > 0) return { w: Math.max(1, Math.round(e.w * (targetH / e.h))), h: targetH };
+  return { w: fallbackW, h: fallbackH };
+}
 function buildHeader(emp) {
   emp = emp || {};
   // [logo-fixo-pdf] Ícone SEMPRE o arquivo do repositório (ver
-  // _estiloLogoIconUrl acima) — não mais emp.logo_url. "Estilo" ao lado
-  // sai como TEXTO de verdade (cor da marca, #C99A46), não imagem: nunca
-  // fica borrado, com risco de deformar ou depender de qualquer resolução
-  // de arquivo — texto em HTML é sempre nítido em qualquer escala do
-  // html2canvas.
+  // _estiloLogoIconUrl acima) — não mais emp.logo_url.
+  // [logo-wordmark] "Estilo"/"RENT A CAR" ao lado saem como IMAGEM recortada
+  // da marca-mestra (ver _estiloWordmarkUrl) — a reconstrução em texto HTML
+  // ficou pra trás: essa é a arte de verdade, com a fonte/kerning originais.
   var _iconUrl = _estiloLogoIconUrl();
-  var srcLogo = (_logoEmbed.data && _logoEmbed.url === _iconUrl) ? _logoEmbed.data : _iconUrl;
-  // [logo-proporcao-html2canvas] <img width/height exatos>, não object-fit
-  // nem background-size:contain — os dois já saíram achatados/esticados em
-  // teste real com o html2canvas. ensureLogoEmbed() guarda a proporção
-  // NATURAL do PNG reamostrado (_logoEmbed.w/h); aqui calculamos o tamanho
-  // final em JS puro, então não sobra cálculo de fit pro html2canvas errar.
-  var ICONH = 60;
-  var iconW = ICONH, iconH = ICONH; // fallback: ~quadrado, caso raro de falha no embed
-  var _temNat = _logoEmbed.url === _iconUrl && _logoEmbed.w > 0 && _logoEmbed.h > 0;
-  if (_temNat) {
-    iconW = Math.max(1, Math.round(_logoEmbed.w * (ICONH / _logoEmbed.h)));
-    iconH = ICONH;
-  }
-  // [logo-lockup-completo] "Estilo" (escuro) + "RENT A CAR" (dourado,
-  // letter-spacing, mesma marca-mestra que o usuário mostrou em anexo) —
-  // faltava o subtítulo, e a cor de "Estilo" estava errada (dourado; na
-  // marca oficial só o ícone e o "RENT A CAR" são dourados, "Estilo" é
-  // escuro/carvão).
-  var logo = '<div style="display:flex;flex-direction:column;align-items:flex-start;gap:2px">'
-    + '<img src="' + srcLogo + '" alt="" width="' + iconW + '" height="' + iconH + '" style="display:block;width:' + iconW + 'px;height:' + iconH + 'px;margin-bottom:2px" onerror="this.style.display=\'none\'"/>'
-    + '<div style="font-size:19px;font-weight:700;color:#2C2C2E;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Arial,sans-serif;line-height:1">Estilo</div>'
-    + '<div style="font-size:9px;font-weight:600;color:#C99A46;letter-spacing:2.2px;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Arial,sans-serif">RENT A CAR</div>'
+  var _wmUrl = _estiloWordmarkUrl();
+  var _iconEntry = _logoEmbedGet(_iconUrl);
+  var _wmEntry = _logoEmbedGet(_wmUrl);
+  var srcLogo = _iconEntry ? _iconEntry.data : _iconUrl;
+  var srcWm = _wmEntry ? _wmEntry.data : _wmUrl;
+  var ICONH = 58;
+  var iconSz = _logoImgSize(_iconUrl, ICONH, ICONH, ICONH); // fallback: ~quadrado, caso raro de falha no embed
+  // Wordmark alinhado pela altura do "Estilo" real (recorte tem RENT A CAR
+  // junto, mais baixo) — WMH um pouco maior que ICONH pra compensar essa
+  // margem extra sem o texto ficar menor que o ícone ao lado.
+  var WMH = 46;
+  var wmSz = _logoImgSize(_wmUrl, WMH, 150, WMH);
+  var logo = '<div style="display:flex;align-items:center;gap:12px">'
+    + '<img src="' + srcLogo + '" alt="" width="' + iconSz.w + '" height="' + iconSz.h + '" style="display:block;width:' + iconSz.w + 'px;height:' + iconSz.h + 'px" onerror="this.style.display=\'none\'"/>'
+    + '<img src="' + srcWm + '" alt="Estilo Rent a Car" width="' + wmSz.w + '" height="' + wmSz.h + '" style="display:block;width:' + wmSz.w + 'px;height:' + wmSz.h + 'px" onerror="this.style.display=\'none\'"/>'
     + '</div>';
   var info = "";
   if (emp.nome) info += '<div style="font-weight:700;font-size:13px;color:#1C1C1E">' + emp.nome + '</div>';
@@ -25418,7 +25448,7 @@ async function printContrato(ct, cl, ve, emp) {
     alert("Não foi possível carregar as assinaturas do contrato. Verifique a conexão e tente de novo.\n\n" + (e.message || ""));
     return;
   }
-  await ensureLogoEmbed(_estiloLogoIconUrl());
+  await _preloadEstiloHeaderLogo();
   var h = buildContratoFullHtml(ct, cl, ve, emp);
   openPdfPage(h, _wct);
 }
@@ -25508,7 +25538,7 @@ async function printFaturaAvulsa(r, cl, ve, emp) {
   var _isPWAfa = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
   var _wfa = null;
   if (!_isPWAfa) { _wfa = window.open("", "_blank"); if (!_wfa) { alert("Permita popups para gerar o PDF."); return; } }
-  await ensureLogoEmbed(_estiloLogoIconUrl());
+  await _preloadEstiloHeaderLogo();
   var _nomeCurtoFa = ((cl && cl.nome) || (r.descricao || "Cobranca")).trim().split(/\s+/)[0];
   var _tituloFa = 'Fatura_' + _nomeCurtoFa + '_' + numCt(r.id);
   var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + _tituloFa + '</title><style>' + _FATURA_CSS + '</style></head><body>';
@@ -25523,7 +25553,7 @@ async function printFatura(ct, cl, ve, emp) {
   var _isPWAft = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
   var _wft = null;
   if (!_isPWAft) { _wft = window.open("", "_blank"); if (!_wft) { alert("Permita popups para gerar o PDF."); return; } }
-  await ensureLogoEmbed(_estiloLogoIconUrl());
+  await _preloadEstiloHeaderLogo();
   // Nome do CLIENTE da fatura (locatário, primeiro nome/palavra), não da locadora —
   // a locadora já aparece no cabeçalho do PDF. Formato do arquivo: Fatura_nome_placa.
   var _nomeCurto = ((cl && cl.nome) || 'Cliente').trim().split(/\s+/)[0];
@@ -25561,7 +25591,7 @@ async function printFaturasLote(list, emp) {
   var _isPWAlt = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
   var _wlt = null;
   if (!_isPWAlt) { _wlt = window.open("", "_blank"); if (!_wlt) { alert("Permita popups para gerar o PDF."); return; } }
-  await ensureLogoEmbed(_estiloLogoIconUrl());
+  await _preloadEstiloHeaderLogo();
   openPdfPage(buildFaturasLoteHtml(list, emp, { closeBtn: true, autoPrint: true }), _wlt);
 }
 
@@ -25570,7 +25600,7 @@ async function printChecklist(ct, cl, ve, emp, tipo) {
   var _isPWAcl = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
   var _wcl = null;
   if (!_isPWAcl) { _wcl = window.open("", "_blank"); if (!_wcl) { alert("Permita popups para gerar o PDF."); return; } }
-  await ensureLogoEmbed(_estiloLogoIconUrl());
+  await _preloadEstiloHeaderLogo();
   var titulo = tipo === "devolucao" ? "VISTORIA DE DEVOLUÇÃO" : "VISTORIA DE RETIRADA";
   var data = tipo === "devolucao" ? ct.data_fim : ct.data_inicio;
   var items = [
@@ -35649,7 +35679,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     var _isPWAnt = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
     var _wnt = null;
     if (!_isPWAnt) { _wnt = window.open("", "_blank"); if (!_wnt) { alert("Permita popups para gerar o PDF."); return; } }
-    await ensureLogoEmbed(_estiloLogoIconUrl());
+    await _preloadEstiloHeaderLogo();
     var _slug = function(s){ return (s||"").trim().replace(/\s+/g,"_").replace(/[^\w\-]/g,""); };
     var titulo = 'Notificacao_' + _slug(cl && cl.nome) + '_' + _slug(ve && ve.placa) + (m.ait ? '_' + _slug(m.ait) : '');
     var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + titulo + '</title>';
@@ -39498,14 +39528,12 @@ function buildOrcamentoHtml(orc, cliente, veiculo, emp) {
   // dependeria da resolução de um arquivo. Nesse banner escuro, "Estilo"
   // fica branco (o carvão da marca oficial não lê no navy) e "RENT A CAR"
   // continua dourado, igual à marca-mestra.
-  var srcLogoOrc = (_logoEmbed.data && _logoEmbed.url === _estiloLogoIconUrl()) ? _logoEmbed.data : _estiloLogoIconUrl();
+  var _iconUrlOrc = _estiloLogoIconUrl();
+  var _iconEntryOrc = _logoEmbedGet(_iconUrlOrc);
+  var srcLogoOrc = _iconEntryOrc ? _iconEntryOrc.data : _iconUrlOrc;
   var _ICONHOrc = 56;
-  var _imgWOrc = _ICONHOrc, _imgHOrc = _ICONHOrc;
-  var _temNatOrc = _logoEmbed.url === _estiloLogoIconUrl() && _logoEmbed.w > 0 && _logoEmbed.h > 0;
-  if (_temNatOrc) {
-    _imgWOrc = Math.max(1, Math.round(_logoEmbed.w * (_ICONHOrc / _logoEmbed.h)));
-    _imgHOrc = _ICONHOrc;
-  }
+  var _imgSzOrc = _logoImgSize(_iconUrlOrc, _ICONHOrc, _ICONHOrc, _ICONHOrc);
+  var _imgWOrc = _imgSzOrc.w, _imgHOrc = _imgSzOrc.h;
   var logo = '<div style="display:flex;align-items:center;gap:10px">'
     + '<img src="' + srcLogoOrc + '" width="' + _imgWOrc + '" height="' + _imgHOrc + '" style="display:block;width:' + _imgWOrc + 'px;height:' + _imgHOrc + 'px" onerror="this.style.display=\'none\'"/>'
     + '<div style="display:flex;flex-direction:column;gap:2px">'
@@ -39603,7 +39631,7 @@ async function printOrcamentoCliente(orc, cliente, veiculo, emp) {
   // Sem isso, a 1ª geração de um Orçamento na sessão (antes de qualquer
   // outro PDF já ter rodado ensureLogoEmbed) cai no fallback de tamanho
   // fixo do ícone — ainda correto, mas sem a resolução reamostrada.
-  await ensureLogoEmbed(_estiloLogoIconUrl());
+  await _preloadEstiloHeaderLogo();
   openPdfPage(buildOrcamentoHtml(orc, cliente, veiculo, emp));
 }
 
@@ -43318,7 +43346,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     var _isPWArg = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
     var _wrg = null;
     if (!_isPWArg) { _wrg = window.open("", "_blank"); if (!_wrg) { alert("Permita popups para gerar o PDF."); return; } }
-    await ensureLogoEmbed(_estiloLogoIconUrl());
+    await _preloadEstiloHeaderLogo();
     var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Relatorio Geral</title><style>body{font-family:Arial,sans-serif;max-width:850px;margin:30px auto;font-size:13px}h2{border-bottom:1px solid #ddd;padding-bottom:6px;margin:20px 0 10px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #ddd}th{background:#f5f5f7}.g{color:#34C759;font-weight:800}.r{color:#FF3B30}@page{margin:0}@media print{body{margin:0;padding:10mm 8mm}}</style></head><body>';
     h += buildHeader(empresa);
     h += '<h2>Resumo Financeiro</h2><table><tr><th>Indicador</th><th>Valor</th></tr>';
@@ -43363,7 +43391,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     var _isPWAfr = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
     var _wfr = null;
     if (!_isPWAfr) { _wfr = window.open("", "_blank"); if (!_wfr) { alert("Permita popups para gerar o PDF."); return; } }
-    await ensureLogoEmbed(_estiloLogoIconUrl());
+    await _preloadEstiloHeaderLogo();
     var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Relatorio de Faturas</title><style>body{font-family:Arial,sans-serif;max-width:850px;margin:30px auto;font-size:13px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #ddd}th{background:#f5f5f7}.tot{font-weight:800;font-size:15px;color:#34C759}.paga{color:#34C759}.emitida{color:#007AFF}.vencida{color:#FF3B30}.prevista{color:#888}@page{margin:0}@media print{body{margin:0;padding:10mm 8mm}}</style></head><body>';
     h += buildHeader(empresa);
     h += '<div style="margin-bottom:16px"><div style="font-size:18px;font-weight:800">RELATORIO DE FATURAS</div>';
@@ -44310,7 +44338,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
     if (dirtyRef.current) return; // não sobrescreve edições em andamento
     const d = await db.get("config", "limit=1");
     if (d && d[0] && !dirtyRef.current) {
-      setForm(d[0]); setConfigId(d[0].id); setEmpresa(d[0]); preloadLogoEmbed(_estiloLogoIconUrl());
+      setForm(d[0]); setConfigId(d[0].id); setEmpresa(d[0]); preloadLogoEmbed(_estiloLogoIconUrl()); preloadLogoEmbed(_estiloWordmarkUrl());
     }
   }
   useEffect(() => { carregar(); }, []);
@@ -53934,7 +53962,7 @@ function App() {
        fallback pra falha real de rede (volta o último cache bom), então aqui
        dá pra confiar no que o servidor respondeu, inclusive quando é []. */
     db.getAll("lembretes").then(function(d){ setLembretes(d || []); });
-    db.get("config", "limit=1").then(d => { if (d && d[0]) { setEmpresa(d[0]); preloadLogoEmbed(_estiloLogoIconUrl()); } });
+    db.get("config", "limit=1").then(d => { if (d && d[0]) { setEmpresa(d[0]); preloadLogoEmbed(_estiloLogoIconUrl()); preloadLogoEmbed(_estiloWordmarkUrl()); } });
   }, [refreshTick]);
 
   /* ── Sincronização entre usuários (tempo real + rede de segurança) ───────

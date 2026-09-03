@@ -37489,6 +37489,42 @@ function calcSaldoOrcPessoalMes(orcItens, despesas, mes) {
   return { saldo: _totRec-_totDes, totRec:_totRec, totDes:_totDes, despesasDoMes:_desps };
 }
 
+/* Baixa de um item do Orçamento Pessoal a partir de FORA da tela do
+   Orçamento Pessoal (cartões da Agenda) — mesma regra de pBaixar (Início/
+   PessoalDash): recorrente cuja própria data é de um mês diferente do
+   atual não pode ter a linha-modelo patchada direto (isso "resolveria"
+   errado o mês antigo e nunca criaria o registro do mês certo, deixando o
+   cartão do mês atual reaparecendo pra sempre — bug já visto e corrigido
+   nesse arquivo) — cria um lançamento-filho (recorrencia_origem_id)
+   dedicado a este mês. Senão, patch direto. Status por tipo (recebido/
+   pago), nunca fixo. Retorna null se o item não for encontrado, ou
+   {novo:...} / {id:...,patch:...} pra quem chamou sincronizar o estado
+   local sem precisar buscar tudo de novo. */
+async function baixarOrcPessoalItem(orcItens, itemId) {
+  var _hjBx = _brNow().toISOString().slice(0, 10);
+  var _mesAtualBx = _hjBx.slice(0, 7);
+  var _itBx = (orcItens || []).find(function(x){ return x.id === itemId; });
+  if (!_itBx) return null;
+  var _stBx = _itBx.tipo === 'receita' ? 'recebido' : 'pago';
+  var _emBx = _itBx.data ? _itBx.data.slice(0, 7) : _itBx.mes;
+  var _isProjetadoBx = !!(_itBx.recorrente && _emBx && _emBx !== _mesAtualBx);
+  if (_isProjetadoBx) {
+    var _diaBx = _itBx.data ? parseInt(_itBx.data.slice(8, 10), 10) : 1;
+    var _anoNBx = parseInt(_mesAtualBx.slice(0, 4), 10), _mesNBx = parseInt(_mesAtualBx.slice(5, 7), 10);
+    var _ultBx = new Date(_anoNBx, _mesNBx, 0).getDate();
+    var _diaProjBx = Math.min(_diaBx, _ultBx);
+    var _dtProjBx = _mesAtualBx + '-' + (_diaProjBx < 10 ? '0' + _diaProjBx : String(_diaProjBx));
+    var _novoBx = await db.post("orcamento_pessoal", {
+      descricao: _itBx.descricao, categoria: _itBx.categoria, valor: _itBx.valor, tipo: _itBx.tipo,
+      mes: _mesAtualBx, data: _dtProjBx, status: _stBx, data_pagamento: _hjBx,
+      recorrente: false, recorrencia_origem_id: _itBx.id
+    });
+    return { novo: _novoBx };
+  }
+  var _updBx = await db.patch("orcamento_pessoal", _itBx.id, { status: _stBx, data_pagamento: _hjBx });
+  return { id: _itBx.id, patch: _updBx || { status: _stBx, data_pagamento: _hjBx } };
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  PessoalDash v5 — Template 4 (header gradient) + Template 5 (timeline)
 //  com previsão de despesas e receitas
@@ -37992,40 +38028,11 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     setSubTab('atrasados');
     if (deepLink.acao === 'baixar') {
       (async function() {
-        var _hjDl = _brNow().toISOString().slice(0, 10);
-        var _mesAtualDl = _hjDl.slice(0, 7);
-        var _itDl = itens.find(function(x){ return x.id === deepLink.itemId; });
-        if (!_itDl) { return; }
-        var _stDl = _itDl.tipo === 'receita' ? 'recebido' : 'pago';
-        var _emDl = _itDl.data ? _itDl.data.slice(0, 7) : _itDl.mes;
-        /* Cartão da Agenda pode ser uma pendência RECORRENTE projetada de um
-           mês anterior (buildAgendaEventos) — o id que ele carrega é o da
-           linha-modelo (template), com a PRÓPRIA data ainda no mês antigo.
-           Patchar essa linha direto (como fazia antes) reaproveitava a MESMA
-           linha pra representar "paguei em setembro", sem nunca criar o
-           lançamento-filho do mês — resultado: o cartão de setembro nunca
-           sumia (nada muda a projeção seguinte) e o mês antigo virava "pago"
-           por engano. Mesma regra de pBaixar (Início/PessoalDash): recorrente
-           de mês diferente do atual → cria um FILHO (recorrencia_origem_id)
-           dedicado a este mês; senão, patch direto na própria linha. */
-        var _isProjetadoDl = !!(_itDl.recorrente && _emDl && _emDl !== _mesAtualDl);
         try {
-          if (_isProjetadoDl) {
-            var _diaDl = _itDl.data ? parseInt(_itDl.data.slice(8, 10), 10) : 1;
-            var _anoNDl = parseInt(_mesAtualDl.slice(0, 4), 10), _mesNDl = parseInt(_mesAtualDl.slice(5, 7), 10);
-            var _ultDl = new Date(_anoNDl, _mesNDl, 0).getDate();
-            var _diaProjDl = Math.min(_diaDl, _ultDl);
-            var _dtProjDl = _mesAtualDl + '-' + (_diaProjDl < 10 ? '0' + _diaProjDl : String(_diaProjDl));
-            var _novoDl = await db.post("orcamento_pessoal", {
-              descricao: _itDl.descricao, categoria: _itDl.categoria, valor: _itDl.valor, tipo: _itDl.tipo,
-              mes: _mesAtualDl, data: _dtProjDl, status: _stDl, data_pagamento: _hjDl,
-              recorrente: false, recorrencia_origem_id: _itDl.id
-            });
-            setItens(function(p){ return [_novoDl].concat(p || []); });
-          } else {
-            var upd = await db.patch("orcamento_pessoal", _itDl.id, { status: _stDl, data_pagamento: _hjDl });
-            setItens(function(p){ return p.map(function(x){ return x.id === _itDl.id ? Object.assign({}, x, upd) : x; }); });
-          }
+          var _rDl = await baixarOrcPessoalItem(itens, deepLink.itemId);
+          if (!_rDl) return;
+          if (_rDl.novo) setItens(function(p){ return [_rDl.novo].concat(p || []); });
+          else setItens(function(p){ return p.map(function(x){ return x.id === _rDl.id ? Object.assign({}, x, _rDl.patch) : x; }); });
           toast("💸 Baixado!");
         } catch(e) { toast("Erro ao salvar", "error"); }
       })();
@@ -48893,10 +48900,29 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
                                        Mensal (Início), então ao fechar a janela que abre em
                                        Contratos/Financeiro pra resolver, o usuário deve voltar
                                        pra Início/Agenda em vez de ficar parado na outra aba. */
-                                    /* Orçamento Pessoal (ver _agk2Executar) — nunca abre no Financeiro
-                                       da Locadora, vai pro modo "pessoal" dentro de Início, já em cima
-                                       do item (editável/baixável na aba "Atrasados" de lá). */
-                                    if (ev.tab === "pessoal") { if (setTab) setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id } })); return; }
+                                    /* Orçamento Pessoal (ver _agk2Executar): nunca abre no Financeiro
+                                       da Locadora. E, diferente de despesa/receita/contrato aqui do
+                                       lado (que navegam pra tela deles, que tem seu PRÓPRIO confirm),
+                                       Orçamento Pessoal não tem tela própria pra confirmar de novo —
+                                       trocar o Dashboard inteiro de modo só pra isso é o que causava a
+                                       Agenda ocasionalmente sumindo (bug reportado). Por isso baixa
+                                       DIRETO aqui (com um confirm leve, já que ninguém mais vai
+                                       perguntar), sem navegar. */
+                                    if (ev.tab === "pessoal") {
+                                      (async function(){
+                                        var _itQt = (orcItens||[]).find(function(x){ return x.id === ev.id; });
+                                        if (!_itQt) return;
+                                        var _cQt = await window.__agConfirm({ title:"Baixar", icon:"💸", message:"Confirmar baixa de \""+(_itQt.descricao||"item")+"\"?", okLabel:"Confirmar" });
+                                        if (!_cQt.ok) return;
+                                        try {
+                                          var _rQt = await baixarOrcPessoalItem(orcItens, ev.id);
+                                          if (!_rQt) return;
+                                          if (onOrcAtualizado) onOrcAtualizado(_rQt);
+                                          if (toast) toast('💸 Baixado!');
+                                        } catch(e) { if (toast) toast('Erro ao salvar', 'error'); }
+                                      })();
+                                      return;
+                                    }
                                     if (ev.acao === "renovar" && ev.id != null && setCtDeepLink) { setCtDeepLink({ acao:"renovar", itemId: ev.id, voltarInicio:true }); if (setTab) setTab("contratos"); return; }
                                     if (ev.acao === "emitir" && ev.id != null && setFinDeepLink) { setFinDeepLink({ subTab:"faturas", acao:"emitir", itemId: ev.id, mes: ev.mesFat, voltarInicio:true }); if (setTab) setTab("financeiro"); return; }
                                     /* Prazo de indicação estourado: abre em Multas o MESMO modal de
@@ -49106,30 +49132,10 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
         return;
       }
       (async function() {
-        var _hjPs = _brNow().toISOString().slice(0, 10);
-        var _mesAtualPs = _hjPs.slice(0, 7);
-        var _itPs = (orcItens || []).find(function(x){ return x.id === ev.id; });
-        if (!_itPs) return;
-        var _stPs = _itPs.tipo === 'receita' ? 'recebido' : 'pago';
-        var _emPs = _itPs.data ? _itPs.data.slice(0, 7) : _itPs.mes;
-        var _isProjetadoPs = !!(_itPs.recorrente && _emPs && _emPs !== _mesAtualPs);
         try {
-          if (_isProjetadoPs) {
-            var _diaPs = _itPs.data ? parseInt(_itPs.data.slice(8, 10), 10) : 1;
-            var _anoNPs = parseInt(_mesAtualPs.slice(0, 4), 10), _mesNPs = parseInt(_mesAtualPs.slice(5, 7), 10);
-            var _ultPs = new Date(_anoNPs, _mesNPs, 0).getDate();
-            var _diaProjPs = Math.min(_diaPs, _ultPs);
-            var _dtProjPs = _mesAtualPs + '-' + (_diaProjPs < 10 ? '0' + _diaProjPs : String(_diaProjPs));
-            var _novoPs = await db.post("orcamento_pessoal", {
-              descricao: _itPs.descricao, categoria: _itPs.categoria, valor: _itPs.valor, tipo: _itPs.tipo,
-              mes: _mesAtualPs, data: _dtProjPs, status: _stPs, data_pagamento: _hjPs,
-              recorrente: false, recorrencia_origem_id: _itPs.id
-            });
-            if (onOrcAtualizado) onOrcAtualizado({ novo: _novoPs });
-          } else {
-            var _updPs = await db.patch("orcamento_pessoal", _itPs.id, { status: _stPs, data_pagamento: _hjPs });
-            if (onOrcAtualizado) onOrcAtualizado({ id: _itPs.id, patch: _updPs || { status: _stPs, data_pagamento: _hjPs } });
-          }
+          var _rPs = await baixarOrcPessoalItem(orcItens, ev.id);
+          if (!_rPs) return;
+          if (onOrcAtualizado) onOrcAtualizado(_rPs);
           if (toast) toast('💸 Baixado!');
         } catch(e) { if (toast) toast('Erro ao salvar', 'error'); }
       })();

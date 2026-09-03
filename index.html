@@ -48797,7 +48797,19 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
     var wrap = _boardWrapRef.current;
     if (!wrap) return;
     var _medir = function(){
+      /* [agenda-faixa-branca] Nunca medir com o painel FORA DE LAYOUT. A
+         Dashboard da Locadora não é desmontada ao entrar no Orçamento
+         Pessoal — ela fica `display:none` (ver modoDash em Inicio) —, e esta
+         medição continua rodando enquanto isso, porque `dias` entra nas deps
+         e muda a cada sincronização/polling. Num elemento oculto todo
+         getBoundingClientRect é 0 e scrollHeight é 0, então o cálculo abaixo
+         gravava uma altura de só o padding (~16px): ao voltar pra Locadora a
+         Agenda reaparecia como uma faixa branca fina, e só um reload
+         resolvia (bug reportado). Sem tamanho medível, mantém a altura
+         anterior e sai — nunca grava um valor colapsado. */
+      if (!wrap.offsetParent && window.getComputedStyle(wrap).position !== 'fixed') return;
       var wrapRect = wrap.getBoundingClientRect();
+      if (!wrapRect.width || !wrapRect.height) return;
       var _els = _colElsRef.current, _best = null, _bestOverlap = -1;
       Object.keys(_els).forEach(function(k){
         var el = _els[k]; if (!el) return;
@@ -48821,7 +48833,20 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
     _medir();
     wrap.addEventListener('scroll', _medir, { passive:true });
     window.addEventListener('resize', _medir);
-    return function(){ wrap.removeEventListener('scroll', _medir); window.removeEventListener('resize', _medir); };
+    /* Voltar do Orçamento Pessoal devolve a Dashboard ao layout — e é
+       exatamente aí que a altura precisa ser medida de novo: enquanto
+       escondida, as medições foram descartadas pelo guard acima, então o
+       valor em memória pode ser de antes de os dados mudarem. rAF duplo
+       porque no primeiro quadro o `display:flex` ainda não foi aplicado;
+       medir antes disso cairia no guard e não faria nada. Reaproveita o
+       evento que Inicio já dispara a cada troca de modo. */
+    var _remedir = function(){ requestAnimationFrame(function(){ requestAnimationFrame(_medir); }); };
+    window.addEventListener('ag:dash-mode-changed', _remedir);
+    return function(){
+      wrap.removeEventListener('scroll', _medir);
+      window.removeEventListener('resize', _medir);
+      window.removeEventListener('ag:dash-mode-changed', _remedir);
+    };
   /* diasExpandidos precisa estar nas deps: tocar no baralho "+N" (ex.: dentro
      de "Atrasados") revela os cartões ocultos e a coluna cresce, mas essa
      medição só reagia a desktop/mostrarBoard/dias/atrasadosRecolhido — o

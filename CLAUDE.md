@@ -163,6 +163,19 @@ A receita vinculada (`ref_fatura`) reflete o `valor_total` como `valor` (previst
 
 Sempre que registrar uma baixa parcial/total de contrato (`confirmarParcialCt`, `confirmarBaixarCt`, fluxos inline), **patchar também a receita vinculada** para manter status e valor consistentes.
 
+### Item recorrente (orçamento pessoal) — UMA função só, nunca PATCH solto
+
+Histórico real deste projeto: o bug "baixei e continua aparecendo como pendente" (Salário AGI, depois Escola) precisou de **5 rodadas de correção**, uma por caminho de UI que baixava um item recorrente do jeito errado — cada um escrito na mão, cada um esquecendo a regra de recorrência. A causa de fundo sempre foi a mesma: código que fazia `db.patch("orcamento_pessoal", it.id, {status, data_pagamento})` **direto**, sem passar pela função compartilhada `baixarOrcPessoalItem(orcItens, itemId, mesAlvo)`.
+
+**Regra permanente: NENHUM código pode fazer `db.patch`/`db.post` de baixa em `orcamento_pessoal` fora de `baixarOrcPessoalItem`.** Essa função já resolve:
+- recorrente cujo mês próprio (`data`) é diferente do mês-alvo → cria linha-filha (`recorrencia_origem_id`) dedicada àquele mês, nunca patcha o template direto (isso "resolve" visualmente mas deixa o mês real sempre pendente pros cálculos — `calcSaldoOrcPessoalMes`/KPIs reprojetam ignorando o status cru do template);
+- já existe uma linha-filha pra aquele mês (criada por outro caminho) → faz PATCH nela, nunca duplica;
+- item não-recorrente ou já no mês certo → PATCH direto, simples.
+
+Qualquer novo botão/swipe/atalho de "baixar" em orçamento pessoal — presente ou futuro — **tem que chamar `baixarOrcPessoalItem`**, passando o mês exato da ocorrência tocada (`efetivoMes(it)` ou `ev.data.slice(0,7)`, nunca "hoje" fixo). Antes de declarar uma tarefa de baixa concluída, **grep por `db.patch("orcamento_pessoal"` e `db.post("orcamento_pessoal"`** no arquivo inteiro e confirmar que todo resultado passa pela função — não só o caminho que acabou de ser editado.
+
+**Nunca mais corrigir um registro corrompido só via SQL manual no Supabase.** SQL direto no banco é aceitável como curativo pontual de um dado já quebrado (feito uma vez), mas a causa tem que ser corrigida no código na mesma tarefa — nunca tratar o sintoma sem também eliminar a origem.
+
 ## Espaçamento entre painéis do Dashboard (Início) — PADRÃO PERMANENTE
 
 Grid de 8pt, dois níveis só — **nunca inventar um terceiro valor**:

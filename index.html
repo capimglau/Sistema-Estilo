@@ -25862,7 +25862,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
     function openPessoal(e) {
       window.__ag_goto_pessoal = false; setModoDash("pessoal");
       var det = e && e.detail;
-      if (det && det.itemId != null) setOrcAgendaDeepLink({ itemId: det.itemId, acao: det.acao || null });
+      if (det && det.itemId != null) setOrcAgendaDeepLink({ itemId: det.itemId, acao: det.acao || null, mes: det.mes || null });
     }
     window.addEventListener("ag:open-pessoal", openPessoal);
     return function() { window.removeEventListener("ag:open-pessoal", openPessoal); };
@@ -27963,7 +27963,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                                           )
                                       )
                                     , React.createElement('div',{
-                                          onClick:function(){ if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id } })); } else setTab(ev.tab); },
+                                          onClick:function(){ if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id, mes: ev.data ? ev.data.slice(0, 7) : null } })); } else setTab(ev.tab); },
                                           style:{
                                             marginTop:11, textAlign:"center", cursor:"pointer",
                                             fontSize:12, fontWeight:700, color:_cc,
@@ -37526,32 +37526,38 @@ function calcSaldoOrcPessoalMes(orcItens, despesas, mes) {
    pago), nunca fixo. Retorna null se o item não for encontrado, ou
    {novo:...} / {id:...,patch:...} pra quem chamou sincronizar o estado
    local sem precisar buscar tudo de novo. */
-async function baixarOrcPessoalItem(orcItens, itemId) {
+async function baixarOrcPessoalItem(orcItens, itemId, mesAlvo) {
   var _hjBx = _brNow().toISOString().slice(0, 10);
   var _mesAtualBx = _hjBx.slice(0, 7);
+  /* mesAlvo = mês da OCORRÊNCIA específica que o usuário tocou (vem de
+     ev.data do card da Agenda, que pode ser um mês atrasado, não o real
+     "hoje") — sem isso, baixar um card de agosto atrasado sempre acabava
+     resolvendo/duplicando o de setembro, e o card de agosto nunca podia
+     ser quitado de verdade (bug reportado repetidamente). */
+  var _mesAlvoBx = mesAlvo || _mesAtualBx;
   var _itBx = (orcItens || []).find(function(x){ return x.id === itemId; });
   if (!_itBx) return null;
   var _stBx = _itBx.tipo === 'receita' ? 'recebido' : 'pago';
   var _emBx = _itBx.data ? _itBx.data.slice(0, 7) : _itBx.mes;
-  var _isProjetadoBx = !!(_itBx.recorrente && _emBx && _emBx !== _mesAtualBx);
+  var _isProjetadoBx = !!(_itBx.recorrente && _emBx && _emBx !== _mesAlvoBx);
   if (_isProjetadoBx) {
     /* Já existe uma ocorrência deste mês pra essa recorrência (criada por
        outro caminho da UI)? Nunca duplicar — patcha a existente. */
     var _jaExisteBx = (orcItens || []).find(function(x){
-      return x.recorrencia_origem_id === _itBx.id && (x.data ? x.data.slice(0, 7) : x.mes) === _mesAtualBx;
+      return x.recorrencia_origem_id === _itBx.id && (x.data ? x.data.slice(0, 7) : x.mes) === _mesAlvoBx;
     });
     if (_jaExisteBx) {
       var _updExBx = await db.patch("orcamento_pessoal", _jaExisteBx.id, { status: _stBx, data_pagamento: _hjBx });
       return { id: _jaExisteBx.id, patch: _updExBx || { status: _stBx, data_pagamento: _hjBx } };
     }
     var _diaBx = _itBx.data ? parseInt(_itBx.data.slice(8, 10), 10) : 1;
-    var _anoNBx = parseInt(_mesAtualBx.slice(0, 4), 10), _mesNBx = parseInt(_mesAtualBx.slice(5, 7), 10);
+    var _anoNBx = parseInt(_mesAlvoBx.slice(0, 4), 10), _mesNBx = parseInt(_mesAlvoBx.slice(5, 7), 10);
     var _ultBx = new Date(_anoNBx, _mesNBx, 0).getDate();
     var _diaProjBx = Math.min(_diaBx, _ultBx);
-    var _dtProjBx = _mesAtualBx + '-' + (_diaProjBx < 10 ? '0' + _diaProjBx : String(_diaProjBx));
+    var _dtProjBx = _mesAlvoBx + '-' + (_diaProjBx < 10 ? '0' + _diaProjBx : String(_diaProjBx));
     var _novoBx = await db.post("orcamento_pessoal", {
       descricao: _itBx.descricao, categoria: _itBx.categoria, valor: _itBx.valor, tipo: _itBx.tipo,
-      mes: _mesAtualBx, data: _dtProjBx, status: _stBx, data_pagamento: _hjBx,
+      mes: _mesAlvoBx, data: _dtProjBx, status: _stBx, data_pagamento: _hjBx,
       recorrente: false, recorrencia_origem_id: _itBx.id
     });
     return { novo: _novoBx };
@@ -38072,7 +38078,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     if (deepLink.acao === 'baixar') {
       (async function() {
         try {
-          var _rDl = await baixarOrcPessoalItem(itens, deepLink.itemId);
+          var _rDl = await baixarOrcPessoalItem(itens, deepLink.itemId, deepLink.mes);
           if (!_rDl) return;
           if (_rDl.novo) setItens(function(p){ return [_rDl.novo].concat(p || []); });
           else setItens(function(p){ return p.map(function(x){ return x.id === _rDl.id ? Object.assign({}, x, _rDl.patch) : x; }); });
@@ -49204,12 +49210,12 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
     if (ev.tab === "pessoal") {
       if (!confirmado) {
         if (setTab) setTab("inicio");
-        window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id } }));
+        window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id, mes: ev.data ? ev.data.slice(0, 7) : null } }));
         return;
       }
       (async function() {
         try {
-          var _rPs = await baixarOrcPessoalItem(orcItens, ev.id);
+          var _rPs = await baixarOrcPessoalItem(orcItens, ev.id, ev.data ? ev.data.slice(0, 7) : null);
           if (!_rPs) return;
           if (onOrcAtualizado) onOrcAtualizado(_rPs);
           if (toast) toast('💸 Baixado!');
@@ -49408,7 +49414,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   }
   function abrirEvento(ev) {
     if (ev.tipo === "lembrete") setAcaoLembrete(ev);
-    else if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id } })); }
+    else if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id, mes: ev.data ? ev.data.slice(0, 7) : null } })); }
     else setTab(ev.tab);
   }
 

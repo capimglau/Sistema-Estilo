@@ -176,6 +176,29 @@ Qualquer novo botão/swipe/atalho de "baixar" em orçamento pessoal — presente
 
 **Nunca mais corrigir um registro corrompido só via SQL manual no Supabase.** SQL direto no banco é aceitável como curativo pontual de um dado já quebrado (feito uma vez), mas a causa tem que ser corrigida no código na mesma tarefa — nunca tratar o sintoma sem também eliminar a origem.
 
+### "Marcar como resolvido" da Agenda NUNCA quita dinheiro
+
+`agenda_adiamentos` (mapa `agAdiaMapa`/`agAdiaOculto`) existe pra pendência que
+se resolve **fora do sistema** — licenciamento, IPVA, CNH, pneus, revisão. O
+próprio modal diz isso, e o botão "Marcar como resolvido" só aparece quando o
+cartão **não tem ação de baixa** (`semAcao` em `_agk2ModalAcao`).
+
+**Cartão COM baixa real (`ev.acao === "baixar"` ou `"renovar"` — contrato,
+despesa, receita, orçamento pessoal) tem fonte da verdade própria no banco** e
+some sozinho quando o registro é de fato quitado (`jaPago`,
+`temFilhoNoMesOrc` etc. em `buildAgendaEventos`). Por isso o marcador
+`resolvido` **nunca** pode ocultar um desses: esconderia uma dívida ainda em
+aberto pra sempre, sem nenhuma tela pra ver ou desfazer — foi exatamente o
+conflito reportado ("o cartão sumiu da Agenda, o banco continuou sem a baixa,
+e todos os painéis seguiram cobrando a pagar").
+
+Regra permanente: no filtro final de `buildAgendaEventos`, `r.resolvido` só
+oculta cartão **sem** ação de baixa/renovação. Adiar (`r.ate`) continua valendo
+pra todos — mas adiar apenas **reposiciona** o cartão na nova data, nunca o
+apaga. Qualquer mecanismo novo de "esconder cartão" tem que respeitar isso:
+**nada que represente dinheiro em aberto pode ser ocultado por marcador de
+UI — só pela quitação real no banco.**
+
 ## Espaçamento entre painéis do Dashboard (Início) — PADRÃO PERMANENTE
 
 Grid de 8pt, dois níveis só — **nunca inventar um terceiro valor**:

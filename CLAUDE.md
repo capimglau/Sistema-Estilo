@@ -199,6 +199,34 @@ apaga. Qualquer mecanismo novo de "esconder cartão" tem que respeitar isso:
 **nada que represente dinheiro em aberto pode ser ocultado por marcador de
 UI — só pela quitação real no banco.**
 
+## Agenda do Dashboard — 3 cartões e 3 dias, o resto no baralho — REGRA PERMANENTE
+
+A Agenda embutida no Início **nunca** cresce livre: ela termina num ponto fixo
+e o que passa disso vira "fantasma" (baralho empilhado com selo `+N`, que só
+abre quando o usuário toca).
+
+Dois cortes independentes, ambos com limite **3**:
+
+- **`_maxVisiveis = 3`** (dentro de `CalendarioKanban2`) — no máximo **3
+  cartões por dia**. Do 4º em diante, o dia empilha o resto no baralho.
+- **`AGK2_LIM_DIAS = 3`** (`agk2CorteDias`) — no máximo **3 dias** renderizados
+  no painel do Início. Os dias seguintes não são renderizados; todos os eventos
+  deles entram no `+N` do baralho do **último dia visível** (por isso o badge
+  soma `_ocultosDoDia + _ocultosDeOutrosDias` — mostrar só um dos dois mentiria
+  sobre quanto ainda há por ver).
+
+O corte de dias é **por DIA, nunca por cartão**: cortar por cartão faria um
+único dia cheio consumir a cota inteira e esconder os outros dois.
+
+Motivo original: sem os cortes o painel listava a janela inteira e empurrava o
+painel de Boletos pra longe da tela.
+
+**Antes de declarar concluída qualquer mudança que gere, filtre ou reordene
+eventos da Agenda** (novo tipo de cartão, mudança em `buildAgendaEventos`,
+mudança no filtro de adiados/resolvidos etc.), confirmar que os dois limites
+continuam valendo — mais eventos elegíveis nunca podem virar mais cartões
+visíveis, só um `+N` maior no baralho.
+
 ## Espaçamento entre painéis do Dashboard (Início) — PADRÃO PERMANENTE
 
 Grid de 8pt, dois níveis só — **nunca inventar um terceiro valor**:

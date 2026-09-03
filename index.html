@@ -25843,8 +25843,17 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   React.useEffect(function() {
     if (window.__ag_goto_pessoal) { window.__ag_goto_pessoal = false; setModoDash("pessoal"); }
   }, []);
+  /* Deep-link de um cartão da Agenda pro item exato no Orçamento Pessoal —
+     leva junto o id (e, se já confirmado no cartão, a ação "baixar") pra
+     OrcamentoPessoalInline abrir direto em cima do item, editável/baixável
+     (aba "Atrasados" de lá já tem as duas ações via swipe). */
+  var _orcDlState = React.useState(null); var orcAgendaDeepLink = _orcDlState[0], setOrcAgendaDeepLink = _orcDlState[1];
   React.useEffect(function() {
-    function openPessoal() { window.__ag_goto_pessoal = false; setModoDash("pessoal"); }
+    function openPessoal(e) {
+      window.__ag_goto_pessoal = false; setModoDash("pessoal");
+      var det = e && e.detail;
+      if (det && det.itemId != null) setOrcAgendaDeepLink({ itemId: det.itemId, acao: det.acao || null });
+    }
     window.addEventListener("ag:open-pessoal", openPessoal);
     return function() { window.removeEventListener("ag:open-pessoal", openPessoal); };
   }, []);
@@ -26380,6 +26389,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
               orcItens: _orcFresh,
               desktop: desktop,
               setTab: setTab,
+              orcAgendaDeepLink: orcAgendaDeepLink, setOrcAgendaDeepLink: setOrcAgendaDeepLink,
               orcCats: _orcCats, setOrcCats: _setOrcCats,
               orcCatsMod: _orcCatsMod, setOrcCatsMod: _setOrcCatsMod,
               contratos: contratos, despesas: despesas, receitas: receitas,
@@ -27933,7 +27943,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                                           )
                                       )
                                     , React.createElement('div',{
-                                          onClick:function(){ if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal")); } else setTab(ev.tab); },
+                                          onClick:function(){ if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id } })); } else setTab(ev.tab); },
                                           style:{
                                             marginTop:11, textAlign:"center", cursor:"pointer",
                                             fontSize:12, fontWeight:700, color:_cc,
@@ -37403,7 +37413,8 @@ function PessoalDash({
   pModal, setPModal, pForm, setPForm,
   pEdit, setPEdit, pSaving, pSave, pDel, pBaixar,
   pfTooltip, setPfTooltip, pfHover, setPfHover, pfSwipeX,
-  orcCats, setOrcCats, orcCatsMod, setOrcCatsMod
+  orcCats, setOrcCats, orcCatsMod, setOrcCatsMod,
+  orcAgendaDeepLink, setOrcAgendaDeepLink
 }) {
   var RX = getRX(desktop);
   var _oi   = orcItens || [];
@@ -37700,7 +37711,8 @@ function PessoalDash({
         contratos:contratos,despesas:despesas,receitas:receitas,
         manutencoes:manutencoes,multas:multas,
         filtroMes:_mes,setFiltroMes:setDashMes,
-        onItensChange:_setPesItens
+        onItensChange:_setPesItens,
+        deepLink: orcAgendaDeepLink, setDeepLink: setOrcAgendaDeepLink
       })
     ,React.createElement('div',{style:{height:28}})
   );
@@ -37712,18 +37724,19 @@ function PessoalDash({
 
 // OrcamentoPessoalInline: versão para embutir na Dashboard (sem cabeçalho nem nav de meses próprios)
 // Usa filtroMes/setFiltroMes do Inicio (dashMes)
-function OrcamentoPessoalInline({ contratos, despesas, receitas, manutencoes, multas, filtroMes, setFiltroMes, onItensChange }) {
+function OrcamentoPessoalInline({ contratos, despesas, receitas, manutencoes, multas, filtroMes, setFiltroMes, onItensChange, deepLink, setDeepLink }) {
   return React.createElement(OrcamentoPessoal, {
     contratos: contratos, despesas: despesas, receitas: receitas,
     manutencoes: manutencoes, multas: multas,
     toast: function(msg, type) { window.dispatchEvent(new CustomEvent('ag:toast', { detail: { msg: msg, type: type || 'success' } })); },
     filtroMes: filtroMes, setFiltroMes: setFiltroMes,
     onItensChange: onItensChange,
+    deepLink: deepLink, setDeepLink: setDeepLink,
     inlineMode: true
   });
 }
 
-function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, toast, onItensChange, filtroMes: _filtroMesProp, setFiltroMes: _setFiltroMesProp, inlineMode }) {
+function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, toast, onItensChange, filtroMes: _filtroMesProp, setFiltroMes: _setFiltroMesProp, inlineMode, deepLink, setDeepLink }) {
   const [itens, setItensRaw] = useState([]);
   const [loading, setLoading] = useState(true);
   function setItens(updater) {
@@ -37880,6 +37893,31 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     (_atrGruposMes[em] = _atrGruposMes[em] || []).push(it);
   });
   var _atrMesesOrd = Object.keys(_atrGruposMes).sort();
+
+  /* Deep-link vindo de um cartão da Agenda (ver Início/PessoalDash,
+     orcAgendaDeepLink + evento "ag:open-pessoal"): leva direto pro item na
+     aba "Atrasados" — que já tem baixar/editar/excluir via swipe — ou, se o
+     usuário já tinha confirmado a baixa no próprio cartão da Agenda,
+     executa a baixa direto (mesmo patch de _atrBaixar). */
+  var _orcHlState = React.useState(null); var orcHighlightId = _orcHlState[0], setOrcHighlightId = _orcHlState[1];
+  React.useEffect(function() {
+    if (!deepLink || deepLink.itemId == null) return;
+    setSubTab('atrasados');
+    if (deepLink.acao === 'baixar') {
+      (async function() {
+        var _hjDl = _brNow().toISOString().slice(0, 10);
+        try {
+          var upd = await db.patch("orcamento_pessoal", deepLink.itemId, { status: "pago", data_pagamento: _hjDl });
+          setItens(function(p){ return p.map(function(x){ return x.id === deepLink.itemId ? Object.assign({}, x, upd) : x; }); });
+          toast("💸 Baixado!");
+        } catch(e) { toast("Erro ao salvar", "error"); }
+      })();
+    } else {
+      setOrcHighlightId(deepLink.itemId);
+      setTimeout(function(){ setOrcHighlightId(null); }, 3000);
+    }
+    if (setDeepLink) setDeepLink(null);
+  }, [deepLink]);
 
   // ── Lucro da Locadora — SEMPRE PREVISTO (mês anterior ao filtroMes) ──────────
   // Fórmula: Receitas Previstas − Despesas Previstas − Manutenções Previstas
@@ -38757,12 +38795,13 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
               React.createElement(BRLValue,{v:_totMesAtr,size:12,weight:800,color:C.red})
             ),
             _itsMes.map(function(it,i){
+              var _isHlAtr = it.id === orcHighlightId;
               return React.createElement(SwipeRow,{
                 key:it.id, onBaixar:_atrBaixar(it), baixarLabel:'💸 Baixar',
                 onEdit:_atrEditar(it), onDelete:_atrExcluir(it),
                 wrapStyle:{borderBottom:i<_itsMes.length-1?'0.6px solid '+C.border:'none'}
               },
-                React.createElement('div',{className:'ag-expirado',style:{padding:'12px 10px',display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
+                React.createElement('div',{className:'ag-expirado', ref: _isHlAtr ? function(el){ if(el){ el.scrollIntoView({behavior:"smooth",block:"center"}); el.classList.add('ag-flash-nav'); el.addEventListener('animationend',function h(){el.classList.remove('ag-flash-nav');el.removeEventListener('animationend',h);}); } } : null, style:{padding:'12px 10px',display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
                   React.createElement('div',{style:{flex:1,minWidth:0}},
                     React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',marginBottom:2}},
                       React.createElement('span',{style:{fontWeight:700,fontSize:14,color:'var(--c-text)'}},it.descricao),
@@ -47940,6 +47979,9 @@ function buildAgendaEventos(ctx) {
       // abrir no Financeiro da Estilo/Locadora, que é outro dinheiro/tela.
       // _agk2Executar trata esse valor especial e manda pro modoDash "pessoal"
       // dentro de Início (Orçamento Pessoal não tem aba própria hoje).
+      // id/acao (mesma convenção de despesa/receita) — permite que o clique no
+      // cartão leve direto ao item específico lá, pronto pra editar ou baixar.
+      id: it.id, acao: "baixar",
       tab: "pessoal"
     });
   });
@@ -48735,8 +48777,9 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
                                        Contratos/Financeiro pra resolver, o usuário deve voltar
                                        pra Início/Agenda em vez de ficar parado na outra aba. */
                                     /* Orçamento Pessoal (ver _agk2Executar) — nunca abre no Financeiro
-                                       da Locadora, vai pro modo "pessoal" dentro de Início. */
-                                    if (ev.tab === "pessoal") { if (setTab) setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal")); return; }
+                                       da Locadora, vai pro modo "pessoal" dentro de Início, já em cima
+                                       do item (editável/baixável na aba "Atrasados" de lá). */
+                                    if (ev.tab === "pessoal") { if (setTab) setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id } })); return; }
                                     if (ev.acao === "renovar" && ev.id != null && setCtDeepLink) { setCtDeepLink({ acao:"renovar", itemId: ev.id, voltarInicio:true }); if (setTab) setTab("contratos"); return; }
                                     if (ev.acao === "emitir" && ev.id != null && setFinDeepLink) { setFinDeepLink({ subTab:"faturas", acao:"emitir", itemId: ev.id, mes: ev.mesFat, voltarInicio:true }); if (setTab) setTab("financeiro"); return; }
                                     /* Prazo de indicação estourado: abre em Multas o MESMO modal de
@@ -48934,11 +48977,13 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
        Orçamento Pessoal não tem aba própria hoje (vive dentro de Início, modo
        "pessoal"), então a navegação é: ir pra Início + avisar o Início pra
        trocar de modo (mesmo evento "ag:open-pessoal" que o atalho do topbar
-       usa). Sem id/ação própria nesse cartão ainda, então sempre é "abrir na
-       tela", nunca uma baixa direta daqui. */
+       usa) — levando junto o id do item, pra abrir já em cima dele, editável
+       e com a opção de baixar (aba "Atrasados" do Orçamento Pessoal). Só
+       baixa direto (sem abrir a tela) quando o usuário já confirmou aqui no
+       cartão — mesma regra de despesa/receita logo abaixo. */
     if (ev.tab === "pessoal") {
       if (setTab) setTab("inicio");
-      window.dispatchEvent(new CustomEvent("ag:open-pessoal"));
+      window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id, acao: confirmado ? "baixar" : null } }));
       return;
     }
     /* Cartão sem ação (documento, CNH, reserva…) e cartão sem id: "Abrir em"
@@ -49127,7 +49172,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   }
   function abrirEvento(ev) {
     if (ev.tipo === "lembrete") setAcaoLembrete(ev);
-    else if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal")); }
+    else if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id } })); }
     else setTab(ev.tab);
   }
 

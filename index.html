@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="79c77fc"/>
+<meta name="ag-build" content="43db38b"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -54027,6 +54027,19 @@ function App() {
     setNavOculto(false);
     showDock();
     if (t === "inicio") {
+      /* Tocar em "Início" ATUALIZA o app, além de navegar (pedido do usuário).
+         Dois passos, os dois reaproveitando o que já existe — nada de
+         location.reload() cego, que jogaria fora o que está na tela e piscaria
+         a cada toque:
+         1) __agSyncAgora — varredura imediata das tabelas (mesma função dos
+            gatilhos de voltar à aba/foco/rede), então os números da Dashboard
+            já chegam atualizados junto com a navegação;
+         2) __agCheckBuild — confere se há versão nova publicada e só então
+            recarrega. Sem versão nova não acontece reload nenhum.
+         É também o atalho pro problema recorrente de PWA em cache: antes só
+         dava pra forçar isso em Config → "Buscar atualização". */
+      try { if (window.__agSyncAgora) window.__agSyncAgora(); } catch(e) {}
+      try { if (window.__agCheckBuild) window.__agCheckBuild(); } catch(e) {}
       setTimeout(function(){
         // Um único scroller (o documento) — ver .ag-app-shell.
         var _sc = scrollContainerRef.current; if (_sc) _sc.scrollTo({ top: 0, behavior: 'smooth' });
@@ -54645,6 +54658,12 @@ function App() {
       if (Date.now() - ultimoCiclo < 1500) return;
       ciclo();
     }
+    /* Exposto pra quem está fora deste efeito poder pedir uma varredura na hora
+       — hoje o toque em "Início" (navTab), que deve trazer o app atualizado
+       junto com a navegação. Passa pela MESMA cicloAgora dos outros gatilhos,
+       inclusive a trava de 1,5s, então tocar Início várias vezes seguidas não
+       vira várias varreduras. */
+    window.__agSyncAgora = cicloAgora;
 
     // ── 1. Tempo real ──
     _agRtIniciar({
@@ -54696,6 +54715,7 @@ function App() {
       vivo = false;
       clearTimeout(timer);
       _agRtParar();
+      if (window.__agSyncAgora === cicloAgora) window.__agSyncAgora = null;
       document.removeEventListener("visibilitychange", aoVoltar);
       window.removeEventListener("focus", aoVoltar);
       window.removeEventListener("online", aoVoltar);
@@ -55279,7 +55299,12 @@ function App() {
           if (t.id === "financeiro") { var _mesH = _hoje.slice(0,7); _nBadge = resolverDespesasDoMes(despesas||[], _mesH).filter(function(d){ if (isRetLucro(d) || d.manutencao_id) return false; var _dataRef = d.data || ""; if (!_dataRef || _dataRef >= _hoje) return false; return d.status !== "pago" && !d.data_pagamento; }).length + (contas||[]).filter(function(c){ return c.status!=="pago" && c.status!=="cancelado" && c.vencimento && c.vencimento < _hoje; }).length; }
           var _isAtalhosSb = t.id === "atalhos";
           var _isActiveSb = _isAtalhosSb ? shortcutsOpen : tab === t.id;
-          var _mainBtn = React.createElement('button', { key: t.id, 'data-tab-id': t.id, onClick: _isAtalhosSb ? function(){ shortcutsOpenRef.current = true; setShortcutsOpen(true); } : () => handleTabChange(t.id), className: _isActiveSb?"lg-tab-active":"", style: { borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: _isActiveSb ? 600 : 400, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10, transition: "all .15s ease", color: _isActiveSb ? C.blue : "var(--c-text)", border: "none", background: "transparent", position: "relative" } }
+          /* "Início" passa por navTab (e não por handleTabChange direto) pra
+             ganhar o mesmo comportamento do dock no mobile: além de navegar,
+             atualiza o app (varredura das tabelas + verificação de versão
+             nova) e volta a página/agenda pro topo. Os demais itens seguem
+             como antes. */
+          var _mainBtn = React.createElement('button', { key: t.id, 'data-tab-id': t.id, onClick: _isAtalhosSb ? function(){ shortcutsOpenRef.current = true; setShortcutsOpen(true); } : (t.id === "inicio" ? function(){ navTab("inicio"); } : () => handleTabChange(t.id)), className: _isActiveSb?"lg-tab-active":"", style: { borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: _isActiveSb ? 600 : 400, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10, transition: "all .15s ease", color: _isActiveSb ? C.blue : "var(--c-text)", border: "none", background: "transparent", position: "relative" } }
             , React.createElement(NavIcon, { id: t.id, active: tab === t.id }), t.label
             , _nBadge > 0 && React.createElement('span', { style: { marginLeft: "auto", background: "#FF3B30", color: "#fff", borderRadius: 10, fontSize: 10, fontWeight: 800, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", lineHeight: 1 } }, _nBadge > 9 ? "9+" : _nBadge)
           );
@@ -57755,6 +57780,11 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
   document.addEventListener("visibilitychange", function() {
     if (document.visibilityState === "visible") checar();
   });
+  /* Exposto pra quem quiser pedir a verificação na hora — hoje o toque em
+     "Início" (navTab). Recarrega SOMENTE se o build publicado for diferente
+     do que está rodando: sem versão nova, não há reload nenhum, então tocar
+     Início nunca pisca a tela nem perde o que está na tela à toa. */
+  window.__agCheckBuild = checar;
 })();
 </script>
 </body>

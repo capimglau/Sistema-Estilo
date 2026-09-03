@@ -37869,15 +37869,36 @@ function PessoalDash({
           ,React.createElement('div',{style:{textAlign:'right',flexShrink:0}},React.createElement(BRLValue,{v:opts.valor,size:15,weight:800,color:opts.ativo?opts.cor:C.sub}))
         );
       }
+      /* Baixa direto daqui — esta prévia era só leitura (sem swipe/toque),
+         a única forma de baixar era pela Agenda. Mesma função compartilhada
+         de sempre (baixarOrcPessoalItem), passando o mês exibido (_mes)
+         como mês-alvo: os itens desta lista já vêm PROJETADOS pra _mes
+         (ver _itens=_itSrc.filter(_vis).map(_projetar) acima), então
+         efetivoMes(it) já é sempre _mes aqui — nunca precisa recalcular. */
+      function _baixarPrevP(it){
+        return async function(){
+          try{
+            var _r = await baixarOrcPessoalItem(_itSrc, it.id, _mes);
+            if(!_r) return;
+            if(onOrcItensChange) onOrcItensChange(function(p){ p=p||[]; return _r.novo ? [_r.novo].concat(p) : p.map(function(x){return x.id===_r.id?Object.assign({},x,_r.patch):x;}); });
+            window.dispatchEvent(new CustomEvent('ag:toast', { detail: { msg: '💸 Baixado!', type: 'success' } }));
+          }catch(e){ window.dispatchEvent(new CustomEvent('ag:toast', { detail: { msg: 'Erro ao salvar', type: 'error' } })); }
+        };
+      }
       function _listP(items,cor){
         var _mAbrP=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
         function _fD(s){ if(!s) return ''; var d=new Date(s.slice(0,10)+'T00:00:00'); return d.getDate()+' '+_mAbrP[d.getMonth()]; }
         return items.slice().sort(function(a,b){return (a.data||a.mes||'').localeCompare(b.data||b.mes||'');}).map(function(it,i){
-          return React.createElement('div',{key:it.id||i,style:{display:'flex',alignItems:'center',gap:8,padding:'9px 0',borderTop:'1px solid '+C.borderSoft}}
+          var _inner=React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8,padding:'9px 0'}}
             ,React.createElement('span',{style:{fontSize:10,color:C.sub,fontWeight:600,minWidth:34,flexShrink:0}},_fD(it.data||it.mes))
             ,React.createElement('span',{style:{fontSize:13,color:'var(--c-text)',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},it.descricao||it.categoria||'Item')
             ,React.createElement(BRLValue,{v:it.valor,size:13,weight:700,color:cor})
           );
+          return React.createElement(SwipeRow,{
+            key:it.id||i, onBaixar:_baixarPrevP(it),
+            baixarLabel:it.tipo==='receita'?'✅ Receber':'💸 Baixar',
+            wrapStyle:{borderTop:'1px solid '+C.borderSoft}
+          },_inner);
         });
       }
       return React.createElement('div',{style:{background:C.card,borderRadius:18,border:'1px solid '+C.border,padding:'4px 16px 8px'}}
@@ -38331,7 +38352,19 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
       if(it.recorrencia_origem_id){await db.del("orcamento_pessoal",it.id);setItens(p=>p.filter(x=>x.id!==it.id));toast("Estornado!");}
       else{var upd=await db.patch("orcamento_pessoal",it.id,{status:"previsto",data_pagamento:null});setItens(p=>p.map(x=>x.id===it.id?Object.assign({},x,upd):x));toast("Estornado!");}
     };
-    var _edit = function(){ setForm(Object.assign({},it)); setEdit(it.id); setModal(true); };
+    var _edit = function(){
+      /* Recorrente projetado (isRecorrente): não existe linha própria ainda
+         pra este mês — editar direto com setEdit(it.id) editaria o TEMPLATE
+         (corrompe o cadastro original da recorrência, afeta todos os
+         meses). Mesma regra do _baixar acima: edita o filho já criado pra
+         este mês, se existir, senão prepara a criação de um novo ao salvar. */
+      if(isRecorrente){
+        var _filhoEd = itens.find(function(x){ return String(x.recorrencia_origem_id)===String(it.id)&&efetivoMes(x)===filtroMes; });
+        if(_filhoEd){ setForm(Object.assign({},_filhoEd)); setEdit(_filhoEd.id); }
+        else { setForm(Object.assign({}, it, { id: undefined, data: dataExib||it.data, mes: filtroMes, recorrente: false, recorrencia_origem_id: it.id })); setEdit(null); }
+      } else { setForm(Object.assign({},it)); setEdit(it.id); }
+      setModal(true);
+    };
     var _del  = function(){
       if(isRecorrente){
         // Recorrente projetado: verifica se existe filho criado

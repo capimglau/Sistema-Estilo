@@ -26434,6 +26434,12 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 var isProjetado=it.recorrente&&it._origemMes&&it._origemMes!==dashMes;
                 try{
                   if(isProjetado){
+                    var jaExiste=(_orcFresh||[]).find(function(x){return x.recorrencia_origem_id===it.id&&(x.data?x.data.slice(0,7):x.mes)===dashMes;});
+                    if(jaExiste){
+                      var uEx=await db.patch("orcamento_pessoal",jaExiste.id,{status:st,data_pagamento:dt});
+                      _syncOrc(function(p){return(p||[]).map(function(x){return x.id===jaExiste.id?Object.assign({},x,uEx):x;});});
+                      return;
+                    }
                     var anoN=parseInt(dashMes.slice(0,4),10),mesN=parseInt(dashMes.slice(5,7),10);
                     var ult=new Date(anoN,mesN,0).getDate();
                     var dia=it.data?parseInt(it.data.slice(8,10),10):1;
@@ -37529,6 +37535,15 @@ async function baixarOrcPessoalItem(orcItens, itemId) {
   var _emBx = _itBx.data ? _itBx.data.slice(0, 7) : _itBx.mes;
   var _isProjetadoBx = !!(_itBx.recorrente && _emBx && _emBx !== _mesAtualBx);
   if (_isProjetadoBx) {
+    /* Já existe uma ocorrência deste mês pra essa recorrência (criada por
+       outro caminho da UI)? Nunca duplicar — patcha a existente. */
+    var _jaExisteBx = (orcItens || []).find(function(x){
+      return x.recorrencia_origem_id === _itBx.id && (x.data ? x.data.slice(0, 7) : x.mes) === _mesAtualBx;
+    });
+    if (_jaExisteBx) {
+      var _updExBx = await db.patch("orcamento_pessoal", _jaExisteBx.id, { status: _stBx, data_pagamento: _hjBx });
+      return { id: _jaExisteBx.id, patch: _updExBx || { status: _stBx, data_pagamento: _hjBx } };
+    }
     var _diaBx = _itBx.data ? parseInt(_itBx.data.slice(8, 10), 10) : 1;
     var _anoNBx = parseInt(_mesAtualBx.slice(0, 4), 10), _mesNBx = parseInt(_mesAtualBx.slice(5, 7), 10);
     var _ultBx = new Date(_anoNBx, _mesNBx, 0).getDate();
@@ -38169,12 +38184,24 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
             _orfaosIds.add(_orfaos[_oi].id);
           }
         }
-        var nc = await db.post("orcamento_pessoal", payload);
-        setItens(function(p){
-          var semOrfaos = _orfaosIds.size > 0 ? p.filter(function(x){ return !_orfaosIds.has(x.id); }) : p;
-          return [nc || Object.assign({id: Date.now()}, payload)].concat(semOrfaos);
-        });
-        toast("✅ Adicionado!");
+        /* já existe uma ocorrência desta mesma recorrência neste mês (criada
+           por outro caminho da UI, ex: baixa rápida na Agenda)? patcha em vez
+           de duplicar */
+        var _jaExisteOc = payload.recorrencia_origem_id
+          ? itens.find(function(x){ return x.recorrencia_origem_id === payload.recorrencia_origem_id && efetivoMes(x) === payload.mes; })
+          : null;
+        if (_jaExisteOc) {
+          var _uEx = await db.patch("orcamento_pessoal", _jaExisteOc.id, payload);
+          setItens(function(p){ return p.map(function(x){ return x.id === _jaExisteOc.id ? Object.assign({}, x, _uEx || payload) : x; }); });
+          toast("✅ Salvo!");
+        } else {
+          var nc = await db.post("orcamento_pessoal", payload);
+          setItens(function(p){
+            var semOrfaos = _orfaosIds.size > 0 ? p.filter(function(x){ return !_orfaosIds.has(x.id); }) : p;
+            return [nc || Object.assign({id: Date.now()}, payload)].concat(semOrfaos);
+          });
+          toast("✅ Adicionado!");
+        }
       }
       setModal(false); setForm({}); setEdit(null);
     } catch(e) {

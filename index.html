@@ -37750,6 +37750,33 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   var _puraRetIdsOP = new Set((despesas||[]).filter(isRetLucroPura).map(function(d){return String(d.id);}));
   todosVisiveis = todosVisiveis.filter(function(it){ var _rid=_retLocDespId(it); return !_rid || _puraRetIdsOP.has(_rid); });
 
+  /* ── Aba "Atrasados" (aba única, agrupada por mês) ──────────────────────
+     Pedido do usuário: reunir TODAS as despesas vencidas de meses anteriores
+     num só lugar, em vez de precisar navegar mês a mês pra achar cada uma —
+     igual à aba "Atrasados" já usada em Contratos/Agenda da Locadora, que
+     também junta o passado inteiro numa lista só, sem depender de qual mês
+     está selecionado no momento.
+     Lê `itens` CRU (a tabela inteira, sem o filtro por filtroMes que gera
+     itensProprios/todosVisiveis acima) — cada linha já existente na tabela
+     vale pela SUA PRÓPRIA data real, sem projeção nenhuma pra recorrentes:
+     uma recorrente que nunca foi paga continua aparecendo pela data em que
+     foi criada, e uma vez baixada aqui (_atrBaixar) some da lista — o que é
+     exatamente o comportamento certo pra "resolver o que ficou pra trás". */
+  var _hojeAtrOP = _brNow().toISOString().slice(0,10);
+  var _itensAtrasados = itens.filter(function(it){
+    if (it.tipo === "receita") return false;
+    if (it.status === "pago" || it.status === "recebido") return false;
+    var dt = it.data || (it.mes ? it.mes + "-01" : "");
+    return !!dt && dt < _hojeAtrOP;
+  }).sort(function(a,b){ return (a.data||a.mes||"").localeCompare(b.data||b.mes||""); });
+  var _totAtrasadosOP = _itensAtrasados.reduce(function(s,it){ return s+parseFloat(it.valor||0); }, 0);
+  var _atrGruposMes = {};
+  _itensAtrasados.forEach(function(it){
+    var em = efetivoMes(it) || "—";
+    (_atrGruposMes[em] = _atrGruposMes[em] || []).push(it);
+  });
+  var _atrMesesOrd = Object.keys(_atrGruposMes).sort();
+
   // ── Lucro da Locadora — SEMPRE PREVISTO (mês anterior ao filtroMes) ──────────
   // Fórmula: Receitas Previstas − Despesas Previstas − Manutenções Previstas
   var _d0 = new Date(filtroMes+'-15'); _d0.setMonth(_d0.getMonth()-1);
@@ -38475,18 +38502,18 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     /* ── Seletor de seção — abaixo da agenda ── */
     , React.createElement('div', {style:{background:'var(--c-card)',borderRadius:16,border:'1px solid '+C.border,padding:'4px 6px',display:'flex',alignItems:'center',gap:6,boxShadow:'0 1px 8px rgba(0,0,0,0.05)'}},
         React.createElement('span', {style:{fontSize:16,flexShrink:0,paddingLeft:6}},
-          subTab==='dashboard'?'📊':subTab==='despesas'?'📉':subTab==='receitas'?'💰':subTab==='recorrentes'?'🔁':subTab==='projecao'?'📈':'🎯'
+          subTab==='dashboard'?'📊':subTab==='despesas'?'📉':subTab==='receitas'?'💰':subTab==='atrasados'?'🚨':subTab==='recorrentes'?'🔁':subTab==='projecao'?'📈':'🎯'
         ),
         React.createElement('select', {
           value: subTab,
           onChange: function(e){ setSubTab(e.target.value); },
           style: {
             flex:1, border:'none', background:'transparent', fontSize:14,
-            fontWeight:700, color:'var(--c-text)', cursor:'pointer',
+            fontWeight:700, color: subTab==='atrasados' && _itensAtrasados.length>0 ? C.red : 'var(--c-text)', cursor:'pointer',
             padding:'10px 4px', outline:'none', WebkitAppearance:'none', appearance:'none'
           }
         },
-          [['dashboard','📊 Visão Geral'],['despesas','📉 Despesas'],['receitas','💰 Receitas'],['recorrentes','🔁 Fixas / Recorrentes'],['projecao','📈 Projeção'],['simulacao','🎯 Simulador']].map(function(t){
+          [['dashboard','📊 Visão Geral'],['despesas','📉 Despesas'],['receitas','💰 Receitas'],['atrasados','🚨 Atrasados'+(_itensAtrasados.length>0?' ('+_itensAtrasados.length+')':'')],['recorrentes','🔁 Fixas / Recorrentes'],['projecao','📈 Projeção'],['simulacao','🎯 Simulador']].map(function(t){
             return React.createElement('option',{key:t[0],value:t[0]},t[1]);
           })
         ),
@@ -38579,6 +38606,76 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
                 return React.createElement(ItemCard,{key:it.id+'-'+filtroMes,it:it,i:i,total:arr.length});
               })
             )
+      );
+    })()
+
+    /* ══════════ ATRASADOS ══════════ (agrupado por mês, independe do
+       filtroMes selecionado — ver _itensAtrasados/_atrGruposMes acima) */
+    , subTab === 'atrasados' && (function(){
+      function _atrBaixar(it){
+        return async function(){
+          var hoje = _brNow().toISOString().split("T")[0];
+          try {
+            var upd = await db.patch("orcamento_pessoal", it.id, { status: "pago", data_pagamento: hoje });
+            setItens(function(p){ return p.map(function(x){ return x.id===it.id?Object.assign({},x,upd):x; }); });
+            toast("💸 Baixado!");
+          } catch(e) { toast("Erro ao salvar", "error"); }
+        };
+      }
+      function _atrEditar(it){
+        return function(){ setForm(Object.assign({}, it)); setEdit(it.id); setModal(true); };
+      }
+      function _atrExcluir(it){
+        return function(){ remove(it.id); };
+      }
+      if (_itensAtrasados.length === 0) {
+        return React.createElement('div',{style:{background:'var(--c-card)',borderRadius:20,border:'1px solid '+C.border,padding:'30px 20px',textAlign:'center'}},
+          React.createElement('div',{style:{fontSize:28,marginBottom:8}},'✅'),
+          React.createElement('div',{style:{fontSize:14,fontWeight:700,color:'var(--c-text)'}},'Nenhuma despesa atrasada'),
+          React.createElement('div',{style:{fontSize:12,color:C.sub,marginTop:4}},'Tudo em dia — sem pendência de meses anteriores.')
+        );
+      }
+      return React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:14}},
+        React.createElement('div',{style:{background:C.red+'12',border:'1px solid '+C.red+'30',borderRadius:16,padding:'14px 16px',display:'flex',justifyContent:'space-between',alignItems:'center'}},
+          React.createElement('div',null,
+            React.createElement('div',{style:{fontSize:13,fontWeight:800,color:C.red}},'🚨 '+_itensAtrasados.length+' despesa'+(_itensAtrasados.length===1?'':'s')+' atrasada'+(_itensAtrasados.length===1?'':'s')),
+            React.createElement('div',{style:{fontSize:11,color:C.sub,marginTop:2}},'Agrupadas por mês — a mais antiga primeiro')
+          ),
+          React.createElement(BRLValue,{v:_totAtrasadosOP,size:17,weight:900,color:C.red})
+        ),
+        _atrMesesOrd.map(function(em){
+          var _itsMes = _atrGruposMes[em];
+          var _nomeMesAtr = em==='—' ? 'Sem data' : (function(){ var s=new Date(em+'-15').toLocaleString('pt-BR',{month:'long',year:'numeric'}); return s.charAt(0).toUpperCase()+s.slice(1); })();
+          var _totMesAtr = _itsMes.reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
+          return React.createElement('div',{key:em,style:{background:'var(--c-card)',borderRadius:16,border:'1px solid '+C.border,overflow:'hidden'}},
+            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 14px',background:'rgba(255,59,48,0.06)',borderBottom:'1px solid '+C.border}},
+              React.createElement('span',{style:{fontSize:12,fontWeight:800,color:'var(--c-text)',textTransform:'capitalize'}},_nomeMesAtr),
+              React.createElement(BRLValue,{v:_totMesAtr,size:12,weight:800,color:C.red})
+            ),
+            _itsMes.map(function(it,i){
+              return React.createElement(SwipeRow,{
+                key:it.id, onBaixar:_atrBaixar(it), baixarLabel:'💸 Baixar',
+                onEdit:_atrEditar(it), onDelete:_atrExcluir(it),
+                wrapStyle:{borderBottom:i<_itsMes.length-1?'0.6px solid '+C.border:'none'}
+              },
+                React.createElement('div',{className:'ag-expirado',style:{padding:'12px 10px',display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
+                  React.createElement('div',{style:{flex:1,minWidth:0}},
+                    React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',marginBottom:2}},
+                      React.createElement('span',{style:{fontWeight:700,fontSize:14,color:'var(--c-text)'}},it.descricao),
+                      it.recorrente&&React.createElement('span',{style:{fontSize:9,background:C.purple+'20',color:C.purple,borderRadius:6,padding:'2px 5px',fontWeight:700}},'🔁')
+                    ),
+                    React.createElement('div',{style:{fontSize:11,color:C.sub}},it.categoria),
+                    React.createElement('div',{style:{fontSize:11,color:C.red,marginTop:2,fontWeight:600}},'Venceu: '+fmtDateShort(it.data))
+                  ),
+                  React.createElement('div',{style:{textAlign:'right',flexShrink:0}},
+                    React.createElement('div',{style:{fontWeight:800,fontSize:15,color:C.red}},'-',React.createElement(BRLValue,{v:it.valor,size:15,weight:800,color:C.red})),
+                    React.createElement('span',{style:Badge(C.red)},'vencida')
+                  )
+                )
+              );
+            })
+          );
+        })
       );
     })()
 
@@ -53389,16 +53486,44 @@ function App() {
     db.get("orcamento_pessoal").then(function(d) { setOrcItens(d || []); }).catch(function() {});
   }, []);
   // Logo da Estilo pulsa no topo (mobile e desktop) quando há algo pendente
-  // na Agenda do Orçamento Pessoal hoje ou atrasado — mesma regra de
-  // "vencido/hoje" já usada em Inicio (orcVencidos/orcHoje), só que aqui
-  // widget-agnóstica pra alcançar o topbar (fora do componente Inicio).
+  // na Agenda do Orçamento Pessoal hoje ou atrasado.
+  // [orc-recorrente-status-cru] Não basta olhar o `status` cru de um item
+  // recorrente: ele carrega o status da ÚLTIMA baixa (pode ser de meses
+  // atrás), então uma recorrente vencida hoje podia continuar marcada
+  // "pago" de um mês passado e nunca acender o pulso — mesmo bug já
+  // diagnosticado em PessoalDash (ver comentário "_vis()/_projetar()" perto
+  // de _itSrc) pra outro consumidor (a própria Agenda). Pra um item
+  // recorrente cuja origem é de um mês anterior, só confia no status cru
+  // quando já existe um lançamento-filho concreto pro mês atual — sem
+  // filho, projeta a data pro mês atual e trata como pendente.
   var _orcAgendaPendente = React.useMemo(function() {
     var _hj = _brNow().toISOString().slice(0, 10);
-    return (orcItens || []).some(function(it) {
-      if (it.status === "pago" || it.status === "recebido") return false;
+    var _mesAtualOrc = _hj.slice(0, 7);
+    var _oi = orcItens || [];
+    function _emOf(it) { return it.data ? it.data.slice(0, 7) : it.mes; }
+    return _oi.some(function(it) {
       if (it.tipo === "receita") return false;
-      var dt = it.data || (it.mes ? it.mes + "-01" : "");
-      return dt && dt <= _hj;
+      var em = _emOf(it);
+      if (!it.recorrente) {
+        if (it.status === "pago" || it.status === "recebido") return false;
+        var dt = it.data || (it.mes ? it.mes + "-01" : "");
+        return !!dt && dt <= _hj;
+      }
+      if (em === _mesAtualOrc) {
+        if (it.status === "pago" || it.status === "recebido") return false;
+        return it.data ? it.data <= _hj : true;
+      }
+      if (em && em < _mesAtualOrc) {
+        var temFilhoNoMes = _oi.some(function(x) { return String(x.recorrencia_origem_id) === String(it.id) && _emOf(x) === _mesAtualOrc; });
+        if (temFilhoNoMes) return false; // o filho concreto do mês atual já responde por essa recorrência
+        var dia = it.data ? parseInt(it.data.slice(8, 10), 10) : 1;
+        var ano = parseInt(_mesAtualOrc.slice(0, 4), 10), mesN = parseInt(_mesAtualOrc.slice(5, 7), 10);
+        var ultimoDia = new Date(ano, mesN, 0).getDate();
+        var diaProj = Math.min(dia, ultimoDia);
+        var dtProj = _mesAtualOrc + "-" + (diaProj < 10 ? "0" + diaProj : String(diaProj));
+        return dtProj <= _hj;
+      }
+      return false;
     });
   }, [orcItens]);
   const [empresa, setEmpresa] = useState(() => { var c = cache.get("config"); return (c && c[0]) || {}; });

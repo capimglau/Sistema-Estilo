@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="b9ad648"/>
+<meta name="ag-build" content="f660046"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -37992,9 +37992,39 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     if (deepLink.acao === 'baixar') {
       (async function() {
         var _hjDl = _brNow().toISOString().slice(0, 10);
+        var _mesAtualDl = _hjDl.slice(0, 7);
+        var _itDl = itens.find(function(x){ return x.id === deepLink.itemId; });
+        if (!_itDl) { return; }
+        var _stDl = _itDl.tipo === 'receita' ? 'recebido' : 'pago';
+        var _emDl = _itDl.data ? _itDl.data.slice(0, 7) : _itDl.mes;
+        /* Cartão da Agenda pode ser uma pendência RECORRENTE projetada de um
+           mês anterior (buildAgendaEventos) — o id que ele carrega é o da
+           linha-modelo (template), com a PRÓPRIA data ainda no mês antigo.
+           Patchar essa linha direto (como fazia antes) reaproveitava a MESMA
+           linha pra representar "paguei em setembro", sem nunca criar o
+           lançamento-filho do mês — resultado: o cartão de setembro nunca
+           sumia (nada muda a projeção seguinte) e o mês antigo virava "pago"
+           por engano. Mesma regra de pBaixar (Início/PessoalDash): recorrente
+           de mês diferente do atual → cria um FILHO (recorrencia_origem_id)
+           dedicado a este mês; senão, patch direto na própria linha. */
+        var _isProjetadoDl = !!(_itDl.recorrente && _emDl && _emDl !== _mesAtualDl);
         try {
-          var upd = await db.patch("orcamento_pessoal", deepLink.itemId, { status: "pago", data_pagamento: _hjDl });
-          setItens(function(p){ return p.map(function(x){ return x.id === deepLink.itemId ? Object.assign({}, x, upd) : x; }); });
+          if (_isProjetadoDl) {
+            var _diaDl = _itDl.data ? parseInt(_itDl.data.slice(8, 10), 10) : 1;
+            var _anoNDl = parseInt(_mesAtualDl.slice(0, 4), 10), _mesNDl = parseInt(_mesAtualDl.slice(5, 7), 10);
+            var _ultDl = new Date(_anoNDl, _mesNDl, 0).getDate();
+            var _diaProjDl = Math.min(_diaDl, _ultDl);
+            var _dtProjDl = _mesAtualDl + '-' + (_diaProjDl < 10 ? '0' + _diaProjDl : String(_diaProjDl));
+            var _novoDl = await db.post("orcamento_pessoal", {
+              descricao: _itDl.descricao, categoria: _itDl.categoria, valor: _itDl.valor, tipo: _itDl.tipo,
+              mes: _mesAtualDl, data: _dtProjDl, status: _stDl, data_pagamento: _hjDl,
+              recorrente: false, recorrencia_origem_id: _itDl.id
+            });
+            setItens(function(p){ return [_novoDl].concat(p || []); });
+          } else {
+            var upd = await db.patch("orcamento_pessoal", _itDl.id, { status: _stDl, data_pagamento: _hjDl });
+            setItens(function(p){ return p.map(function(x){ return x.id === _itDl.id ? Object.assign({}, x, upd) : x; }); });
+          }
           toast("💸 Baixado!");
         } catch(e) { toast("Erro ao salvar", "error"); }
       })();

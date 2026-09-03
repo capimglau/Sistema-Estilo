@@ -38064,19 +38064,60 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
      igual à aba "Atrasados" já usada em Contratos/Agenda da Locadora, que
      também junta o passado inteiro numa lista só, sem depender de qual mês
      está selecionado no momento.
-     Lê `itens` CRU (a tabela inteira, sem o filtro por filtroMes que gera
-     itensProprios/todosVisiveis acima) — cada linha já existente na tabela
-     vale pela SUA PRÓPRIA data real, sem projeção nenhuma pra recorrentes:
-     uma recorrente que nunca foi paga continua aparecendo pela data em que
-     foi criada, e uma vez baixada aqui (_atrBaixar) some da lista — o que é
-     exatamente o comportamento certo pra "resolver o que ficou pra trás". */
+
+     [orc-atrasados-projetado] ANTES lia `itens` CRU e confiava no `status`
+     bruto de cada linha pra decidir "vencida ou não" — igual ao bug já
+     documentado em `baixarOrcPessoalItem` (ver [orc-recorrente-status-cru]
+     acima): uma recorrente cujo `status` bruto ficou "pago" da ÚLTIMA vez
+     que foi baixada (ex: abril) sumia daqui PRA SEMPRE, mesmo com meses
+     seguintes (julho, agosto...) nunca baixados — a lista mostrava "0
+     atrasados" enquanto o KPI "Despesas pessoais do dia"
+     (calcSaldoOrcPessoalMes, que projeta corretamente) continuava cobrando
+     o valor. Bug reportado: "diz que não há atrasado, mas o painel do dia
+     mostra a pagar — conflito".
+     Agora cada item RECORRENTE é projetado mês a mês (mesma lógica de
+     `calcSaldoOrcPessoalMes`/`buildAgendaEventos`: pula meses que já têm
+     linha-filha própria — `recorrencia_origem_id` — e ignora o status cru
+     do template) entre o mês do próprio template e o mês atual; cada mês
+     sem filha e já vencido vira uma entrada "virtual" (mesmo id do
+     template, `data`/`mes` daquele mês específico, `_projetadoAtr:true`) —
+     baixável, editável e exclúivel individualmente por mês, exatamente como
+     um cartão real. Item não-recorrente continua pela própria data, sem
+     projeção. */
   var _hojeAtrOP = _brNow().toISOString().slice(0,10);
-  var _itensAtrasados = itens.filter(function(it){
-    if (it.tipo === "receita") return false;
-    if (it.status === "pago" || it.status === "recebido") return false;
-    var dt = it.data || (it.mes ? it.mes + "-01" : "");
-    return !!dt && dt < _hojeAtrOP;
-  }).sort(function(a,b){ return (a.data||a.mes||"").localeCompare(b.data||b.mes||""); });
+  var _mesHojeAtrOP = _hojeAtrOP.slice(0,7);
+  function _mesesAteHojeAtrOP(mesIni) {
+    // meses de (mesIni, _mesHojeAtrOP] — exclui mesIni, inclui o mês atual —
+    // limitado a 24 meses pra nunca rodar sem fim com uma data absurda.
+    var out = [];
+    var d = new Date(mesIni + "-01"); d.setMonth(d.getMonth() + 1);
+    var lim = new Date(_mesHojeAtrOP + "-01");
+    var guard = 0;
+    while (d <= lim && guard < 24) { out.push(d.toISOString().slice(0,7)); d.setMonth(d.getMonth() + 1); guard++; }
+    return out;
+  }
+  var _itensAtrasados = [];
+  itens.forEach(function(it){
+    if (it.tipo === "receita") return;
+    if (it.recorrencia_origem_id) return; // linha-filha: tratada junto do template abaixo, nunca solta
+    if (!it.recorrente) {
+      if (it.status === "pago" || it.status === "recebido") return;
+      var dt = it.data || (it.mes ? it.mes + "-01" : "");
+      if (dt && dt < _hojeAtrOP) _itensAtrasados.push(it);
+      return;
+    }
+    var em = efetivoMes(it);
+    if (!em) return;
+    _mesesAteHojeAtrOP(em).forEach(function(mAlvo){
+      if (!itemVisivelNoMes(it, mAlvo)) return; // respeita prazo_recorrencia, se houver
+      var filho = itens.find(function(x){ return String(x.recorrencia_origem_id) === String(it.id) && efetivoMes(x) === mAlvo; });
+      if (filho) return; // já tem lançamento próprio nesse mês (pago ou não) — não duplica
+      var dtProj = it.data ? projetarDataOP(it.data, mAlvo) : (mAlvo + "-01"); // sem data exata (só mês): projeta no dia 1
+      if (!dtProj || dtProj >= _hojeAtrOP) return; // só entra se já venceu de fato
+      _itensAtrasados.push(Object.assign({}, it, { data: dtProj, mes: mAlvo, status: 'previsto', data_pagamento: null, _projetadoAtr: true }));
+    });
+  });
+  _itensAtrasados.sort(function(a,b){ return (a.data||a.mes||"").localeCompare(b.data||b.mes||""); });
   var _totAtrasadosOP = _itensAtrasados.reduce(function(s,it){ return s+parseFloat(it.valor||0); }, 0);
   var _atrGruposMes = {};
   _itensAtrasados.forEach(function(it){
@@ -38979,10 +39020,29 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
         };
       }
       function _atrEditar(it){
-        return function(){ setForm(Object.assign({}, it)); setEdit(it.id); setModal(true); };
+        return function(){
+          /* Entrada projetada (_projetadoAtr): não existe linha própria pra
+             editar ainda — mesma regra do "Baixar" do ItemCard, procura um
+             filho já criado pra este mês ou prepara a criação de um novo,
+             nunca abre o template pra edição direta (isso corromperia o
+             cadastro original da recorrência). */
+          if (it._projetadoAtr) {
+            var _filhoAtr = itens.find(function(x){ return String(x.recorrencia_origem_id)===String(it.id) && efetivoMes(x)===efetivoMes(it); });
+            if (_filhoAtr) { setForm(Object.assign({}, _filhoAtr)); setEdit(_filhoAtr.id); }
+            else { setForm(Object.assign({}, it, { id: undefined, recorrente: false, recorrencia_origem_id: it.id })); setEdit(null); }
+          } else { setForm(Object.assign({}, it)); setEdit(it.id); }
+          setModal(true);
+        };
       }
       function _atrExcluir(it){
-        return function(){ remove(it.id); };
+        return function(){
+          if (it._projetadoAtr) {
+            if (!confirm('Excluir a recorrência inteira ("'+it.descricao+'")? Isso remove o lançamento fixo de todos os meses futuros.')) return;
+            remove(it.id);
+            return;
+          }
+          remove(it.id);
+        };
       }
       if (_itensAtrasados.length === 0) {
         return React.createElement('div',{style:{background:'var(--c-card)',borderRadius:20,border:'1px solid '+C.border,padding:'30px 20px',textAlign:'center'}},
@@ -39011,7 +39071,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
             _itsMes.map(function(it,i){
               var _isHlAtr = it.id === orcHighlightId;
               return React.createElement(SwipeRow,{
-                key:it.id, onBaixar:_atrBaixar(it), baixarLabel:'💸 Baixar',
+                key:it.id+'-'+(it.mes||em), onBaixar:_atrBaixar(it), baixarLabel:'💸 Baixar',
                 onEdit:_atrEditar(it), onDelete:_atrExcluir(it),
                 wrapStyle:{borderBottom:i<_itsMes.length-1?'0.6px solid '+C.border:'none'}
               },

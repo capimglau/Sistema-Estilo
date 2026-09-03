@@ -24200,7 +24200,15 @@ function ensureLogoEmbed(url) {
       var img = new Image();
       img.onload = function() {
         try {
-          var maxH = 320;
+          // 320 -> 640: o cabeçalho do PDF já usa a proporção NATURAL guardada
+          // aqui pra desenhar o <img> num tamanho exato (ver buildHeader), mas
+          // com 320px de altura reamostrada um logo quase quadrado (caso da
+          // Estilo) rendia só ~320px de fonte pra uma captura em scale:1.5 —
+          // reportado como "baixa resolução" mesmo depois da proporção já
+          // estar certa. O dobro dá folga confortável pra qualquer escala
+          // usada nos geradores de PDF, sem pesar no payload (ainda é um
+          // logo, não uma foto).
+          var maxH = 640;
           var esc = img.naturalHeight > maxH ? maxH / img.naturalHeight : 1;
           var cv = document.createElement("canvas");
           cv.width = Math.round(img.naturalWidth * esc) || 1;
@@ -25084,14 +25092,22 @@ function openPdfPage(html, preOpenedWin) {
   html = html.replace(/<script>\s*window\.print\(\)\s*;?\s*<\/script>/gi, '');
   var old = document.getElementById('_pdf_overlay');
   if (old) old.remove();
+  // [pdf-volta-pra-aba-certa] Guarda a aba ativa ANTES de abrir o preview —
+  // é o "onde eu estava" que _closePdfOverlay usa pra voltar exatamente pra
+  // lá (ex.: gerou fatura na aba Faturas, fecha o PDF, volta pra Faturas),
+  // em vez de sempre forçar Início. window.__ag_currentTab é mantido pelo
+  // próprio App (useEffect em [tab]), então já reflete a aba de onde o
+  // usuário disparou a geração do PDF.
+  var _tabAoAbrirPdf = window.__ag_currentTab || 'inicio';
   window._closePdfOverlay = function() {
     var el = document.getElementById('_pdf_overlay');
     if (el) { if (el._blobUrl) { try { URL.revokeObjectURL(el._blobUrl); } catch(e) {} } el.remove(); }
     delete window._closePdfOverlay;
-    // Ao fechar o preview, navega para a tela inicial. Essa troca de estado do
-    // React força um re-render que destrava o webview do PWA no iOS (que ficava
-    // travado ao apenas remover o overlay). Acompanha um reflow de segurança.
-    try { window.dispatchEvent(new CustomEvent('ag:goto-inicio')); } catch(e) {}
+    // Ao fechar o preview, troca de estado (volta pra aba de origem, não mais
+    // sempre Início). Essa troca de estado do React força um re-render que
+    // destrava o webview do PWA no iOS (que ficava travado ao apenas remover
+    // o overlay). Acompanha um reflow de segurança.
+    try { window.dispatchEvent(new CustomEvent('ag:goto-tab', { detail: { tab: _tabAoAbrirPdf } })); } catch(e) {}
     setTimeout(function() {
       var root = document.getElementById('root');
       if (root) { root.style.display = 'none'; void root.offsetHeight; root.style.display = ''; }
@@ -53448,15 +53464,25 @@ function App() {
       // Chamado pelo ErrBoundary ao capturar qualquer erro — sempre retorna para início
       setTab('inicio');
     }
+    function onGotoTab(e) {
+      // Disparado ao fechar o preview de PDF (ver openPdfPage/_closePdfOverlay):
+      // volta pra aba de onde o PDF foi gerado (ex.: Faturas), não sempre
+      // Início — o reflow que essa troca de estado força é o que já era
+      // usado só com 'inicio', só que agora mirando a aba certa.
+      var t = e.detail && e.detail.tab;
+      setTab(t || 'inicio');
+    }
     window.addEventListener('popstate', onPop);
     document.addEventListener('ag:swipeback', onSwipeBack);
     window.addEventListener('ag:goto-inicio', onGotoInicio);
+    window.addEventListener('ag:goto-tab', onGotoTab);
     function onSetTheme(e){ if (e.detail && setThemeDirect) setThemeDirect(e.detail); }
     document.addEventListener('ag:set-theme', onSetTheme);
     return function() {
       window.removeEventListener('popstate', onPop);
       document.removeEventListener('ag:swipeback', onSwipeBack);
       window.removeEventListener('ag:goto-inicio', onGotoInicio);
+      window.removeEventListener('ag:goto-tab', onGotoTab);
       document.removeEventListener('ag:set-theme', onSetTheme);
     };
   }, []);

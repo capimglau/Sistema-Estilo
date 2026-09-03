@@ -25566,9 +25566,13 @@ function buildFaturasLoteHtml(list, emp, opts) {
   var h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Faturas (' + list.length + ')</title><style>' + css + '</style></head><body>';
   h += '<div class="np"><button onclick="try{if(window._agPdfDireto){this.disabled=true;this.textContent=\'Gerando PDF\u2026\';window._agPdfDireto();}else if(window.opener&&window.opener._agPdfDireto){this.disabled=true;this.textContent=\'Gerando PDF\u2026\';window.opener._agPdfDireto(document.documentElement.outerHTML,document.title);}else if(window.parent&&window.parent!==window&&window.parent._printPdfOverlay){window.parent._printPdfOverlay();}else{window.print();}}catch(e){try{window.print()}catch(_){}}" style="flex:1;background:#007AFF;color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:700;cursor:pointer">📄 Salvar / Compartilhar PDF — ' + list.length + ' fatura(s)</button>' + (opts.closeBtn ? '<button ' + _PDF_CLOSE_BTN + ' style="background:#F2F2F7;border:none;border-radius:10px;padding:12px 20px;font-size:15px;cursor:pointer">✕ Fechar</button>' : '') + '</div>';
   list.forEach(function(item) {
-    var ct = (item && item.c) ? item.c : item;
     var cl = (item && item.cl) ? item.cl : {};
     var ve = (item && item.ve) ? item.ve : {};
+    if (item && item.avulsa) {
+      h += '<div class="fatura-pg">' + _buildFaturaAvulsaBody(item.recObj, cl, ve, emp) + '</div>';
+      return;
+    }
+    var ct = (item && item.c) ? item.c : item;
     h += '<div class="fatura-pg">' + _buildFaturaBody(ct, cl, ve, emp) + '</div>';
   });
   h += "</body></html>";
@@ -41163,6 +41167,19 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             var _clFa = _ctVincFa ? clientes.find(function(c){ return c.id == _ctVincFa.cliente_id; }) : (r.cliente_id ? clientes.find(function(c){ return c.id == r.cliente_id; }) : null);
             var _veFa = r.veiculo_id ? veiculos.find(function(v){ return v.id == r.veiculo_id; }) : (_ctVincFa ? veiculos.find(function(v){ return v.id == _ctVincFa.veiculo_id; }) : null);
             await printFaturaAvulsa(r, _clFa, _veFa, empresa);
+            // Registra a emissão na própria receita (numero_fatura + data_emissao) pra
+            // essa fatura avulsa passar a aparecer na aba Faturas — sem isso nada era
+            // persistido e a fatura gerada "sumia" (bug reportado pelo usuário).
+            if (!r.numero_fatura) {
+              var _numFaAv = proximoNumeroFatura(receitas);
+              var _hjFaAv = _brNow().toISOString().slice(0, 10);
+              var _pFaAv = { numero_fatura: _numFaAv, data_emissao: _hjFaAv };
+              if (r.status === "previsto") _pFaAv.status = "emitida";
+              try {
+                var _updFaAv = await db.patch("receitas", r.id, _pFaAv);
+                setReceitas(function(p){ return p.map(function(x){ return x.id === r.id ? Object.assign({}, x, _updFaAv) : x; }); });
+              } catch(e) { console.warn("Falha ao registrar emissão da fatura avulsa:", e); }
+            }
           } : null;
 
           return React.createElement(SwipeRow, { key: r.id,
@@ -42804,7 +42821,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       var _recByRefFat = {}; (receitas || []).forEach(function(r) { if (r.ref_fatura) _recByRefFat[r.ref_fatura] = r; });
       var _clById = {}; (clientes || []).forEach(function(x) { _clById[x.id] = x; });
       var _veById = {}; (veiculos || []).forEach(function(x) { _veById[x.id] = x; });
-      var competencias = (contratos || []).filter(function(c) {
+      var competenciasContratos = (contratos || []).filter(function(c) {
         if (c.status === "cancelado") return false;
         // A fatura aparece no mês da previsao_pagamento (ou data_fim como fallback)
         var dtRef = c.previsao_pagamento || c.data_fim || "";
@@ -42847,6 +42864,37 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           pagamento: recExist ? recExist.data_pagamento : null
         };
       });
+
+      // Faturas avulsas (receitas sem contrato/ref_fatura com fatura emitida via
+      // swipe "Fatura" na tela de Receitas) — precisam aparecer aqui também, não só
+      // as ligadas a contrato (regra de cobertura de dados do CLAUDE.md).
+      var competenciasAvulsas = (receitas || []).filter(function(r) {
+        return !r.ref_fatura && !r.contrato_id && r.numero_fatura;
+      }).filter(function(r) {
+        var dtRef = r.data_emissao || r.data || "";
+        return dtRef.slice(0, 7) === mesFat;
+      }).map(function(r) {
+        var clAv = r.cliente_id ? _clById[r.cliente_id] : null;
+        var veAv = r.veiculo_id ? _veById[r.veiculo_id] : null;
+        var dtVencAv = r.data_vencimento || r.data || dtVencPadrao;
+        var statusAv;
+        if (r.status === "recebido" || r.status === "pago") statusAv = "paga";
+        else if (r.status === "cancelado") statusAv = "cancelada";
+        else if (r.status === "emitida" && dtVencAv < hoje) statusAv = "vencida";
+        else if (r.status === "emitida") statusAv = "emitida";
+        else statusAv = dtVencAv < hoje ? "vencida" : "prevista";
+        return {
+          c: null, cl: clAv || {}, ve: veAv || {}, avulsa: true, recObj: r,
+          refKey: "avulsa_" + r.id, recId: r.id, numero: r.numero_fatura,
+          cliente: (clAv && clAv.nome) || r.descricao || "—",
+          placa: veAv ? veAv.placa : "—",
+          veiculo: veAv ? (veAv.marca + " " + veAv.modelo) : "—",
+          vencimento: dtVencAv, valor: parseFloat(r.valor || 0), diasEf: null, status: statusAv,
+          emissao: r.data_emissao, pagamento: r.data_pagamento
+        };
+      });
+
+      var competencias = competenciasContratos.concat(competenciasAvulsas);
 
       var fatsFil = filtroStatusFat === "todas"
         ? competencias
@@ -42996,7 +43044,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       return React.createElement(React.Fragment, null
         , React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:12 } }
         , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" } }
-          , React.createElement('span', { style: { fontSize:12, color:C.sub } }, competencias.length + " contrato(s)")
+          , React.createElement('span', { style: { fontSize:12, color:C.sub } }, competencias.length + " fatura(s)")
         )
         , (function(){
             var fatTotalBar = totP + totE + totV + totPg;
@@ -43029,7 +43077,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         )
 
         , competencias.length === 0
-          ? React.createElement('div', { style: { color:C.sub, textAlign:"center", padding:30 } }, "Nenhum contrato ativo em " + mesFat)
+          ? React.createElement('div', { style: { color:C.sub, textAlign:"center", padding:30 } }, "Nenhuma fatura em " + mesFat)
           : fatsFil.length === 0
             ? React.createElement('div', { style: { color:C.sub, textAlign:"center", padding:30 } }, "Nenhuma fatura com status '" + (SL[filtroStatusFat] || filtroStatusFat) + "'")
             : fatsFil.map(function(fat) {
@@ -43080,7 +43128,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                     , React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"flex-end", gap:10, marginTop:8 } }
                       , React.createElement('div', { style: { fontSize:12, color:C.sub, minWidth:0 } }
                         , React.createElement('div', null, fat.placa + " · " + fat.veiculo)
-                        , React.createElement('div', { style: { marginTop:3 } }, "📅 Competência: " + mesFat + " (" + fat.diasEf + "d)")
+                        , React.createElement('div', { style: { marginTop:3 } }, "📅 Competência: " + mesFat + (fat.diasEf != null ? " (" + fat.diasEf + "d)" : ""))
                       )
                       , React.createElement('div', { style: { textAlign:"right", flexShrink:0 } }
                         , React.createElement('div', { style: { fontSize: 10, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 } }, "Valor")
@@ -43118,10 +43166,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 , podePagar && React.createElement('div', { className:'ag-sheet-row', onClick:function(){ setFatSheet(null); setTimeout(function(){ marcarPaga(f); },120); } }
                   , React.createElement('span', {className:'ag-sheet-icon'}, '✅'), 'Marcar paga'
                 )
-                , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ setFatSheet(null); setTimeout(function(){ printFatura(f.c, f.cl, f.ve, empresa); },120); } }
+                , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ setFatSheet(null); setTimeout(function(){ f.avulsa ? printFaturaAvulsa(f.recObj, f.cl, f.ve, empresa) : printFatura(f.c, f.cl, f.ve, empresa); },120); } }
                   , React.createElement('span', {className:'ag-sheet-icon'}, '📄'), 'Ver / Imprimir PDF'
                 )
-                , React.createElement('div', { className:'ag-sheet-row', onClick:function(){ setFatSheet(null); setTimeout(function(){ if(window.__ag_open_enviar) window.__ag_open_enviar({tipo:"fatura",id:f.c.id,mes:mesFat}); },120); } }
+                , !f.avulsa && React.createElement('div', { className:'ag-sheet-row', onClick:function(){ setFatSheet(null); setTimeout(function(){ if(window.__ag_open_enviar) window.__ag_open_enviar({tipo:"fatura",id:f.c.id,mes:mesFat}); },120); } }
                   , React.createElement('span', {className:'ag-sheet-icon'}, '📲'), 'Enviar (WhatsApp / E-mail)'
                 )
                 , podeCancelar && React.createElement('div', { className:'ag-sheet-row danger', onClick:function(){ setFatSheet(null); setTimeout(function(){ cancelar(f); },120); } }

@@ -49173,58 +49173,20 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
     if (!_alvo && resultado.length) _alvo = resultado[0]; // "Atrasados", se houver; senão o próximo dia
     if (_alvo) _alvo.alvoCentral = true;
     /* [AGK2-V2 · totais-do-dia] Quanto o dia move, não só quantos itens tem.
-       A contagem sozinha ("9") não diz se o dia pesa R$ 200 ou R$ 20.000. */
-    /* [AGK2-V2 · saldo-acumulado] Cabeçalho mostra o saldo da CONTA (o quanto
-       vai estar no caixa até aquele dia), não só o que aquele dia isolado
-       movimenta — parte do saldo real já realizado (saldoCaixaAte, mesma
-       fonte do card "Saldo nas contas" do Início) e vai acumulando coluna a
-       coluna, na ordem cronológica (Atrasados primeiro, depois cada dia).
-       saldoCaixaAte exclui o próprio dia informado (dt >= ateDt não entra),
-       então o corte tem que ser AMANHÃ — igual ao Início (_hojeMaisUm) — senão
-       as baixas já realizadas HOJE ficam de fora e o saldo diverge do card
-       "Saldo nas contas hoje" (regra de consistência do CLAUDE.md). */
-    var _hojeMaisUmKb = (function(){ var x=new Date(isoHoje+"T12:00:00"); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); })();
-    /* [AGK2-V2 · saldo-arrasto] Navegando pra um mês FUTURO (isoIni > hoje),
-       `eventosJanela` só cobre o mês selecionado — o lookback de "Atrasados"
-       só roda pro mês corrente (ver `ehMesCorrente` acima). Sem isso, tudo
-       que está pendente entre hoje e o início do mês visualizado (inclusive
-       atraso de antes) desaparecia da conta, e o saldo "nascia" sempre do
-       saldo real de hoje — dia 1 do mês seguinte parecia ter voltado atrás
-       em vez de continuar de onde o mês anterior fechou. Escaneia os meses
-       entre hoje (com o mesmo lookback de atraso) e o mês anterior ao
-       visualizado, soma o fluxo de tudo com data < isoIni, e usa como ponto
-       de partida do acumulado — assim o 1º dia do mês seguinte sempre
-       continua exatamente de onde o saldo projetado do mês anterior parou. */
-    var _saldoArrasto = 0;
-    if (isoIni > hoje) {
-      var _mesesArrasto = {};
-      var _curArr = new Date(hoje.slice(0,7)+"-01T12:00:00");
-      _curArr.setMonth(_curArr.getMonth() - AGK2_LOOKBACK_ATRASO);
-      var _fimArr = new Date(isoIni+"T12:00:00");
-      _fimArr.setMonth(_fimArr.getMonth() - 1);
-      while (_curArr.getFullYear()<_fimArr.getFullYear() || (_curArr.getFullYear()===_fimArr.getFullYear() && _curArr.getMonth()<=_fimArr.getMonth())) {
-        _mesesArrasto[_curArr.getFullYear()+"-"+_pad2(_curArr.getMonth()+1)] = { ano:_curArr.getFullYear(), mes:_curArr.getMonth() };
-        _curArr.setMonth(_curArr.getMonth()+1);
-      }
-      var _vistosArrasto = {}, _evArrasto = [];
-      Object.keys(_mesesArrasto).forEach(function(mk){
-        var mm = _mesesArrasto[mk];
-        buildAgendaEventos({ contratos:contratos||[], multas:multas||[], veiculos:veiculos||[], clientes:clientes||[], contas:contas||[], despesas:despesas||[], receitas:receitas||[], reservas:reservas||[], manutencoes:manutencoes||[], orcItens:orcItens||[], lembretes:lembretes||[], hoje:hoje, ano:mm.ano, mes:mm.mes }).forEach(function(ev){
-          if (!ev.data || ev.data >= isoIni) return;
-          var k = ev.tipo+"|"+ev.data+"|"+ev.titulo;
-          if (_vistosArrasto[k]) return;
-          _vistosArrasto[k] = true;
-          _evArrasto.push(ev);
-        });
-      });
-      var _totArrasto = _agk2TotaisDia(_evArrasto);
-      _saldoArrasto = _totArrasto.ent - _totArrasto.sai;
-    }
-    var _accConta = saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _hojeMaisUmKb) + _saldoArrasto;
+       A contagem sozinha ("9") não diz se o dia pesa R$ 200 ou R$ 20.000.
+       [AGK2-V2 · saldo-do-dia-nao-acumulado] O cabeçalho já tinha um saldo
+       ACUMULADO (saldoCaixaAte, real, só da Estilo) somado dia a dia com
+       `col.tot.ent - col.tot.sai` — mas `col.tot` inclui os eventos de
+       Orçamento Pessoal (`orcamento_despesa`/`orcamento_receita`, que também
+       carregam `fluxo`), então o acumulado terminava misturando o caixa real
+       da Estilo com movimentação pessoal — os dois são saldos DIFERENTES e
+       nunca podem se misturar (CLAUDE.md). Corrigido pro simples: o número
+       do cabeçalho agora é só o saldo NAQUELE dia (entradas − saídas), sem
+       acumular entre dias — os valores de entrada/saída continuam somando
+       tudo que move dinheiro naquele dia (Estilo + Pessoal), só não fingem
+       mais ser "o saldo da conta". */
     resultado.forEach(function(col){
       col.tot = _agk2TotaisDia(col.evsDia);
-      _accConta += (col.tot.ent - col.tot.sai);
-      col.saldoConta = _accConta;
     });
     return resultado;
   }, [eventosFiltrados, isoHoje, isoIni, contratos, receitas, despesas, manutencoes, multas, veiculos, clientes, contas, reservas, orcItens, lembretes, hoje]);
@@ -49580,11 +49542,13 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
                       : expandidoPc
                         ? function(){ setDiasExpandidos(function(m){ var n=Object.assign({},m); delete n[c.isoD]; return n; }); }
                         : null;
-                  /* Cabeçalho mostra o SALDO DA CONTA acumulado até aquele dia (não
-                     só o que o dia isolado movimenta) no lugar da contagem de
-                     eventos — pedido do usuário, mesmo padrão de cores (verde/
-                     vermelho) do resto do sistema, sem fundo no badge. */
-                  var _saldoDia = c.saldoConta != null ? c.saldoConta : 0;
+                  /* Cabeçalho mostra o saldo DAQUELE DIA (entradas − saídas, sem
+                     acumular com os outros dias) no lugar da contagem de eventos
+                     — pedido do usuário, mesmo padrão de cores (verde/vermelho)
+                     do resto do sistema, sem fundo no badge. Não é "saldo da
+                     conta": um acumulado corria o risco de misturar caixa real
+                     da Estilo com Orçamento Pessoal (ver _agk2TotaisDia acima). */
+                  var _saldoDia = c.tot ? (c.tot.ent - c.tot.sai) : 0;
                   var _corSaldoDia = _saldoDia > 0 ? "#2C7A46" : _saldoDia < 0 ? "#FF3B30" : "var(--c-sub)";
                   var conteudo = [
                     React.createElement('div', {

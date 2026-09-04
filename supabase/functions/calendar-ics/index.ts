@@ -339,8 +339,16 @@ Deno.serve(async (_req) => {
     });
     return resultado;
   }
+  // Janela -6..+2 (mesmo AGK2_LOOKBACK_ATRASO da Agenda, não só -1..+2): no
+  // browser, buildAgendaEventos é chamado uma vez por mês num lookback de 6
+  // meses pra trás (CalendarioKanban2), e cada chamada resolve despesas só
+  // dentro do SEU próprio -1..+2 — a soma das várias chamadas é o que cobre
+  // os atrasados de meses anteriores. Aqui a function só roda uma vez, então
+  // precisa da janela larga de uma vez só, senão uma despesa (ou recorrente
+  // pendente) vencida há mais de 1 mês sumia do calendário assinado.
+  const AGK2_LOOKBACK_ATRASO = 6;
   const mesesParaResolver: string[] = [];
-  for (let mi = -1; mi <= 2; mi++) {
+  for (let mi = -AGK2_LOOKBACK_ATRASO; mi <= 2; mi++) {
     const dt = new Date(anoAtual, mesAtualIdx + mi, 1);
     mesesParaResolver.push(dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0"));
   }
@@ -428,7 +436,6 @@ Deno.serve(async (_req) => {
   // um só reprojetado pro mês atual (ver AGK2_LOOKBACK_ATRASO no index.html —
   // sem isso, um item pendente há 3 meses só aparecia como 1 evento, escondendo
   // os meses anteriores em aberto de quem assina o calendário).
-  const AGK2_LOOKBACK_ATRASO = 6;
   const mesesOrc: string[] = [];
   for (let mi = -AGK2_LOOKBACK_ATRASO; mi <= 2; mi++) {
     const dt = new Date(anoAtual, mesAtualIdx + mi, 1);
@@ -441,8 +448,13 @@ Deno.serve(async (_req) => {
       const em = orcEmOf(it);
       let data: string | null, jaPago: boolean;
       if (!it.recorrente) {
+        // Item não-recorrente não depende do refMes da varredura — usa
+        // sempre a PRÓPRIA data, esteja ela atrasada há quanto tempo for
+        // (dedup por `chave` abaixo evita ele entrar 1x por mês da janela).
+        // Filtrar por refMes aqui (bug corrigido) sumia com atrasados de
+        // Orçamento Pessoal fora da janela de -6..+2 meses.
         data = it.data || (it.mes ? it.mes + "-01" : null);
-        if (!data || data.slice(0, 7) !== refMes) return;
+        if (!data) return;
         jaPago = it.status === "pago" || it.status === "recebido" || !!it.data_pagamento;
       } else if (!em || em > refMes) {
         return;

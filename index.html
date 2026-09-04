@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="3123cb5"/>
+<meta name="ag-build" content="f06f2a8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -23491,6 +23491,47 @@ function saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, ateDt
   return s;
 }
 
+/* Movimentos de caixa (contratos/receitas/despesas/manutenções/multas) que
+   caíram EXATAMENTE num dia — mesmos critérios/campos de data de
+   saldoCaixaAte acima (mesma regra de consistência: nunca duplicar a
+   fórmula com um recorte novo), só que filtrando "dt === diaStr" em vez de
+   "dt < ateDt". Usado pra explicar, item a item, o que fez o saldo subir
+   ou descer num ponto da linha do gráfico "Saldo nas contas". */
+function movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, diaStr) {
+  var itens = [];
+  (contratos||[]).forEach(function(c){
+    if(c.status==='cancelado') return;
+    var _pago=c.status_pagamento==='pago';
+    var _parc=c.status_pagamento==='parcial'&&parseFloat(c.valor_pago||0)>0;
+    if(!_pago&&!_parc) return;
+    var dt=c.data_pagamento||c.previsao_pagamento||c.data_fim; if(dt!==diaStr) return;
+    itens.push({ tipo:'receita', label:'Contrato'+(c.placa?' · '+c.placa:''), valor:_pago?parseFloat(c.valor_total||0):parseFloat(c.valor_pago||0) });
+  });
+  (receitas||[]).forEach(function(r){
+    if(r.ref_fatura) return;
+    var dt=r.data_pagamento||r.data; if(dt!==diaStr) return;
+    if(r.status==='recebido'||r.status==='pago') itens.push({ tipo:'receita', label:r.descricao||r.categoria||'Receita', valor:parseFloat(r.valor||0) });
+  });
+  (despesas||[]).forEach(function(d){
+    if(d.manutencao_id) return;
+    var dt=d.data_pagamento||d.data; if(dt!==diaStr) return;
+    if(d.status==='pago'||d.data_pagamento) itens.push({ tipo:'despesa', label:d.descricao||d.categoria||'Despesa', valor:parseFloat(d.valor||0) });
+  });
+  (manutencoes||[]).forEach(function(m){
+    var dt=m.data_pagamento; if(dt!==diaStr) return;
+    itens.push({ tipo:'despesa', label:'Manutenção'+(m.tipo?' · '+m.tipo:''), valor:parseFloat(m.custo||0) });
+  });
+  (multas||[]).forEach(function(mu){
+    if(mu.status==='cancelada'||mu.status==='cancelado') return;
+    if(mu.status==='pago'&&mu.data_pagamento===diaStr) itens.push({ tipo:'despesa', label:'Multa', valor:parseFloat(mu.valor||0) });
+    if(mu.cobrado_cliente==='pago'){
+      var dtCob=mu.data_cobranca_cliente||mu.data_pagamento;
+      if(dtCob===diaStr) itens.push({ tipo:'receita', label:'Multa cobrada do cliente', valor:parseFloat(mu.valor_cobrado||mu.valor||0) });
+    }
+  });
+  return itens;
+}
+
 function retiradaLucroDoMes(despesas, m) {
   return resolverDespesasDoMes(despesas||[], m).filter(isRetLucroPura).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
 }
@@ -29050,6 +29091,24 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
          igual antes). */
       var _diaHojeNum = parseInt(hoje.slice(8,10),10);
 
+      /* Ponto do gráfico selecionado (tap num dia da linha) — mostra, logo
+         abaixo, as despesas/receitas que fizeram o saldo oscilar naquele
+         dia (pedido do usuário: "adicione na linha gráfica as despesas e
+         receitas que fizerem a oscilação"). Guarda {face,dia} porque as 3
+         faces têm dias com o mesmo número (ex.: dia 5 em "Hoje" e em
+         "Projetado" são coisas diferentes) — troca de face sem selection
+         "vazando" de uma pro outra. */
+      var _saldoPontoSelSt = React.useState(null);
+      var _saldoPontoSel = _saldoPontoSelSt[0], _setSaldoPontoSel = _saldoPontoSelSt[1];
+      function _toggleSaldoPonto(face, dia) {
+        return function(e){
+          e.stopPropagation();
+          _setSaldoPontoSel(function(prev){
+            return (prev && prev.face===face && prev.dia===dia) ? null : { face:face, dia:dia };
+          });
+        };
+      }
+
       /* ---- Face "Hoje": tendência recente (até 7 dias, ou desde o dia 1
          se o mês for mais novo que isso) ---- */
       var _janelaRecente = Math.min(7, _diaHojeNum);
@@ -29071,18 +29130,18 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         if (!c.previsao_pagamento || c.previsao_pagamento <= hoje) return;
         var falta = parseFloat(c.valor_total||0) - (c.status_pagamento === 'parcial' ? parseFloat(c.valor_pago||0) : 0);
         if (falta <= 0) return;
-        _eventosFuturos.push({ dia: parseInt(c.previsao_pagamento.slice(8,10),10), delta: falta });
+        _eventosFuturos.push({ dia: parseInt(c.previsao_pagamento.slice(8,10),10), delta: falta, tipo:'receita', label:'Contrato' });
       });
       _despMesTodasList.forEach(function(d){
         if (d.status === 'pago' || d.data_pagamento) return;
         if (!d.data || d.data <= hoje) return;
-        _eventosFuturos.push({ dia: parseInt(d.data.slice(8,10),10), delta: -parseFloat(d.valor||0) });
+        _eventosFuturos.push({ dia: parseInt(d.data.slice(8,10),10), delta: -parseFloat(d.valor||0), tipo:'despesa', label:d.descricao||d.categoria||'Despesa' });
       });
       _manMesTodasList.forEach(function(m){
         var _dtM = m.data_previsao_pagamento || m.data_entrada || '';
         if (m.status_financeiro === 'pago' || m.data_pagamento) return;
         if (!_dtM || _dtM <= hoje) return;
-        _eventosFuturos.push({ dia: parseInt(_dtM.slice(8,10),10), delta: -parseFloat(m.custo||0) });
+        _eventosFuturos.push({ dia: parseInt(_dtM.slice(8,10),10), delta: -parseFloat(m.custo||0), tipo:'despesa', label:'Manutenção'+(m.tipo?' · '+m.tipo:'') });
       });
       _eventosFuturos.sort(function(a,b){ return a.dia - b.dia; });
       var _projDias = [{ dia:_diaHojeNum, saldo:_saldoAtual }];
@@ -29146,7 +29205,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var _scaleYTrendP = _mkScaleY(_saldoTrendP.map(function(p){return p.saldo;}));
       var _pathTrendP = _saldoTrendP.map(function(p,i){ return (i===0?'M':'L') + _scaleXTrendP(i) + ',' + _scaleYTrendP(p.saldo); }).join(' ');
 
-      return React.createElement('div', { className:"ag-kpi-card", style:Object.assign({},_cardBase,{cursor:'pointer',padding:0,overflow:'hidden',position:'relative'}), onClick:function(){ setSaldoHojeTick(function(v){ return v+1; }); } }
+      return React.createElement('div', { className:"ag-kpi-card", style:Object.assign({},_cardBase,{cursor:'pointer',padding:0,overflow:'hidden',position:'relative'}), onClick:function(){ setSaldoHojeTick(function(v){ return v+1; }); _setSaldoPontoSel(null); } }
         , React.createElement('div', { style:{ display:'flex' } }
           , React.createElement('div', { style:Object.assign({},_cardBase,{flex:1,borderRight:'1px solid var(--c-border)',position:'relative'}) }
             , saldoHojeFace===0
@@ -29208,19 +29267,19 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
               ? React.createElement(React.Fragment, { key:'g-hoje' }
                   , React.createElement('svg', { viewBox:'0 0 '+_chartW+' '+_chartH, width:'100%', height:44, preserveAspectRatio:'none' }
                       , React.createElement('path', { d:_pathHoje, fill:'none', stroke:C.green, strokeWidth:2.2, strokeLinecap:'round' })
-                      , _histRecente.map(function(p,i){ return React.createElement('circle', { key:i, cx:_scaleXHoje(p.dia), cy:_scaleYHoje(p.saldo), r:i===_histRecente.length-1?3:1.8, fill:C.green }); })
+                      , _histRecente.map(function(p,i){ return React.createElement('circle', { key:i, cx:_scaleXHoje(p.dia), cy:_scaleYHoje(p.saldo), r:_saldoPontoSel&&_saldoPontoSel.face===0&&_saldoPontoSel.dia===p.dia?4.5:(i===_histRecente.length-1?3:1.8), fill:C.green, style:{cursor:'pointer'}, onClick:_toggleSaldoPonto(0,p.dia) }); })
                     )
-                  , React.createElement('div', { style:{fontSize:9,color:C.sub,marginTop:2} }, 'últimos '+_janelaRecente+' dia'+(_janelaRecente>1?'s':'')+' de caixa realizado')
+                  , React.createElement('div', { style:{fontSize:9,color:C.sub,marginTop:2} }, 'últimos '+_janelaRecente+' dia'+(_janelaRecente>1?'s':'')+' de caixa realizado — toque num ponto pra ver o que moveu')
                 )
               : saldoHojeFace===1
               ? React.createElement(React.Fragment, { key:'g-proj' }
                   , React.createElement('svg', { viewBox:'0 0 '+_chartW+' '+_chartH, width:'100%', height:44, preserveAspectRatio:'none' }
                       , React.createElement('path', { d:_pathProj, fill:'none', stroke:C.green, strokeWidth:2.2, strokeLinecap:'round' })
                       , React.createElement('path', { d:_pathProjFinal, fill:'none', stroke:C.green, strokeWidth:2, strokeDasharray:'4,4', strokeLinecap:'round' })
-                      , _projDias.map(function(p,i){ return React.createElement('circle', { key:i, cx:_scaleXProj(p.dia), cy:_scaleYProj(p.saldo), r:2, fill:p.saldo<0?C.red:C.green }); })
+                      , _projDias.map(function(p,i){ return React.createElement('circle', { key:i, cx:_scaleXProj(p.dia), cy:_scaleYProj(p.saldo), r:_saldoPontoSel&&_saldoPontoSel.face===1&&_saldoPontoSel.dia===p.dia?4.5:2, fill:p.saldo<0?C.red:C.green, style:{cursor:'pointer'}, onClick:_toggleSaldoPonto(1,p.dia) }); })
                       , React.createElement('circle', { cx:_scaleXProj(_ultimoDiaMesHoje), cy:_scaleYProj(_saldoProjetado), r:3, fill:'none', stroke:C.green, strokeWidth:1.6 })
                     )
-                  , React.createElement('div', { style:{fontSize:9,color:C.sub,marginTop:2} }, _eventosFuturos.length+' vencimento'+(_eventosFuturos.length===1?'':'s')+' até o fim do mês')
+                  , React.createElement('div', { style:{fontSize:9,color:C.sub,marginTop:2} }, _eventosFuturos.length+' vencimento'+(_eventosFuturos.length===1?'':'s')+' até o fim do mês — toque num ponto pra ver o que muda o saldo')
                 )
               : React.createElement(React.Fragment, { key:'g-pessoal' }
                   , React.createElement('svg', { viewBox:'0 0 '+_chartW+' '+_chartH, width:'100%', height:44, preserveAspectRatio:'none' }
@@ -29229,6 +29288,29 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                     )
                   , React.createElement('div', { style:{fontSize:9,color:C.sub,marginTop:2} }, '👤 saldo pessoal — últimos 6 meses')
                 )
+          /* Detalhe do ponto tocado: as despesas/receitas que fizeram o saldo
+             oscilar naquele dia — "Hoje" usa os movimentos JÁ realizados
+             (movimentosCaixaDoDia, mesmos campos/critérios de saldoCaixaAte);
+             "Projetado" usa os eventos futuros já calculados pra linha
+             tracejada (_eventosFuturos), sem duplicar nenhuma fórmula nova. */
+          , _saldoPontoSel && (saldoHojeFace===0 || saldoHojeFace===1) && (function(){
+              var _diaPontoStr = _mesHoje + '-' + String(_saldoPontoSel.dia).padStart(2,'0');
+              var _itensPonto = _saldoPontoSel.face===0
+                ? movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _diaPontoStr)
+                : _eventosFuturos.filter(function(ev){ return ev.dia === _saldoPontoSel.dia; }).map(function(ev){ return { tipo:ev.tipo, label:ev.label, valor:Math.abs(ev.delta) }; });
+              if (_saldoPontoSel.face !== saldoHojeFace || !_itensPonto.length) return null;
+              return React.createElement('div', { style:{ marginTop:6, paddingTop:6, borderTop:'1px solid var(--c-border)' } }
+                , React.createElement('div', { style:{ fontSize:9, color:C.sub, fontWeight:700, marginBottom:4, textTransform:'capitalize' } }
+                  , new Date(_diaPontoStr+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short',weekday:'short'}))
+                , _itensPonto.map(function(it,i){
+                    return React.createElement('div', { key:i, style:{ display:'flex', justifyContent:'space-between', gap:6, fontSize:10, marginBottom:2 } }
+                      , React.createElement('span', { style:{ color:'var(--c-text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }, it.label)
+                      , React.createElement('span', { style:{ color:it.tipo==='receita'?C.green:C.red, fontWeight:700, flexShrink:0, fontVariantNumeric:'tabular-nums' } }
+                        , (it.tipo==='receita'?'+':'−')+fmtBRL(it.valor).replace('R$','').trim())
+                    );
+                  })
+              );
+            })()
         )
       );
     })()

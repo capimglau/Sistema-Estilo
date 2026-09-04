@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="7373bb1"/>
+<meta name="ag-build" content="2f823f1"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -29166,15 +29166,70 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var _scaleXFrom = function(diaBase, diaFim){ return function(d){ return (d-diaBase)/Math.max(1,diaFim-diaBase) * _chartW; }; };
       var _mkScaleY = function(vals){ var mn=Math.min.apply(null,vals), mx=Math.max.apply(null,vals), sp=(mx-mn)||1;
         return function(v){ return _padT + (1-(v-mn)/sp) * (_chartH-_padT-_padB); }; };
+      /* Helpers compartilhados pelas 3 faces do gráfico (gradiente duplo
+         verde/vermelho no cruzamento do zero + curva suave). Ficam aqui,
+         ANTES das 3 faces, porque cada uma passou a usar os dois.
+         gradiente SEMPRE com gradientUnits:'userSpaceOnUse' e y1/y2 fixos
+         em 0.._chartH — por padrão o SVG usa objectBoundingBox, que recalcula
+         0%-100% em cima da caixa da própria linha/path (não da altura real
+         do gráfico); numa curva cujo range de valores não cobre o card
+         inteiro isso descola a transição verde/vermelho do ponto real onde
+         o saldo cruza o zero. userSpaceOnUse fixa a régua no viewBox, então
+         a cor bate com a posição vertical de verdade, e todo path que usar
+         o mesmo id (linha cheia + trecho tracejado, por ex.) fica com a
+         MESMA régua de cor, sem cada um recalcular a própria caixa. */
+      var _catmullToBezier = function(pts){
+        if (pts.length < 2) return pts.length ? ('M'+pts[0].x+','+pts[0].y) : '';
+        var d = 'M'+pts[0].x+','+pts[0].y;
+        /* divisor 8 (em vez do clássico 6): controla a "tensão" da curva —
+           quanto maior, menos a linha se curva perto de cada ponto (menos
+           overshoot), resultando numa curva mais suave/discreta em vez de
+           bulge acentuado — pedido do usuário pra suavizar as 3 faces. */
+        for (var i=0; i<pts.length-1; i++){
+          var p0 = pts[i-1] || pts[i], p1 = pts[i], p2 = pts[i+1], p3 = pts[i+2] || p2;
+          var c1x = p1.x + (p2.x-p0.x)/8, c1y = p1.y + (p2.y-p0.y)/8;
+          var c2x = p2.x - (p3.x-p1.x)/8, c2y = p2.y - (p3.y-p1.y)/8;
+          d += ' C'+c1x+','+c1y+' '+c2x+','+c2y+' '+p2.x+','+p2.y;
+        }
+        return d;
+      };
+      var _zeroBandInfo = function(vals){
+        var mn=Math.min.apply(null,vals), mx=Math.max.apply(null,vals), sp=(mx-mn)||1;
+        var y0 = _padT + (1-(0-mn)/sp) * (_chartH-_padT-_padB);
+        var frac = Math.max(0, Math.min(1, y0/_chartH));
+        var band = 0.08;
+        return { stopA: Math.max(0,frac-band), stopB: Math.min(1,frac+band) };
+      };
 
       var _scaleXHoje = _scaleXFrom(_diaInicioRecente, _diaHojeNum);
       var _scaleYHoje = _mkScaleY(_histRecente.map(function(p){return p.saldo;}));
       var _pathHoje = _histRecente.map(function(p,i){ return (i===0?'M':'L') + _scaleXHoje(p.dia) + ',' + _scaleYHoje(p.saldo); }).join(' ');
+      /* Face "Hoje": mesmo tratamento (gradiente duplo + glow + curva suave)
+         da face Pessoal, pedido do usuário pra não deixar nenhuma das 3
+         faces do card sem o efeito. */
+      var _ptsHoje = _histRecente.map(function(p){ return { x:_scaleXHoje(p.dia), y:_scaleYHoje(p.saldo) }; });
+      var _pathHojeSmooth = _catmullToBezier(_ptsHoje);
+      var _areaHoje = _pathHojeSmooth + ' L'+_scaleXHoje(_histRecente[_histRecente.length-1].dia)+','+_chartH+' L'+_scaleXHoje(_histRecente[0].dia)+','+_chartH+' Z';
+      var _bandHoje = _zeroBandInfo(_histRecente.map(function(p){return p.saldo;}));
+      var _lastPtHoje = _ptsHoje[_ptsHoje.length-1];
+      var _glowColorHoje = _saldoAtual < 0 ? C.red : C.green;
 
       var _scaleXProj = _scaleXFrom(_diaHojeNum, _ultimoDiaMesHoje);
       var _scaleYProj = _mkScaleY(_projDias.map(function(p){return p.saldo;}).concat([_saldoProjetado]));
       var _pathProj = _projDias.map(function(p,i){ return (i===0?'M':'L') + _scaleXProj(p.dia) + ',' + _scaleYProj(p.saldo); }).join(' ');
       var _pathProjFinal = 'M'+_scaleXProj(_ultimoEventoDia)+','+_scaleYProj(_projDias[_projDias.length-1].saldo)+' L '+_scaleXProj(_ultimoDiaMesHoje)+','+_scaleYProj(_saldoProjetado);
+      /* Face "Projetado": mesmo tratamento; o trecho tracejado final
+         continua reto (só liga o último evento discreto ao valor oficial —
+         são só 2 pontos, sem série pra suavizar), mas usa o MESMO gradiente
+         userSpaceOnUse da linha cheia, então a cor bate certinho mesmo
+         cruzando o zero exatamente dentro do trecho tracejado. */
+      var _ptsProj = _projDias.map(function(p){ return { x:_scaleXProj(p.dia), y:_scaleYProj(p.saldo) }; });
+      var _pathProjSmooth = _catmullToBezier(_ptsProj);
+      var _areaProjBase = _pathProjSmooth + ' L'+_scaleXProj(_ultimoDiaMesHoje)+','+_scaleYProj(_saldoProjetado);
+      var _areaProj = _areaProjBase + ' L'+_scaleXProj(_ultimoDiaMesHoje)+','+_chartH+' L'+_scaleXProj(_diaHojeNum)+','+_chartH+' Z';
+      var _bandProj = _zeroBandInfo(_projDias.map(function(p){return p.saldo;}).concat([_saldoProjetado]));
+      var _lastPtProj = { x:_scaleXProj(_ultimoDiaMesHoje), y:_scaleYProj(_saldoProjetado) };
+      var _glowColorProj = _saldoProjetado < 0 ? C.red : C.green;
 
       /* Face 2 "Pessoal" (pedido do usuário): mesmo card, mesmas duas colunas,
          mas com os números do Orçamento Pessoal — nunca somados aos da Estilo
@@ -29215,29 +29270,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
          do gráfico. Curva suave via Catmull-Rom→Bézier só nesta face (as
          outras 2 continuam com linha reta, sem pedido de mudança). */
       var _ptsTrendP = _saldoTrendP.map(function(p,i){ return { x:_scaleXTrendP(i), y:_scaleYTrendP(p.saldo) }; });
-      var _catmullToBezier = function(pts){
-        if (pts.length < 2) return pts.length ? ('M'+pts[0].x+','+pts[0].y) : '';
-        var d = 'M'+pts[0].x+','+pts[0].y;
-        for (var i=0; i<pts.length-1; i++){
-          var p0 = pts[i-1] || pts[i], p1 = pts[i], p2 = pts[i+1], p3 = pts[i+2] || p2;
-          var c1x = p1.x + (p2.x-p0.x)/6, c1y = p1.y + (p2.y-p0.y)/6;
-          var c2x = p2.x - (p3.x-p1.x)/6, c2y = p2.y - (p3.y-p1.y)/6;
-          d += ' C'+c1x+','+c1y+' '+c2x+','+c2y+' '+p2.x+','+p2.y;
-        }
-        return d;
-      };
       var _pathTrendPSmooth = _catmullToBezier(_ptsTrendP);
       var _areaTrendP = _pathTrendPSmooth + ' L'+_scaleXTrendP(_saldoTrendP.length-1)+','+_chartH+' L'+_scaleXTrendP(0)+','+_chartH+' Z';
       var _valsTrendP = _saldoTrendP.map(function(p){ return p.saldo; });
-      var _mnTrendP = Math.min.apply(null, _valsTrendP), _mxTrendP = Math.max.apply(null, _valsTrendP), _spTrendP = (_mxTrendP-_mnTrendP)||1;
-      /* posição vertical (0..1) do zero dentro do chart; fora da faixa de
-         valores, satura em 0 (tudo negativo) ou 1 (tudo positivo) — mesma
-         lógica de _mkScaleY, só que avaliada em v=0. */
-      var _y0TrendP = _padT + (1 - (0-_mnTrendP)/_spTrendP) * (_chartH-_padT-_padB);
-      var _zeroFracP = Math.max(0, Math.min(1, _y0TrendP/_chartH));
-      var _bandP = 0.08;
-      var _stopATrendP = Math.max(0, _zeroFracP-_bandP);
-      var _stopBTrendP = Math.min(1, _zeroFracP+_bandP);
+      var _bandTrendP = _zeroBandInfo(_valsTrendP);
       var _lastPtP = _ptsTrendP[_ptsTrendP.length-1];
       var _glowColorP = _valsTrendP[_valsTrendP.length-1] < 0 ? C.red : C.green;
 
@@ -29302,32 +29338,72 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           , saldoHojeFace===0
               ? React.createElement(React.Fragment, { key:'g-hoje' }
                   , React.createElement('svg', { viewBox:'0 0 '+_chartW+' '+_chartH, width:'100%', height:44, preserveAspectRatio:'none' }
-                      , React.createElement('path', { d:_pathHoje, fill:'none', stroke:C.green, strokeWidth:2.2, strokeLinecap:'round' })
-                      , _histRecente.map(function(p,i){ return React.createElement('circle', { key:i, cx:_scaleXHoje(p.dia), cy:_scaleYHoje(p.saldo), r:_saldoPontoSel&&_saldoPontoSel.face===0&&_saldoPontoSel.dia===p.dia?4.5:(i===_histRecente.length-1?3:1.8), fill:C.green, style:{cursor:'pointer'}, onClick:_toggleSaldoPonto(0,p.dia) }); })
+                      , React.createElement('defs', null
+                          , React.createElement('linearGradient', { id:'gradSaldoHojeStroke', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
+                              , React.createElement('stop', { offset:0, stopColor:C.green })
+                              , React.createElement('stop', { offset:_bandHoje.stopA, stopColor:C.green })
+                              , React.createElement('stop', { offset:_bandHoje.stopB, stopColor:C.red })
+                              , React.createElement('stop', { offset:1, stopColor:C.red })
+                            )
+                          , React.createElement('linearGradient', { id:'gradSaldoHojeFill', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
+                              , React.createElement('stop', { offset:0, stopColor:C.green, stopOpacity:0.22 })
+                              , React.createElement('stop', { offset:_bandHoje.stopA, stopColor:C.green, stopOpacity:0.04 })
+                              , React.createElement('stop', { offset:_bandHoje.stopB, stopColor:C.red, stopOpacity:0.04 })
+                              , React.createElement('stop', { offset:1, stopColor:C.red, stopOpacity:0.22 })
+                            )
+                          , React.createElement('radialGradient', { id:'glowSaldoHoje', cx:'50%', cy:'50%', r:'50%' }
+                              , React.createElement('stop', { offset:0, stopColor:_glowColorHoje, stopOpacity:0.35 })
+                              , React.createElement('stop', { offset:1, stopColor:_glowColorHoje, stopOpacity:0 })
+                            )
+                        )
+                      , React.createElement('path', { d:_areaHoje, fill:'url(#gradSaldoHojeFill)', stroke:'none' })
+                      , React.createElement('path', { d:_pathHojeSmooth, fill:'none', stroke:'url(#gradSaldoHojeStroke)', strokeWidth:2.4, strokeLinecap:'round', strokeLinejoin:'round' })
+                      , React.createElement('circle', { cx:_lastPtHoje.x, cy:_lastPtHoje.y, r:13, fill:'url(#glowSaldoHoje)' })
+                      , _histRecente.map(function(p,i){ return React.createElement('circle', { key:i, cx:_scaleXHoje(p.dia), cy:_scaleYHoje(p.saldo), r:_saldoPontoSel&&_saldoPontoSel.face===0&&_saldoPontoSel.dia===p.dia?4.5:(i===_histRecente.length-1?3.5:1.8), fill:i===_histRecente.length-1?'#fff':(p.saldo<0?C.red:C.green), stroke:i===_histRecente.length-1?_glowColorHoje:'none', strokeWidth:i===_histRecente.length-1?2.4:0, style:{cursor:'pointer'}, onClick:_toggleSaldoPonto(0,p.dia) }); })
                     )
                 )
               : saldoHojeFace===1
               ? React.createElement(React.Fragment, { key:'g-proj' }
                   , React.createElement('svg', { viewBox:'0 0 '+_chartW+' '+_chartH, width:'100%', height:44, preserveAspectRatio:'none' }
-                      , React.createElement('path', { d:_pathProj, fill:'none', stroke:C.green, strokeWidth:2.2, strokeLinecap:'round' })
-                      , React.createElement('path', { d:_pathProjFinal, fill:'none', stroke:C.green, strokeWidth:2, strokeDasharray:'4,4', strokeLinecap:'round' })
+                      , React.createElement('defs', null
+                          , React.createElement('linearGradient', { id:'gradSaldoProjStroke', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
+                              , React.createElement('stop', { offset:0, stopColor:C.green })
+                              , React.createElement('stop', { offset:_bandProj.stopA, stopColor:C.green })
+                              , React.createElement('stop', { offset:_bandProj.stopB, stopColor:C.red })
+                              , React.createElement('stop', { offset:1, stopColor:C.red })
+                            )
+                          , React.createElement('linearGradient', { id:'gradSaldoProjFill', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
+                              , React.createElement('stop', { offset:0, stopColor:C.green, stopOpacity:0.22 })
+                              , React.createElement('stop', { offset:_bandProj.stopA, stopColor:C.green, stopOpacity:0.04 })
+                              , React.createElement('stop', { offset:_bandProj.stopB, stopColor:C.red, stopOpacity:0.04 })
+                              , React.createElement('stop', { offset:1, stopColor:C.red, stopOpacity:0.22 })
+                            )
+                          , React.createElement('radialGradient', { id:'glowSaldoProj', cx:'50%', cy:'50%', r:'50%' }
+                              , React.createElement('stop', { offset:0, stopColor:_glowColorProj, stopOpacity:0.35 })
+                              , React.createElement('stop', { offset:1, stopColor:_glowColorProj, stopOpacity:0 })
+                            )
+                        )
+                      , React.createElement('path', { d:_areaProj, fill:'url(#gradSaldoProjFill)', stroke:'none' })
+                      , React.createElement('path', { d:_pathProjSmooth, fill:'none', stroke:'url(#gradSaldoProjStroke)', strokeWidth:2.4, strokeLinecap:'round', strokeLinejoin:'round' })
+                      , React.createElement('path', { d:_pathProjFinal, fill:'none', stroke:'url(#gradSaldoProjStroke)', strokeWidth:2, strokeDasharray:'4,4', strokeLinecap:'round' })
+                      , React.createElement('circle', { cx:_lastPtProj.x, cy:_lastPtProj.y, r:13, fill:'url(#glowSaldoProj)' })
                       , _projDias.map(function(p,i){ return React.createElement('circle', { key:i, cx:_scaleXProj(p.dia), cy:_scaleYProj(p.saldo), r:_saldoPontoSel&&_saldoPontoSel.face===1&&_saldoPontoSel.dia===p.dia?4.5:2, fill:p.saldo<0?C.red:C.green, style:{cursor:'pointer'}, onClick:_toggleSaldoPonto(1,p.dia) }); })
-                      , React.createElement('circle', { cx:_scaleXProj(_ultimoDiaMesHoje), cy:_scaleYProj(_saldoProjetado), r:3, fill:'none', stroke:C.green, strokeWidth:1.6 })
+                      , React.createElement('circle', { cx:_lastPtProj.x, cy:_lastPtProj.y, r:3.5, fill:'#fff', stroke:_glowColorProj, strokeWidth:2.4 })
                     )
                 )
               : React.createElement(React.Fragment, { key:'g-pessoal' }
                   , React.createElement('svg', { viewBox:'0 0 '+_chartW+' '+_chartH, width:'100%', height:44, preserveAspectRatio:'none' }
                       , React.createElement('defs', null
-                          , React.createElement('linearGradient', { id:'gradSaldoPessoalStroke', x1:0, y1:0, x2:0, y2:1 }
+                          , React.createElement('linearGradient', { id:'gradSaldoPessoalStroke', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
                               , React.createElement('stop', { offset:0, stopColor:C.green })
-                              , React.createElement('stop', { offset:_stopATrendP, stopColor:C.green })
-                              , React.createElement('stop', { offset:_stopBTrendP, stopColor:C.red })
+                              , React.createElement('stop', { offset:_bandTrendP.stopA, stopColor:C.green })
+                              , React.createElement('stop', { offset:_bandTrendP.stopB, stopColor:C.red })
                               , React.createElement('stop', { offset:1, stopColor:C.red })
                             )
-                          , React.createElement('linearGradient', { id:'gradSaldoPessoalFill', x1:0, y1:0, x2:0, y2:1 }
+                          , React.createElement('linearGradient', { id:'gradSaldoPessoalFill', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
                               , React.createElement('stop', { offset:0, stopColor:C.green, stopOpacity:0.22 })
-                              , React.createElement('stop', { offset:_stopATrendP, stopColor:C.green, stopOpacity:0.04 })
-                              , React.createElement('stop', { offset:_stopBTrendP, stopColor:C.red, stopOpacity:0.04 })
+                              , React.createElement('stop', { offset:_bandTrendP.stopA, stopColor:C.green, stopOpacity:0.04 })
+                              , React.createElement('stop', { offset:_bandTrendP.stopB, stopColor:C.red, stopOpacity:0.04 })
                               , React.createElement('stop', { offset:1, stopColor:C.red, stopOpacity:0.22 })
                             )
                           , React.createElement('radialGradient', { id:'glowSaldoPessoal', cx:'50%', cy:'50%', r:'50%' }

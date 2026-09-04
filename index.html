@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="bbf4f22"/>
+<meta name="ag-build" content="7cd86d1"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -32984,6 +32984,10 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           if (ctDeepLink.data) confirmarBaixarCt(_ctDL, ctDeepLink.data);
           else { setBaixarCtData(_brNow().toISOString().split("T")[0]); setBaixarCtModal(_ctDL); }
         }
+        /* "Editar" vindo do cartão da Agenda (botão ✏️ Editar): abre o
+           contrato direto no formulário de edição, mesmo caminho do
+           swipe "Editar" da lista. */
+        else if (ctDeepLink.acao === "editar") { setForm(Object.assign({}, _ctDL)); setEdit(_ctDL.id); setModal(true); }
       }
     }
     if (setCtDeepLink) setCtDeepLink(null);
@@ -38306,6 +38310,31 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
           toast("💸 Baixado!");
         } catch(e) { toast("Erro ao salvar", "error"); }
       })();
+    } else if (deepLink.acao === 'editar') {
+      /* Vindo do botão "✏️ Editar" do cartão da Agenda: abre o formulário
+         de edição direto, sem exigir swipe na aba Atrasados. Mesma lógica
+         de recorrente-projetado do "Editar" por swipe (ver _edit acima):
+         edita o filho já criado pra este mês, se existir, senão prepara a
+         criação de um novo ao salvar — nunca edita o template direto. */
+      var _mesDl = deepLink.mes || filtroMes;
+      if (setFiltroMes) setFiltroMes(_mesDl);
+      var _itDl = itens.find(function(x){ return x.id === deepLink.itemId; });
+      if (_itDl) {
+        var _isRecDl = _itDl.recorrente && efetivoMes(_itDl) !== _mesDl;
+        if (_isRecDl) {
+          var _filhoDl = itens.find(function(x){ return String(x.recorrencia_origem_id) === String(_itDl.id) && efetivoMes(x) === _mesDl; });
+          if (_filhoDl) { setForm(Object.assign({}, _filhoDl)); setEdit(_filhoDl.id); }
+          else {
+            var _diaDl = _itDl.data ? _itDl.data.slice(8, 10) : null;
+            setForm(Object.assign({}, _itDl, { id: undefined, data: _diaDl ? _mesDl + '-' + _diaDl : _itDl.data, mes: _mesDl, recorrente: false, recorrencia_origem_id: _itDl.id }));
+            setEdit(null);
+          }
+        } else { setForm(Object.assign({}, _itDl)); setEdit(_itDl.id); }
+        setModal(true);
+      } else {
+        setOrcHighlightId(deepLink.itemId);
+        setTimeout(function(){ setOrcHighlightId(null); }, 3000);
+      }
     } else {
       setOrcHighlightId(deepLink.itemId);
       setTimeout(function(){ setOrcHighlightId(null); }, 3000);
@@ -49525,7 +49554,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
     if (ev.tab === "pessoal") {
       if (!confirmado) {
         if (setTab) setTab("inicio");
-        window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id, mes: ev.data ? ev.data.slice(0, 7) : null } }));
+        window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id, acao: "editar", mes: ev.data ? ev.data.slice(0, 7) : null } }));
         return;
       }
       (async function() {
@@ -49549,13 +49578,13 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
     var _volta = confirmado ? { voltarInicio: true } : {};
     if (ev.acao === "renovar") {
       if (!setCtDeepLink) return;
-      setCtDeepLink(Object.assign({ acao: confirmado ? "renovar" : null, itemId: ev.id, confirmado: !!confirmado }, _volta));
+      setCtDeepLink(Object.assign({ acao: confirmado ? "renovar" : "editar", itemId: ev.id, confirmado: !!confirmado }, _volta));
       if (setTab) setTab("contratos");
       return;
     }
     if (ev.tipo === "pagamento") {
       if (!setCtDeepLink) return;
-      setCtDeepLink(Object.assign({ acao:"baixar", itemId: ev.id, data: confirmado ? data : null }, _volta));
+      setCtDeepLink(Object.assign({ acao: confirmado ? "baixar" : "editar", itemId: ev.id, data: confirmado ? data : null }, _volta));
       if (setTab) setTab("contratos");
       return;
     }
@@ -49595,7 +49624,12 @@ function _agk2ModalAcao(o) {
   var rotuloOk = semAcao ? "Marcar como resolvido"
                : ehRenovar ? "Renovar"
                : ev.tipo === "pagamento" ? "Receber" : "Baixar";
-  var rotuloIr = "Abrir em " + (AGK2_TAB_NOME[ev.tab] || (ehContrato ? "Contratos" : "Financeiro"));
+  /* Cartão com lançamento de verdade por trás (despesa/receita/contrato/item
+     do orçamento pessoal): o botão secundário vira "Editar" — leva direto
+     pro formulário de edição do lançamento, não só pra aba. Cartão sem ação
+     (documento do veículo, CNH, reserva…) continua só navegando. */
+  var temLancamento = !semAcao && ev.id != null;
+  var rotuloIr = temLancamento ? "✏️ Editar" : "Abrir em " + (AGK2_TAB_NOME[ev.tab] || (ehContrato ? "Contratos" : "Financeiro"));
   var tone = _agk2Tone(ev.tipo);
   var atraso = _agk2Atraso(ev.data, _brNow().toISOString().split("T")[0]);
   function fmtD(d){ if(!d) return "--"; var p=String(d).split("-"); return p[2]+"/"+p[1]+"/"+p[0].slice(2); }

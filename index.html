@@ -26000,6 +26000,14 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   const [m4DiaSel, setM4DiaSel] = React.useState(null);
   const [showSimulacao, setShowSimulacao] = React.useState(false);
   const [showFatList, setShowFatList] = React.useState(false);
+  /* Lista "A Receber"/"Atrasado" — igual ao showFatList, mas só com o que
+     ainda NÃO foi recebido (contratos + receitas avulsas), pra abrir uma
+     lista de verdade em vez de mandar pra Contratos, tela que só tem
+     contrato e perderia as receitas avulsas do total mostrado no card
+     (regra de cobertura de dados: avulsa tem que aparecer em todo painel
+     de "a receber"). */
+  const [showARecList, setShowARecList] = React.useState(false);
+  const [arecListModo, setArecListModo] = React.useState("receber"); // "receber" | "atrasado"
   /* Card "Resultado Previsto" do banner de KPIs também alterna — não o
      clique no card inteiro, que já abre a simulação de inadimplência — para
      3 faces: 0 = Resultado Previsto, 1 = Despesas do mês (previsto x a
@@ -26211,6 +26219,16 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           - (r.status === "parcial" && r._valorPago != null ? parseFloat(r._valorPago) : 0)); }, 0);
   const atrasadoQtd = _ctsAtraso.length + _recAvAtraso.length;
 
+  /* Base da lista "A Receber" (contratos + receitas avulsas ainda não
+     recebidos no mês, vencidos ou não — MESMA base de prevMes/recMes,
+     igual ao atrasadoMes acima, só sem o corte de data vencida). */
+  const _ctsPendReceber = ctsMes.filter(function(c){
+    return c.status !== "cancelado" && c.status_pagamento !== "pago" && c.status_pagamento !== "isento";
+  });
+  const _recAvPendReceber = recAvDash.filter(function(r){
+    return r.status !== "recebido" && r.status !== "isento";
+  });
+
   /* Resumo de Despesas do mês — usado na face alternativa do card
      "Resultado Previsto" (previsto x a pagar), mesma fórmula usada nos
      painéis Despesas Pendentes/barras (pago = status pago OU tem
@@ -26266,13 +26284,16 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
        (comportamento original, é o único conteúdo sem tela própria)
      - face 1 (Despesas do Mês) → Financeiro, aba Despesas, filtrado no mês
      - face 2 (Manutenções do Mês) → aba Manutenção
-     - face 3 (A Receber, só mobile) → Contratos filtrado em "A Receber",
-       mesmo destino do card dedicado "A Receber" do banner desktop */
+     - face 3 (A Receber, só mobile) → abre a lista "A Receber" (contratos +
+       receitas avulsas pendentes) INLINE, igual à lista de Faturamento —
+       nunca navegar pra Contratos aqui: aquela tela só filtra contrato,
+       perderia as receitas avulsas que compõem o valor mostrado no card
+       (regra de cobertura de dados) */
   function _onResPrevCardClick(e) {
     e.stopPropagation();
     if (resPrevFace === 1) { setFinDeepLink({ subTab: "despesas", mes: dashMes }); setTab("financeiro"); }
     else if (resPrevFace === 2) { setTab("manutencao"); }
-    else if (resPrevFace === 3) { if (setCtDeepLink) setCtDeepLink({ filter: "a_receber", mes: dashMes }); setTab("contratos"); }
+    else if (resPrevFace === 3) { setArecListModo("receber"); setShowARecList(function(v){ return !v; }); }
     else { setShowSimulacao(function(v){ return !v; }); }
   }
 
@@ -26742,10 +26763,12 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           )
           /* A Receber */
           // Havendo vencido, o cartão alterna entre "A Receber" e "Atrasado".
-          // O clique acompanha a face: leva ao filtro do que está sendo
-          // mostrado, senão o número visto e a lista aberta não batem.
+          // O clique acompanha a face: abre a lista inline correspondente
+          // (contratos + receitas avulsas) — nunca navegar pra Contratos
+          // aqui, que só filtra contrato e perderia as avulsas que também
+          // compõem o valor mostrado no card (regra de cobertura de dados).
           , React.createElement('div', { className: "ag-kpi-card " + (faceAtraso ? "ag-kpi-red" : "ag-kpi-amber"),
-              onClick: function(){ if (setCtDeepLink) setCtDeepLink({ filter: faceAtraso ? 'atrasados_mes' : 'a_receber', mes:dashMes }); setTab("contratos"); },
+              onClick: function(){ setArecListModo(faceAtraso ? "atrasado" : "receber"); setShowARecList(function(v){ return !v; }); },
               style: { cursor: "pointer", paddingTop: 11.96, paddingBottom: 11.96 } }
             , React.createElement('div', { key: faceAtraso ? 'atr' : 'rec', className: "ag-kpi-face" }
               , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: faceAtraso ? _flagCorPastel(C.red) : "var(--c-sub)", marginBottom: 5 } }, faceAtraso ? "⚠️ Atrasado" : "A Receber")
@@ -26905,6 +26928,43 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                   , React.createElement(BRLValue, { v:row.valor, size:13.5, weight:700, color:"var(--c-text)" })
                 );
               })
+        ) : null
+      /* Lista "A Receber"/"Atrasado" — MESMA base do card (contratos +
+         receitas avulsas pendentes no mês, ou só os vencidos quando
+         arecListModo==="atrasado"), pra nunca mostrar um total que a
+         lista aberta não sustenta (regra de cobertura de dados). */
+      , showARecList ? React.createElement('div', { style:{marginTop:10,borderRadius:16,border:"1px solid "+C.border,overflow:"hidden",background:C.card,backdropFilter:"blur(12px)",WebkitBackdropFilter:"blur(12px)"} }
+          , React.createElement('div', { style:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 16px",borderBottom:"1px solid "+C.border,background:"rgba(255,255,255,0.02)"} }
+            , React.createElement('div', { style:{fontSize:11,fontWeight:700,color:C.sub} }, arecListModo==="atrasado" ? "⚠️ Contratos e receitas vencidos" : "🗂️ Contratos e receitas a receber")
+            , React.createElement('div', { onClick:function(){setShowARecList(false);}, style:{fontSize:14,color:C.sub,cursor:"pointer",padding:"0 2px"} }, "✕")
+          )
+          , (function(){
+              var _ctsArec = arecListModo==="atrasado" ? _ctsAtraso : _ctsPendReceber;
+              var _recArec = arecListModo==="atrasado" ? _recAvAtraso : _recAvPendReceber;
+              if ((_ctsArec.length + _recArec.length) === 0) {
+                return React.createElement('div', { style:{padding:"16px",fontSize:13,color:C.sub,textAlign:"center"} }, arecListModo==="atrasado" ? "Nenhum vencido neste m\xeas" : "Nada pendente neste m\xeas");
+              }
+              return [].concat(
+                _ctsArec.map(function(c){
+                  var cl = clientes.find(function(x){ return x.id == c.cliente_id; });
+                  var v = Math.max(0, parseFloat(c.valor_total||0) - (c.status_pagamento==="parcial" ? parseFloat(c.valor_pago||0) : 0));
+                  return { key:"ct"+c.id, nome:(cl && cl.nome) || "Cliente", sub:"Contrato"+(c.numero?(" \xb7 "+c.numero):"")+(c.status_pagamento==="parcial"?" \xb7 Parcial":arecListModo==="atrasado"?" \xb7 Vencido":" \xb7 A receber"), valor:v, cor: arecListModo==="atrasado"?C.red:(c.status_pagamento==="parcial"?C.orange:C.sub), onClick:function(){ setShowARecList(false); if (setCtDeepLink) setCtDeepLink({ acao:null, itemId:c.id }); setTab("contratos"); } };
+                })
+              ).concat(
+                _recArec.map(function(r){
+                  var v = Math.max(0, parseFloat(r.valor||0) - (r.status==="parcial" && r._valorPago != null ? parseFloat(r._valorPago) : 0));
+                  return { key:"rv"+r.id, nome:r.descricao||"Receita avulsa", sub:"Avulsa"+(arecListModo==="atrasado"?" \xb7 Vencida":" \xb7 A receber"), valor:v, cor: arecListModo==="atrasado"?C.red:C.sub, onClick:function(){ setShowARecList(false); if (setFinDeepLink) setFinDeepLink({ subTab:"receitas", itemId:r.id, mes:dashMes, voltarInicio:true }); setTab("financeiro"); } };
+                })
+              ).map(function(row,i,arr){
+                return React.createElement('div', { key:row.key, onClick:row.onClick, style:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 16px",borderBottom:i<arr.length-1?"1px solid rgba(255,255,255,0.04)":"none",cursor:"pointer"} }
+                  , React.createElement('div', { style:{minWidth:0,flex:1,marginRight:10} }
+                    , React.createElement('div', { style:{fontSize:13,fontWeight:600,color:"var(--c-text)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"} }, row.nome)
+                    , React.createElement('div', { style:{fontSize:10.5,color:row.cor,fontWeight:600,marginTop:1} }, row.sub)
+                  )
+                  , React.createElement(BRLValue, { v:row.valor, size:13.5, weight:700, color:"var(--c-text)" })
+                );
+              });
+            })()
         ) : null
     )
 

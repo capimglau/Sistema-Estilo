@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="be9dc18"/>
+<meta name="ag-build" content="2cd4dcd"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -30222,9 +30222,26 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         var urgente   = venceu || venceHj;
         var _mid = l.id;
 
+        /* Tocar no cartão pergunta se quer concluir a etapa atual (pedido do
+           usuário) — quem só quer abrir a multa usa o "Ver" do swipe. O SIM
+           não grava nada aqui: manda o deep-link `concluir` pra tela de
+           Multas, que roda a MESMA ação do botão "✓ Concluir" de lá
+           (getNextAction) — nada de duplicar a gravação em dois lugares,
+           mesma regra do deep-link de notificação que a Agenda já usa. */
+        var _concluirEtapa = async function(){
+          var _c = await window.__agConfirm({
+            title: "Concluir etapa",
+            icon: "✅",
+            message: 'Concluir "' + l.etapaLabel + '" da multa de ' + l.cliente + (l.placa && l.placa !== '--' ? ' · ' + l.placa : '') + "?",
+            okLabel: "Concluir"
+          });
+          if (!_c || !_c.ok) return;
+          if (setMtDeepLink) setMtDeepLink({ acao:'concluir', itemId:_mid, voltarInicio:true });
+          setTab('multas');
+        };
         var _inner = React.createElement('div', {
           style:{ display:'flex', alignItems:'stretch', minHeight:78, cursor:'pointer' },
-          onClick:function(){ onItemNav({ type:'multa', id:_mid }, 'multas'); }
+          onClick:_concluirEtapa
         }
           /* Bandeira SEMPRE com o ícone de traço da etapa (_MUL_ETAPA_ICON,
              via _flagIcon) — não mais com a data. Antes o ícone só entrava
@@ -35922,6 +35939,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   }
 
   function abrirNotifModal(m, status) {
+    _armarVoltarInicioMt();
     setNotifModal({ multa: m, status: status });
     setNotifData(_brNow().toISOString().split("T")[0]);
   }
@@ -35939,6 +35957,17 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   function _talvezVoltarInicioMt(){
     if (_voltarInicioMtRef.current) { _voltarInicioMtRef.current = false; if (setTab) setTab("inicio"); }
   }
+  /* "Voltar pro Início" só vale se a ação do deep-link realmente abrir um dos
+     modais que fecham por aqui. Nem toda ação abre (confirmar recebimento do
+     cliente usa confirm nativo; notificar o condutor abre o modal do DSV), e
+     armar o ref direto deixaria a marca pendurada pra disparar num modal
+     futuro qualquer — o usuário abriria uma ação sem relação e seria jogado
+     pro Início. Então o deep-link só deixa a marca PENDENTE, e quem a
+     converte é o próprio abrirAcaoModal/abrirNotifModal. */
+  var _mtVoltarPendRef = React.useRef(false);
+  function _armarVoltarInicioMt(){
+    if (_mtVoltarPendRef.current) { _mtVoltarPendRef.current = false; _voltarInicioMtRef.current = true; }
+  }
   function fecharNotifModal(){ setNotifModal(null); _talvezVoltarInicioMt(); }
   React.useEffect(function(){
     if (!mtDeepLink) return;
@@ -35947,6 +35976,27 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       if (_mDL) {
         _voltarInicioMtRef.current = !!mtDeepLink.voltarInicio;
         abrirNotifModal(_mDL, mtDeepLink.notifStatus || "nao_localizou");
+      }
+    }
+    /* "concluir": veio do painel "Multas pendentes" do Início, onde o usuário
+       já respondeu SIM à pergunta de concluir a etapa. Aqui só dispara a MESMA
+       ação do botão "✓ Concluir" da lista (getNextAction) — que abre o modal
+       da etapa pra registrar a data. A gravação continua sendo das funções de
+       sempre; o deep-link não duplica nada. */
+    if (mtDeepLink.acao === "concluir" && mtDeepLink.itemId != null) {
+      var _mCon = (multas||[]).find(function(x){ return x.id == mtDeepLink.itemId; });
+      if (_mCon) {
+        var _ctCon = getCt(_mCon.contrato_id);
+        var _clCon = _ctCon ? getCl(_ctCon.cliente_id) : getCl(_mCon.cliente_id);
+        var _veCon = _ctCon ? getVeByContrato(_mCon.contrato_id) : (_mCon.veiculo_id ? veiculos.find(function(v){ return v.id == _mCon.veiculo_id; }) : null);
+        var _actCon = getNextAction(_mCon, _clCon, _veCon);
+        if (_actCon) {
+          _mtVoltarPendRef.current = !!mtDeepLink.voltarInicio;
+          _actCon.action();
+          _mtVoltarPendRef.current = false; // nenhum modal consumiu: não fica pendurada
+        } else {
+          toast("Esta multa já está encerrada.");
+        }
       }
     }
     if (setMtDeepLink) setMtDeepLink(null);
@@ -36162,10 +36212,15 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
      Substituído por um mini-modal próprio (mesmo padrão já usado em
      abrirNotifModal/fecharNotifModal para o registro de notificação). */
   function abrirAcaoModal(m, cfg) {
+    _armarVoltarInicioMt();
     setAcaoModal(Object.assign({ multa: m }, cfg));
     setAcaoModalData(_brNow().toISOString().split("T")[0]);
   }
-  function fecharAcaoModal() { setAcaoModal(null); }
+  /* Igual a fecharNotifModal: se a ação veio de fora (deep-link do painel
+     "Multas pendentes" do Início), fechar o modal — confirmando ou
+     cancelando — devolve o usuário pro Início, em vez de largá-lo parado na
+     lista de multas. */
+  function fecharAcaoModal() { setAcaoModal(null); _talvezVoltarInicioMt(); }
   async function confirmarPagar(m, dt) {
     await db.patch("multas", m.id, { status: "pago", data_pagamento: dt });
     setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, { status: "pago", data_pagamento: dt }) : x));

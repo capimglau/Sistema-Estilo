@@ -35684,10 +35684,19 @@ function buildDSVHtml(m, cl, ve, emp, assSvg) {
   return h;
 }
 
-function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSelectMulta, selectedMultaId }) {
+/* statusFiltro/notifFiltro/veiculoFiltro/clienteFiltro: quando vêm de fora, o
+   gráfico usa os seletores do topo da tela de Multas (os mesmos da lista) e
+   esconde o seletor próprio — antes cada painel tinha o seu, com as mesmas
+   opções de status/etapa, e mudar um não mexia no outro (pedido do usuário
+   de unificar). Sem esses props ele continua se virando sozinho. */
+function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSelectMulta, selectedMultaId, statusFiltro, notifFiltro, veiculoFiltro, clienteFiltro }) {
+  var _gmExterno = statusFiltro != null;
   var [gmPlaca, setGmPlaca] = React.useState("");
-  var [gmStatus, setGmStatus] = React.useState("nao_encerrada");
+  var [gmStatusInterno, setGmStatus] = React.useState("nao_encerrada");
   var [gmAIT, setGmAIT] = React.useState("");
+  /* A lista chama de "a_pagar" o que aqui sempre se chamou "pendente" — é o
+     mesmo filtro (multa ainda não paga ao órgão), só o nome que diverge. */
+  var gmStatus = _gmExterno ? (statusFiltro === "a_pagar" ? "pendente" : statusFiltro) : gmStatusInterno;
   var _gmScrollRef = React.useRef(null);
   React.useEffect(function(){
     if(!_gmScrollRef.current||!fil||!fil.length) return;
@@ -35715,6 +35724,18 @@ function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSel
     }
     if (gmPlaca) { var ve = getMVe(m); if (!ve || String(ve.id) !== gmPlaca) return false; }
     if (gmAIT && (m.ait||"") !== gmAIT) return false;
+    /* Filtros de fora (notificação, veículo e cliente): o gráfico passa a
+       mostrar exatamente o mesmo recorte da lista logo abaixo. */
+    if (_gmExterno && notifFiltro && notifFiltro !== "todos") {
+      var _sn = m.status_notificacao || "nao_notificado";
+      if (notifFiltro === "enviada") { if (_sn !== "enviada" && _sn !== "aguardando") return false; }
+      else if (_sn !== notifFiltro) return false;
+    }
+    if (_gmExterno && (veiculoFiltro || clienteFiltro)) {
+      var _ctf = (contratos||[]).find(function(c){ return c.id == m.contrato_id; });
+      if (veiculoFiltro) { var _vid = _ctf ? String(_ctf.veiculo_id) : String(m.veiculo_id||""); if (_vid !== veiculoFiltro) return false; }
+      if (clienteFiltro) { var _cid = _ctf ? String(_ctf.cliente_id) : String(m.cliente_id||""); if (_cid !== clienteFiltro) return false; }
+    }
     return true;
   });
   var isMob = typeof window!=="undefined"&&window.innerWidth<600;
@@ -35740,7 +35761,9 @@ function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSel
   }
 
   return React.createElement(React.Fragment, null
-    , React.createElement("div",{style:{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginTop:0,marginBottom:8}}
+    /* Seletor próprio só quando ninguém filtra por fora — na tela de Multas
+       quem manda é o par de seletores do topo, um só pros dois painéis. */
+    , !_gmExterno && React.createElement("div",{style:{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginTop:0,marginBottom:8}}
       , React.createElement("div",{style:{fontSize:12,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:0.5,flexShrink:0,marginRight:2}},"Cronograma")
       , React.createElement("select",{value:gmSelVal,onChange:handleGmSel,style:selSt}
         , React.createElement("optgroup",{label:"Status"}
@@ -36400,140 +36423,10 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         , temFiltro && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: limparFiltros, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1311}}, "Limpar filtros" )
       )
     )
-    /* Seção Multas — Pipeline Estruturado */
-    , (() => {
-      /* ── classificação de todas as multas (sem filtro de mês para dar visão geral) ── */
-      var todasAtivas = (multas||[]).filter(function(m){ return m.status !== "cancelada" && m.status !== "cancelado"; });
-      var multasMesAtivas = todasAtivas.filter(function(m){ return (m.vencimento||m.data||"").slice(0,7) === dashMes; });
-
-      /* ── helpers ── */
-      function mVal(m){ return parseFloat(m.valor||0); }
-      function mValCob(m){ return parseFloat(m.valor_cobrado||m.valor||0); }
-      function mClVe(m){
-        var ct = m.contrato_id ? (contratos||[]).find(function(x){return x.id==m.contrato_id;}) : null;
-        var cl = ct ? (clientes||[]).find(function(x){return x.id==ct.cliente_id;}) : (clientes||[]).find(function(x){return x.id==m.cliente_id;});
-        var ve = ct ? (veiculos||[]).find(function(x){return x.id==ct.veiculo_id;}) : (veiculos||[]).find(function(x){return x.id==m.veiculo_id;});
-        return { cl:cl, ve:ve };
-      }
-
-      /* ── DIMENSÃO 1: Locadora → Órgão (pagamento da multa) ── */
-      var locPaga    = todasAtivas.filter(function(m){ return m.status === "pago"; });
-      var locPendente= todasAtivas.filter(function(m){ return m.status !== "pago"; });
-      var totalLocPaga = locPaga.reduce(function(s,m){return s+mVal(m);},0);
-      var totalLocPend = locPendente.reduce(function(s,m){return s+mVal(m);},0);
-      var totalLoc = totalLocPaga + totalLocPend;
-      var pctLocPaga = totalLoc > 0 ? (totalLocPaga/totalLoc*100) : 0;
-
-      /* ── DIMENSÃO 2: Notificação ao Órgão (indicação de condutor) ── */
-      var notifStatus = function(m){ var s = m.status_notificacao || "nao_notificado"; return s === "aguardando" ? "enviada" : s; };
-      var nNotifNao   = todasAtivas.filter(function(m){ return notifStatus(m)==="nao_notificado"; });
-      var nNotifEnv   = todasAtivas.filter(function(m){ var s=notifStatus(m); return s==="enviada" || s==="aguardando"; });
-      var nNotifAgu   = []; // unificado com nNotifEnv — "aguardando" = "enviada" semanticamente
-      var nNotifOk    = todasAtivas.filter(function(m){ return notifStatus(m)==="notificado"; });
-      var nNotifFail  = todasAtivas.filter(function(m){ return notifStatus(m)==="nao_localizou"; });
-      var totalNotif  = todasAtivas.length;
-
-      /* ── DIMENSÃO 3: Cobrança ao Cliente ── */
-      var cliNao     = todasAtivas.filter(function(m){ return !m.cobrado_cliente || m.cobrado_cliente==="nao"; });
-      var cliPend    = todasAtivas.filter(function(m){ return m.cobrado_cliente==="pendente"; });
-      var cliPago    = todasAtivas.filter(function(m){ return m.cobrado_cliente==="pago"; });
-      var totalCliPago= cliPago.reduce(function(s,m){return s+mValCob(m);},0);
-      var totalCliPend= cliPend.reduce(function(s,m){return s+mValCob(m);},0);
-      var totalCli    = todasAtivas.reduce(function(s,m){return s+mValCob(m);},0);
-      var pctCliPago  = totalCli > 0 ? (totalCliPago/totalCli*100) : 0;
-
-      /* ── alertas críticos: multas vencidas ainda não pagas ── */
-      var vencidasNaoPagas = locPendente.filter(function(m){ return m.vencimento && m.vencimento < hoje; });
-      /* em processo de notificação = enviada ao cliente mas órgão não notificado */
-      var emProcessoNotif = todasAtivas.filter(function(m){ return (m.cobrado_cliente==="pendente"||m.cobrado_cliente==="pago") && notifStatus(m)==="nao_notificado"; });
-      /* cobrança ao cliente em atraso: pendente e (vencida junto ao órgão OU enviada há +30 dias) */
-      var _30diasAtras = new Date(_brNowMs()-30*86400000).toISOString().split("T")[0];
-      var cliAtrasados = cliPend.filter(function(m){ return (m.vencimento && m.vencimento < hoje) || (m.data_cobranca_cliente && m.data_cobranca_cliente < _30diasAtras); });
-
-      var _mSelState  = React.useState(null); var mSel = _mSelState[0]; var setMSel = _mSelState[1];
-      var _mTipState  = React.useState(null); var tipBarM = _mTipState[0]; var setTipBarM = _mTipState[1];
-      var _mTipPosState = React.useState({x:0,y:0}); var tipPosM = _mTipPosState[0]; var setTipPosM = _mTipPosState[1];
-      var _tipHovMState = React.useState(false); var tipHovM = _tipHovMState[0]; var setTipHovM = _tipHovMState[1];
-      var _funilSelState = React.useState(null); var funilSel = _funilSelState[0]; var setFunilSel = _funilSelState[1];
-      var _hovFunilState = React.useState(null); var hovFunil = _hovFunilState[0]; var setHovFunil = _hovFunilState[1];
-      var _hovFunilPosState = React.useState({x:0,y:0}); var hovFunilPos = _hovFunilPosState[0]; var setHovFunilPos = _hovFunilPosState[1];
-      var isMobileM = (typeof window !== "undefined") && window.innerWidth < 600;
-
-      function MultaTooltip(props) {
-        if (!props.show) return null;
-        /* Mobile: inline panel (no fixed positioning) */
-        if (isMobileM) {
-          return React.createElement('div', {
-            style:{ background:"var(--c-card)", color:"var(--c-text)", borderRadius:14, padding:"11px 15px",
-            border:"1px solid var(--c-border)", boxShadow:"0 4px 16px rgba(0,0,0,0.18)", fontSize:12, lineHeight:1.75,
-            marginTop:6, marginBottom:2 } }
-            , props.children
-          );
-        }
-        var vw = (typeof window !== "undefined") ? window.innerWidth : 600;
-        var left = Math.min(tipPosM.x + 14, vw - 260);
-        return React.createElement('div', {
-          className:"hov-tooltip",
-          onMouseEnter: function(){ setTipHovM(true); },
-          onMouseLeave: function(){ setTipHovM(false); setTipBarM(null); },
-          style:{ position:"fixed", zIndex:9999, top:(tipPosM.y+16)+"px", left:left+"px",
-          background:"var(--c-card)", color:"var(--c-text)", borderRadius:14, padding:"11px 15px", minWidth:220, maxWidth:290,
-          border:"1px solid var(--c-border)", boxShadow:"0 10px 32px rgba(0,0,0,0.22)", pointerEvents:"auto", fontSize:12, lineHeight:1.75 } }
-          , props.children
-        );
-      }
-
-      /* ── Row de multa expandida ── */
-      function RowMulta(props) {
-        var m = props.m, i = props.i;
-        var ref = mClVe(m);
-        var vencida = m.status !== "pago" && m.vencimento && m.vencimento < hoje;
-        var ns = (typeof NOTIF_STATUS !== "undefined" ? NOTIF_STATUS : []).find(function(n){return n.id===notifStatus(m);})||{label:"—",emoji:"○",cor:C.sub};
-        var cliCorMap = { nao: C.sub, pendente: "#B8915A", pago: "#5a8a63" };
-        var cliLblMap = { nao: "Não cobrado", pendente: "Cobrado · aguard.", pago: "Cliente pagou" };
-        return React.createElement('div', { key:m.id, onClick:function(){ window.__pendingMultaId=m.id; window.dispatchEvent(new CustomEvent('openMulta',{detail:{id:m.id}})); setTab("multas"); },
-          style:{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", padding:"9px 0", borderTop: i>0 ? "1px solid "+C.border : "none", cursor:"pointer", gap:10 } }
-          , React.createElement('div', { style:{ flex:1, minWidth:0 } }
-            , React.createElement('div', { style:{ fontSize:12, fontWeight:600, color: vencida ? C.red : "var(--c-text)", marginBottom:2 } }
-              , (vencida ? "🚨 " : "") + ((ref.cl&&ref.cl.nome)||m.cliente_nome||"–")
-            )
-            , React.createElement('div', { style:{ fontSize:11, color:C.sub } }, (ref.ve?ref.ve.placa:m.placa||"–")+" · "+(m.tipo||"Multa")+(m.vencimento?" · venc."+fmtDateShort(m.vencimento):""))
-            , React.createElement('div', { style:{ display:"flex", gap:6, marginTop:4, flexWrap:"wrap" } }
-              /* Badge: locadora */
-              , React.createElement('span', { style:{ fontSize:10, fontWeight:700, padding:"2px 7px", borderRadius:8,
-                  background: m.status==="pago" ? "rgba(107,158,122,0.15)" : "rgba(176,112,112,0.14)",
-                  color: m.status==="pago" ? "#5a8a63" : "#8f5060" } }
-                , m.status==="pago" ? "✅ Loc. pagou" : "⏳ Loc. pendente"
-              )
-              /* Badge: notificação órgão */
-              , React.createElement('span', { style:{ fontSize:10, fontWeight:700, padding:"2px 7px", borderRadius:8,
-                  background: ns.cor+"22", color: ns.cor } }
-                , ns.emoji+" "+ns.label
-              )
-              /* Badge: cliente */
-              , React.createElement('span', { style:{ fontSize:10, fontWeight:700, padding:"2px 7px", borderRadius:8,
-                  background: (cliCorMap[m.cobrado_cliente||"nao"]||C.sub)+"22",
-                  color: cliCorMap[m.cobrado_cliente||"nao"]||C.sub } }
-                , cliLblMap[m.cobrado_cliente||"nao"]||"Não cobrado"
-              )
-            )
-          )
-          , React.createElement('div', { style:{ textAlign:"right", flexShrink:0 } }
-            , React.createElement(BRLValue,{v:mVal(m),size:13,weight:700,color: vencida ? C.red : "var(--c-text)"})
-            , m.cobrado_cliente==="pago" && React.createElement('div', { style:{ fontSize:10, color:C.green, fontWeight:600 } }, "↩ ", React.createElement(BRLValue,{v:mValCob(m),size:10,weight:600,color:C.green}))
-          )
-        );
-      }
-
-      return React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:35 } }
-
-        , React.createElement(GraficoMultas, { multas: multas, veiculos: veiculos, clientes: clientes, contratos: contratos, onSelectMulta: setDashMultaSel, selectedMultaId: dashMultaSel })
-
-      );
-    })()
-
-    , viewMode === "cronograma" && React.createElement(GraficoMultas, { multas: multas, veiculos: veiculos, clientes: clientes, contratos: contratos })
-    , viewMode === "lista" && React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap", paddingBottom: 2 } },
+    /* Um par de seletores só, valendo pro cronograma E pra lista (antes cada
+       painel tinha o seu, com as mesmas opções — pedido do usuário). Por isso
+       não dependem mais do viewMode: o cronograma aparece nos dois modos. */
+    , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap", paddingBottom: 2 } },
       React.createElement('select', { value: filterNotif, onChange: function(e){setFilterNotif(e.target.value);},
         style: Object.assign({}, FI, { flex: 1, minWidth: 0, fontSize: 13, padding: "6px 8px", cursor: "pointer", fontWeight: 600 }) },
         [{ id: "todos", label: "Todos", emoji: "" }].concat(NOTIF_STATUS).map(function(ns) {
@@ -36562,6 +36455,14 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         )
       ),
     )
+    /* Cronograma das multas — filtrado pelos seletores do topo, os mesmos da
+       lista logo abaixo. Ficava dentro de uma IIFE que também montava a faixa
+       "Status por Multa" (removida) e uns 90 anos-luz de estatísticas só dela;
+       sem a faixa, tudo aquilo virou código morto e saiu junto. */
+    , React.createElement(GraficoMultas, { multas: multas, veiculos: veiculos, clientes: clientes, contratos: contratos,
+        onSelectMulta: setDashMultaSel, selectedMultaId: dashMultaSel,
+        statusFiltro: filter, notifFiltro: filterNotif, veiculoFiltro: filVeiculo, clienteFiltro: filCliente })
+
     , viewMode === "lista" && React.createElement('div', { style: { display: "flex", flexDirection: "column" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1318}}
       , fil.length === 0 && React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, { color: C.sub, textAlign: "center", padding: 30 }), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1319}}, "Nenhuma multa" )
       , fil.map((m, i) => {

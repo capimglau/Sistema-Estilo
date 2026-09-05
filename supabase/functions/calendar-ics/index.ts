@@ -51,10 +51,15 @@ Deno.serve(async (_req) => {
     supabase.from("agenda_adiamentos").select("*"),
   ]);
 
-  const hoje = new Date().toISOString().split("T")[0];
-  const anoAtual = new Date().getFullYear();
-  const mesAtualIdx = new Date().getMonth();
-  // RFC 5545 DTSTAMP: current UTC time in basic format
+  /* "Hoje" no fuso de São Paulo, como o app faz em todo lugar (_brNow). Com
+     new Date() cru, o servidor roda em UTC: das 21h à meia-noite o dia já
+     virou lá, e por essas três horas toda noite o feed classificava como
+     atrasado/futuro o dia errado — e a janela de meses (-6..+2) podia pular
+     pro mês seguinte antes da hora, na virada. en-CA dá YYYY-MM-DD direto. */
+  const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  const anoAtual = parseInt(hoje.slice(0, 4), 10);
+  const mesAtualIdx = parseInt(hoje.slice(5, 7), 10) - 1;
+  // RFC 5545 DTSTAMP: current UTC time in basic format (aqui é UTC de propósito)
   const dtstamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
 
   function numV(v: any): number | null { const n = parseFloat(v); return isNaN(n) ? null : n; }

@@ -88,16 +88,27 @@
 body, body *{ font-family:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif !important; }
 /* APP-FONT-IBM-PLEX-END */
 *{box-sizing:border-box;margin:0;padding:0;outline:none;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;}
-/* Bug conhecido do Safari/WebKit (iOS): qualquer input que abre um picker
-   nativo de calendário/relógio (date, time, datetime-local, month, week)
-   tem um "-webkit-min-logical-width" interno que ignora o width:100% do
-   CSS dentro de flexbox — o campo vaza pra fora do container em vez de
-   encolher junto com os outros campos da mesma linha/coluna. É só no iOS:
-   em outros navegadores essa propriedade não existe e a regra não faz
-   nada. Sem isso, todo campo de Retirada/Devolução/Hora/Vencimento
-   (contrato, multa, manutenção, lembrete etc.) passa da borda dos campos
-   de texto ao lado. */
-input[type="date"], input[type="time"], input[type="datetime-local"], input[type="month"], input[type="week"]{-webkit-min-logical-width:0%;}
+/* Campo que abre picker nativo (date, time, datetime-local, month, week):
+   no iOS o CONTROLE NATIVO não respeita box-sizing:border-box — soma o
+   padding do CSS (13px de cada lado, ver FI) POR FORA da largura pedida,
+   então com width:100% ele sai ~26px mais largo que os campos de texto ao
+   lado e passa da borda da tela.
+   Sempre existiu, mas só ficou visível quando o formulário virou uma
+   coluna só no celular: antes cada campo ocupava ~45% de uma janela de
+   90vw e os 26px a mais ainda cabiam dentro dela ("antes não havia esse
+   problema", relato do usuário). */
+input[type="date"], input[type="time"], input[type="datetime-local"], input[type="month"], input[type="week"]{max-width:100%;width:100%;min-width:0;box-sizing:border-box;}
+/* appearance:none tira o desenho nativo e o campo volta a ser uma caixa
+   comum, que obedece o box model — essa é a correção de verdade. O
+   -webkit-min-logical-width que estava aqui antes resolvia uma versão
+   ANTIGA desse bug (iOS 7/8) e não faz mais efeito no iOS de hoje.
+   Tocar no campo continua abrindo o seletor nativo, e a aparência (fundo,
+   borda, raio, padding) já vem do CSS do app, não do navegador. Só no
+   mobile: no desktop o appearance nativo desenha o ícone de calendário
+   clicável, que ali faz falta. */
+@media(max-width:767px){
+  input[type="date"], input[type="time"], input[type="datetime-local"], input[type="month"], input[type="week"]{-webkit-appearance:none;appearance:none;}
+}
 /* A correção acima resolve o controle nativo em si, mas o CONTAINER dele
    (a div do par "Entrada/Saída", "Valor/Data Prevista" etc.) também pode
    vazar: por padrão, um item de flex ou grid tem min-width:auto, que puxa
@@ -603,6 +614,15 @@ body.pearl .lg-banner-panel{background:linear-gradient(165deg,#eef2f9 0%,#ffffff
    janela vêm de style inline (ver Modal() em React). */
 @media(max-width:767px){
   .lg-modal-overlay-full{padding:0!important;}
+  /* A barra do topo do app (.ag-mobile-topbar) é fixa com z-index 99998 —
+     bem acima do overlay do modal (10000). Enquanto a janela era flutuante
+     e centralizada isso não incomodava; em tela cheia ela passou a pintar
+     por cima do cabeçalho do modal e comer o botão de fechar (✕). Com a
+     janela aberta, a barra desce pra baixo do overlay: em sheet de tela
+     cheia o padrão iOS é a folha cobrir a interface toda mesmo. `:has()`
+     em vez de uma classe no body via JS — assim volta sozinho quando o
+     último modal fecha, sem contador nem risco de sobrar classe presa. */
+  body:has(.lg-modal-mobile-full) .ag-mobile-topbar{z-index:1;}
   .lg-modal.lg-modal-mobile-full{
     /* width EM % DO OVERLAY, não 100vw — bug clássico do Safari/iOS: 100vw
        usa o viewport "grande" (barra de endereço recolhida) mesmo quando a
@@ -613,6 +633,12 @@ body.pearl .lg-banner-panel{background:linear-gradient(165deg,#eef2f9 0%,#ffffff
     width:100%!important;max-width:100%!important;
     height:100dvh!important;max-height:100dvh!important;
     border-radius:0!important;
+    /* No PWA instalado (standalone) o viewport começa embaixo do relógio /
+       Dynamic Island, então sem isso o cabeçalho do modal (título + ✕)
+       nasceria por baixo da barra de status — mesmo problema que a barra do
+       app causava na aba do Safari (ver regra do .ag-mobile-topbar acima).
+       Na aba do Safari o env() é 0 e nada muda. */
+    padding-top:env(safe-area-inset-top,0px);
   }
   /* Campo de formulário (Lbl) sempre ocupa a linha inteira — e a linha que
      o contém (várias vêm em pares "lado a lado" via display:flex) precisa
@@ -30902,7 +30928,14 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         // e o total ficava maior que o gap usado no resto da coluna — pedido do
         // usuário: mesmo espaçamento de Saldo→Despesas em toda a coluna).
         React.createElement('div', { style:{ marginBottom:8, fontSize:13, fontWeight:700, color:C.sub, } }, "Receitas e Despesas Mensais"),
-        React.createElement('div', { className:'lg-card graph4-premium-card', "data-no-cm":"1", style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"14px", boxShadow:"0 1px 8px rgba(0,0,0,0.05)" } },
+        // marginTop negativo cancelando o gap do wrapper (RX.dashGap*1.5,
+        // linha ~29529): título e card aqui são dois itens SOLTOS dentro do
+        // Fragment, não um bloco só (diferente de _painelFunil, que embrulha
+        // título+card num único <div> e por isso fica colado) — sem isso o
+        // gap do flex column pai entra ENTRE os dois, somado ao marginBottom
+        // do título acima, e o painel fica visivelmente mais longe do texto
+        // do que os outros da mesma coluna (reportado 2x pelo usuário).
+        React.createElement('div', { className:'lg-card graph4-premium-card', "data-no-cm":"1", style:{ background:C.card, borderRadius:16, border:"1px solid "+C.border, padding:"14px", boxShadow:"0 1px 8px rgba(0,0,0,0.05)", marginTop:-(RX.dashGap*1.5) } },
           // Filtros — mesmo padrão de fontSize/padding dos demais selects de filtro do app (ex.: filtroStatusDesp em Financeiro)
           React.createElement('div', { style:{ display:"flex", gap:8, marginBottom:12 } },
             React.createElement('select', { value:catSel, onChange:function(e){ setCatSel(e.target.value); setCatClickedMes(null); }, style:{ flex:1, background:"rgba(120,120,128,0.10)", border:"1px solid "+C.border, borderRadius:10, padding:"6px 9px", fontSize:12, fontWeight:600, color:"var(--c-text)", outline:"none" } },

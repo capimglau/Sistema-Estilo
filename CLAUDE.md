@@ -85,6 +85,31 @@ Investigação longa (múltiplas rodadas de tentativa e erro) até chegar na cau
 - `pwaApplyIconLinks` usa direto `logo-estilo-icon-transparente.png` (repositório) pro claro e pro escuro — **não usa mais `pwa_icon_url`/`pwa_icon_dark_url` de Config/Supabase** (pedido explícito do usuário; os campos continuam existindo na tela de Config, só não são mais lidos por este código).
 - Se um dia isso for revisitado: **não repetir as abordagens da lista "o que NÃO funciona" acima** sem uma razão nova e testada.
 
+### O detector de versão nova NÃO pode recarregar no meio de um toque
+
+O bloco no fim do `index.html` compara o `meta[name="ag-build"]` publicado com
+o que está rodando e dá `location.reload()` quando muda. Ele ouvia
+`visibilitychange` e recarregava em **qualquer** volta a visível.
+
+No iOS, porém, abrir o **seletor de data**, o teclado ou a folha de
+compartilhamento também esconde e reexibe a página em poucos segundos. O
+usuário tocava na data inicial do relatório de Faturas, o app recarregava, e
+como a sessão só restaurava a aba principal (`ag_current_tab`) e **não** a
+sub-aba, ele reaparecia no Financeiro comum. O relato foi "clico na data e o
+app fecha e volta pra aba Financeiro" — não era crash nenhum, era o
+auto-update se atropelando.
+
+Regras permanentes:
+
+- Só verificar versão depois de uma **ausência real** (`hidden` por mais de
+  ~20s). Ida-e-volta curta é seletor/teclado, não "saí do app".
+- **Nunca recarregar com a tela ocupada** — janela aberta (`.lg-modal`) ou
+  foco num `INPUT`/`TEXTAREA`/`SELECT`. Se estiver, reagenda a verificação.
+- **Sub-aba é estado de navegação e se guarda junto com a aba**
+  (`ag_subtab_*`, mesma janela de 10 min do `ag_current_tab_ts`). Qualquer
+  recarregamento — auto-update, F5, iOS descartando a aba por memória — tem
+  que devolver a pessoa à MESMA tela, não à raiz da seção.
+
 ### Causa raiz separada, mas relevante: cache do Service Worker mascarando os testes
 
 Boa parte das rodadas de "não resolveu" desta investigação eram, na real, o aparelho do usuário preso numa versão antiga em cache — não um problema no código do ícone em si. Achado: `sw.js` tinha uma busca "network-first" que chamava `fetch(request)` puro (modo de cache **default**), que podia ser respondida por um cache HTTP do navegador/CDN sem nunca ir na rede de verdade, mesmo rotulada como "vai na rede". Corrigido forçando `{ cache: "no-store" }` nas buscas de navegação e de revalidação de estáticos. **Ao investigar qualquer bug de PWA que "não reflete a mudança" mesmo após o deploy, suspeitar de cache antes de suspeitar do código** — confirmar a versão em Config → Versão do app.

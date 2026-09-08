@@ -55095,11 +55095,34 @@ function App() {
     return function(){ clearInterval(iv); document.removeEventListener("visibilitychange", refrescarCarimbo); };
   }, []);
 
-  const [cadastroSubTab, setCadastroSubTab] = useState("frota");
-  const [gestaoSubTab, setGestaoSubTab] = useState("relatorios");
-  const [financeiroSubTab, setFinanceiroSubTab] = useState("fin_principal");
-  const [operacionalSubTab, setOperacionalSubTab] = useState("contratos");
-  const [configSubTab, setConfigSubTab] = useState("config_geral");
+  /* Sub-abas guardadas junto com a aba principal, na mesma janela de 10 min.
+     A aba já era restaurada e a sub-aba não: qualquer recarregamento — o do
+     detector de versão nova, um F5, o iOS descartando a aba por memória —
+     devolvia o usuário de Financeiro→Gestão→Relatórios para o Financeiro
+     comum, parecendo que "o app voltou sozinho". Restaurar as duas põe a
+     pessoa de volta exatamente na tela em que estava. */
+  function _subTabInicial(chave, padrao) {
+    try {
+      var v = sessionStorage.getItem("ag_subtab_" + chave);
+      var ts = parseInt(sessionStorage.getItem("ag_current_tab_ts") || "0", 10);
+      if (v && ts && (Date.now() - ts) < 10 * 60 * 1000) return v;
+    } catch(e) {}
+    return padrao;
+  }
+  const [cadastroSubTab, setCadastroSubTab] = useState(function(){ return _subTabInicial("cadastro", "frota"); });
+  const [gestaoSubTab, setGestaoSubTab] = useState(function(){ return _subTabInicial("gestao", "relatorios"); });
+  const [financeiroSubTab, setFinanceiroSubTab] = useState(function(){ return _subTabInicial("financeiro", "fin_principal"); });
+  const [operacionalSubTab, setOperacionalSubTab] = useState(function(){ return _subTabInicial("operacional", "contratos"); });
+  const [configSubTab, setConfigSubTab] = useState(function(){ return _subTabInicial("config", "config_geral"); });
+  React.useEffect(function(){
+    try {
+      sessionStorage.setItem("ag_subtab_cadastro", cadastroSubTab);
+      sessionStorage.setItem("ag_subtab_gestao", gestaoSubTab);
+      sessionStorage.setItem("ag_subtab_financeiro", financeiroSubTab);
+      sessionStorage.setItem("ag_subtab_operacional", operacionalSubTab);
+      sessionStorage.setItem("ag_subtab_config", configSubTab);
+    } catch(e) {}
+  }, [cadastroSubTab, gestaoSubTab, financeiroSubTab, operacionalSubTab, configSubTab]);
   const [navOculto, setNavOculto] = useState(false);
   const [dockVisible, setDockVisible] = React.useState(true);
   // "Descansado": depois de alguns segundos sem interação o Dock fica
@@ -59021,14 +59044,38 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
         var ja = null;
         try { ja = sessionStorage.getItem("ag_reload_build"); } catch(e) {}
         if (ja === m[1]) return;
+        /* Versão nova existe, mas não se atropela quem está no meio de algo:
+           tenta de novo daqui a pouco, quando a tela estiver livre. */
+        if (_ocupado()) { setTimeout(checar, 30000); return; }
         try { sessionStorage.setItem("ag_reload_build", m[1]); } catch(e) {}
         location.reload();
       })
       .catch(function() {});
   }
+  /* Nem toda ida-e-volta de visibilidade é "o usuário saiu do app". No iOS,
+     abrir o seletor de data, o teclado ou a folha de compartilhamento também
+     esconde e reexibe a página em poucos segundos. Recarregar nesse instante
+     joga fora a tela que a pessoa está usando: foi exatamente assim que
+     escolher a data inicial no relatório de Faturas devolvia o usuário pra
+     aba Financeiro — o app não travava nem fechava, ele se RECARREGAVA, e a
+     sessão só restaura a aba principal, não a sub-aba. */
+  var _saiuEm = 0;
+  var AUSENCIA_REAL_MS = 20000;
+  /* Ocupado = tem janela aberta ou o foco está num campo. Recarregar aí
+     apagaria o que a pessoa está preenchendo. */
+  function _ocupado() {
+    try {
+      if (document.querySelector(".lg-modal, .lg-modal-overlay")) return true;
+      var a = document.activeElement;
+      if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
+    } catch(e) {}
+    return false;
+  }
   setTimeout(checar, 4000);
   document.addEventListener("visibilitychange", function() {
-    if (document.visibilityState === "visible") checar();
+    if (document.visibilityState === "hidden") { _saiuEm = Date.now(); return; }
+    if (Date.now() - _saiuEm < AUSENCIA_REAL_MS) return; // foi só um seletor/teclado
+    checar();
   });
   /* Exposto pra quem quiser pedir a verificação na hora — hoje o toque em
      "Início" (navTab). Recarrega SOMENTE se o build publicado for diferente

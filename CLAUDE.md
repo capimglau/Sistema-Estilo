@@ -174,6 +174,69 @@ Histórico real deste projeto: o bug "baixei e continua aparecendo como pendente
 
 Qualquer novo botão/swipe/atalho de "baixar" em orçamento pessoal — presente ou futuro — **tem que chamar `baixarOrcPessoalItem`**, passando o mês exato da ocorrência tocada (`efetivoMes(it)` ou `ev.data.slice(0,7)`, nunca "hoje" fixo). Antes de declarar uma tarefa de baixa concluída, **grep por `db.patch("orcamento_pessoal"` e `db.post("orcamento_pessoal"`** no arquivo inteiro e confirmar que todo resultado passa pela função — não só o caminho que acabou de ser editado.
 
+### Baixa é UMA função por tipo — `[baixa-unica]` — REGRA PERMANENTE
+
+**Uma baixa registrada em qualquer tela tem que aparecer baixada em TODAS as
+outras, na mesma hora — telas, painéis, KPIs, gráficos, agenda, fluxo de caixa
+e previsão. Nada pode continuar pendente em lugar nenhum.**
+
+A causa raiz de toda quebra dessa regra, sem exceção neste projeto, é a mesma:
+**a regra de baixa escrita mais de uma vez**. Cada cópia nasce completa e vai
+ficando para trás conforme a outra evolui. Já aconteceu com o orçamento
+pessoal (5 rodadas), com a despesa recorrente, com a manutenção vinculada e
+com o contrato da fatura.
+
+Existe **uma função por tipo de baixa**, no escopo global do `index.html`, e
+**nenhuma tela pode reimplementar a regra**:
+
+| o que baixa | função única | o que ela arrasta junto |
+|---|---|---|
+| item do orçamento pessoal | `baixarOrcPessoalItem` | linha-filha do mês da recorrência |
+| despesa | `baixarDespesaItem` | linha-filha do mês (recorrente) + `manutencao` vinculada |
+| receita | `baixarReceitaItem` | `contratos` da fatura (`ref_fatura`) |
+| contrato | `confirmarBaixarCt` / `confirmarParcialCt` | receita vinculada, via `sincronizarRefFatura` |
+
+Todas devolvem um resultado normalizado — `{novo}` / `{id, patch}` /
+`{removido}`, mais os vínculos (`manutencao`, `contrato`) — que o chamador
+aplica com **`_orcAplicarLocal`** (genérica, apesar do nome histórico). Para
+`orcamento_pessoal` há ainda o `_orcBroadcast`, porque essa tabela tem quatro
+cópias vivas (ver `[orc-sync]` abaixo); as demais tabelas têm cópia única no
+`App` e basta chamar o setter (`setDespesas`, `setReceitas`, `setContratos`,
+`setManutencoes`).
+
+**Checklist obrigatório antes de declarar concluída qualquer tarefa que
+envolva baixa:**
+
+1. `grep` por `db.patch("<tabela>"` e `db.post("<tabela>"` no arquivo inteiro
+   e confirmar que **todo** resultado com `status`/`data_pagamento` passa pela
+   função única. Um `db.patch` solto é sempre um bug esperando o próximo mês.
+2. Conferir os vínculos do tipo baixado: despesa ↔ manutenção, receita ↔
+   contrato da fatura, contrato ↔ receita, recorrente ↔ linha-filha do mês.
+3. Nenhum caminho de baixa pode **terminar em silêncio**. Se a função devolveu
+   `null` (lançamento não encontrado) ou o tipo do evento não é reconhecido,
+   avise na tela. Um botão que não faz nada e não diz nada já custou várias
+   rodadas de investigação aqui.
+4. Comparar id **sempre** com `String(a) === String(b)`. Id chega do banco com
+   tipo diferente do que circula na tela, e um `===` cru que falha devolve
+   `null` — que vira exatamente uma baixa que não acontece, em silêncio.
+5. Desfazer tem que desfazer **o que foi feito**: se a baixa criou a
+   linha-filha do mês, o "Desfazer" apaga essa linha (não adianta restaurar o
+   status do template); se arrastou o contrato junto, devolve o contrato
+   também.
+
+Divergências reais já encontradas e corrigidas por esta regra — não
+reintroduzir:
+
+- `_agBaixar` (painéis do Início) dava PATCH cru: recorrente era quitada no
+  template e a manutenção vinculada ficava pendente para sempre.
+- `_agBaixar` não marcava o contrato da fatura ao receber a receita: Contratos
+  e Receitas mostravam totais diferentes para o mesmo dinheiro.
+- `marcarPaga` (aba Faturas) marcava a receita e deixava o contrato em aberto.
+- `ItemCard._baixar` (orçamento pessoal) abria o formulário de edição em vez
+  de dar baixa.
+- Um painel chamava `_agBaixar({type:"rec"})` e a função só conhecia
+  `"receita"` — o botão "Receber" não fazia absolutamente nada.
+
 ### Toda gravação em `orcamento_pessoal` precisa avisar as OUTRAS cópias — `[orc-sync]`
 
 O app mantém **quatro cópias vivas** da mesma tabela em memória:

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="3d5cad8"/>
+<meta name="ag-build" content="a49b2a0"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -26700,6 +26700,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       window.dispatchEvent(new CustomEvent('ag:open-item', {detail: {type: "veiculo", id: ref.id}}));
       setTab("frota");
     } else if (ref.type === "conta") {
+      /* Contas fixas moram na sub-aba "🔁 Fixas" — mandar só pra "financeiro"
+         deixava o usuário na aba padrão sem achar a conta que ele tocou. */
+      setFinDeepLink({ subTab: "contas_rec", itemId: ref.id, mes: ref.mes || null });
       setTab("financeiro");
     } else {
       setTab(tab || "inicio");
@@ -30309,7 +30312,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           action2:function(){ onItemNav({type:'contrato',id:_cid},'contratos'); },
           action2Label:'Ver', action2Icon:'\u{1F441}', action2Color:'rgba(0,122,255,0.92)',
           onBaixar:function(){ window.__pendingRenovarId = _cid; setTab('contratos'); },
-          baixarLabel:'Renovar',
+          /* 🔄 explícito: renovar não é pagamento, e o slot de "baixar" usa 💸
+             por padrão — o botão saía com ícone de dinheiro numa ação que não
+             mexe em dinheiro nenhum. */
+          baixarLabel:'🔄 Renovar',
           onDelete:null,
           wrapStyle: Object.assign({ borderRadius:14, boxShadow:_flagCardShadow() }, diasRest<=0 ? _hojeRowGlow : null),
           innerStyle: _flagCardBg()
@@ -32479,7 +32485,9 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
   var _abrirVeiculoByIdRef = React.useRef(null);
   _abrirVeiculoByIdRef.current = function(id) {
     var v = (veiculos||[]).find(function(x){ return String(x.id) === String(id); });
-    if (!v) return;
+    /* Sem aviso, o usuário tocava no item em outra tela, era trazido pra cá e
+       simplesmente nada abria — sem pista do porquê. */
+    if (!v) { _agAvisar("Não encontrei este veículo — pode ter sido excluído."); return; }
     setForm(Object.assign({}, v)); setEdit(v.id); setModal(true);
   };
   React.useEffect(function() {
@@ -32884,7 +32892,7 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
   var _abrirClienteByIdRef = React.useRef(null);
   _abrirClienteByIdRef.current = function(id) {
     var c = (clientes||[]).find(function(x){ return String(x.id) === String(id); });
-    if (!c) return;
+    if (!c) { _agAvisar("Não encontrei este cliente — pode ter sido excluído."); return; }
     setForm(Object.assign({}, c, { tipo_pessoa: inferirTipoPessoa(c) })); setEdit(c.id); setModal(true);
   };
   useEffect(function() {
@@ -33691,7 +33699,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   var _abrirContratoByIdRef = React.useRef(null);
   _abrirContratoByIdRef.current = function(id) {
     var c = (contratos||[]).find(function(x){ return String(x.id) === String(id); });
-    if (!c) return;
+    if (!c) { _agAvisar("Não encontrei este contrato — pode ter sido excluído."); return; }
     setForm(Object.assign({}, c)); setEdit(c.id); setModal(true);
   };
   useEffect(function() {
@@ -37467,7 +37475,7 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
   var _abrirManutByIdRef = React.useRef(null);
   _abrirManutByIdRef.current = function(id) {
     var m = (manutencoes||[]).find(function(x){ return String(x.id) === String(id); });
-    if (!m) return;
+    if (!m) { _agAvisar("Não encontrei esta manutenção — pode ter sido excluída."); return; }
     setManutSheet(m);
   };
   useEffect(function() {
@@ -38442,6 +38450,14 @@ async function baixarReceitaItem(receitas, contratos, receitaId, dataPag) {
    Mesma regra de data que despesas e receitas já usam: enquanto está em
    aberto vale o VENCIMENTO (é quando o dinheiro deve sair); depois de paga
    vale a DATA DO PAGAMENTO (é quando saiu de fato). */
+/* Aviso na tela que funciona de qualquer lugar, inclusive de componente que
+   não recebe o prop `toast`. Existe para que NENHUMA ação disparada por toque
+   termine em silêncio: "cliquei e não aconteceu nada" já custou várias
+   rodadas de investigação neste projeto. */
+function _agAvisar(msg, tipo) {
+  try { window.dispatchEvent(new CustomEvent("ag:toast", { detail: { msg: msg, type: tipo || "error" } })); }
+  catch(e) { console.warn("aviso", msg, e); }
+}
 function contaEhReceber(c) { return String((c && c.tipo) || "pagar") === "receber"; }
 function contaCancelada(c) { return !c || c.status === "cancelado"; }
 function contaEstaPaga(c) { return !!c && (c.status === "pago" || c.status === "recebido" || !!c.data_pagamento); }
@@ -38787,7 +38803,7 @@ function PessoalDash({
         return async function(){
           try{
             var _r = await baixarOrcPessoalItem(_itSrc, it.id, _mes);
-            if(!_r) return;
+            if(!_r) { _agAvisar("Não encontrei este lançamento para baixar"); return; }
             /* [orc-sync] Só o onOrcItensChange não bastava: ele atualiza a
                cópia de cima (Início/App), mas esta tela lê _pesItens, que
                continuava com o item pendente — a lista não mexia. */
@@ -41587,6 +41603,16 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     setHighlightRecId(_dlIdR);
     if (highlightRecTimer.current) clearTimeout(highlightRecTimer.current);
     highlightRecTimer.current = setTimeout(function() { setHighlightRecId(null); }, 3000);
+    if (setFinDeepLink) setFinDeepLink(null);
+  }, [finDeepLink]);
+  /* Conta fixa vinda de um toque no painel do dia (onItemNav type "conta").
+     Antes só chamava setTab("financeiro") e largava o usuário na aba padrão,
+     sem nenhuma pista de onde a conta estava — toque que "não fazia nada". */
+  useEffect(function() {
+    if (!finDeepLink || finDeepLink.subTab !== "contas_rec") return;
+    _voltarInicioRef.current = !!finDeepLink.voltarInicio;
+    setTab("contas_rec");
+    if (finDeepLink.mes) setFiltroMes(finDeepLink.mes);
     if (setFinDeepLink) setFinDeepLink(null);
   }, [finDeepLink]);
   useEffect(function() {

@@ -224,6 +224,80 @@ eq("nenhum header x-api-key no cliente",
 eq("chave da IA não é lida do banco nem do localStorage",
   (semComentarios.match(/getItem\(\s*["']claude_api_key["']\s*\)|empresa\.claude_api_key/g) || []).length, 0);
 
+grupo("Fatura emitida não migra de mês");
+
+// Mudar a previsão de pagamento de um contrato chamava criarFaturaPrevista, que
+// "migrava" a receita vinculada para o mês novo — reescrevendo ref_fatura, data,
+// vencimento e valor. O único freio era `status !== "recebido"`, então a fatura
+// JÁ EMITIDA ia junto: o mês antigo ficava sem receita nenhuma e voltava a
+// aparecer "sem emissão", e o número FAT-xxxxx reaparecia num mês em que não
+// foi emitida. Aqui a função real roda com dublês — nada de reescrever a regra.
+{
+  const _ini = html.indexOf("async function criarFaturaPrevista(c) {");
+  const _fim = html.indexOf("async function criarParcelasCC(c) {", _ini);
+  ok("criarFaturaPrevista foi encontrada no index.html", _ini > 0 && _fim > _ini);
+  const fonte = html.slice(_ini, _fim);
+
+  // Roda até o primeiro await: db.patch/db.post são registrados de forma
+  // síncrona, então dá pra inspecionar sem esperar promessa nenhuma.
+  function rodar(receitas, contrato) {
+    const chamadas = { patch: [], post: [] };
+    const db = {
+      patch: (t, id, p) => { chamadas.patch.push({ t, id, p }); return Promise.resolve(p); },
+      post:  (t, p)     => { chamadas.post.push({ t, p }); return Promise.resolve(Object.assign({ id: 999 }, p)); },
+    };
+    const fabrica = new Function(
+      "receitas", "db", "setReceitas", "getCl", "getVe", "fmtComp", "getRenLabel", "criarParcelasCC", "console",
+      fonte + "\nreturn criarFaturaPrevista;");
+    const fn = fabrica(receitas, db, () => {}, () => ({ nome: "Cliente" }), () => ({ placa: "ABC1D23" }),
+      (m) => String(m), () => "1", () => Promise.resolve(), { warn(){}, error(){} });
+    fn(contrato);
+    return chamadas;
+  }
+
+  const contrato = { id: 7, cliente_id: 1, veiculo_id: 1, valor_total: 2000, previsao_pagamento: "2026-07-10" };
+  const base = { id: 55, ref_fatura: "fat_7_2026-06", valor: "1800.00" };
+
+  // 1) previsão pura: migrar é o certo — é só um lembrete de cobrança
+  {
+    const c = rodar([Object.assign({}, base, { status: "prevista" })], contrato);
+    eq("previsão pura migra para o mês novo", c.patch.length, 1);
+    eq("e leva o ref_fatura junto", c.patch[0].p.ref_fatura, "fat_7_2026-07");
+    eq("sem criar uma segunda receita", c.post.length, 0);
+  }
+  // 2) emitida: fica onde saiu, e o mês novo ganha a SUA fatura prevista
+  {
+    const c = rodar([Object.assign({}, base, { status: "emitida", numero_fatura: "FAT-00099", data_emissao: "2026-06-02" })], contrato);
+    eq("fatura emitida não é migrada", c.patch.length, 0);
+    eq("o mês novo ganha a própria fatura prevista", c.post.length, 1);
+    eq("com o ref_fatura do mês novo", c.post[0].p.ref_fatura, "fat_7_2026-07");
+    eq("e nascendo como prevista", c.post[0].p.status, "prevista");
+  }
+  // 3) número sem status "emitida" (fatura emitida por outro caminho) também trava
+  {
+    const c = rodar([Object.assign({}, base, { status: "prevista", numero_fatura: "FAT-00100" })], contrato);
+    eq("receita com número não migra", c.patch.length, 0);
+    eq("e o mês novo ganha a sua", c.post.length, 1);
+  }
+  // 4) recebida continua intocada — e agora o mês novo não fica sem fatura
+  {
+    const c = rodar([Object.assign({}, base, { status: "recebido", data_pagamento: "2026-06-08" })], contrato);
+    eq("fatura recebida não é migrada", c.patch.length, 0);
+    eq("o mês novo ganha a própria fatura", c.post.length, 1);
+  }
+  // 5) já existe a receita do mês certo: não mexe em nada
+  {
+    const c = rodar([{ id: 56, ref_fatura: "fat_7_2026-07", status: "prevista" }], contrato);
+    eq("mês já coberto não gera patch", c.patch.length, 0);
+    eq("nem post", c.post.length, 0);
+  }
+}
+// O valor do contrato também não pode ser carimbado por cima da fatura emitida.
+ok("alterar o valor do contrato não reescreve fatura já emitida",
+  /_recValor = _recsCt\.find\(function\(r\)\{ return r\.status !== "emitida" && !r\.numero_fatura && !r\.data_emissao; \}\)/.test(html));
+ok("e o usuário é avisado de que a fatura emitida ficou com o valor antigo",
+  /continua com o valor original — cancele e emita de novo/.test(html));
+
 grupo("Fatura já emitida não some nem se reemite");
 
 // "Vencida" é a situação que pede ação e tem que ganhar de "emitida" — mas
@@ -250,9 +324,25 @@ ok("fatura emitida e vencida ainda pode ser cancelada",
   /var podeCancelar = fat\.foiEmitida && fat\.status !== "paga"/.test(fatSub));
 ok("emitir\(\) recusa reemissão em qualquer caminho",
   /if \(fat\.foiEmitida\) \{ toast\("Essa fatura já foi emitida/.test(fatSub));
-// A emissão em lote existe nas duas telas e tinha a mesma brecha.
-eq("nenhuma emissão em lote ignora foiEmitida",
-  (html.match(/(?:selVisiveis|faturasFil)\.filter\(function\(f\)\{ return (?!!f\.foiEmitida)/g) || []).length, 0);
+// A emissão em lote de Financeiro › Faturas tinha a mesma brecha.
+eq("a emissão em lote não ignora foiEmitida",
+  (html.match(/selVisiveis\.filter\(function\(f\)\{ return (?!!f\.foiEmitida)/g) || []).length, 0);
+
+grupo("Relatório de Faturas é posição, não emissão");
+// O relatório não emite nada — emitir tem lugar em Financeiro › Faturas e na
+// Agenda. Aqui a seleção escolhe QUAIS faturas saem no PDF/CSV.
+const rel = html.slice(html.indexOf("function Relatorios({"),
+                       html.indexOf("function Relatorios({") + 40000);
+ok("a tela de Relatórios foi encontrada", rel.length > 1000);
+eq("o relatório não emite fatura nenhuma",
+  (rel.match(/emitirFaturasSelecionadas|db\.post\("receitas"|db\.patch\("receitas"/g) || []).length, 0);
+ok("a seleção define o que sai no relatório",
+  /var faturasSaida = \(fatSelMode && faturasSel\.length\) \? faturasSel : faturasFil/.test(rel));
+ok("o PDF imprime a seleção", /faturasSaida\.forEach\(function\(f\)/.test(rel));
+ok("o CSV exporta a seleção", /var linhas = faturasSaida\.map/.test(rel));
+ok("o total da tela mostra o que vai sair", /TOTAL SELECIONADO \(/.test(rel));
+ok("qualquer fatura pode entrar no relatório, não só a emitível",
+  !/var emitivel =/.test(rel));
 
 grupo("Chart Manager não pode mover nó do React");
 

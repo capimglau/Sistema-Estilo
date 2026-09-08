@@ -285,6 +285,55 @@ o usuário lê todo dia — não fazer por conta própria.
 - Se a receita tiver `contrato_id` preenchido (campo "Contrato (opcional)" do formulário), a fatura puxa cliente/veículo de lá; senão usa `veiculo_id`/`cliente_id` diretos da receita, se houver. Sem nenhum dos dois, a fatura sai só com a descrição/valor — ainda assim válida.
 - **Qualquer novo tipo de "a receber"** que apareça no sistema (nova categoria de receita, nova tela) precisa seguir essa mesma regra — nunca deixar um lançamento pendente sem opção de emitir fatura.
 
+## Fatura emitida não muda de mês nem de valor — `[fatura-nao-migra]` — PERMANENTE
+
+`criarFaturaPrevista` (tela de Contratos) cria a receita "prevista" de um
+contrato. Quando a **previsão de pagamento muda**, ela *migra* a receita já
+existente para o mês novo — reescrevendo `ref_fatura`, `data`,
+`data_vencimento` e **`valor`**.
+
+O único freio era `status !== "recebido"`. Com isso, **a fatura já emitida ia
+junto**: o mês antigo ficava sem receita nenhuma vinculada e voltava a aparecer
+**"sem emissão"** — como se a fatura nunca tivesse saído — e o número dela
+(`FAT-xxxxx`) reaparecia num mês em que não foi emitida, com o valor trocado
+pelo valor atual do contrato. Sintoma relatado: *"as faturas não aparecem mais
+como emitidas nos meses passados"*.
+
+**Regra permanente: fatura emitida é DOCUMENTO. Tem número e data de emissão, e
+pertence à competência em que saiu — não migra de mês, não tem o valor
+reescrito e não é apagada por edição de contrato.**
+
+- só migra de mês a **previsão pura**: `status !== "recebido"` **e**
+  `status !== "emitida"` **e** sem `numero_fatura` **e** sem `data_emissao`;
+- quando não migra, o mês novo **ganha a sua própria fatura prevista** (o
+  `return` antigo deixava o mês novo sem fatura nenhuma — valia também para a
+  recebida);
+- mudar o `valor_total` do contrato **não** carimba o valor novo por cima de
+  uma fatura emitida: atualiza só a prevista e **avisa na tela** que a emitida
+  ficou com o valor original (cancele e emita de novo para atualizar).
+
+Travado em `tests/run.js`, grupo *"Fatura emitida não migra de mês"* — que roda
+a `criarFaturaPrevista` real com dublês de `db`, e não uma cópia da regra.
+
+## O relatório de Faturas é POSIÇÃO, não emissão — `[relatorio-posicao]`
+
+Relatórios › Faturas mostra **como estão** as faturas (previstas, emitidas,
+vencidas, pagas). **Emitir não é função dele** — emitir tem lugar em
+Financeiro › Faturas e na Agenda, onde existe o contexto da cobrança.
+
+A seleção dessa tela serve para **escolher quais faturas saem no relatório**
+(PDF e CSV), não para emitir em lote:
+
+- qualquer fatura pode ser marcada (antes só a "emitível" era clicável);
+- nada marcado = sai a lista filtrada inteira, e a tela diz isso;
+- o card de total vira **"TOTAL SELECIONADO (n de N)"** e os botões mostram a
+  contagem — o que se vê na tela é o que sai no papel;
+- o PDF registra no cabeçalho quando é uma seleção parcial.
+
+Travado em `tests/run.js`, grupo *"Relatório de Faturas é posição, não
+emissão"*, incluindo a verificação de que a tela **não faz nenhum
+`db.post`/`db.patch` em `receitas`**.
+
 ## Situação da fatura ≠ "já foi emitida" — `[fatura-emitida]` — PERMANENTE
 
 A fatura tem **uma situação** (`prevista` · `emitida` · `vencida` · `paga` ·

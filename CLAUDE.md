@@ -285,6 +285,47 @@ o usuário lê todo dia — não fazer por conta própria.
 - Se a receita tiver `contrato_id` preenchido (campo "Contrato (opcional)" do formulário), a fatura puxa cliente/veículo de lá; senão usa `veiculo_id`/`cliente_id` diretos da receita, se houver. Sem nenhum dos dois, a fatura sai só com a descrição/valor — ainda assim válida.
 - **Qualquer novo tipo de "a receber"** que apareça no sistema (nova categoria de receita, nova tela) precisa seguir essa mesma regra — nunca deixar um lançamento pendente sem opção de emitir fatura.
 
+## Situação da fatura ≠ "já foi emitida" — `[fatura-emitida]` — PERMANENTE
+
+A fatura tem **uma situação** (`prevista` · `emitida` · `vencida` · `paga` ·
+`cancelada`) e ela é **exclusiva**: passou do vencimento sem pagar, vira
+`vencida` — e `vencida` tem que continuar ganhando de `emitida`, porque é a
+situação que pede ação.
+
+O erro foi tratar essa situação como se também respondesse *"esta fatura já foi
+emitida?"*. Como toda emitida acaba vencendo, o resultado era:
+
+- o filtro **"Emitidas"** devolvia lista vazia em **todo mês fechado**, com
+  faturas numeradas visíveis na mesma tela ("não há nenhuma emitida de nenhum
+  mês");
+- a pílula **"Emitidas"** marcava **R$ 0,00** para sempre;
+- a fatura **com número** ainda oferecia **"Emitir"** — e emitir de novo
+  gerava outro número **por cima do primeiro**, apagando o rastro;
+- e ela **não podia ser cancelada** (`podeCancelar` exigia `status==="emitida"`).
+
+**Regra permanente: "já foi emitida" é `foiEmitida` — `numero_fatura` ou
+`data_emissao` preenchidos — e nunca se deduz da situação.** O relatório de
+Faturas já fazia certo (`foiEmitida`); a aba Financeiro › Faturas não, e as
+duas telas divergiam sobre o mesmo dinheiro.
+
+Onde vale (todos já corrigidos, não reintroduzir):
+
+- filtro "Emitidas" → `foiEmitida && status !== "paga" && status !== "cancelada"`;
+- pílula **"Já emitidas"** → mesma lista. O rótulo diz "Já emitidas" de
+  propósito: essa pílula **atravessa** as outras (uma emitida também pode estar
+  vencida), então **somar as quatro não dá o total do mês** — por isso o
+  denominador do percentual pago é o total das competências, nunca
+  `totP+totE+totV+totPg`;
+- `podeEmitir` → `!foiEmitida && (prevista|vencida)`, e a própria `emitir()`
+  recusa com aviso na tela (nenhum caminho pode reemitir em silêncio);
+- `podeCancelar` → `foiEmitida && !paga && !cancelada`;
+- **emissão em lote das DUAS telas** (Financeiro › Faturas e Relatórios ›
+  Faturas) filtra por `!foiEmitida`.
+
+**Qualquer tela nova de fatura** — e qualquer botão de emitir, filtro ou
+contador — pergunta `foiEmitida`, nunca `status === "emitida"`. Travado em
+`tests/run.js`, grupo *"Fatura já emitida não some nem se reemite"*.
+
 ## Sincronização de baixas — PREMISSA PERMANENTE
 
 **Toda baixa (pagamento/recebimento) de despesa, receita ou contrato DEVE sincronizar automaticamente com TUDO que estiver relacionado.** Uma baixa nunca pode atualizar só o registro tocado — precisa refletir em:

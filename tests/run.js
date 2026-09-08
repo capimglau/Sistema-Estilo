@@ -224,6 +224,36 @@ eq("nenhum header x-api-key no cliente",
 eq("chave da IA não é lida do banco nem do localStorage",
   (semComentarios.match(/getItem\(\s*["']claude_api_key["']\s*\)|empresa\.claude_api_key/g) || []).length, 0);
 
+grupo("Fatura já emitida não some nem se reemite");
+
+// "Vencida" é a situação que pede ação e tem que ganhar de "emitida" — mas
+// apagava o fato de a fatura JÁ ter sido emitida. Em todo mês fechado o filtro
+// "Emitidas" devolvia lista vazia e a pílula marcava R$ 0,00, mesmo com faturas
+// numeradas na tela; pior, a fatura com número ainda oferecia "Emitir", e
+// emitir de novo gerava outro número por cima do primeiro.
+// A resposta é `foiEmitida` (tem numero_fatura ou data_emissao), que o
+// relatório de Faturas já usava — as duas telas têm que bater.
+const fatSub = html.slice(html.indexOf("var competenciasContratos"),
+                          html.indexOf("var competenciasContratos") + 30000);
+ok("a aba Financeiro › Faturas foi encontrada", fatSub.length > 1000);
+ok("a fatura carrega foiEmitida, não só a situação",
+  /var foiEmitida = !!\(recExist && \(recExist\.data_emissao \|\| recExist\.numero_fatura\)\)/.test(fatSub));
+ok("filtro 'Emitidas' procura o que já foi emitido, não o status",
+  /filtroStatusFat === "emitida"[\s\S]{0,400}f\.foiEmitida/.test(fatSub));
+ok("a pílula 'Já emitidas' também usa foiEmitida",
+  /var totE = competencias\.filter\(function\(f\)\{ return f\.foiEmitida/.test(fatSub));
+ok("o percentual pago não soma pílulas que se sobrepõem",
+  /var fatTotalBar = competencias\.filter/.test(fatSub));
+ok("não se oferece 'Emitir' para fatura que já tem número",
+  /var podeEmitir = !fat\.foiEmitida/.test(fatSub));
+ok("fatura emitida e vencida ainda pode ser cancelada",
+  /var podeCancelar = fat\.foiEmitida && fat\.status !== "paga"/.test(fatSub));
+ok("emitir\(\) recusa reemissão em qualquer caminho",
+  /if \(fat\.foiEmitida\) \{ toast\("Essa fatura já foi emitida/.test(fatSub));
+// A emissão em lote existe nas duas telas e tinha a mesma brecha.
+eq("nenhuma emissão em lote ignora foiEmitida",
+  (html.match(/(?:selVisiveis|faturasFil)\.filter\(function\(f\)\{ return (?!!f\.foiEmitida)/g) || []).length, 0);
+
 grupo("Chart Manager não pode mover nó do React");
 
 // O Chart Manager (minimizar/duplicar/mover card) percorre o DOM e decora

@@ -56734,8 +56734,37 @@ class ErrBoundary extends React.Component {
   constructor(props){ super(props); this.state = { err: null, recovering: false, attempts: 0 }; }
   static getDerivedStateFromError(err){ return { err: err, recovering: false }; }
   componentDidCatch(err, info){
-    try { window.__lastReactErr = { msg: String(err && err.message || err), stack: String(err && err.stack || "") + "\n" + (info && info.componentStack || ""), at: Date.now() }; } catch(_){}
-    console.error('[AutoGest] React error:', err && err.message, err && err.stack);
+    /* Guarda um diagnóstico COMPLETO e legível. A tela mostrava só a mensagem
+       do erro — e mensagem de DOM do Safari ("The object can not be found
+       here.") não diz nada sobre ONDE quebrou. A pilha de componentes diz: a
+       primeira linha dela é a tela em que o erro aconteceu. Fica também em
+       sessionStorage pra sobreviver ao "Recarregar" e poder ser copiado
+       depois. */
+    var _linhas = String((info && info.componentStack) || "").split("\n")
+      .map(function(l){ return l.trim(); }).filter(Boolean);
+    /* Prioriza as linhas que nomeiam um COMPONENTE (nome com inicial
+       maiúscula: Relatorios, Financeiro, OrcamentoPessoal…). As linhas de tag
+       crua ("at div") não dizem em que tela o erro aconteceu, que é a única
+       informação que resolve o chamado. */
+    var _comps = _linhas.filter(function(l){ return /(?:^|\s)(?:in|at)\s+[A-Z][A-Za-z0-9_]+/.test(l); });
+    var _comp = (_comps.length ? _comps : _linhas);
+    var _det = {
+      msg: String(err && err.message || err),
+      nome: String((err && err.name) || ""),
+      onde: _comp.slice(0, 6).join("\n"),
+      stack: String(err && err.stack || "").split("\n").slice(0, 8).join("\n"),
+      build: (window.__AG_BUILD || "dev"),
+      aba: (window.__ag_currentTab || "?"),
+      subabas: (function(){ try {
+        return ["financeiro","gestao","operacional","cadastro","config"].map(function(k){
+          return k + "=" + (sessionStorage.getItem("ag_subtab_" + k) || "?");
+        }).join(" "); } catch(e) { return ""; } })(),
+      quando: new Date().toLocaleString("pt-BR"),
+      at: Date.now()
+    };
+    try { window.__lastReactErr = _det; } catch(_){}
+    try { sessionStorage.setItem("ag_last_err", JSON.stringify(_det)); } catch(_){}
+    console.error('[AutoGest] React error:', err && err.message, err && err.stack, _comp.slice(0,6).join(" | "));
     // Só tenta recuperação automática nas primeiras tentativas
     if ((this.state.attempts || 0) < 2) this._scheduleRecovery();
   }
@@ -56753,13 +56782,31 @@ class ErrBoundary extends React.Component {
       var errMsg = String(this.state.err && this.state.err.message || this.state.err);
       var globalErr = window.__lastGlobalErr ? window.__lastGlobalErr.msg : null;
       var displayMsg = errMsg && errMsg !== 'undefined' ? errMsg : (globalErr || 'Erro desconhecido');
+      var _detErr = null;
+      try { _detErr = window.__lastReactErr || JSON.parse(sessionStorage.getItem("ag_last_err") || "null"); } catch(_){}
       return React.createElement('div', { style: { position:"fixed", inset:0, background:"#1c1c1e", color:"#fff", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"24px", zIndex:100000, fontFamily:"-apple-system,sans-serif", gap:16 } },
         React.createElement('div', { style:{ fontSize:48 } }, "⚠️"),
         React.createElement('div', { style:{ fontSize:17, fontWeight:700, textAlign:"center" } }, "Algo deu errado"),
         React.createElement('div', { style:{ fontSize:12, opacity:0.55, textAlign:"center", maxWidth:300, lineHeight:1.5, wordBreak:"break-word" } }, displayMsg.slice(0, 200)),
-        React.createElement('div', { style:{ display:"flex", gap:10, marginTop:8 } },
+        /* Onde quebrou. Sem isto a tela dizia só a mensagem do navegador, que
+           em erro de DOM do Safari não aponta nada — e o usuário não tinha
+           como informar a tela pra quem vai corrigir. */
+        _detErr && _detErr.onde && React.createElement('div', { style:{ fontSize:11, opacity:0.4, textAlign:"center", maxWidth:300, lineHeight:1.45, fontFamily:"ui-monospace,Menlo,monospace", wordBreak:"break-word" } },
+          (_detErr.onde.split("\n")[0] || "") + (_detErr.aba ? "  ·  aba: " + _detErr.aba : "")),
+        React.createElement('div', { style:{ display:"flex", gap:10, marginTop:8, flexWrap:"wrap", justifyContent:"center" } },
           React.createElement('button', { onClick: function(){ location.reload(); }, style:{ background:"#007AFF", color:"#fff", border:"none", borderRadius:12, padding:"11px 22px", fontWeight:700, fontSize:14, cursor:"pointer" } }, "Recarregar"),
-          React.createElement('button', { onClick: function(){ try{ localStorage.clear(); }catch(_){} location.reload(); }, style:{ background:"rgba(255,255,255,0.12)", color:"#fff", border:"none", borderRadius:12, padding:"11px 22px", fontWeight:600, fontSize:14, cursor:"pointer" } }, "Limpar cache")
+          React.createElement('button', { onClick: function(){ try{ localStorage.clear(); }catch(_){} location.reload(); }, style:{ background:"rgba(255,255,255,0.12)", color:"#fff", border:"none", borderRadius:12, padding:"11px 22px", fontWeight:600, fontSize:14, cursor:"pointer" } }, "Limpar cache"),
+          React.createElement('button', { onClick: function(){
+              var txt = "AutoGest — erro\n" + (_detErr ? ("quando: " + _detErr.quando + "\nbuild: " + _detErr.build
+                + "\naba: " + _detErr.aba + (_detErr.subabas ? "\nsub-abas: " + _detErr.subabas : "")
+                + "\nerro: " + _detErr.nome + ": " + _detErr.msg
+                + "\nonde:\n" + _detErr.onde + "\nstack:\n" + _detErr.stack) : displayMsg);
+              function _ok(){ try { window.dispatchEvent(new CustomEvent("ag:toast", { detail:{ msg:"Detalhes copiados", type:"success" } })); } catch(e){} }
+              try {
+                if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(txt).then(_ok, function(){}); return; }
+              } catch(e) {}
+              try { var ta=document.createElement("textarea"); ta.value=txt; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); _ok(); } catch(e) {}
+            }, style:{ background:"rgba(255,255,255,0.12)", color:"#fff", border:"none", borderRadius:12, padding:"11px 22px", fontWeight:600, fontSize:14, cursor:"pointer" } }, "Copiar detalhes")
         )
       );
     }

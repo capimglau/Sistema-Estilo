@@ -135,6 +135,48 @@ Isso inclui, mas não se limita a:
 
 Ao implementar ou corrigir qualquer painel financeiro, **verificar explicitamente** se `receitas` avulsas (`!r.ref_fatura`), `despesas` avulsas e contratos parciais estão incluídos em TODAS as fontes de dados daquele painel. Nunca assumir que "está coberto" — checar o código.
 
+## Todas as contas alimentam o fluxo de caixa — `[contas-fluxo]` — PERMANENTE
+
+A tabela `contas` (contas a pagar/receber, campo `tipo`: `"pagar"` | `"receber"`)
+apareceu por muito tempo só na Agenda e nos alertas do Início: **não entrava em
+cálculo de dinheiro nenhum**. O fluxo de caixa somava contratos, receitas,
+despesas, manutenções e multas e ignorava as contas — dinheiro que sai (ou
+entra) de verdade e não aparecia em lugar nenhum.
+
+**Regra permanente: toda conta é dinheiro e entra em todo cálculo de caixa,
+exatamente como despesa, manutenção e multa já entram.** `tipo: "receber"`
+soma nas entradas; `tipo: "pagar"` soma nas saídas; `status: "cancelado"`
+fica de fora.
+
+Helpers únicos (escopo global do `index.html`) — **nunca refazer essa conta na
+mão em nenhum painel**:
+
+- `contaEhReceber(c)` · `contaCancelada(c)` · `contaEstaPaga(c)`
+- `contaDataFluxo(c)` — **a data em que a conta pesa no caixa**: enquanto está
+  em aberto vale o `vencimento` (quando o dinheiro deve sair); depois de paga
+  vale a `data_pagamento` (quando saiu de fato). Mesma regra que despesas e
+  receitas já usam — não inventar outra.
+- `contasDoMesFluxo(contas, mes)` e `totaisContasMes(contas, mes)` →
+  `{entrada, saida}`.
+
+Já ligados (mantenha os dois batendo — são dois "fluxo de caixa" diferentes na
+mesma tela do usuário):
+
+- `Financeiro` → aba **Fluxo** (Linha do Tempo diária/mensal, com pílula
+  própria "Contas") e o painel **Fluxo de Caixa — 12 meses**.
+- `_saldoFluxoMesLoc` (saldo do fluxo de caixa do mês, lido pelo painel do
+  Início). Para isso o prop `contas` foi passado por
+  `Inicio → PessoalDash → OrcamentoPessoalInline → OrcamentoPessoal`.
+
+**Ao criar qualquer painel novo de dinheiro** (fluxo, previsão, saldo, KPI,
+gráfico), incluir `contas` junto com despesas/manutenções/multas. Um painel
+que soma despesa e esquece a conta mente sobre o caixa.
+
+Ponto em aberto, decidir com o usuário antes de mexer: as contas ainda **não**
+entram no *Resultado Previsto* / DRE / KPIs de despesa do Dashboard. Esses são
+números de resultado (competência), não de caixa, e incluí-los muda valores que
+o usuário lê todo dia — não fazer por conta própria.
+
 ## Receita "a receber" sempre com opção de gerar fatura — PREMISSA PERMANENTE
 
 **Toda receita a receber — com ou sem contrato vinculado — precisa ter a opção de gerar fatura.** Isso já valia pra receitas ligadas a contrato (`ref_fatura`, tela de Faturas); receita **avulsa** (standalone, sem contrato) não tinha nenhuma forma de gerar fatura — bug reportado pelo usuário.

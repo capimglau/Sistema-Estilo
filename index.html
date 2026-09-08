@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="bc8d760"/>
+<meta name="ag-build" content="10ecbbe"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -44323,8 +44323,16 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         } else {
           status = dtVenc < hoje ? "vencida" : "prevista";
         }
+        /* [fatura-emitida] "Vencida" é a SITUAÇÃO (o que precisa de ação) e
+           tem que continuar ganhando de "emitida" — mas ela apagava o fato de
+           a fatura já ter sido emitida. Resultado: o filtro "Emitidas" não
+           achava nenhuma em nenhum mês passado, o botão "Emitir" reaparecia
+           numa fatura que já tinha número (emitir de novo sobrescrevia o
+           número) e não dava pra cancelar. Mesma regra do relatório de
+           Faturas, que já usava `foiEmitida`. */
+        var foiEmitida = !!(recExist && (recExist.data_emissao || recExist.numero_fatura));
         return {
-          c: c, cl: cl || {}, ve: ve || {},
+          c: c, cl: cl || {}, ve: ve || {}, foiEmitida: foiEmitida,
           refKey: refKey, recId: recExist ? recExist.id : null,
           numero: recExist ? recExist.numero_fatura : null,
           cliente: cl ? cl.nome : "—",
@@ -44356,6 +44364,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         else statusAv = dtVencAv < hoje ? "vencida" : "prevista";
         return {
           c: null, cl: clAv || {}, ve: veAv || {}, avulsa: true, recObj: r,
+          foiEmitida: !!(r.data_emissao || r.numero_fatura),
           refKey: "avulsa_" + r.id, recId: r.id, numero: r.numero_fatura,
           cliente: (clAv && clAv.nome) || r.descricao || "—",
           placa: veAv ? veAv.placa : "—",
@@ -44369,10 +44378,20 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
       var fatsFil = filtroStatusFat === "todas"
         ? competencias
-        : competencias.filter(function(f) { return f.status === filtroStatusFat; });
+        : filtroStatusFat === "emitida"
+          /* [fatura-emitida] "Emitidas" = já emitidas e ainda não pagas,
+             vencidas inclusive. Comparar com `status` devolvia lista vazia em
+             todo mês fechado, porque toda emitida vencida vira "vencida". */
+          ? competencias.filter(function(f) { return f.foiEmitida && f.status !== "paga" && f.status !== "cancelada"; })
+          : competencias.filter(function(f) { return f.status === filtroStatusFat; });
 
       var totP = competencias.filter(function(f){ return f.status==="prevista"; }).reduce(function(s,f){ return s+f.valor; },0);
-      var totE = competencias.filter(function(f){ return f.status==="emitida"; }).reduce(function(s,f){ return s+f.valor; },0);
+      /* [fatura-emitida] Mesma lista do filtro "Emitidas": o que já saiu e
+         ainda não voltou. Soma junto com as vencidas emitidas de propósito —
+         são o mesmo dinheiro visto de dois ângulos (quanto está na rua ×
+         quanto já passou do prazo), por isso o total da barra abaixo NÃO
+         soma as quatro pílulas, e sim as competências do mês. */
+      var totE = competencias.filter(function(f){ return f.foiEmitida && f.status!=="paga" && f.status!=="cancelada"; }).reduce(function(s,f){ return s+f.valor; },0);
       var totV = competencias.filter(function(f){ return f.status==="vencida"; }).reduce(function(s,f){ return s+f.valor; },0);
       var totPg = competencias.filter(function(f){ return f.status==="paga"; }).reduce(function(s,f){ return s+f.valor; },0);
 
@@ -44382,6 +44401,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
       async function emitir(fat) {
         if (fat.status !== "prevista" && fat.status !== "vencida") return;
+        /* [fatura-emitida] Trava final: emitir de novo o que já tem número
+           gera outro número por cima e o usuário perde o rastro do primeiro.
+           Vale pra todo caminho — botão, swipe e emissão em lote. */
+        if (fat.foiEmitida) { toast("Essa fatura já foi emitida" + (fat.numero ? " (" + fat.numero + ")" : "") + "."); return; }
         var dtEmissao = hoje;
         var num = await proximoNumFatura();
         var payload = {
@@ -44471,7 +44494,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       var selVisiveis = fatsFil.filter(function(f){ return fatSel[f.refKey]; });
 
       async function emitirSelecionadas() {
-        var alvo = selVisiveis.filter(function(f){ return f.status === "prevista" || f.status === "vencida"; });
+        var alvo = selVisiveis.filter(function(f){ return !f.foiEmitida && (f.status === "prevista" || f.status === "vencida"); });
         if (!alvo.length) { toast("Nenhuma fatura prevista/vencida selecionada."); return; }
         var dtEmissao = hoje;
         // Numeração sequencial calculada uma única vez (state é assíncrono)
@@ -44533,7 +44556,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           , React.createElement('span', { style: { fontSize:12, color:C.sub } }, competencias.length + " fatura(s)")
         )
         , (function(){
-            var fatTotalBar = totP + totE + totV + totPg;
+            /* Antes: totP+totE+totV+totPg. Com "Emitidas" se sobrepondo a
+               "Vencidas", essa soma contaria o mesmo dinheiro duas vezes e
+               derrubaria o percentual pago. O total do mês é o que vale. */
+            var fatTotalBar = competencias.filter(function(f){ return f.status!=="cancelada"; }).reduce(function(s,f){ return s+f.valor; },0);
             var fatPctBar = fatTotalBar > 0 ? Math.round(totPg/fatTotalBar*100) : 0;
             return React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" }, onTouchStart: _finBarTouchStart, onTouchEnd: _finBarTouchEnd }
               , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }
@@ -44545,7 +44571,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               )
               , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginTop: 7 } }
                 , React.createElement('span', { style: { fontSize: 12, fontWeight: 600, color: C.sub } }, "● Previstas: ", React.createElement(BRLValue,{v:totP,size:12,weight:600,color:C.sub}))
-                , React.createElement('span', { style: { fontSize: 12, fontWeight: 600, color: C.blue } }, "● Emitidas: ", React.createElement(BRLValue,{v:totE,size:12,weight:600,color:C.blue}))
+                , /* "Já emitidas" e não "Emitidas": esta pílula ATRAVESSA as outras (uma
+                     fatura já emitida também pode estar vencida), então somar as quatro
+                     não dá o total do mês — o rótulo precisa dizer isso sozinho. */
+                  React.createElement('span', { style: { fontSize: 12, fontWeight: 600, color: C.blue } }, "● Já emitidas: ", React.createElement(BRLValue,{v:totE,size:12,weight:600,color:C.blue}))
                 , totV > 0
                   ? React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.red } }, "⚠️ Vencidas: ", React.createElement(BRLValue,{v:totV,size:12,weight:700,color:C.red}))
                   : React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.green } }, "✓ Vencidas: ", React.createElement(BRLValue,{v:0,size:12,weight:700,color:C.green}))
@@ -44568,11 +44597,15 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             ? React.createElement('div', { style: { color:C.sub, textAlign:"center", padding:30 } }, "Nenhuma fatura com status '" + (SL[filtroStatusFat] || filtroStatusFat) + "'")
             : fatsFil.map(function(fat) {
                 var podePagar  = fat.status === "prevista" || fat.status === "emitida" || fat.status === "vencida";
-                var podeEmitir = fat.status === "prevista" || fat.status === "vencida";
-                var podeCancelar = fat.status === "emitida";
+                /* [fatura-emitida] Emitir de novo uma fatura que já tem
+                   número gerava outro número por cima do primeiro. E cancelar
+                   só valia pra "emitida" — a emitida que venceu ficava sem
+                   saída nenhuma. */
+                var podeEmitir = !fat.foiEmitida && (fat.status === "prevista" || fat.status === "vencida");
+                var podeCancelar = fat.foiEmitida && fat.status !== "paga" && fat.status !== "cancelada";
                 var podeEstornar = fat.status === "paga";
                 var isSel = !!fatSel[fat.refKey];
-                var _fatMostraAlternarEmitir = fat.status === "prevista" || fat.status === "vencida";
+                var _fatMostraAlternarEmitir = !fat.foiEmitida && (fat.status === "prevista" || fat.status === "vencida");
                 var _fatCorTab = (fat.status === "paga" || fat.status === "emitida") ? C.green : (SC[fat.status] || C.sub);
                 var _fatDataTab = fat.status === "paga" ? fat.pagamento : fat.vencimento;
                 var _fatDDMM = _fatDataTab ? _fatDataTab.slice(8,10) + "/" + _fatDataTab.slice(5,7) : null;
@@ -44958,7 +44991,10 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   function toggleFatSel(refKey) {
     setFatSel(function(p) { var n = Object.assign({}, p); if (n[refKey]) delete n[refKey]; else n[refKey] = true; return n; });
   }
-  var fatEmitiveis = faturasFil.filter(function(f){ return f.sit === "prevista" || f.sit === "vencida"; });
+  /* [fatura-emitida] Mesma regra da aba Financeiro › Faturas: fatura que já
+     tem número/data de emissão não entra na emissão em lote — reemitir
+     sobrescreve o número da primeira. */
+  var fatEmitiveis = faturasFil.filter(function(f){ return !f.foiEmitida && (f.sit === "prevista" || f.sit === "vencida"); });
   var fatSelVisiveis = fatEmitiveis.filter(function(f){ return fatSel[f.refKey]; });
   async function emitirFaturasSelecionadas() {
     var alvo = fatSelVisiveis;
@@ -45111,7 +45147,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
         , faturasFil.map(function(f, i) {
             var sitCor = { prevista: C.sub, emitida: C.blue, paga: C.green, vencida: C.red }[f.sit] || C.sub;
             var sitPastel = _flagCorPastel(sitCor);
-            var emitivel = f.sit === "prevista" || f.sit === "vencida";
+            var emitivel = !f.foiEmitida && (f.sit === "prevista" || f.sit === "vencida");
             var isSel = !!fatSel[f.refKey];
             return React.createElement('div', { key: f.c.id, onClick: (fatSelMode && emitivel) ? function(){ toggleFatSel(f.refKey); } : undefined, style: Object.assign({ display: "flex", alignItems: "stretch", cursor: (fatSelMode && emitivel) ? "pointer" : "default" }, _flagCardBg()) }
               , _dateBadgeFlag(f.dtRef || f.dtPag, sitPastel, false, null)

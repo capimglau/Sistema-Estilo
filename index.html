@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="41801e3"/>
+<meta name="ag-build" content="76582a0"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -26756,7 +26756,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var despAntes = (despesas||[]).find(function(x){ return String(x.id) === String(ev.id); });
       var statusOriginalDesp = despAntes ? despAntes.status : null;
       var dataPagOriginalDesp = despAntes ? despAntes.data_pagamento : null;
-      var _rbDesp = await baixarDespesaItem(despesas, ev.id, _r.v1);
+      var _rbDesp = await baixarDespesaItem(despesas, ev.id, _r.v1, ev.mes);
       if (!_rbDesp) { toast("Não encontrei esta despesa para baixar", "error"); return; }
       setDespesas(function(p){ return _orcAplicarLocal(p, _rbDesp); });
       if (_rbDesp.manutencao && setManutencoes) setManutencoes(function(p){ return _orcAplicarLocal(p, _rbDesp.manutencao); });
@@ -29112,7 +29112,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                           (d.categoria||"")+(pago?" \xb7 paga":" \xb7 pendente"),
                           -parseFloat(d.valor||0), pago?C.red:C.orange,
                           function(){setFinDeepLink({subTab:"despesas",itemId:_dId});setTab("financeiro");setChartDaySheet(null);},
-                          !pago?{onBaixar:function(){_agBaixar({type:"desp",id:_dId});},label:"Baixar"}:null);
+                          /* mes: a parcela é a do DIA aberto neste painel — sem isso a
+                             baixa de uma recorrente cairia no mês de hoje. */
+                          !pago?{onBaixar:function(){_agBaixar({type:"desp",id:_dId,mes:(d.data||"").slice(0,7)});},label:"Baixar"}:null);
                       })
                   )
                   /* ── Retiradas de Lucro / Ajustes de Saldo (saída de caixa, não é despesa real) ── */
@@ -30328,7 +30330,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
 
         return React.createElement(SwipeRow, {
           key:'desp-'+_did,
-          onBaixar:function(){ _agBaixar({type:'desp',id:_did}); }, baixarLabel:'Baixar',
+          onBaixar:function(){ _agBaixar({type:'desp',id:_did,mes:_dmes}); }, baixarLabel:'Baixar',
           onEdit:function(){ setFinDeepLink({subTab:'despesas',itemId:_did,mes:_dmes}); setTab('financeiro'); }, editLabel:'Editar',
           onDelete:null,
           wrapStyle: Object.assign({ borderRadius:14, boxShadow:_flagCardShadow() }, isUrgenteDesp ? _hojeRowGlow : null),
@@ -38325,18 +38327,26 @@ function useOrcSync(setLista, pularNulo) {
    aplicar com _orcAplicarLocal (a função é genérica apesar do nome
    histórico): {novo} | {id, patch}, mais os vínculos em `manutencao` e
    `contrato` quando houver. */
-async function baixarDespesaItem(despesas, despesaId, dataPag) {
+/* `mesAlvo` = mês da PARCELA que o usuário tocou ("AAAA-MM"), não o mês em que
+   ele está pagando. Uma recorrente vista em março baixa março; a mesma vista
+   em setembro baixa setembro — mesmo que o pagamento seja lançado hoje.
+   Antes o mês saía da data de pagamento, então quitar hoje uma parcela
+   atrasada de março criava a linha em SETEMBRO: março continuava em aberto
+   para sempre e setembro aparecia pago duas vezes. Quem chama passa o mês da
+   linha que está na tela — as listas já entregam a recorrente projetada
+   (`resolverDespesasDoMes`), então é `(d.data||"").slice(0,7)`. */
+async function baixarDespesaItem(despesas, despesaId, dataPag, mesAlvo) {
   var _hjD = dataPag ? String(dataPag).slice(0, 10) : _brNow().toISOString().slice(0, 10);
   var _d = (despesas || []).find(function(x){ return String(x.id) === String(despesaId); });
   if (!_d) return null;
   if (_d.recorrente) {
-    /* Recorrente: a baixa é do MÊS, nunca do cadastro. Mesmo mês-alvo que o
-       Financeiro sempre usou (o mês da data de pagamento informada). */
     var _diaD = (_d.data || "").slice(8, 10) || "01";
     var _origemD = _d.recorrencia_origem_id || _d.id;
-    var _mesPagoD = _hjD.slice(0, 7);
+    /* Sem mesAlvo explícito cai no mês de hoje — nunca no mês do cadastro,
+       que faria toda baixa recair para sempre na primeira parcela. */
+    var _mesAlvoD = mesAlvo ? String(mesAlvo).slice(0, 7) : _brNow().toISOString().slice(0, 7);
     var _jaD = (despesas || []).find(function(x){
-      return String(x.recorrencia_origem_id) === String(_origemD) && (x.data || "").slice(0, 7) === _mesPagoD;
+      return String(x.recorrencia_origem_id) === String(_origemD) && (x.data || "").slice(0, 7) === _mesAlvoD;
     });
     if (_jaD) {
       var _updJa = await db.patch("despesas", _jaD.id, { status: "pago", data_pagamento: _hjD });
@@ -38344,7 +38354,7 @@ async function baixarDespesaItem(despesas, despesaId, dataPag) {
     }
     var _novaD = await db.post("despesas", {
       descricao: _d.descricao, categoria: _d.categoria, veiculo_id: _d.veiculo_id || null,
-      valor: _d.valor, data: _mesPagoD + "-" + _diaD,
+      valor: _d.valor, data: _mesAlvoD + "-" + _diaD,
       status: "pago", data_pagamento: _hjD,
       recorrente: false, recorrencia_origem_id: _origemD,
       observacoes: _d.observacoes || null
@@ -41372,7 +41382,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         /* [baixa-unica] Regra de baixa (recorrente vira linha-filha do mês,
            avulsa dá patch e arrasta a manutenção vinculada) mora em
            baixarDespesaItem — aqui só se aplica o resultado. */
-        var _rbD = await baixarDespesaItem(despesas, d.id, dt);
+        /* d vem da lista já projetada pro mês exibido (resolverDespesasDoMes)
+           ou do deep-link, que também projeta — então (d.data) é o mês da
+           PARCELA, que é o que manda na baixa. */
+        var _rbD = await baixarDespesaItem(despesas, d.id, dt, (d.data || "").slice(0, 7));
         if (!_rbD) { toast("Não encontrei esta despesa para baixar"); return; }
         setDespesas(p => _orcAplicarLocal(p, _rbD));
         if (_rbD.manutencao) setManutencoes(p => _orcAplicarLocal(p, _rbD.manutencao));

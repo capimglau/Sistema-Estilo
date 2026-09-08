@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="10ecbbe"/>
+<meta name="ag-build" content="d68157f"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -33837,15 +33837,27 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     // Existe receita de outro mês (mês antigo) — migrar data e ref_fatura
     var recAntiga = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + c.id + "_") && !r.ref_fatura.includes("_cc_p"); });
     var cl = getCl(c.cliente_id); var ve = getVe(c.veiculo_id);
-    if (recAntiga) {
-      // Só migra se ainda não está recebida — pagamento já feito permanece no mês original
-      if (recAntiga.status !== "recebido") {
-        try {
-          var migPatch = { ref_fatura: refKey, data: c.previsao_pagamento, data_vencimento: c.previsao_pagamento, valor: parseFloat(c.valor_total||0).toFixed(2), cliente_id: c.cliente_id, veiculo_id: c.veiculo_id || null, forma_pagamento: c.forma_pagamento || null };
-          var migUpd = await db.patch("receitas", recAntiga.id, migPatch);
-          setReceitas(function(p){ return p.map(function(r){ return r.id === recAntiga.id ? Object.assign({}, r, migUpd, migPatch) : r; }); });
-        } catch(e) { console.warn("migrar fatura:", e); }
-      }
+    /* [fatura-nao-migra] Só migra de mês a fatura que ainda é PREVISÃO PURA.
+       Antes o único freio era `status !== "recebido"`, então mudar a previsão
+       de pagamento de um contrato ARRASTAVA JUNTO a fatura já emitida: o
+       ref_fatura, a data, o vencimento e até o valor eram reescritos para o
+       mês novo. O mês antigo ficava sem receita nenhuma vinculada e voltava a
+       aparecer "sem emissão", como se a fatura nunca tivesse sido emitida —
+       e o número dela (FAT-xxxxx) reaparecia num mês em que não foi emitida.
+       Fatura emitida é documento: tem número e data de emissão, e pertence à
+       competência em que saiu. Ela fica onde está; o mês novo ganha a sua
+       própria fatura prevista, logo abaixo. */
+    var _ehPrevisaoPura = !!recAntiga
+      && recAntiga.status !== "recebido"
+      && recAntiga.status !== "emitida"
+      && !recAntiga.numero_fatura
+      && !recAntiga.data_emissao;
+    if (recAntiga && _ehPrevisaoPura) {
+      try {
+        var migPatch = { ref_fatura: refKey, data: c.previsao_pagamento, data_vencimento: c.previsao_pagamento, valor: parseFloat(c.valor_total||0).toFixed(2), cliente_id: c.cliente_id, veiculo_id: c.veiculo_id || null, forma_pagamento: c.forma_pagamento || null };
+        var migUpd = await db.patch("receitas", recAntiga.id, migPatch);
+        setReceitas(function(p){ return p.map(function(r){ return r.id === recAntiga.id ? Object.assign({}, r, migUpd, migPatch) : r; }); });
+      } catch(e) { console.warn("migrar fatura:", e); }
       return;
     }
     try {
@@ -34097,9 +34109,18 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         }
         // Sincronizar valor da receita vinculada se valor_total mudou
         if (payload.valor_total && ctAntes && parseFloat(payload.valor_total) !== parseFloat(ctAntes.valor_total)) {
-          var _recValor = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + edit + "_") && r.status !== "cancelada" && r.status !== "recebido"; });
+          /* [fatura-nao-migra] Mesma regra da migração de mês: fatura já
+             emitida é documento e não se reescreve sozinha. Antes o valor do
+             contrato era carimbado por cima do valor da fatura emitida, sem
+             aviso — o cliente tinha um PDF com um valor e o sistema, outro. */
+          var _recsCt = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + edit + "_") && r.status !== "cancelada" && r.status !== "recebido"; });
+          var _recValor = _recsCt.find(function(r){ return r.status !== "emitida" && !r.numero_fatura && !r.data_emissao; });
+          var _recEmit  = _recsCt.find(function(r){ return r.status === "emitida" || r.numero_fatura || r.data_emissao; });
           if (_recValor) {
             try { var _uvr = await db.patch("receitas", _recValor.id, { valor: parseFloat(payload.valor_total).toFixed(2) }); setReceitas(function(p){ return p.map(function(r){ return r.id===_recValor.id ? Object.assign({},r,_uvr) : r; }); }); } catch(e) { console.warn("sync valor receita:", e); }
+          }
+          if (_recEmit) {
+            toast("Valor do contrato alterado, mas a fatura " + (_recEmit.numero_fatura || "já emitida") + " continua com o valor original — cancele e emita de novo para atualizar.", "error");
           }
         }
         toast("Atualizado!");
@@ -44958,7 +44979,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     exportarCSV("contratos", linhas);
   }
   function csvFaturas() {
-    var linhas = faturasFil.map(function(f) {
+    var linhas = faturasSaida.map(function(f) {
       return { numero: numCt(f.c.id), cliente: f.cl.nome||"", veiculo: (f.ve.placa||"") + " " + (f.ve.modelo||""), retirada: f.c.data_inicio||"", devolucao: f.c.data_fim||"", vencimento: f.dtRef||"", data_pagamento: f.dtPag||"", situacao: f.sit, valor: f.valor };
     });
     exportarCSV("faturas", linhas);
@@ -44974,14 +44995,15 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     h += '<div style="margin-bottom:16px"><div style="font-size:18px;font-weight:800">RELATORIO DE FATURAS</div>';
     if (de || ate) h += '<div style="font-size:13px;color:#666">Período: ' + (de ? fmtDate(de) : "--") + ' a ' + (ate ? fmtDate(ate) : "--") + ' (por data de pagamento/vencimento)</div>';
     if (fatSit) h += '<div style="font-size:12px;color:#666">Situação: ' + (_SIT_LABEL[fatSit]||fatSit) + '</div>';
+    if (faturasSaida.length !== faturasFil.length) h += '<div style="font-size:12px;color:#666">Seleção: ' + faturasSaida.length + ' de ' + faturasFil.length + ' faturas do filtro</div>';
     if (fatClientes.length) {
       var _nomesCli = fatClientes.map(function(id){ var cl = clientes.find(function(c){ return String(c.id) === id; }); return cl ? cl.nome : null; }).filter(Boolean);
       h += '<div style="font-size:12px;color:#666">Cliente(s): ' + _nomesCli.join(", ") + '</div>';
     }
     h += '</div>';
     h += '<table><tr><th>No</th><th>Cliente</th><th>Veículo</th><th>Vencimento</th><th>Dt.Pagamento</th><th>Situação</th><th>Valor</th></tr>';
-    faturasFil.forEach(function(f) { h += '<tr><td>' + numCt(f.c.id) + '</td><td>' + (f.cl.nome||"--") + '</td><td>' + (f.ve.placa||"--") + ' ' + (f.ve.modelo||"") + '</td><td>' + fmtDate(f.dtRef) + '</td><td>' + (f.dtPag ? fmtDate(f.dtPag) : "--") + '</td><td class="' + f.sit + '">' + (_SIT_LABEL[f.sit]||f.sit) + '</td><td>' + fmtBRL(f.valor) + '</td></tr>'; });
-    h += '<tr><td colspan="6" class="tot">TOTAL (' + faturasFil.length + ')</td><td class="tot">' + fmtBRL(totalFaturas) + '</td></tr></table>';
+    faturasSaida.forEach(function(f) { h += '<tr><td>' + numCt(f.c.id) + '</td><td>' + (f.cl.nome||"--") + '</td><td>' + (f.ve.placa||"--") + ' ' + (f.ve.modelo||"") + '</td><td>' + fmtDate(f.dtRef) + '</td><td>' + (f.dtPag ? fmtDate(f.dtPag) : "--") + '</td><td class="' + f.sit + '">' + (_SIT_LABEL[f.sit]||f.sit) + '</td><td>' + fmtBRL(f.valor) + '</td></tr>'; });
+    h += '<tr><td colspan="6" class="tot">TOTAL (' + faturasSaida.length + ')</td><td class="tot">' + fmtBRL(totalSaida) + '</td></tr></table>';
     h += '<p style="text-align:center;font-size:10px;color:#aaa;margin-top:20px">AutoGest Pro - ' + new Date().toLocaleString("pt-BR") + '</p>';
     h += '<scr' + 'ipt>window.print();</scr' + 'ipt></body></html>';
     openPdfPage(h, _wfr);
@@ -44991,58 +45013,14 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   function toggleFatSel(refKey) {
     setFatSel(function(p) { var n = Object.assign({}, p); if (n[refKey]) delete n[refKey]; else n[refKey] = true; return n; });
   }
-  /* [fatura-emitida] Mesma regra da aba Financeiro › Faturas: fatura que já
-     tem número/data de emissão não entra na emissão em lote — reemitir
-     sobrescreve o número da primeira. */
-  var fatEmitiveis = faturasFil.filter(function(f){ return !f.foiEmitida && (f.sit === "prevista" || f.sit === "vencida"); });
-  var fatSelVisiveis = fatEmitiveis.filter(function(f){ return fatSel[f.refKey]; });
-  async function emitirFaturasSelecionadas() {
-    var alvo = fatSelVisiveis;
-    if (!alvo.length) { toast("Nenhuma fatura prevista/vencida selecionada."); return; }
-    var dtEmissao = _hojeRelat;
-    var maxN = (receitas||[]).filter(function(r){ return r.numero_fatura && r.numero_fatura.startsWith("FAT-"); })
-      .reduce(function(m,r){ var n = parseInt((r.numero_fatura||"FAT-00000").replace("FAT-",""),10); return isNaN(n)?m:Math.max(m,n); }, 0);
-    var novas = [], patches = {}, ok = 0, falhas = [];
-    for (var i = 0; i < alvo.length; i++) {
-      var f = alvo[i]; maxN++; var num = "FAT-" + String(maxN).padStart(5,"0");
-      try {
-        if (f.recId) {
-          await db.patch("receitas", f.recId, { status: "emitida", data_emissao: dtEmissao, numero_fatura: num });
-          patches[f.recId] = { status: "emitida", data_emissao: dtEmissao, numero_fatura: num };
-        } else {
-          var nova = await db.post("receitas", {
-            descricao: "Fatura " + (f.cl.nome||"") + " — " + (f.ve.placa||"") + " (" + (f.dtRef||"").slice(0,7) + ")",
-            valor: f.valor, categoria: "Locacao",
-            data: dtEmissao, data_emissao: dtEmissao,
-            data_vencimento: f.dtRef, numero_fatura: num,
-            ref_fatura: f.refKey, status: "emitida",
-            forma_pagamento: "Pix",
-            cliente_id: f.c.cliente_id, veiculo_id: f.c.veiculo_id,
-            contrato_id: f.c.id
-          });
-          novas.push(nova);
-        }
-        ok++;
-      } catch(e) {
-        /* antes o erro sumia em silêncio: a fatura ficava sem emitir de verdade
-           (trava otimista, RLS, rede), mas o toast dizia "emitida" mesmo assim —
-           e o alerta do calendário continuava aparecendo, sem o usuário entender
-           por quê. Agora toda falha é reportada, com o nome do cliente. */
-        maxN--;
-        falhas.push((f.cl.nome||"Contrato #"+f.c.id) + ": " + (e.message||String(e)));
-      }
-    }
-    setReceitas(function(p) {
-      var arr = p.map(function(r){ return patches[r.id] ? Object.assign({}, r, patches[r.id]) : r; });
-      return novas.concat(arr);
-    });
-    if (falhas.length) {
-      toast((ok>0 ? ok+" fatura(s) emitida(s), " : "") + falhas.length+" falhou(aram) — "+falhas.join(" · "), "error");
-    } else {
-      toast(ok + " fatura(s) emitida(s)!");
-    }
-    setFatSel({}); setFatSelMode(false);
-  }
+  /* [relatorio-posicao] O relatório de Faturas é uma POSIÇÃO do que já foi
+     emitido/previsto — não é lugar de emitir nada (emitir tem seu lugar em
+     Financeiro › Faturas e na Agenda). A seleção aqui serve pra escolher
+     QUAIS faturas saem no PDF e no CSV; quando nada está selecionado, sai a
+     lista filtrada inteira. */
+  var faturasSel = faturasFil.filter(function(f){ return fatSel[f.refKey]; });
+  var faturasSaida = (fatSelMode && faturasSel.length) ? faturasSel : faturasFil;
+  var totalSaida = faturasSaida.reduce(function(s,f){ return s + f.valor; }, 0);
 
   return React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2620}}
     , React.createElement('div', { className: "pg-title", __self: this, __source: {fileName: _jsxFileName, lineNumber: 2621}}, "Relatórios")
@@ -45129,17 +45107,18 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
         , React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: function(){ setDe(""); setAte(""); setFatClientes([]); setFatSit(""); } }, "Limpar")
       )
       /* ── Seleção para emissão em lote ── */
-      , fatEmitiveis.length > 0 && React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } }
+      , faturasFil.length > 0 && React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } }
         , React.createElement('button', { type: "button", onClick: function(){ setFatSelMode(function(v){ if (v) setFatSel({}); return !v; }); },
             style: { padding: "9px 12px", borderRadius: 12, border: "1.5px solid " + (fatSelMode ? C.blue : C.border), background: fatSelMode ? "rgba(0,122,255,0.1)" : "transparent", color: fatSelMode ? C.blue : C.text, fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" } }
-          , fatSelMode ? "✕ Cancelar seleção" : "☑️ Selecionar faturas para emitir")
-        , fatSelMode && React.createElement('button', { type: "button", onClick: function(){ var all = {}; fatEmitiveis.forEach(function(f){ all[f.refKey] = true; }); setFatSel(all); },
+          , fatSelMode ? "✕ Cancelar seleção" : "☑️ Escolher quais saem no relatório")
+        , fatSelMode && React.createElement('button', { type: "button", onClick: function(){ var all = {}; faturasFil.forEach(function(f){ all[f.refKey] = true; }); setFatSel(all); },
             style: { padding: "9px 12px", borderRadius: 12, border: "1px solid " + C.border, background: "transparent", color: C.sub, fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" } }
-          , "Selecionar todas (" + fatEmitiveis.length + ")")
-        , fatSelMode && fatSelVisiveis.length > 0 && React.createElement('span', { style: { fontSize: 12, color: C.sub } }, fatSelVisiveis.length + " selecionada(s)")
-        , fatSelMode && fatSelVisiveis.length > 0 && React.createElement('button', { type: "button", onClick: emitirFaturasSelecionadas,
-            style: { marginLeft: "auto", padding: "9px 14px", borderRadius: 12, border: "none", background: C.blue, color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" } }
-          , "📤 Emitir (" + fatSelVisiveis.length + ")")
+          , "Todas (" + faturasFil.length + ")")
+        , fatSelMode && React.createElement('button', { type: "button", onClick: function(){ setFatSel({}); },
+            style: { padding: "9px 12px", borderRadius: 12, border: "1px solid " + C.border, background: "transparent", color: C.sub, fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" } }
+          , "Limpar")
+        , fatSelMode && React.createElement('span', { style: { fontSize: 12, color: faturasSel.length ? C.blue : C.sub, marginLeft: "auto", fontWeight: 600 } }
+          , faturasSel.length ? faturasSel.length + " de " + faturasFil.length + " no relatório" : "nenhuma marcada — sai o filtro inteiro")
       )
       /* ── Lista de faturas ── */
       , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 10 } }
@@ -45147,11 +45126,13 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
         , faturasFil.map(function(f, i) {
             var sitCor = { prevista: C.sub, emitida: C.blue, paga: C.green, vencida: C.red }[f.sit] || C.sub;
             var sitPastel = _flagCorPastel(sitCor);
-            var emitivel = !f.foiEmitida && (f.sit === "prevista" || f.sit === "vencida");
+            /* [relatorio-posicao] Qualquer fatura pode entrar no relatório —
+               antes só a "emitível" era clicável, porque a seleção servia pra
+               emitir. Numa posição, escolher só as previstas não faz sentido. */
             var isSel = !!fatSel[f.refKey];
-            return React.createElement('div', { key: f.c.id, onClick: (fatSelMode && emitivel) ? function(){ toggleFatSel(f.refKey); } : undefined, style: Object.assign({ display: "flex", alignItems: "stretch", cursor: (fatSelMode && emitivel) ? "pointer" : "default" }, _flagCardBg()) }
+            return React.createElement('div', { key: f.c.id, onClick: fatSelMode ? function(){ toggleFatSel(f.refKey); } : undefined, style: Object.assign({ display: "flex", alignItems: "stretch", cursor: fatSelMode ? "pointer" : "default" }, _flagCardBg()) }
               , _dateBadgeFlag(f.dtRef || f.dtPag, sitPastel, false, null)
-              , fatSelMode && React.createElement('div', { style: { flexShrink: 0, width: 20, height: 20, borderRadius: 6, border: "2px solid " + (emitivel ? (isSel ? C.blue : C.sub) : C.border), background: isSel ? C.blue : "transparent", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, opacity: emitivel ? 1 : 0.35, alignSelf: "center", margin: "0 4px 0 8px" } }, isSel ? "✓" : "")
+              , fatSelMode && React.createElement('div', { style: { flexShrink: 0, width: 20, height: 20, borderRadius: 6, border: "2px solid " + (isSel ? C.blue : C.sub), background: isSel ? C.blue : "transparent", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, alignSelf: "center", margin: "0 4px 0 8px" } }, isSel ? "✓" : "")
               , React.createElement('div', { style: { minWidth: 0, flex: 1, padding: "13px 8px" } }
                 , React.createElement('div', { style: { fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }
                   , f.cl.nome || "--"
@@ -45168,14 +45149,17 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
               )
             );
           })
-        , faturasFil.length > 0 && React.createElement('div', { className: "lg-card", style: Object.assign({}, CARD, { display: "flex", justifyContent: "space-between", fontWeight: 800 }) }
-          , React.createElement('span', null, "TOTAL (", faturasFil.length, ")")
-          , React.createElement(BRLValue,{v:totalFaturas,weight:400,color:C.green})
+        /* data-no-cm: rodapé de total não é card de gráfico — sem ele o Chart
+           Manager colava uma barra com o título congelado ("TOTAL (42)") em
+           cima de um card que já dizia outra coisa. */
+        , faturasFil.length > 0 && React.createElement('div', { className: "lg-card", 'data-no-cm': "1", style: Object.assign({}, CARD, { display: "flex", justifyContent: "space-between", fontWeight: 800 }) }
+          , React.createElement('span', null, faturasSaida.length === faturasFil.length ? "TOTAL (" + faturasFil.length + ")" : "TOTAL SELECIONADO (" + faturasSaida.length + " de " + faturasFil.length + ")")
+          , React.createElement(BRLValue,{v:totalSaida,weight:400,color:C.green})
         )
       )
       , React.createElement('div', { style: { display: "flex", gap: 8, flexWrap: "wrap" } }
-        , React.createElement('button', { className: bCls(Btn(C.orange)), style: bStyle(Btn(C.orange)), onClick: imprimirFaturas }, "Imprimir Relatório de Faturas")
-        , React.createElement('button', { className: bCls(Btn(C.green)), style: bStyle(Btn(C.green)), onClick: csvFaturas }, "⬇ CSV Faturas")
+        , React.createElement('button', { className: bCls(Btn(C.orange)), style: bStyle(Btn(C.orange)), onClick: imprimirFaturas }, "Imprimir Relatório de Faturas (" + faturasSaida.length + ")")
+        , React.createElement('button', { className: bCls(Btn(C.green)), style: bStyle(Btn(C.green)), onClick: csvFaturas }, "⬇ CSV Faturas (" + faturasSaida.length + ")")
       )
     )
 

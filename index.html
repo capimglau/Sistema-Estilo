@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="f7397df"/>
+<meta name="ag-build" content="3d5cad8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -2633,7 +2633,13 @@ body.dark .graph4-premium-item,body.dim .graph4-premium-item,body.midnight .grap
 /* ══════════════════════════════════════════════════
    EFFECT 10 · SWIPE ROW (swipe-to-reveal actions)
    ══════════════════════════════════════════════════ */
-.ag-swipe-wrap{position:relative;overflow:hidden;}
+/* min-height 48px: a área revelada pelo swipe tem exatamente a altura da
+   linha, e nas listas compactas (prévia de pendências do Orçamento Pessoal,
+   por exemplo) a linha tem ~40px — o ícone e o rótulo do botão ficavam
+   espremidos contra as bordas de cima e de baixo, sem respiro nenhum
+   (reportado por print). 48px também é o alvo de toque mínimo recomendado;
+   linha que já é mais alta não muda em nada. */
+.ag-swipe-wrap{position:relative;overflow:hidden;min-height:48px;}
 /* Ações DIREITA (swipe esquerda → Excluir) */
 .ag-swipe-actions{
   position:absolute;right:0;top:0;bottom:0;
@@ -2648,11 +2654,14 @@ body.dark .graph4-premium-item,body.dim .graph4-premium-item,body.midnight .grap
 }
 .ag-sw-btn{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
-  gap:3px;padding:0 16px;cursor:pointer;
-  font-size:10px;font-weight:700;letter-spacing:0.03em;color:#fff;
+  /* padding vertical + line-height:1 — sem os dois, ícone e texto colavam nas
+     bordas do botão (ver comentário em .ag-swipe-wrap). */
+  gap:3px;padding:6px 14px;cursor:pointer;
+  font-size:10px;font-weight:700;letter-spacing:0.03em;line-height:1;color:#fff;
   border:none;font-family:inherit;
   transition:filter 0.15s ease;
 }
+.ag-sw-btn > span{line-height:1;}
 .ag-sw-btn:active{filter:brightness(0.88);}
 .ag-sw-inner{
   position:relative;z-index:1;
@@ -24344,7 +24353,7 @@ function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel
         return React.createElement('button', { key:i, className:'ag-sw-btn',
             style:{ background:a.color, flex:1 },
             onClick:function(e){ closeSwipe(e); a.fn(); } },
-          React.createElement('span', { style:{fontSize:18} }, a.icon), a.label
+          React.createElement('span', { style:{fontSize:16} }, a.icon), a.label
         );
       })
     ),
@@ -24355,7 +24364,7 @@ function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel
         return React.createElement('button', { key:i, className:'ag-sw-btn',
             style:{ background:a.color, flex:1 },
             onClick:function(e){ closeSwipe(e); a.fn(); } },
-          React.createElement('span', { style:{fontSize:18} }, a.icon), a.label
+          React.createElement('span', { style:{fontSize:16} }, a.icon), a.label
         );
       })
     ),
@@ -38816,6 +38825,35 @@ function PessoalDash({
           setPModal(true);
         };
       }
+      /* Excluir daqui também. Numa ocorrência de recorrência, apagar o
+         template levaria o lançamento fixo de TODOS os meses junto — então a
+         linha-filha do mês, quando existe, é o que se apaga; só quando não há
+         filha é que a exclusão atinge a recorrência inteira, e aí o aviso diz
+         isso com todas as letras antes de confirmar. */
+      function _excluirPrevP(it){
+        return async function(){
+          var _tplX = _itSrc.find(function(x){ return String(x.id) === String(it.id); }) || it;
+          var _emTplX = _tplX.data ? _tplX.data.slice(0,7) : _tplX.mes;
+          var _ehProjX = !!(_tplX.recorrente && _emTplX !== _mes);
+          var _alvoX = _tplX.id, _msgX = 'Excluir "' + (_tplX.descricao || 'lançamento') + '"?';
+          if (_ehProjX) {
+            var _filhoX = _itSrc.find(function(x){
+              return String(x.recorrencia_origem_id) === String(_tplX.id) && (x.data ? x.data.slice(0,7) : x.mes) === _mes;
+            });
+            if (_filhoX) { _alvoX = _filhoX.id; _msgX = 'Excluir o lançamento deste mês de "' + (_tplX.descricao || '') + '"?'; }
+            else _msgX = 'Excluir a recorrência inteira ("' + (_tplX.descricao || '') + '")? Isso remove o lançamento fixo de TODOS os meses.';
+          }
+          if (!window.confirm(_msgX)) return;
+          try {
+            await db.del("orcamento_pessoal", _alvoX);
+            _orcBroadcast({ removido: _alvoX });
+            if (onOrcItensChange) onOrcItensChange(function(p){ return _orcAplicarLocal(p, { removido: _alvoX }); });
+            window.dispatchEvent(new CustomEvent('ag:toast', { detail: { msg: 'Lançamento excluído', type: 'success' } }));
+          } catch(e) {
+            window.dispatchEvent(new CustomEvent('ag:toast', { detail: { msg: 'Erro ao excluir', type: 'error' } }));
+          }
+        };
+      }
       function _listP(items,cor){
         var _mAbrP=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
         function _fD(s){ if(!s) return ''; var d=new Date(s.slice(0,10)+'T00:00:00'); return d.getDate()+' '+_mAbrP[d.getMonth()]; }
@@ -38829,6 +38867,7 @@ function PessoalDash({
             key:it.id||i, onBaixar:_baixarPrevP(it),
             baixarLabel:it.tipo==='receita'?'✅ Receber':'💸 Baixar',
             onEdit:_editarPrevP(it), editLabel:'Editar',
+            onDelete:_excluirPrevP(it), deleteLabel:'Excluir',
             wrapStyle:{borderTop:'1px solid '+C.borderSoft}
           },_inner);
         });

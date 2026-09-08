@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="c3e55d1"/>
+<meta name="ag-build" content="b617cd2"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -38883,8 +38883,21 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
           var _filhoDl = itens.find(function(x){ return String(x.recorrencia_origem_id) === String(_itDl.id) && efetivoMes(x) === _mesDl; });
           if (_filhoDl) { setForm(Object.assign({}, _filhoDl)); setEdit(_filhoDl.id); }
           else {
-            var _diaDl = _itDl.data ? _itDl.data.slice(8, 10) : null;
-            setForm(Object.assign({}, _itDl, { id: undefined, data: _diaDl ? _mesDl + '-' + _diaDl : _itDl.data, mes: _mesDl, recorrente: false, recorrencia_origem_id: _itDl.id }));
+            /* A ocorrência do mês NASCE LIMPA. Copiar o template cru trazia
+               junto o `status`/`data_pagamento` da ÚLTIMA baixa dele — uma
+               recorrente quitada em janeiro abria a ocorrência de março já
+               marcada "pago em 10/01", e salvar assim registrava uma baixa
+               que nunca aconteceu. É a mesma normalização que a projeção de
+               `_itensAtrasados` e o `_projetar` do PessoalDash já fazem.
+               A data sai de projetarDataOP (não de um slice do dia): dia 31
+               num mês de 30 vira "2026-04-31", data inválida. */
+            setForm(Object.assign({}, _itDl, {
+              id: undefined,
+              data: projetarDataOP(_itDl.data, _mesDl) || _itDl.data,
+              mes: _mesDl,
+              status: 'previsto', data_pagamento: null,
+              recorrente: false, recorrencia_origem_id: _itDl.id
+            }));
             setEdit(null);
           }
         } else { setForm(Object.assign({}, _itDl)); setEdit(_itDl.id); }
@@ -39088,7 +39101,12 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
       if(isRecorrente){
         var _filhoEd = itens.find(function(x){ return String(x.recorrencia_origem_id)===String(it.id)&&efetivoMes(x)===filtroMes; });
         if(_filhoEd){ setForm(Object.assign({},_filhoEd)); setEdit(_filhoEd.id); }
-        else { setForm(Object.assign({}, it, { id: undefined, data: dataExib||it.data, mes: filtroMes, recorrente: false, recorrencia_origem_id: it.id })); setEdit(null); }
+        /* status/data_pagamento ZERADOS: `it` aqui é o TEMPLATE cru (ver
+           itensRecorrentes — recorrente de mês anterior entra sem projeção),
+           e ele carrega a última baixa que teve. Sem zerar, a ocorrência
+           deste mês abria já marcada "pago" com a data de meses atrás e
+           salvar gravava uma baixa que nunca aconteceu. */
+        else { setForm(Object.assign({}, it, { id: undefined, data: dataExib||it.data, mes: filtroMes, status: 'previsto', data_pagamento: null, recorrente: false, recorrencia_origem_id: it.id })); setEdit(null); }
       } else { setForm(Object.assign({},it)); setEdit(it.id); }
       setModal(true);
     };
@@ -40501,8 +40519,21 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
     /* ── Modal de lançamento ── */
 
-    , React.createElement(Modal, {open:modal,onClose:function(){setModal(false);},title:edit?'Editar Lançamento':'Novo Lançamento'},
+    /* Título: "Editar" tem que continuar dizendo EDITAR. Uma ocorrência de
+       recorrência que ainda não tem linha própria no mês é salva como
+       registro novo (nunca se patcha o template — ver ItemCard._edit), mas
+       para quem clicou em "✏️ Editar" num lançamento de março que está na
+       tela, ler "Novo Lançamento" é a mesma coisa que a edição não ter
+       aberto — foi exatamente assim que o usuário reportou. O `edit` continua
+       null (é isso que faz o save criar a linha do mês); só o rótulo passa a
+       contar a verdade, e a nota abaixo explica o que salvar vai fazer. */
+    , React.createElement(Modal, {open:modal,onClose:function(){setModal(false);},
+        title:(edit || form.recorrencia_origem_id) ? 'Editar Lançamento' : 'Novo Lançamento'},
       React.createElement('div', {style:{display:'flex',flexDirection:'column',gap:14}},
+        (!edit && form.recorrencia_origem_id) && React.createElement('div',{style:{fontSize:11.5,lineHeight:1.45,color:C.sub,background:C.purple+'10',border:'1px solid '+C.purple+'30',borderRadius:12,padding:'10px 12px'}},
+          React.createElement('span',{style:{fontWeight:800,color:C.purple}},'🔁 Ocorrência de '+(function(){ var m=form.mes||(form.data||'').slice(0,7); if(!m) return 'um mês'; var t=new Date(m+'-15').toLocaleString('pt-BR',{month:'long',year:'numeric'}); return t.charAt(0).toUpperCase()+t.slice(1); })()),
+          ' — salvar grava o lançamento deste mês. A recorrência dos outros meses fica como está.'
+        ),
         /* Tipo */
         React.createElement('div', {style:{display:'flex',gap:8}},
           ['despesa','receita'].map(function(t){

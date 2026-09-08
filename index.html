@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="a49b2a0"/>
+<meta name="ag-build" content="16b1203"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -24387,12 +24387,18 @@ function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel
   );
 }
 
-function Lbl({ label, children, flex, labelColor }) {
+function Lbl({ label, children, flex, labelColor, style }) {
   /* Label sempre acima do campo — garante visibilidade em todos os temas.
      className "ag-field" é o gancho que o CSS mobile (.lg-modal-mobile-full)
      usa pra empilhar os campos em tela cheia, um por linha, no padrão iOS —
      ver comentário perto de .lg-modal-mobile-full no <style>. */
-  return React.createElement('div', { className: "ag-field", style: { flex: flex, minWidth: 0 } },
+  /* `style` era ACEITO pelos chamadores e IGNORADO aqui. Os cinco lugares que
+     passam largura por style são justamente o filtro do relatório de Faturas
+     ("De", "Até", "Cliente", "Situação", "Ordenar"): eles pedem
+     `flex:1, minWidth:120` e recebiam `flex:undefined, minWidth:0` — os campos
+     não dividiam a linha e encolhiam até o texto ficar cortado (reportado por
+     print). O style do chamador entra por último e manda. */
+  return React.createElement('div', { className: "ag-field", style: Object.assign({ flex: flex, minWidth: 0 }, style || {}) },
     React.createElement('div', { style: labelColor ? { fontSize: 13, fontWeight: 700, color: labelColor, marginBottom: 5 } : { fontSize: 13, fontWeight: 600, color: "var(--c-text)", opacity: 0.6, marginBottom: 5 } }, label),
     children
   );
@@ -44824,10 +44830,25 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   var porStatus = ["disponivel", "alugado", "manutencao", "inativo", "vendido"].map(st => ({ label: st, count: veiculos.filter(v => statusEfetivoVeiculo(v, contratos) === st).length }));
 
   var _hojeRelat = _brNow().toISOString().split("T")[0];
+  /* Índices montados UMA vez. Antes, para cada contrato o código varria as
+     listas inteiras de receitas, clientes e veículos — custo contratos ×
+     receitas, refeito a cada tecla digitada no filtro. Numa base grande isso
+     trava a tela por segundos no celular, e travar por segundos é o caminho
+     mais curto para o iOS matar a PWA (o usuário vê "o app fechou"). */
+  var _recPorCt = {};
+  (receitas || []).forEach(function(r){
+    var _rf = r && r.ref_fatura;
+    if (typeof _rf !== "string") return;
+    var _m = _rf.match(/^fat_(\d+)_/);
+    if (!_m) return;
+    (_recPorCt[_m[1]] = _recPorCt[_m[1]] || []).push(r);
+  });
+  var _clPorId = {}; (clientes || []).forEach(function(x){ _clPorId[String(x.id)] = x; });
+  var _vePorId = {}; (veiculos || []).forEach(function(x){ _vePorId[String(x.id)] = x; });
   var _fatList = (contratos || []).filter(function(c){ return c.status !== "cancelado"; }).map(function(c) {
-    var cl = (clientes||[]).find(function(x){ return x.id == c.cliente_id; }) || {};
-    var ve = (veiculos||[]).find(function(x){ return x.id == c.veiculo_id; }) || {};
-    var recs = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
+    var cl = _clPorId[String(c.cliente_id)] || {};
+    var ve = _vePorId[String(c.veiculo_id)] || {};
+    var recs = _recPorCt[String(c.id)] || [];
     var recPrinc = recs.find(function(r){ return r.status==="recebido"; }) || recs.find(function(r){ return r.status==="emitida"; }) || recs[0] || null;
     var dtRef = c.previsao_pagamento || c.data_fim || "";
     var dtPag = (recPrinc && recPrinc.data_pagamento) || c.data_pagamento || null;
@@ -44846,8 +44867,12 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
              foiEmitida: foiEmitida, recId: recPrinc ? recPrinc.id : null, refKey: refKey };
   });
   var faturasFil = _fatList.filter(function(f) {
-    if (de && f.dtFiltro && f.dtFiltro < de) return false;
-    if (ate && f.dtFiltro && f.dtFiltro > ate) return false;
+    /* Sem data não está dentro de janela nenhuma. O `f.dtFiltro &&` de antes
+       fazia toda fatura sem previsão/vencimento passar por QUALQUER período
+       escolhido — filtrar por agosto trazia junto contratos sem data. */
+    if ((de || ate) && !f.dtFiltro) return false;
+    if (de && f.dtFiltro < de) return false;
+    if (ate && f.dtFiltro > ate) return false;
     if (fatClientes.length && fatClientes.indexOf(String(f.c.cliente_id)) < 0) return false;
     if (fatSit === "emitida") { if (!f.foiEmitida) return false; }
     else if (fatSit && f.sit !== fatSit) return false;

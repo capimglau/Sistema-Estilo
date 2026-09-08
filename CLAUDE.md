@@ -28,8 +28,13 @@ CLAUDE.md
   símbolo extraído e usado COMO ícone — não repita o emoji esperando que ele
   apareça no texto. Antes disso o botão saía com o emoji duas vezes e o texto
   cortado dentro dos 72px, a ponto de não dar pra saber qual era a ação.
-  Toda linha com "Baixar" deve oferecer **"Editar" ao lado**: um único botão
-  revelado no swipe não se identifica sozinho.
+  Toda linha com "Baixar" deve oferecer **"Editar" e "Excluir"**: um único
+  botão revelado no swipe não se identifica sozinho. Baixar/Editar saem no
+  swipe ←, Excluir no swipe →.
+- **Altura mínima de linha com swipe: 48px** (`.ag-swipe-wrap`). A área
+  revelada tem exatamente a altura da linha — em lista compacta (~40px) o
+  ícone e o rótulo do botão ficavam colados nas bordas. 48px também é o alvo
+  de toque mínimo recomendado.
 
 ## Atualizar o ícone PWA via anexo
 

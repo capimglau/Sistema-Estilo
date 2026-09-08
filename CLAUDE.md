@@ -114,6 +114,63 @@ Regras permanentes:
 
 Boa parte das rodadas de "não resolveu" desta investigação eram, na real, o aparelho do usuário preso numa versão antiga em cache — não um problema no código do ícone em si. Achado: `sw.js` tinha uma busca "network-first" que chamava `fetch(request)` puro (modo de cache **default**), que podia ser respondida por um cache HTTP do navegador/CDN sem nunca ir na rede de verdade, mesmo rotulada como "vai na rede". Corrigido forçando `{ cache: "no-store" }` nas buscas de navegação e de revalidação de estáticos. **Ao investigar qualquer bug de PWA que "não reflete a mudança" mesmo após o deploy, suspeitar de cache antes de suspeitar do código** — confirmar a versão em Config → Versão do app.
 
+## Nada fora do React muda um nó de lugar — `[cm-sem-mover]` — PERMANENTE
+
+O app tem código que percorre o DOM e decora o que o React desenhou — o
+**Chart Manager** (`CHART MANAGER v2`, no fim do `index.html`: minimizar,
+duplicar, mover card de aba, ocultar). Ele fazia `body.appendChild(card)`:
+arrancava o `.lg-card` do container e enfiava dentro de um
+`<div class="cm-body">`.
+
+O React continuava achando que aquele card era **filho direto do container
+original**. No render seguinte em que a lista **crescia**, ele chamava
+`container.insertBefore(novaLinha, card)` — e o navegador respondia
+`NotFoundError: The object can not be found here.`, que na tela virava
+**"Algo deu errado"** e, no iPhone, **o app fechando sozinho**.
+
+Sintoma reportado: no relatório de **Faturas**, escolher um **mês anterior**
+fechava o app; **setembro** (mês corrente) não. Não era a data nem o seletor:
+mês anterior **aumenta** a lista, e o React precisa inserir linhas **antes** do
+card "TOTAL" que já não estava mais lá; o mês corrente só **encolhia** a lista
+(só remoções), e remoção não passa por `insertBefore`. Era um bug latente em
+**toda** lista do app que cresce, não só em Faturas.
+
+**Regra permanente: código não-React pode LER o DOM e pode ACRESCENTAR filhos,
+mas nunca pode MOVER nem REMOVER um nó que o React renderizou.**
+
+- Acrescentar filho a um nó do React é tolerado — o React só mexe nos filhos
+  que ele mesmo criou, e o nó extra nunca é referência de `insertBefore`.
+- Mover ou remover um nó do React é fatal, sempre, mesmo que "funcione" na
+  tela em que foi testado. Só quebra no primeiro render que insere um irmão.
+
+Como o Chart Manager ficou:
+
+- **O card é o próprio wrapper** (`card.classList.add('cm-wrapper','cm-inplace')`).
+  A barra de ferramentas entra como **primeiro filho** do card e a barra de
+  "minimizado" como **último** — filhos extra, nunca uma nova casa pro card.
+- **Minimizar** põe a classe no próprio card
+  (`.cm-wrapper.cm-inplace.cm-collapsed > *:not(.cm-toolbar):not(.cm-collapsed-bar)`),
+  não num `.cm-body` que não existe mais.
+- **Ocultar/mover** passa por **`cmSumir(wrapper)`**: em card real ele só faz
+  `display:none`; `wrapper.remove()` num card real arranca do DOM um nó que o
+  React ainda espera encontrar.
+- **Duplicar/mover para outra aba** clona o HTML (`cmConteudoHTML`) e insere um
+  **wrapper sintético** (`cmWrapperSintetico`) — nó que o React não conhece e
+  que pode ser movido à vontade.
+- **Arrastar para reordenar ficou desligado no card real** (`_real` em
+  `bindWrapper`): reordenar é mover de lugar, e não há como fazer isso com um
+  nó do React. Só o card duplicado/movido continua arrastável.
+
+Guardas no `tests/run.js` (grupo *"Chart Manager não pode mover nó do React"*):
+`body.appendChild(card)` e `wrapper.remove()` **zerados** no bloco, e presença
+de `cm-inplace`, `cmSumir` e da trava de arrastar. Ao mexer nesse bloco, rodar
+`node tests/run.js` antes de declarar concluído.
+
+**Ao escrever qualquer código novo que ande pelo DOM** (decorador, observer,
+polyfill, "melhoria visual" em JS puro): só acrescente. Se a ideia exige mover
+um elemento renderizado pelo React, ela está errada — resolva no React ou por
+CSS (`order`, `display`), nunca movendo o nó.
+
 ## SQL de migração — sempre mostrar para copiar
 
 Sempre que uma tarefa criar ou alterar um arquivo em `sql/` (nova tabela, coluna,

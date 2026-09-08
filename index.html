@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="b617cd2"/>
+<meta name="ag-build" content="cbcc458"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -38164,7 +38164,11 @@ async function baixarOrcPessoalItem(orcItens, itemId, mesAlvo, dataPag) {
      resolvendo/duplicando o de setembro, e o card de agosto nunca podia
      ser quitado de verdade (bug reportado repetidamente). */
   var _mesAlvoBx = mesAlvo || _mesAtualBx;
-  var _itBx = (orcItens || []).find(function(x){ return x.id === itemId; });
+  /* String(): ids vindos do banco nem sempre chegam com o mesmo tipo dos que
+     circulam na tela (FK serializada como texto, id vindo de um dataset/DOM).
+     O resto do arquivo já compara assim — aqui ficou de fora, e um `===` que
+     falha aqui devolve null, que é uma baixa que não acontece em silêncio. */
+  var _itBx = (orcItens || []).find(function(x){ return String(x.id) === String(itemId); });
   if (!_itBx) return null;
   var _stBx = _itBx.tipo === 'receita' ? 'recebido' : 'pago';
   var _emBx = _itBx.data ? _itBx.data.slice(0, 7) : _itBx.mes;
@@ -38173,7 +38177,7 @@ async function baixarOrcPessoalItem(orcItens, itemId, mesAlvo, dataPag) {
     /* Já existe uma ocorrência deste mês pra essa recorrência (criada por
        outro caminho da UI)? Nunca duplicar — patcha a existente. */
     var _jaExisteBx = (orcItens || []).find(function(x){
-      return x.recorrencia_origem_id === _itBx.id && (x.data ? x.data.slice(0, 7) : x.mes) === _mesAlvoBx;
+      return String(x.recorrencia_origem_id) === String(_itBx.id) && (x.data ? x.data.slice(0, 7) : x.mes) === _mesAlvoBx;
     });
     if (_jaExisteBx) {
       var _updExBx = await db.patch("orcamento_pessoal", _jaExisteBx.id, { status: _stBx, data_pagamento: _hjBx });
@@ -39058,35 +39062,37 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     var _opHoje   = !_quitado && _dataOP === _hoje;
     var _opClass  = _opVencida?"ag-expirado":_opHoje?"ag-urgent":"";
     var showBaixar = isRecorrente||(it.status!=="pago"&&it.status!=="recebido");
-    var _baixar = function(){
-      /* Abre o modal pré-preenchido para o usuário confirmar/ajustar a data de pagamento */
-      var novoStatus = it.tipo==="receita"?"recebido":"pago";
-      var dataProj   = isRecorrente && it.data ? projetarDataOP(it.data, filtroMes) : it.data;
-      var hoje       = _brNow().toISOString().split("T")[0];
-      var baseForm   = Object.assign({}, it, {
-        status:         novoStatus,
-        data_pagamento: it.data_pagamento || hoje,
-        data:           dataProj || it.data,
-        mes:            filtroMes
-      });
-      if(isRecorrente){
-        /* Para recorrentes: editar filho existente ou criar novo */
-        var _filhoExist = itens.find(function(x){ return String(x.recorrencia_origem_id)===String(it.id)&&efetivoMes(x)===filtroMes; });
-        if(_filhoExist){
-          setForm(Object.assign({},_filhoExist)); setEdit(_filhoExist.id);
-        } else {
-          setForm(Object.assign({}, baseForm, {
-            id:                   undefined,
-            recorrente:           false,
-            recorrencia_origem_id: it.id
-          }));
-          setEdit(null);
-        }
-      } else {
-        setForm(baseForm);
-        setEdit(it.id);
-      }
-      setModal(true);
+    /* "💸 Baixar" tem que BAIXAR. Este era o único caminho de baixa do
+       orçamento pessoal que, em vez de dar baixa, abria o formulário inteiro
+       de lançamento pré-preenchido — o usuário tocava Baixar e recebia uma
+       janela de edição. Pior no caso recorrente com a ocorrência do mês já
+       criada: caía no ramo do filho existente, que abria o formulário SEM
+       nem marcar como pago, ou seja, tocar em Baixar não mudava
+       absolutamente nada. Foi o "baixar não funciona" relatado.
+
+       Agora pergunta só a data (mesmo prompt de _agBaixarP) e delega pra
+       baixarOrcPessoalItem — a função única de baixa, que já resolve
+       template × linha-filha × mês-alvo (CLAUDE.md · "Item recorrente — UMA
+       função só"). Quem quiser mexer em valor/categoria continua tendo o
+       "Editar" ao lado. */
+    var _baixar = async function(){
+      var _hjB = _brNow().toISOString().split("T")[0];
+      var _ehRecB = it.tipo === "receita";
+      var _pr = window.__agPrompt
+        ? await window.__agPrompt({ title: _ehRecB ? "Receber" : "Baixar", icon: _ehRecB ? "💰" : "💸",
+            label1: _ehRecB ? "Data do recebimento" : "Data do pagamento", type1: "date", default1: _hjB })
+        : { ok: true, v1: _hjB };
+      if (!_pr || !_pr.ok) return;
+      try {
+        var _rb = await baixarOrcPessoalItem(itens, it.id, filtroMes, _pr.v1);
+        /* Nunca sair em silêncio: sem isto, um lançamento que a função não
+           encontrasse fazia o toque não produzir efeito NENHUM — nem baixa,
+           nem aviso — e não havia como o usuário saber que algo falhou. */
+        if (!_rb) { toast("Não encontrei este lançamento para baixar", "error"); return; }
+        _orcBroadcast(_rb);
+        setItens(function(p){ return _orcAplicarLocal(p, _rb); });
+        toast(_ehRecB ? "✅ Recebido!" : "💸 Baixado!");
+      } catch(e) { toast("Erro ao salvar", "error"); }
     };
     var _estornar = async function(){
       if(it.recorrencia_origem_id){await db.del("orcamento_pessoal",it.id);setItens(p=>p.filter(x=>x.id!==it.id));toast("Estornado!");}
@@ -39827,7 +39833,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
                reportado: baixa "some" da lista mas continua "a pagar" no
                painel do dia. */
             var _r = await baixarOrcPessoalItem(itens, it.id, efetivoMes(it));
-            if (!_r) return;
+            if (!_r) { toast("Não encontrei este lançamento para baixar", "error"); return; } // nunca sair em silêncio
             _orcBroadcast(_r); // [orc-sync] Agenda/Dashboard/prévia atualizam junto
             setItens(function(p){ return _orcAplicarLocal(p, _r); });
             toast("💸 Baixado!");

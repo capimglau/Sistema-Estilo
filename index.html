@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="cbcc458"/>
+<meta name="ag-build" content="eea4db3"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -26033,7 +26033,7 @@ function statusEfetivoVeiculo(veiculo, contratos) {
 }
 
 
-function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, reservas, multas, manutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, lembretes, setLembretes, setTab, setFinDeepLink, setCtDeepLink, setMtDeepLink, orcItens, setOrcItens, desktop, empresa, toast, setOperacionalSubTab }) {
+function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, reservas, multas, manutencoes, setManutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, lembretes, setLembretes, setTab, setFinDeepLink, setCtDeepLink, setMtDeepLink, orcItens, setOrcItens, desktop, empresa, toast, setOperacionalSubTab }) {
   var RX = getRX(desktop);
   const hoje = _hojeISO();
   const mesAtual = hoje.slice(0, 7);
@@ -26749,14 +26749,32 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
     } else if (ev.type === "desp") {
       _r = await window.__agPrompt({ title:"Baixar Despesa", icon:"💸", label1:"Data do pagamento", type1:"date", default1:dtHoje });
       if (!_r || !_r.ok) return;
-      var despAntes = (despesas||[]).find(function(x){ return x.id === ev.id; });
+      /* [baixa-unica] Delegado a baixarDespesaItem — este caminho fazia um
+         PATCH cru: recorrente era quitada NO TEMPLATE (o mês real seguia
+         pendente em todo cálculo que reprojeta a recorrência) e a manutenção
+         vinculada ficava pendente para sempre. */
+      var despAntes = (despesas||[]).find(function(x){ return String(x.id) === String(ev.id); });
       var statusOriginalDesp = despAntes ? despAntes.status : null;
       var dataPagOriginalDesp = despAntes ? despAntes.data_pagamento : null;
-      await db.patch("despesas", ev.id, { status:"pago", data_pagamento:_r.v1 });
-      setDespesas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status:"pago",data_pagamento:_r.v1}):x; }); });
+      var _rbDesp = await baixarDespesaItem(despesas, ev.id, _r.v1);
+      if (!_rbDesp) { toast("Não encontrei esta despesa para baixar", "error"); return; }
+      setDespesas(function(p){ return _orcAplicarLocal(p, _rbDesp); });
+      if (_rbDesp.manutencao && setManutencoes) setManutencoes(function(p){ return _orcAplicarLocal(p, _rbDesp.manutencao); });
       window._agUndo("✅ Despesa baixada!", async function(){
-        await db.patch("despesas", ev.id, { status: statusOriginalDesp, data_pagamento: dataPagOriginalDesp });
-        setDespesas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status: statusOriginalDesp, data_pagamento: dataPagOriginalDesp}):x; }); });
+        /* Desfazer tem que desfazer o que FOI feito: quando a baixa criou a
+           linha-filha do mês, restaurar status no template não devolveria
+           nada ao lugar — apaga-se a linha criada. */
+        if (_rbDesp.novo) {
+          await db.del("despesas", _rbDesp.novo.id);
+          setDespesas(function(p){ return _orcAplicarLocal(p, { removido: _rbDesp.novo.id }); });
+          return;
+        }
+        var _alvoUndo = _rbDesp.id;
+        var _antesUndo = (despesas||[]).find(function(x){ return String(x.id) === String(_alvoUndo); });
+        var _stU = _alvoUndo === ev.id ? statusOriginalDesp : (_antesUndo ? _antesUndo.status : "previsto");
+        var _dpU = _alvoUndo === ev.id ? dataPagOriginalDesp : (_antesUndo ? _antesUndo.data_pagamento : null);
+        await db.patch("despesas", _alvoUndo, { status: _stU, data_pagamento: _dpU });
+        setDespesas(function(p){ return _orcAplicarLocal(p, { id: _alvoUndo, patch: { status: _stU, data_pagamento: _dpU } }); });
       });
     } else if (ev.type === "conta") {
       _r = await window.__agPrompt({ title:"Baixar Conta", icon:"💸", label1:"Data do pagamento", type1:"date", default1:dtHoje });
@@ -26770,18 +26788,42 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         await db.patch("contas", ev.id, { status: statusOriginalConta, data_pagamento: dataPagOriginalConta });
         setContas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status: statusOriginalConta, data_pagamento: dataPagOriginalConta}):x; }); });
       });
-    } else if (ev.type === "receita") {
+    } else if (ev.type === "receita" || ev.type === "rec") {
       _r = await window.__agPrompt({ title:"Receber Pagamento", icon:"💰", label1:"Data do pagamento", type1:"date", default1:dtHoje });
       if (!_r || !_r.ok) return;
-      var recAntes = (receitas||[]).find(function(x){ return x.id === ev.id; });
+      /* [baixa-unica] Delegado a baixarReceitaItem — este caminho não
+         marcava o contrato da fatura como pago, então Contratos e Receitas
+         passavam a mostrar números diferentes para o mesmo dinheiro. */
+      var recAntes = (receitas||[]).find(function(x){ return String(x.id) === String(ev.id); });
       var statusOriginalRec = recAntes ? recAntes.status : null;
       var dataPagOriginalRec = recAntes ? recAntes.data_pagamento : null;
-      await db.patch("receitas", ev.id, { status:"recebido", data_pagamento:_r.v1 });
-      setReceitas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status:"recebido",data_pagamento:_r.v1}):x; }); });
+      var ctAntesRec = null;
+      var _rbRec = await baixarReceitaItem(receitas, contratos, ev.id, _r.v1);
+      if (!_rbRec) { toast("Não encontrei esta receita para baixar", "error"); return; }
+      if (_rbRec.contrato) ctAntesRec = (contratos||[]).find(function(c){ return String(c.id) === String(_rbRec.contrato.id); }) || null;
+      setReceitas(function(p){ return _orcAplicarLocal(p, _rbRec); });
+      if (_rbRec.contrato && setContratos) setContratos(function(p){ return _orcAplicarLocal(p, _rbRec.contrato); });
       window._agUndo("✅ Recebimento registrado!", async function(){
         await db.patch("receitas", ev.id, { status: statusOriginalRec, data_pagamento: dataPagOriginalRec });
-        setReceitas(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,{status: statusOriginalRec, data_pagamento: dataPagOriginalRec}):x; }); });
+        setReceitas(function(p){ return _orcAplicarLocal(p, { id: ev.id, patch: { status: statusOriginalRec, data_pagamento: dataPagOriginalRec } }); });
+        /* O contrato só foi tocado por causa desta receita — desfazer um sem
+           o outro deixaria justamente a divergência que a baixa corrigiu. */
+        if (ctAntesRec && setContratos) {
+          var _pu = { status_pagamento: ctAntesRec.status_pagamento, data_pagamento: ctAntesRec.data_pagamento };
+          try {
+            await db.patch("contratos", ctAntesRec.id, _pu);
+            setContratos(function(p){ return _orcAplicarLocal(p, { id: ctAntesRec.id, patch: _pu }); });
+          } catch(e) { console.warn("desfazer contrato da fatura", e); }
+        }
       });
+    } else {
+      /* Tipo desconhecido = botão morto. Foi o que aconteceu com "rec": o
+         painel de Receitas avulsas do dia chamava _agBaixar({type:"rec"}) e
+         a função só conhecia "receita", então o "Receber" não fazia NADA —
+         sem baixa, sem erro, sem pista. Um caminho de baixa jamais pode
+         terminar em silêncio. */
+      console.warn("_agBaixar: tipo não reconhecido", ev && ev.type);
+      toast("Não consegui baixar por aqui — avise o suporte (tipo: " + (ev && ev.type) + ")", "error");
     }
   }
 
@@ -38260,6 +38302,90 @@ function useOrcSync(setLista, pularNulo) {
   }, []);
 }
 
+/* ═══ [baixa-unica] Baixa de DESPESA e de RECEITA — uma função para cada ═══
+
+   Mesma doutrina de baixarOrcPessoalItem: a REGRA de baixa mora num lugar só,
+   e cada tela apenas aplica o resultado no estado dela. Antes desta função a
+   regra estava escrita duas vezes — a completa no Financeiro
+   (_baixarDespesaFluxo/_baixarReceitaFluxo) e uma versão pela metade no
+   Início (_agBaixar, usado pelos painéis de pendências e pelas listas do
+   Dashboard). As duas divergiam em coisas que valem dinheiro:
+
+     • despesa RECORRENTE: o Financeiro cria a linha-filha do mês; o Início
+       dava PATCH no template — o mesmo erro que já custou 5 rodadas no
+       orçamento pessoal (a baixa "some" da tela e o mês real segue pendente
+       em todo cálculo que reprojeta a recorrência);
+     • despesa de MANUTENÇÃO: o Financeiro marca a manutenção como paga
+       junto; o Início deixava a manutenção pendente para sempre;
+     • receita de FATURA (ref_fatura): o Financeiro marca o contrato como
+       pago junto; o Início deixava o contrato em aberto, então as telas de
+       Contratos e Receitas passavam a mostrar números diferentes.
+
+   Retorno normalizado, igual ao de baixarOrcPessoalItem, para o chamador
+   aplicar com _orcAplicarLocal (a função é genérica apesar do nome
+   histórico): {novo} | {id, patch}, mais os vínculos em `manutencao` e
+   `contrato` quando houver. */
+async function baixarDespesaItem(despesas, despesaId, dataPag) {
+  var _hjD = dataPag ? String(dataPag).slice(0, 10) : _brNow().toISOString().slice(0, 10);
+  var _d = (despesas || []).find(function(x){ return String(x.id) === String(despesaId); });
+  if (!_d) return null;
+  if (_d.recorrente) {
+    /* Recorrente: a baixa é do MÊS, nunca do cadastro. Mesmo mês-alvo que o
+       Financeiro sempre usou (o mês da data de pagamento informada). */
+    var _diaD = (_d.data || "").slice(8, 10) || "01";
+    var _origemD = _d.recorrencia_origem_id || _d.id;
+    var _mesPagoD = _hjD.slice(0, 7);
+    var _jaD = (despesas || []).find(function(x){
+      return String(x.recorrencia_origem_id) === String(_origemD) && (x.data || "").slice(0, 7) === _mesPagoD;
+    });
+    if (_jaD) {
+      var _updJa = await db.patch("despesas", _jaD.id, { status: "pago", data_pagamento: _hjD });
+      return { id: _jaD.id, patch: _updJa || { status: "pago", data_pagamento: _hjD } };
+    }
+    var _novaD = await db.post("despesas", {
+      descricao: _d.descricao, categoria: _d.categoria, veiculo_id: _d.veiculo_id || null,
+      valor: _d.valor, data: _mesPagoD + "-" + _diaD,
+      status: "pago", data_pagamento: _hjD,
+      recorrente: false, recorrencia_origem_id: _origemD,
+      observacoes: _d.observacoes || null
+    });
+    return { novo: _novaD };
+  }
+  var _updD = await db.patch("despesas", _d.id, { status: "pago", data_pagamento: _hjD });
+  var _resD = { id: _d.id, patch: _updD || { status: "pago", data_pagamento: _hjD } };
+  if (_d.manutencao_id) {
+    try {
+      var _umD = await db.patch("manutencao", _d.manutencao_id, { status_financeiro: "pago", data_pagamento: _hjD });
+      _resD.manutencao = { id: _d.manutencao_id, patch: _umD || { status_financeiro: "pago", data_pagamento: _hjD } };
+    } catch(e) { console.warn("sincronizar manutenção da despesa", e); }
+  }
+  return _resD;
+}
+
+async function baixarReceitaItem(receitas, contratos, receitaId, dataPag) {
+  var _hjR = dataPag ? String(dataPag).slice(0, 10) : _brNow().toISOString().slice(0, 10);
+  var _r = (receitas || []).find(function(x){ return String(x.id) === String(receitaId); });
+  if (!_r) return null;
+  var _updR = await db.patch("receitas", _r.id, { status: "recebido", data_pagamento: _hjR });
+  var _resR = { id: _r.id, patch: _updR || { status: "recebido", data_pagamento: _hjR } };
+  /* Receita de fatura (ref_fatura "fat_<contrato>_<mes>"): receber a fatura é
+     receber o contrato. Sem isto, Contratos e Receitas mostram totais
+     diferentes para o mesmo dinheiro. */
+  if (_r.ref_fatura) {
+    var _mR = String(_r.ref_fatura).match(/^fat_(\d+)_/);
+    if (_mR) {
+      var _ctR = (contratos || []).find(function(c){ return String(c.id) === _mR[1]; });
+      if (_ctR && _ctR.status_pagamento !== "pago") {
+        try {
+          await db.patch("contratos", _ctR.id, { status_pagamento: "pago", data_pagamento: _hjR });
+          _resR.contrato = { id: _ctR.id, patch: { status_pagamento: "pago", data_pagamento: _hjR } };
+        } catch(e) { console.warn("sincronizar contrato da fatura", e); }
+      }
+    }
+  }
+  return _resR;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  PessoalDash v5 — Template 4 (header gradient) + Template 5 (timeline)
 //  com previsão de despesas e receitas
@@ -41199,30 +41325,14 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         var umM = await db.patch("manutencao", mn.id, { status_financeiro: "pago", data_pagamento: dt });
         setManutencoes(p => p.map(x => x.id==mn.id ? Object.assign({},x,umM) : x));
         toast("✅ Manutenção baixada!");
-      } else if (d.recorrente) {
-        var _diaRec = (d.data || "").slice(8,10) || "01";
-        var _origemId = d.recorrencia_origem_id || d.id;
-        var _mesPagoRec = dt.slice(0,7);
-        var _jaExisteRec = despesas.find(function(x){ return x.recorrencia_origem_id == _origemId && (x.data||"").slice(0,7) === _mesPagoRec; });
-        if (_jaExisteRec) {
-          var upd = await db.patch("despesas", _jaExisteRec.id, { status: "pago", data_pagamento: dt });
-          setDespesas(p => p.map(x => x.id === _jaExisteRec.id ? Object.assign({}, x, upd) : x));
-        } else {
-          var _paiId = d.recorrencia_origem_id || d.id;
-          var novaInst = await db.post("despesas", {
-            descricao: d.descricao, categoria: d.categoria, veiculo_id: d.veiculo_id || null,
-            valor: d.valor, data: _mesPagoRec + "-" + _diaRec,
-            status: "pago", data_pagamento: dt,
-            recorrente: false, recorrencia_origem_id: _paiId,
-            observacoes: d.observacoes || null
-          });
-          setDespesas(p => [novaInst].concat(p));
-        }
-        toast("✅ Despesa baixada!");
       } else {
-        var upd2 = await db.patch("despesas", d.id, { status: "pago", data_pagamento: dt });
-        setDespesas(p => p.map(x => x.id === d.id ? Object.assign({}, x, upd2) : x));
-        if (d.manutencao_id) { try { var um = await db.patch("manutencao", d.manutencao_id, { status_financeiro: "pago", data_pagamento: dt }); setManutencoes(p => p.map(x => x.id==d.manutencao_id ? Object.assign({},x,um) : x)); } catch(e){ console.warn(e); } }
+        /* [baixa-unica] Regra de baixa (recorrente vira linha-filha do mês,
+           avulsa dá patch e arrasta a manutenção vinculada) mora em
+           baixarDespesaItem — aqui só se aplica o resultado. */
+        var _rbD = await baixarDespesaItem(despesas, d.id, dt);
+        if (!_rbD) { toast("Não encontrei esta despesa para baixar"); return; }
+        setDespesas(p => _orcAplicarLocal(p, _rbD));
+        if (_rbD.manutencao) setManutencoes(p => _orcAplicarLocal(p, _rbD.manutencao));
         toast("✅ Despesa baixada!");
       }
     } catch(e) { toast("❌ Erro ao baixar: " + (e.message || e)); }
@@ -41245,9 +41355,11 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       if (!_rRec.ok) return;
       dt = _rRec.v1;
     }
-    var upd = await db.patch("receitas", r.id, { status: "recebido", data_pagamento: dt });
-    setReceitas(p => p.map(x => x.id === r.id ? Object.assign({}, x, upd) : x));
-    if (r.ref_fatura) { var m2 = r.ref_fatura.match(/^fat_(\d+)_/); if (m2) { var ct2 = contratos.find(function(c){return String(c.id)===m2[1];}); if (ct2 && ct2.status_pagamento !== "pago") { try { await db.patch("contratos", ct2.id, { status_pagamento: "pago", data_pagamento: dt }); setContratos(p => p.map(x => x.id==ct2.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dt}) : x)); } catch(e){ console.warn(e); } } } }
+    /* [baixa-unica] Inclui a sincronia com o contrato da fatura. */
+    var _rbR = await baixarReceitaItem(receitas, contratos, r.id, dt);
+    if (!_rbR) { toast("Não encontrei esta receita para baixar"); return; }
+    setReceitas(p => _orcAplicarLocal(p, _rbR));
+    if (_rbR.contrato) setContratos(p => _orcAplicarLocal(p, _rbR.contrato));
     toast("Receita baixada!");
   }
   /* Mesma lógica de emissão da aba Faturas (função emitir(fat) ali dentro),
@@ -44111,8 +44223,14 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         var dtPag = hoje;
         try {
           if (fat.recId) {
-            await db.patch("receitas", fat.recId, { status: "recebido", data_pagamento: dtPag });
-            setReceitas(function(p){ return p.map(function(r){ return r.id === fat.recId ? Object.assign({}, r, { status: "recebido", data_pagamento: dtPag }) : r; }); });
+            /* [baixa-unica] Marcar a fatura como paga é receber o contrato.
+               Antes daqui só a receita era tocada — a tela de Contratos
+               seguia com o mesmo dinheiro "a receber", e os dois painéis
+               mostravam totais diferentes. */
+            var _rbFat = await baixarReceitaItem(receitas, contratos, fat.recId, dtPag);
+            if (!_rbFat) { toast("Não encontrei a receita desta fatura."); return; }
+            setReceitas(function(p){ return _orcAplicarLocal(p, _rbFat); });
+            if (_rbFat.contrato) setContratos(function(p){ return _orcAplicarLocal(p, _rbFat.contrato); });
           } else {
             var num2 = await proximoNumFatura();
             var nova2 = await db.post("receitas", {
@@ -44126,6 +44244,15 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               contrato_id: fat.c.id
             });
             setReceitas(function(p){ return [nova2, ...p]; });
+            /* Mesma regra do ramo acima: a fatura nasceu já recebida, então o
+               contrato dela não pode continuar em aberto. */
+            var _ctFat = (contratos || []).find(function(c){ return String(c.id) === String(fat.c && fat.c.id); });
+            if (_ctFat && _ctFat.status_pagamento !== "pago") {
+              try {
+                await db.patch("contratos", _ctFat.id, { status_pagamento: "pago", data_pagamento: dtPag });
+                setContratos(function(p){ return _orcAplicarLocal(p, { id: _ctFat.id, patch: { status_pagamento: "pago", data_pagamento: dtPag } }); });
+              } catch(e) { console.warn("sincronizar contrato da fatura", e); }
+            }
           }
           toast("Fatura marcada como paga!");
         } catch(e) { toast("Erro ao marcar paga."); }

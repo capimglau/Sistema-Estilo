@@ -297,17 +297,20 @@ eq("texto vazio não deixa lixo na linha",
 
 grupo("Anotação cobrada vira histórico");
 {
+  // Data curta (08/08/26): a linha usa fmtDateShort, igual aos cartões da
+  // Agenda. Se um dia o ano voltar a ter 4 dígitos aqui, é este teste que
+  // avisa — a linha vai pras observações do contrato e fica lá pra sempre.
   const o = "⚠️ Avaria [R$ 1.450,00]: farol trincado\nPagamento via Pix";
   const h = F.encerrarAnotacaoCobrada(o, "2026-08-08");
   eq("registra data e valor na linha",
-    h, "✔️ Avaria cobrada em 08/08/2026 — R$ 1.450,00: farol trincado\nPagamento via Pix");
+    h, "✔️ Avaria cobrada em 08/08/26 — R$ 1.450,00: farol trincado\nPagamento via Pix");
   // O texto mora na linha da marca: voltar pra "comentário" puro o apagava.
   eq("o texto da avaria não se perde", /farol trincado/.test(h), true);
   eq("o resto das observações continua lá", /Pagamento via Pix/.test(h), true);
   eq("não volta a ser pendência", F.avariaDoContrato({ observacoes: h }), null);
   eq("sem valor, não inventa preço",
     F.encerrarAnotacaoCobrada("🔧 Manutenção pendente: revisão", "2026-08-08"),
-    "✔️ Manutenção pendente cobrada em 08/08/2026: revisão");
+    "✔️ Manutenção pendente cobrada em 08/08/26: revisão");
   eq("comentário comum não é tocado",
     F.encerrarAnotacaoCobrada("Pagamento via Pix", "2026-08-08"), "Pagamento via Pix");
 }
@@ -487,9 +490,16 @@ grupo("Multas — painel agrupado");
   const g = F.painelMultasPendentes(multas, contratos, veiculos, clientes);
 
   eq("grupos vazios não aparecem", g.length, 3);
-  eq("aguardando você vem primeiro", g[0].id, "voce");
-  eq("depois o cliente", g[1].id, "cliente");
-  eq("por último o órgão", g[2].id, "orgao");
+  // Um grupo por ETAPA do pipeline, não por responsável: o cabeçalho tem de
+  // dizer exatamente o passo ("Solicitar o boleto"), não só de quem é a bola
+  // — ver o comentário em GRUPOS_MULTA no index.html. A ordem continua sendo
+  // a do pipeline, e cada grupo ainda carrega o responsável em `resp`.
+  eq("os grupos saem na ordem do pipeline",
+    g.map((x) => x.id).join(","), "recebida,dsv_enviado,boleto_solic");
+  eq("o cabeçalho diz o passo, não o responsável",
+    g[0].titulo, "Enviar notificação ao condutor");
+  eq("cada grupo diz de quem é a bola",
+    g.map((x) => x.resp).join(","), "voce,cliente,orgao");
   eq("multa quitada não entra em grupo nenhum",
     g.reduce((t, x) => t + x.itens.length, 0), 4);
   eq("prazo mais apertado primeiro dentro do grupo", g[0].itens[0].ait, "A3");
@@ -503,48 +513,50 @@ grupo("Multas — painel agrupado");
     F.painelMultasPendentes([multas[3]], contratos, veiculos, clientes).length, 0);
 }
 
-grupo("Vitrine do miolo — volta representativa");
+grupo("Gráfico circular — agregação das fatias");
 {
   // O caso que quebrou de verdade: o seguro lançado veículo a veículo dá
-  // vários lançamentos com a MESMA data e a MESMA categoria. Ordenando por
-  // data, esse lote tomava a volta inteira e o miolo parecia travado em
-  // "Seguros" — como se fosse a única despesa do mês.
-  const rec = [
-    { chave: "Kablan Engenharia Ltda", valor: 8223, data: "2026-08-10" },
-    { chave: "SP9 Incorpor. Ltda", valor: 2700, data: "2026-08-16" },
-  ];
+  // vários lançamentos com a MESMA categoria. Se a agregação não somasse por
+  // chave, "Seguros" viraria quatro fatias finas em vez de uma só — e o
+  // gráfico mentiria sobre o peso de cada categoria no mês.
   const desp = [
-    { chave: "Seguros", valor: 307, data: "2026-08-25" },
-    { chave: "Seguros", valor: 412, data: "2026-08-25" },
-    { chave: "Seguros", valor: 298, data: "2026-08-25" },
-    { chave: "Seguros", valor: 255, data: "2026-08-25" },
-    { chave: "Impostos", valor: 1220, data: "2026-08-06" },
-    { chave: "Manutenção", valor: 310, data: "2026-08-07" },
+    { chave: "Seguros", valor: 307 },
+    { chave: "Seguros", valor: 412 },
+    { chave: "Seguros", valor: 298 },
+    { chave: "Seguros", valor: 255 },
+    { chave: "Impostos", valor: 1220 },
+    { chave: "Manutenção", valor: 310 },
   ];
-  const volta = F.rdVoltaVitrine(rec, desp, 16);
+  const fatias = F.rdGroupBy(desp, new Set(), F.RD_COR_CATEGORIA);
 
-  // 2 clientes + 3 categorias = 5 grupos, então a primeira rodada tem 5
-  // cartões e passa uma vez por cada um.
-  const primeiraRodada = volta.slice(0, 5).map((c) => c.nome);
-  eq("a primeira rodada passa por todos os grupos, sem repetir",
-    new Set(primeiraRodada).size, 5);
-  eq("nenhum grupo aparece duas vezes antes de todos aparecerem uma",
-    primeiraRodada.filter((n) => n === "Seguros").length, 1);
-  // Enquanto houver dos dois lados, alterna; quando um acaba, o outro segue.
-  eq("entrada e saída se intercalam enquanto há dos dois",
-    volta.slice(0, 4).map((c) => c.tipo).join(","),
-    "receita,despesa,receita,despesa");
-  eq("o lote repetido só volta depois que todo mundo apareceu",
-    volta[5].nome, "Seguros");
-  eq("dentro do grupo, o maior lançamento vem primeiro",
-    volta.find((c) => c.nome === "Seguros").valor, 412);
-  eq("a volta cobre todos os lançamentos", volta.length, rec.length + desp.length);
-  eq("cliente entra com o nome curto, igual ao rótulo da fatia",
-    volta[0].nome, "Kablan");
-  eq("categoria de despesa entra com o nome inteiro",
-    F.rdNomeNoGrafico("despesa", "Contabilidade"), "Contabilidade");
-  eq("o teto corta a volta", F.rdVoltaVitrine(rec, desp, 3).length, 3);
-  eq("mês sem lançamento devolve volta vazia", F.rdVoltaVitrine([], [], 16).length, 0);
+  eq("lançamentos da mesma categoria viram UMA fatia", fatias.length, 3);
+  eq("a fatia soma todos os lançamentos dela",
+    fatias.find((f) => f.key === "Seguros").value, 307 + 412 + 298 + 255);
+  eq("as fatias saem da maior para a menor",
+    fatias.map((f) => f.key).join(","), "Seguros,Impostos,Manutenção");
+  eq("a soma das fatias bate com a soma dos lançamentos",
+    F.rdSum(fatias.map((f) => ({ valor: f.value }))), F.rdSum(desp));
+
+  // Cor: categoria conhecida puxa da tabela; cliente (paleta em array) entra
+  // pela ordem, para dois vizinhos nunca saírem com o mesmo tom.
+  eq("categoria conhecida usa a cor fixa dela",
+    fatias.find((f) => f.key === "Impostos").color, F.RD_COR_CATEGORIA["Impostos"]);
+  const clientes = F.rdGroupBy(
+    [{ chave: "Kablan", valor: 8223 }, { chave: "SP9", valor: 2700 }],
+    new Set(), F.RD_PALETTE_CLIENTE);
+  eq("com paleta em sequência, cada fatia pega a cor da posição dela",
+    clientes[0].color + "|" + clientes[1].color,
+    F.RD_PALETTE_CLIENTE[0] + "|" + F.RD_PALETTE_CLIENTE[1]);
+  ok("cores de fatias vizinhas não se repetem", clientes[0].color !== clientes[1].color);
+
+  // A seleção é o que acende a fatia no gráfico e filtra a lista embaixo.
+  const comSel = F.rdGroupBy(desp, new Set(["Seguros"]), F.RD_COR_CATEGORIA);
+  eq("só a chave selecionada vem marcada",
+    comSel.filter((f) => f.selected).map((f) => f.key).join(","), "Seguros");
+
+  eq("mês sem lançamento não gera fatia nenhuma",
+    F.rdGroupBy([], new Set(), F.RD_COR_CATEGORIA).length, 0);
+  eq("soma de lista vazia é zero", F.rdSum([]), 0);
 }
 
 grupo("Parcelas de cartão — grupo e lançamento principal");

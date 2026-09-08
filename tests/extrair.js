@@ -47,6 +47,7 @@ function extrair(marcadores) {
     var _brNow = function () { return new Date("2026-08-06T12:00:00Z"); };
     var fmtDate = function (d) { if (!d) return "--"; var p = String(d).split("-"); return p.length !== 3 ? d : p[2] + "/" + p[1] + "/" + p[0]; };
     var fmtDateShort = function (d) { if (!d) return "--"; var p = String(d).split("-"); return p.length !== 3 ? d : p[2] + "/" + p[1] + "/" + p[0].slice(2); };
+    var fmtBRL = function (v) { return "R$ " + (Math.abs(parseFloat(v || 0))).toFixed(2); };
   `;
 
   const escopo = {};
@@ -59,7 +60,7 @@ function extrair(marcadores) {
       difCombustivel, fmtFracao, KM_PNEUS_ALERTA, statusPneus,
       KM_REVISAO_ALERTA, statusRevisaoKm,
       _periodosSobrepoem, veiculoDaReserva, conflitosDaReserva, clienteDaReserva,
-      rdNomeNoGrafico, rdVoltaVitrine, rdSum,
+      rdSum, rdGroupBy, RD_COR_CATEGORIA, RD_PALETTE_CLIENTE,
       TIPOS_ANOTACAO, tipoAnotacao, lerAnotacaoContrato, definirTipoAnotacao,
       definirValorAnotacao, definirAnotacaoContrato,
       encerrarAnotacaoCobrada,
@@ -101,11 +102,13 @@ const MARCADORES = [
     ate: "var DSV_LOGO_SVG =",
   },
   {
-    // Monta a volta da vitrine do miolo do gráfico circular. Fica noutra
-    // parte do arquivo, junto do componente, então é um recorte separado.
-    nome: "vitrine do gráfico circular",
-    de: "function rdNomeNoGrafico(",
-    ate: "function rdGroupBy(",
+    // Agregação que alimenta o gráfico circular: soma por chave, ordena e
+    // escolhe a cor de cada fatia. Começa na paleta (AG_PASTEL) porque as
+    // cores das fatias saem dela — recortar só a partir de RD_COR_CATEGORIA
+    // deixaria o trecho sem as constantes que ele usa.
+    nome: "agregação do gráfico circular",
+    de: "var AG_PASTEL = {",
+    ate: "function _fmtBarVal(",
   },
   {
     // Reconstrução do grupo de parcelas de cartão. É o que decide qual

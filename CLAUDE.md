@@ -234,7 +234,7 @@ Existe **uma função por tipo de baixa**, no escopo global do `index.html`, e
 | o que baixa | função única | o que ela arrasta junto |
 |---|---|---|
 | item do orçamento pessoal | `baixarOrcPessoalItem` | linha-filha do mês da recorrência |
-| despesa | `baixarDespesaItem` | linha-filha do mês (recorrente) + `manutencao` vinculada |
+| despesa | `baixarDespesaItem(despesas, id, dataPag, mesAlvo)` | linha-filha do **mês da parcela** (recorrente) + `manutencao` vinculada |
 | receita | `baixarReceitaItem` | `contratos` da fatura (`ref_fatura`) |
 | contrato | `confirmarBaixarCt` / `confirmarParcialCt` | receita vinculada, via `sincronizarRefFatura` |
 
@@ -245,6 +245,18 @@ aplica com **`_orcAplicarLocal`** (genérica, apesar do nome histórico). Para
 cópias vivas (ver `[orc-sync]` abaixo); as demais tabelas têm cópia única no
 `App` e basta chamar o setter (`setDespesas`, `setReceitas`, `setContratos`,
 `setManutencoes`).
+
+**Recorrente baixa no MÊS DA PARCELA, nunca no mês do pagamento.** Uma
+recorrente cadastrada em março, vista em março, baixa março; a mesma vista em
+setembro baixa setembro — ainda que o pagamento seja lançado hoje. Por isso
+`baixarDespesaItem` e `baixarOrcPessoalItem` recebem **`mesAlvo` separado da
+data de pagamento**, e quem chama passa o mês da linha que está na tela
+(as listas já entregam a recorrente projetada — `resolverDespesasDoMes` para
+despesas, `_projetar` para orçamento pessoal — então é
+`(d.data||"").slice(0,7)`). Tirar o mês da data de pagamento, como já foi
+feito aqui, fazia quitar hoje uma parcela atrasada de março criar a linha em
+**setembro**: março ficava em aberto para sempre e setembro aparecia pago duas
+vezes.
 
 **Checklist obrigatório antes de declarar concluída qualquer tarefa que
 envolva baixa:**

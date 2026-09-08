@@ -31,6 +31,11 @@ CLAUDE.md
   Toda linha com "Baixar" deve oferecer **"Editar" e "Excluir"**: um único
   botão revelado no swipe não se identifica sozinho. Baixar/Editar saem no
   swipe ←, Excluir no swipe →.
+- **Prop aceito é prop usado.** `Lbl` recebia `style` dos chamadores e
+  simplesmente ignorava: os cinco campos do filtro do relatório de Faturas
+  pediam `flex:1, minWidth:120` por `style` e ficavam espremidos/cortados.
+  Ao criar componente de layout, ou o prop entra no elemento ou não existe —
+  prop silenciosamente descartado vira bug visual que ninguém acha.
 - **Altura mínima de linha com swipe: 48px** (`.ag-swipe-wrap`). A área
   revelada tem exatamente a altura da linha — em lista compacta (~40px) o
   ícone e o rótulo do botão ficavam colados nas bordas. 48px também é o alvo

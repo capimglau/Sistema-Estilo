@@ -81,7 +81,7 @@ Nunca assumir que o usuário vai abrir o arquivo sozinho para rodar no Supabase.
 
 ## Branch de desenvolvimento
 
-Branch ativo: `claude/placeholder-task-nsnXx`
+Branch ativo: `claude/despesa-pessoal-agenda-download-edit-954vzh`
 
 ## Consistência de implementação — OBRIGATÓRIO
 
@@ -173,6 +173,37 @@ Histórico real deste projeto: o bug "baixei e continua aparecendo como pendente
 - item não-recorrente ou já no mês certo → PATCH direto, simples.
 
 Qualquer novo botão/swipe/atalho de "baixar" em orçamento pessoal — presente ou futuro — **tem que chamar `baixarOrcPessoalItem`**, passando o mês exato da ocorrência tocada (`efetivoMes(it)` ou `ev.data.slice(0,7)`, nunca "hoje" fixo). Antes de declarar uma tarefa de baixa concluída, **grep por `db.patch("orcamento_pessoal"` e `db.post("orcamento_pessoal"`** no arquivo inteiro e confirmar que todo resultado passa pela função — não só o caminho que acabou de ser editado.
+
+### Toda gravação em `orcamento_pessoal` precisa avisar as OUTRAS cópias — `[orc-sync]`
+
+O app mantém **quatro cópias vivas** da mesma tabela em memória:
+`App.orcItens`, `Inicio._orcFresh`, `PessoalDash._pesItens` e
+`OrcamentoPessoal.itens`. Atualizar só a cópia do caminho que gravou é a causa
+raiz do sintoma **"baixei/editei e nada aconteceu"** — o registro muda no banco
+e a tela continua idêntica até um reload. Foi exatamente isso na Agenda dentro
+do Orçamento Pessoal: ela montava `CalendarioKanban2` **sem `onOrcAtualizado` e
+sem `toast`**, então a baixa gravava em silêncio absoluto.
+
+Regra permanente: depois de gravar, chame **`_orcBroadcast(resultado)` uma
+vez** — `{novo: registro}`, `{id, patch}` ou `{removido: id}`. Cada cópia se
+inscreve com `useOrcSync(...)` e se atualiza sozinha. Ao aplicar o resultado na
+própria cópia, use **`_orcAplicarLocal(p, res)`**, nunca um `concat`/`map` na
+mão: a mesma gravação também volta pelo evento e um `concat` cego insere a
+linha nova duas vezes (`_orcAplicarLocal` é idempotente de propósito).
+
+Duas armadilhas relacionadas, já corrigidas — não reintroduzir:
+
+- **Lista projetada não serve pra baixar.** A Agenda do Orçamento Pessoal
+  recebe as recorrentes já projetadas pro mês exibido (é o que faz o cartão
+  aparecer). Nessa cópia o `data` da recorrente já é do mês-alvo, então
+  `baixarOrcPessoalItem` acha que não há projeção e dá **PATCH no template** —
+  o erro que esta seção inteira existe pra evitar. Por isso `CalendarioKanban2`
+  aceita `orcItensRaw` (cópia crua) e a baixa usa **sempre** ela.
+- **Deep-link não pode agir antes da carga.** `OrcamentoPessoal` carrega
+  `itens` de forma assíncrona, mas o deep-link da Agenda chega junto com a
+  montagem da tela. Sem esperar (`if (loading) return;`), o `find` não achava o
+  item, o formulário não abria e o deep-link era descartado — "editar pela
+  agenda não faz nada".
 
 **Nunca mais corrigir um registro corrompido só via SQL manual no Supabase.** SQL direto no banco é aceitável como curativo pontual de um dado já quebrado (feito uma vez), mas a causa tem que ser corrigida no código na mesma tarefa — nunca tratar o sintoma sem também eliminar a origem.
 

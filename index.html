@@ -26087,6 +26087,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
      (bug já visto e corrigido pro caminho da Agenda; pSave/pDel/pBaixar,
      usados pela tela do Orçamento Pessoal em si, tinham o mesmo problema). */
   function _syncOrc(updater){ _setOrcFresh(updater); if (setOrcItens) setOrcItens(updater); }
+  // [orc-sync] _orcFresh é `null` enquanto carrega — pularNulo evita que um
+  // evento chegado antes da carga vire uma lista de um item só.
+  useOrcSync(_setOrcFresh, true);
   const [_orcCats,    _setOrcCats]    = React.useState([]);
   const [_orcCatsMod, _setOrcCatsMod] = React.useState(false);
   React.useEffect(function(){db.get('orcamento_categorias').then(function(d){_setOrcCats(d||[]);}).catch(function(){});}, []);
@@ -26790,15 +26793,20 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 _setPSaving(true);
                 try{
                   var payload={descricao:_pForm.descricao,valor:parseFloat(_pForm.valor)||0,tipo:_pForm.tipo||'despesa',categoria:_pForm.categoria||'Outros',mes:(_pForm.data&&_pForm.data.length>=7)?_pForm.data.slice(0,7):dashMes,data:_pForm.data||null,status:_pForm.status||'previsto',recorrente:!!_pForm.recorrente};
-                  if(_pEdit){var u=await db.patch("orcamento_pessoal",_pEdit,payload);_syncOrc(function(p){return(p||[]).map(function(it){return it.id===_pEdit?Object.assign({},it,u):it;});});}
-                  else{var c=await db.post("orcamento_pessoal",payload);_syncOrc(function(p){return[c].concat(p||[]);});}
+                  /* [orc-sync] _syncOrc só alcança _orcFresh/App — a tela do
+                     Orçamento Pessoal (e o _pesItens que ela alimenta, fonte
+                     real do que este painel mostra) ficavam com o dado velho,
+                     e salvar "não fazia nada" na lista. O broadcast fecha o
+                     circuito pra todas as cópias. */
+                  if(_pEdit){var u=await db.patch("orcamento_pessoal",_pEdit,payload);var _rEd={id:_pEdit,patch:u||payload};_orcBroadcast(_rEd);_syncOrc(function(p){return _orcAplicarLocal(p,_rEd);});}
+                  else{var c=await db.post("orcamento_pessoal",payload);var _rNv={novo:c};_orcBroadcast(_rNv);_syncOrc(function(p){return _orcAplicarLocal(p,_rNv);});}
                   _setPModal(false);_setPEdit(null);_setPForm({tipo:'despesa',categoria:'Moradia'});
                 }catch(e){console.error(e);}
                 _setPSaving(false);
               },
               pDel: async function(id){
                 if(!window.confirm('Excluir lançamento?'))return;
-                try{await db.del("orcamento_pessoal",id);_syncOrc(function(p){return(p||[]).filter(function(it){return it.id!==id;});});}catch(e){}
+                try{await db.del("orcamento_pessoal",id);_orcBroadcast({removido:id});_syncOrc(function(p){return _orcAplicarLocal(p,{removido:id});});}catch(e){}
               },
               pBaixar: async function(it){
                 /* Nunca reimplementar a lógica de baixa aqui — SEMPRE delegar
@@ -26809,7 +26817,8 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 try{
                   var _r=await baixarOrcPessoalItem(_orcFresh, it.id, dashMes);
                   if(!_r) return;
-                  _syncOrc(function(p){ p=p||[]; return _r.novo ? [_r.novo].concat(p) : p.map(function(x){return x.id===_r.id?Object.assign({},x,_r.patch):x;}); });
+                  _orcBroadcast(_r); // [orc-sync] avisa todas as cópias de uma vez
+                  _syncOrc(function(p){ return _orcAplicarLocal(p, _r); });
                 }catch(e){console.error('Baixar:',e);}
               }
             })
@@ -27555,7 +27564,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 return React.createElement('div', { style: desktop ? { flex:1, minHeight:0, display:"flex", flexDirection:"column" } : { display:"flex", flexDirection:"column" } }
                   , React.createElement(CalendarioKanban2, { contratos:contratos, multas:multas, veiculos:veiculos, setVeiculos:setVeiculos, clientes:clientes, contas:contas, despesas:despesas, receitas:receitas, reservas:reservas, manutencoes:manutencoes, orcItens:orcItens, lembretes:lembretes, setLembretes:setLembretes, hoje:hoje, setTab:setTab, desktop:desktop, dashMes:dashMes, mesAtual:mesAtual, setCtDeepLink:setCtDeepLink, setFinDeepLink:setFinDeepLink, setMtDeepLink:setMtDeepLink, toast:toast,
                       onOrcAtualizado: function(info){
-                        _syncOrc(function(p){ p = p || []; return info.novo ? [info.novo].concat(p) : p.map(function(x){ return x.id === info.id ? Object.assign({}, x, info.patch) : x; }); });
+                        /* _orcAplicarLocal e não um concat na mão: a mesma gravação
+                           também chega por evento ([orc-sync]) e um concat cego
+                           inseriria a linha nova DUAS vezes. */
+                        _syncOrc(function(p){ return _orcAplicarLocal(p, info); });
                       } })
                 );
                 /* ── gráfico 3 meses: anterior · atual · próximo ── */
@@ -28402,7 +28414,11 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                                   var _sit = _m4Situacao(ev,_diaSel);
                                   /* Card inteiro é o alvo do toque — dispensa o botão de
                                      largura total, que enchia a tela de caixas vazias. */
-                                  var _abrir = function(){ if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id, mes: ev.data ? ev.data.slice(0, 7) : null } })); } else setTab(ev.tab); };
+                                  /* acao:"editar" — sem ela o deep-link só "destacava" o
+                                     item (destaque que nem sempre está na tela), e tocar
+                                     num lançamento pessoal parecia não fazer nada. Mesmo
+                                     comportamento do cartão da Agenda do Dashboard. */
+                                  var _abrir = function(){ if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id, acao: "editar", mes: ev.data ? ev.data.slice(0, 7) : null } })); } else setTab(ev.tab); };
                                   return React.createElement('div',{key:i, onClick:_abrir, style:{
                                       position:"relative", background:"var(--c-card)", borderRadius:14,
                                       border:"1px solid var(--c-border)", boxShadow:_SH, cursor:"pointer",
@@ -38112,9 +38128,12 @@ function calcSaldoOrcPessoalMes(orcItens, despesas, mes) {
    pago), nunca fixo. Retorna null se o item não for encontrado, ou
    {novo:...} / {id:...,patch:...} pra quem chamou sincronizar o estado
    local sem precisar buscar tudo de novo. */
-async function baixarOrcPessoalItem(orcItens, itemId, mesAlvo) {
-  var _hjBx = _brNow().toISOString().slice(0, 10);
-  var _mesAtualBx = _hjBx.slice(0, 7);
+/* `dataPag` (opcional) = data escolhida pelo usuário no fluxo que chamou
+   (ex.: campo "📅 Data do pagamento" da janela do cartão da Agenda). Sem ela,
+   vale hoje — comportamento de sempre dos caminhos que não perguntam data. */
+async function baixarOrcPessoalItem(orcItens, itemId, mesAlvo, dataPag) {
+  var _hjBx = (dataPag ? String(dataPag).slice(0, 10) : _brNow().toISOString().slice(0, 10));
+  var _mesAtualBx = _brNow().toISOString().slice(0, 7);
   /* mesAlvo = mês da OCORRÊNCIA específica que o usuário tocou (vem de
      ev.data do card da Agenda, que pode ser um mês atrasado, não o real
      "hoje") — sem isso, baixar um card de agosto atrasado sempre acabava
@@ -38152,6 +38171,67 @@ async function baixarOrcPessoalItem(orcItens, itemId, mesAlvo) {
   return { id: _itBx.id, patch: _updBx || { status: _stBx, data_pagamento: _hjBx } };
 }
 
+/* ═══ [orc-sync] Propagação de UMA gravação de `orcamento_pessoal` para TODAS
+   as cópias vivas da tabela ═══════════════════════════════════════════════
+
+   O app mantém QUATRO cópias em memória da mesma tabela:
+     • App.orcItens        (prop que desce pra Início/Financeiro)
+     • Inicio._orcFresh    (o que o PessoalDash lê)
+     • PessoalDash._pesItens (espelho vindo do OrcamentoPessoal)
+     • OrcamentoPessoal.itens (a tela do Orçamento Pessoal em si)
+
+   Atualizar só a cópia do caminho que gravou é a causa raiz do sintoma
+   "baixei e nada aconteceu": a Agenda do Orçamento Pessoal, por exemplo,
+   chamava baixarOrcPessoalItem sem nenhum callback de atualização — a linha
+   era gravada no banco e a tela continuava exatamente igual até um reload.
+
+   Regra: quem grava chama `_orcBroadcast(resultado)` UMA vez; cada cópia se
+   atualiza sozinha pelo evento. Formatos aceitos, os mesmos que
+   baixarOrcPessoalItem devolve, mais a exclusão:
+     {novo: registro} · {id, patch} · {removido: id}
+   A aplicação é IDEMPOTENTE de propósito — o caminho que já atualizou a
+   própria cópia na mão não duplica nada ao receber o eco do próprio evento. */
+function _orcAplicarLocal(lista, res) {
+  var p = lista || [];
+  if (!res) return p;
+  if (res.novo && res.novo.id != null) {
+    if (p.some(function(x){ return String(x.id) === String(res.novo.id); })) {
+      return p.map(function(x){ return String(x.id) === String(res.novo.id) ? Object.assign({}, x, res.novo) : x; });
+    }
+    return [res.novo].concat(p);
+  }
+  if (res.removido != null) {
+    return p.filter(function(x){ return String(x.id) !== String(res.removido); });
+  }
+  if (res.id != null) {
+    return p.map(function(x){ return String(x.id) === String(res.id) ? Object.assign({}, x, res.patch) : x; });
+  }
+  return p;
+}
+function _orcBroadcast(res) {
+  if (!res) return res;
+  try { window.dispatchEvent(new CustomEvent("ag:orc-atualizado", { detail: res })); } catch(e) { console.warn("orc broadcast", e); }
+  return res;
+}
+/* `pularNulo`: cópias que usam `null` como "ainda não carreguei" (_orcFresh,
+   _pesItens) não podem ser preenchidas pelo evento — virariam uma lista de um
+   item só e passariam a mascarar a fonte de fallback. Elas ignoram o evento
+   até a carga terminar; a carga já traz o registro gravado. */
+function useOrcSync(setLista, pularNulo) {
+  React.useEffect(function() {
+    function _onOrc(e) {
+      var res = e && e.detail;
+      if (!res) return;
+      setLista(function(p) {
+        if (pularNulo && p == null) return p;
+        return _orcAplicarLocal(p, res);
+      });
+    }
+    window.addEventListener("ag:orc-atualizado", _onOrc);
+    return function() { window.removeEventListener("ag:orc-atualizado", _onOrc); };
+  }, []);
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  PessoalDash v5 — Template 4 (header gradient) + Template 5 (timeline)
 //  com previsão de despesas e receitas
@@ -38171,6 +38251,8 @@ function PessoalDash({
   var _hoje = _brNow().toISOString().split('T')[0];
   var _mes  = dashMes;
   var [_pesItens, _setPesItens] = React.useState(null);
+  // [orc-sync] `null` = o OrcamentoPessoal ainda não empurrou a lista dele.
+  useOrcSync(_setPesItens, true);
   // Fonte única de itens pessoais — usa _pesItens (sincronizado via OrcamentoPessoal) quando disponível.
   // Remove espelhos [ret_loc:] legados cuja despesa de origem NÃO é retirada de lucro pura (ex: "Ajuste de
   // Saldo", que só move o caixa e não é receita pessoal). Espelhos de Retirada de Lucro real são mantidos.
@@ -38353,9 +38435,23 @@ function PessoalDash({
         contratos:[],multas:[],veiculos:[],clientes:[],contas:[],
         despesas:[],receitas:[],reservas:[],manutencoes:[],
         orcItens:_itSrc.filter(function(it){return !it.recorrente;}).concat(_itens.filter(function(it){return it.recorrente;})),
+        /* orcItensRaw: a lista acima leva as recorrentes já PROJETADAS pro mês
+           exibido (é o que faz o cartão aparecer aqui) — mas nela o `data` da
+           recorrente já é do mês-alvo, o que faria baixarOrcPessoalItem achar
+           que não há projeção nenhuma e dar PATCH no TEMPLATE, violando a
+           regra "recorrente vira linha-filha" (ver CLAUDE.md · "Item
+           recorrente — UMA função só"). A baixa usa esta cópia CRUA. */
+        orcItensRaw:_itSrc,
         lembretes:[],setLembretes:function(){},
         hoje:_hoje,setTab:setTab,desktop:desktop,dashMes:dashMes,mesAtual:mesAtual,
-        setCtDeepLink:function(){},setFinDeepLink:function(){},setMtDeepLink:function(){}
+        setCtDeepLink:function(){},setFinDeepLink:function(){},setMtDeepLink:function(){},
+        /* Esta Agenda ia pra CalendarioKanban2 SEM toast e SEM nenhum callback
+           de atualização: a baixa gravava no banco e a tela não mexia um pixel
+           — nem aviso, nem cartão saindo do dia. Era literalmente o "baixar
+           despesa pessoal pela agenda e nada acontecer". Hoje a atualização
+           das listas vem do _orcBroadcast que a própria baixa dispara
+           ([orc-sync]); aqui fica só o aviso na tela. */
+        toast:function(msg,type){ window.dispatchEvent(new CustomEvent('ag:toast',{detail:{msg:msg,type:type||'success'}})); }
       })
     )
 
@@ -38453,7 +38549,11 @@ function PessoalDash({
           try{
             var _r = await baixarOrcPessoalItem(_itSrc, it.id, _mes);
             if(!_r) return;
-            if(onOrcItensChange) onOrcItensChange(function(p){ p=p||[]; return _r.novo ? [_r.novo].concat(p) : p.map(function(x){return x.id===_r.id?Object.assign({},x,_r.patch):x;}); });
+            /* [orc-sync] Só o onOrcItensChange não bastava: ele atualiza a
+               cópia de cima (Início/App), mas esta tela lê _pesItens, que
+               continuava com o item pendente — a lista não mexia. */
+            _orcBroadcast(_r);
+            if(onOrcItensChange) onOrcItensChange(function(p){ return _orcAplicarLocal(p, _r); });
             window.dispatchEvent(new CustomEvent('ag:toast', { detail: { msg: '💸 Baixado!', type: 'success' } }));
           }catch(e){ window.dispatchEvent(new CustomEvent('ag:toast', { detail: { msg: 'Erro ao salvar', type: 'error' } })); }
         };
@@ -38531,6 +38631,12 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
       return next;
     });
   }
+  /* [orc-sync] Baixa disparada de fora desta tela (Agenda do Dashboard, Agenda
+     do Orçamento Pessoal, prévia de pendências) chega por evento — sem isso a
+     lista daqui continuava mostrando "a pagar" um item já quitado no banco.
+     Usa setItensRaw de propósito: não precisa reemitir onItensChange, cada
+     cópia já recebe o mesmo evento. */
+  useOrcSync(setItensRaw);
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({});
   const [edit, setEdit] = useState(null);
@@ -38572,25 +38678,17 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     if(!window.__agPrompt) return;
     var _r = await window.__agPrompt({ title:titulo, icon:icone, label1:'Data', type1:'date', default1:dtHoje });
     if(!_r||!_r.ok) return;
-    var st = ev.type==='receita'?'recebido':'pago';
-    var it = ev._raw;
-    var _isRec = efetivoMes(it) !== filtroMes;
     try {
-      if(_isRec) {
-        var _filhoExist = itens.find(function(x){ return String(x.recorrencia_origem_id)===String(it.id)&&efetivoMes(x)===filtroMes; });
-        if(_filhoExist) {
-          var upd = await db.patch('orcamento_pessoal', _filhoExist.id, {status:st, data_pagamento:_r.v1});
-          setItens(function(p){ return p.map(function(x){ return x.id===_filhoExist.id?Object.assign({},x,upd):x; }); });
-        } else {
-          var dataProj = projetarDataOP(it.data, filtroMes);
-          var payload = { descricao:it.descricao, valor:parseFloat(it.valor||0), tipo:it.tipo, categoria:it.categoria||'Outros', data:dataProj||it.data, mes:filtroMes, status:st, data_pagamento:_r.v1, recorrente:false, recorrencia_origem_id:it.id };
-          var nc = await db.post('orcamento_pessoal', payload);
-          setItens(function(p){ return [nc||Object.assign({id:Date.now()},payload)].concat(p); });
-        }
-      } else {
-        var upd2 = await db.patch('orcamento_pessoal', ev.id, {status:st, data_pagamento:_r.v1});
-        setItens(function(p){ return p.map(function(x){ return x.id===ev.id?Object.assign({},x,upd2):x; }); });
-      }
+      /* CLAUDE.md · "Item recorrente — UMA função só": este caminho tinha a
+         regra de recorrência reescrita na mão (patch/post direto em
+         `orcamento_pessoal`) — a mesma origem do bug que já custou 5 rodadas
+         de correção. Agora delega pra baixarOrcPessoalItem, que decide sozinha
+         entre PATCH direto, PATCH na linha-filha existente ou criação da
+         filha do mês, e avisa todas as cópias por _orcBroadcast ([orc-sync]). */
+      var _rB = await baixarOrcPessoalItem(itens, ev.id, filtroMes, _r.v1);
+      if(!_rB) return;
+      _orcBroadcast(_rB);
+      setItens(function(p){ return _orcAplicarLocal(p, _rB); });
       if(toast) toast('✅ '+(ev.type==='receita'?'Recebido!':'Baixado!'));
     } catch(e){ if(toast) toast('Erro ao salvar','error'); }
   }
@@ -38728,14 +38826,21 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
   var _orcHlState = React.useState(null); var orcHighlightId = _orcHlState[0], setOrcHighlightId = _orcHlState[1];
   React.useEffect(function() {
     if (!deepLink || deepLink.itemId == null) return;
+    /* [orc-deeplink-carga] Espera a carga de `itens` terminar antes de agir.
+       Quando o deep-link vem de um cartão da Agenda do Dashboard, ele chega
+       JUNTO com a montagem desta tela (o modo pessoal só abre por causa dele)
+       — o efeito rodava com `itens` ainda vazio, `find` não achava o item,
+       caía no ramo de destaque e o deep-link era descartado. Resultado
+       exato do bug reportado: "editar pela agenda não faz nada". */
+    if (loading) return;
     setSubTab('atrasados');
     if (deepLink.acao === 'baixar') {
       (async function() {
         try {
           var _rDl = await baixarOrcPessoalItem(itens, deepLink.itemId, deepLink.mes);
           if (!_rDl) return;
-          if (_rDl.novo) setItens(function(p){ return [_rDl.novo].concat(p || []); });
-          else setItens(function(p){ return p.map(function(x){ return x.id === _rDl.id ? Object.assign({}, x, _rDl.patch) : x; }); });
+          _orcBroadcast(_rDl); // [orc-sync]
+          setItens(function(p){ return _orcAplicarLocal(p, _rDl); });
           toast("💸 Baixado!");
         } catch(e) { toast("Erro ao salvar", "error"); }
       })();
@@ -38769,7 +38874,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
       setTimeout(function(){ setOrcHighlightId(null); }, 3000);
     }
     if (setDeepLink) setDeepLink(null);
-  }, [deepLink]);
+  }, [deepLink, loading]);
 
   // ── Lucro da Locadora — SEMPRE PREVISTO (mês anterior ao filtroMes) ──────────
   // Fórmula: Receitas Previstas − Despesas Previstas − Manutenções Previstas
@@ -39681,8 +39786,8 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
                painel do dia. */
             var _r = await baixarOrcPessoalItem(itens, it.id, efetivoMes(it));
             if (!_r) return;
-            if (_r.novo) setItens(function(p){ return [_r.novo].concat(p || []); });
-            else setItens(function(p){ return p.map(function(x){ return x.id===_r.id?Object.assign({},x,_r.patch):x; }); });
+            _orcBroadcast(_r); // [orc-sync] Agenda/Dashboard/prévia atualizam junto
+            setItens(function(p){ return _orcAplicarLocal(p, _r); });
             toast("💸 Baixado!");
           } catch(e) { toast("Erro ao salvar", "error"); }
         };
@@ -49118,7 +49223,13 @@ function buildAgendaEventos(ctx) {
    embutido no painel do Dashboard. Usa buildAgendaEventos (mesma fonte da aba
    Agenda) pra nunca divergir do que aparece nos outros calendários do sistema
    (regra de cobertura de dados). */
-function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, lembretes, setLembretes, hoje, setTab, H, desktop, dashMes, mesAtual, setCtDeepLink, setFinDeepLink, setMtDeepLink, toast, onOrcAtualizado }) {
+/* orcItensRaw (opcional): cópia CRUA de `orcamento_pessoal`, usada só pela
+   baixa. `orcItens` pode chegar com as recorrentes já projetadas pro mês
+   exibido (é o caso da Agenda dentro do Orçamento Pessoal) — projetada, a
+   recorrente parece um lançamento próprio do mês e baixarOrcPessoalItem
+   acabaria dando PATCH no template em vez de criar a linha-filha. Quando não
+   vier, `orcItens` já é a cópia crua (caso do Dashboard da locadora). */
+function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes, contas, despesas, receitas, reservas, manutencoes, orcItens, orcItensRaw, lembretes, setLembretes, hoje, setTab, H, desktop, dashMes, mesAtual, setCtDeepLink, setFinDeepLink, setMtDeepLink, toast, onOrcAtualizado }) {
   var _flArr = React.useState("todos"); var filtro = _flArr[0], setFiltro = _flArr[1];
   /* Dias com o "monte" de cartões expandido (mais de 2 eventos, tocou pra ver
      todos) — chave é a data ISO do dia. */
@@ -50060,11 +50171,20 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
       }
       (async function() {
         try {
-          var _rPs = await baixarOrcPessoalItem(orcItens, ev.id, ev.data ? ev.data.slice(0, 7) : null);
+          var _rPs = await baixarOrcPessoalItem(orcItensRaw || orcItens, ev.id, ev.data ? ev.data.slice(0, 7) : null, data);
           if (!_rPs) return;
+          /* Uma gravação, TODAS as cópias: _orcBroadcast avisa App/Início/
+             PessoalDash/OrcamentoPessoal de uma vez (ver [orc-sync]). O
+             onOrcAtualizado continua sendo chamado pra quem já tratava o
+             resultado na mão — a aplicação é idempotente, não duplica. */
+          _orcBroadcast(_rPs);
           if (onOrcAtualizado) onOrcAtualizado(_rPs);
           if (toast) toast('💸 Baixado!');
-        } catch(e) { if (toast) toast('Erro ao salvar', 'error'); }
+          else window.dispatchEvent(new CustomEvent('ag:toast', { detail: { msg: '💸 Baixado!', type: 'success' } }));
+        } catch(e) {
+          if (toast) toast('Erro ao salvar', 'error');
+          else window.dispatchEvent(new CustomEvent('ag:toast', { detail: { msg: 'Erro ao salvar', type: 'error' } }));
+        }
       })();
       return;
     }
@@ -50264,7 +50384,10 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   }
   function abrirEvento(ev) {
     if (ev.tipo === "lembrete") setAcaoLembrete(ev);
-    else if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id, mes: ev.data ? ev.data.slice(0, 7) : null } })); }
+    // acao:"editar" — mesma regra do cartão da Agenda do Dashboard: abrir o
+    // formulário do lançamento, não só "destacar" um item que pode nem estar
+    // visível (era o toque que não fazia nada).
+    else if (ev.tab === "pessoal") { setTab("inicio"); window.dispatchEvent(new CustomEvent("ag:open-pessoal", { detail: { itemId: ev.id, acao: "editar", mes: ev.data ? ev.data.slice(0, 7) : null } })); }
     else setTab(ev.tab);
   }
 
@@ -54880,6 +55003,9 @@ function App() {
   React.useEffect(function() {
     db.get("orcamento_pessoal").then(function(d) { setOrcItens(d || []); }).catch(function() {});
   }, []);
+  // [orc-sync] Toda baixa/edição de orçamento pessoal, venha de onde vier,
+  // chega aqui pelo evento — ver _orcBroadcast/useOrcSync.
+  useOrcSync(setOrcItens);
   // Logo da Estilo pulsa no topo (mobile e desktop) quando há algo pendente
   // na Agenda do Orçamento Pessoal hoje ou atrasado. Feature separada do
   // logo da FATURA (esse é sobre o topbar do app) — não remover de novo por

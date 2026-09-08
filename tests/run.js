@@ -224,6 +224,35 @@ eq("nenhum header x-api-key no cliente",
 eq("chave da IA não é lida do banco nem do localStorage",
   (semComentarios.match(/getItem\(\s*["']claude_api_key["']\s*\)|empresa\.claude_api_key/g) || []).length, 0);
 
+grupo("Chart Manager não pode mover nó do React");
+
+// O Chart Manager (minimizar/duplicar/mover card) percorre o DOM e decora
+// cards. Ele já arrancou o card do container do React pra enfiar dentro de um
+// <div class="cm-body">: o React seguia achando que o card era filho direto do
+// container e, no render seguinte, chamava insertBefore(novaLinha, card) —
+// "NotFoundError: The object can not be found here", que na tela virava "Algo
+// deu errado" e no iPhone o app fechando. Aparecia ao filtrar o relatório de
+// Faturas por um mês anterior (a lista CRESCE e o React precisa inserir antes
+// do card TOTAL); o mês corrente só encolhia a lista e por isso não quebrava.
+//
+// Estas verificações travam a regra: dentro do bloco do Chart Manager, nada
+// pode mover nem remover um nó que o React renderizou.
+const cmBruto = (html.match(/CHART MANAGER v2[\s\S]*?\n<\/script>/) || [""])[0];
+// Sem os comentários: as próprias notas que explicam o bug citam
+// `body.appendChild(card)` e `wrapper.remove()`, e acusariam a documentação.
+const cm = cmBruto.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+ok("o bloco do Chart Manager foi encontrado", cm.length > 1000);
+eq("o card nunca é enfiado dentro de um .cm-body",
+  (cm.match(/body\.appendChild\(\s*card\s*\)/g) || []).length, 0);
+eq("nenhum wrapper.remove\(\) solto — sai por cmSumir, que só esconde",
+  (cm.match(/wrapper\.remove\(\)/g) || []).length, 0);
+ok("wrapCard marca o card como wrapper no próprio lugar (cm-inplace)",
+  /classList\.add\('cm-wrapper','cm-inplace'\)/.test(cm));
+ok("cmSumir existe e esconde em vez de arrancar do DOM",
+  /function cmSumir\(/.test(cm) && /cm-inplace'\)\)\{ wrapper\.style\.display='none'/.test(cm));
+ok("card real não é arrastável (arrastar = mudar de lugar)",
+  /if\(_real\)\{ wrapper\.draggable=false/.test(cm));
+
 grupo("Anotação do contrato — tipo escolhido");
 eq("sem marcador é comentário", F.lerAnotacaoContrato("Pagamento via Pix").tipo, "comentario");
 eq("comentário não vai pro painel", F.avariaDoContrato({ observacoes: "Pagamento via Pix" }), null);

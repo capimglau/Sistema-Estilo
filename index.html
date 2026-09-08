@@ -57289,6 +57289,14 @@ if (!__viewerMode) {
 .cm-body.cm-collapsed{max-height:0!important;opacity:0;}
 .cm-collapsed-bar{display:none;align-items:center;gap:7px;padding:7px 14px;font-size:11px;color:var(--c-sub,#888);font-style:italic;border-top:none;}
 .cm-body.cm-collapsed~.cm-collapsed-bar{display:flex;}
+/* [cm-sem-mover] Card que é o PRÓPRIO wrapper: continua exatamente onde o
+   React o colocou, com a barra de ferramentas injetada dentro dele. Aqui não
+   existe .cm-body pra colapsar — esconde-se o conteúdo do próprio card. */
+.cm-wrapper.cm-inplace{transition:opacity 0.22s ease;}
+.cm-wrapper.cm-inplace>.cm-toolbar{margin:0 0 8px;border-bottom:1px solid var(--c-border,rgba(0,0,0,0.07));border-radius:12px 12px 0 0;}
+.cm-wrapper.cm-inplace.cm-collapsed>*:not(.cm-toolbar):not(.cm-collapsed-bar){display:none!important;}
+.cm-wrapper.cm-inplace.cm-collapsed>.cm-toolbar{margin-bottom:0;border-bottom:none;}
+.cm-wrapper.cm-inplace.cm-collapsed>.cm-collapsed-bar{display:flex;}
 /* Context menu */
 .cm-menu{position:fixed;z-index:99999;background:var(--c-card,#fff);border:1px solid var(--c-border,rgba(0,0,0,0.1));border-radius:16px;box-shadow:0 10px 48px rgba(0,0,0,0.18),0 2px 8px rgba(0,0,0,0.08);padding:6px;min-width:220px;max-height:70vh;overflow-y:auto;animation:cmIn 0.18s cubic-bezier(0.22,1,0.36,1) both;}
 @keyframes cmIn{from{opacity:0;transform:scale(0.9) translateY(-8px);}to{opacity:1;transform:scale(1) translateY(0);}}
@@ -57466,12 +57474,15 @@ function getTitle(card){
 /* ── Collapse / expand ── */
 function setCollapsed(wrapper, val){
   var id=wrapper.dataset.cmId;
+  /* [cm-sem-mover] Wrapper sintético (card clonado/movido) tem .cm-body;
+     card real continua no lugar e é ele mesmo o wrapper — aí a classe vai
+     no próprio card. */
   var body=wrapper.querySelector('.cm-body');
   var bar=wrapper.querySelector('.cm-collapsed-bar');
   var btn=wrapper.querySelector('[data-cm="min"]');
   if(val){ S.col[id]=1; } else { delete S.col[id]; }
   S.save();
-  body.classList.toggle('cm-collapsed', !!val);
+  (body||wrapper).classList.toggle('cm-collapsed', !!val);
   if(bar) bar.style.display = val ? 'flex' : 'none';
   if(btn) btn.innerHTML = val ? I.plus : I.minus;
   btn && (btn.title = val ? 'Expandir' : 'Minimizar');
@@ -57671,13 +57682,7 @@ function openMenu(wrapper, e){
   // ── REMOVER ──
   m.appendChild(mkBtn('cm-item cm-red', I.trash+' Remover card', function(){
     var t = wrapper.dataset.cmTitle || getTitle(wrapper.querySelector('.cm-body>*')||wrapper);
-    wrapper.style.transition='opacity .22s,transform .22s';
-    wrapper.style.opacity='0'; wrapper.style.transform='scale(0.95)';
-    setTimeout(function(){
-      wrapper.remove();
-      S.hide(t);
-      updateTray();
-    }, 240);
+    cmSumir(wrapper, function(){ S.hide(t); updateTray(); });
     toast('Card ocultado');
   }));
 
@@ -57694,7 +57699,7 @@ function openMenu(wrapper, e){
 /* Duplicar para aba + sub-aba */
 function duplicateToTabSub(wrapper, tab, sub){
   _pendingClone={
-    html: wrapper.querySelector('.cm-body').innerHTML,
+    html: cmConteudoHTML(wrapper),
     title: (wrapper.dataset.cmTitle||'Gráfico')+' (cópia)',
     tabId: tab.id, tabLabel: tab.label+' › '+sub.label,
     subTabId: sub.id
@@ -57708,13 +57713,12 @@ function duplicateToTabSub(wrapper, tab, sub){
 /* Mover para aba + sub-aba */
 function moveToTabSub(wrapper, tab, sub){
   var title = wrapper.dataset.cmTitle||'Gráfico';
-  var html  = wrapper.querySelector('.cm-body').innerHTML;
+  var html  = cmConteudoHTML(wrapper);
   var lbl   = tab.label+' › '+sub.label;
   _pendingClone={html:html, title:title, tabId:tab.id, tabLabel:lbl, subTabId:sub.id};
   // Persiste: oculta na origem e registra destino
   S.addMoved({title:title, html:html, tabId:tab.id, subTabId:sub.id, tabLabel:lbl});
-  wrapper.style.transition='opacity .22s'; wrapper.style.opacity='0';
-  setTimeout(function(){ wrapper.remove(); },250);
+  cmSumir(wrapper);
   if(tab.btn) tab.btn.click();
   toast('📦 Movendo para '+lbl+'...');
   setTimeout(function(){ navigateSubTab(sub.id); injectPendingClone(); }, 700);
@@ -57726,14 +57730,52 @@ function addItem(){}   // legacy stub
 function addSubItem(){} // legacy stub
 
 /* ── Clone helpers ── */
+/* [cm-sem-mover] HTML do CONTEÚDO do card, sem a barra de ferramentas nem a
+   barra de "minimizado". Serve pras duas formas de wrapper: o sintético
+   (tem .cm-body) e o card real, que é o próprio wrapper. */
+function cmConteudoHTML(wrapper){
+  var body=wrapper.querySelector('.cm-body');
+  if(body) return body.innerHTML;
+  var copia=wrapper.cloneNode(true);
+  copia.querySelectorAll('.cm-toolbar,.cm-collapsed-bar').forEach(function(x){ x.remove(); });
+  return copia.outerHTML;
+}
+/* Wrapper que NÃO é um nó do React: pode ser inserido, movido e removido à
+   vontade. É o que se usa pra card duplicado e pra card movido de aba. */
+function cmWrapperSintetico(title, html){
+  var wrapper=document.createElement('div');
+  wrapper.className='cm-wrapper';
+  wrapper.dataset.cmId='cm2_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
+  wrapper.dataset.cmTitle=title;
+  wrapper.draggable=true;
+  var tb=document.createElement('div');
+  tb.className='cm-toolbar';
+  tb.innerHTML='<div class="cm-drag-handle"><span class="cm-drag-dots">'+I.dots+'</span><span class="cm-chart-label">'+String(title).slice(0,45)+'</span></div>'
+    +'<div class="cm-btns"><button class="cm-btn" data-cm="min" title="Minimizar">'+I.minus+'</button><button class="cm-btn" data-cm="more" title="Opções">'+I.more+'</button></div>';
+  var body=document.createElement('div');
+  body.className='cm-body';
+  body.innerHTML=html;
+  var bar=document.createElement('div');
+  bar.className='cm-collapsed-bar'; bar.style.display='none'; bar.style.cursor='pointer';
+  bar.innerHTML=I.chart+' <span style="margin-left:4px">'+String(title).slice(0,35)+'</span><span style="margin-left:auto;font-size:10px;opacity:0.6">minimizado</span>';
+  bar.addEventListener('click',function(){setCollapsed(wrapper,false);});
+  wrapper.appendChild(tb); wrapper.appendChild(body); wrapper.appendChild(bar);
+  return wrapper;
+}
+/* Some com o card sem tirá-lo do DOM. Um `wrapper.remove()` num card real
+   arranca do DOM um nó que o React ainda considera filho do container — o
+   próximo render dele estoura com NotFoundError. Ver [cm-sem-mover]. */
+function cmSumir(wrapper, depois){
+  wrapper.style.transition='opacity .22s,transform .22s';
+  wrapper.style.opacity='0'; wrapper.style.transform='scale(0.97)';
+  setTimeout(function(){
+    if(wrapper.classList.contains('cm-inplace')){ wrapper.style.display='none'; }
+    else if(wrapper.parentNode){ wrapper.parentNode.removeChild(wrapper); }
+    if(depois) depois();
+  }, 240);
+}
 function makeClone(wrapper){
-  var clone=wrapper.cloneNode(true);
-  clone.dataset.cmId='cm2_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
-  clone.dataset.cmTitle=(wrapper.dataset.cmTitle||'Gráfico')+' (cópia)';
-  var cb=clone.querySelector('.cm-body'); if(cb) cb.classList.remove('cm-collapsed');
-  var bar=clone.querySelector('.cm-collapsed-bar'); if(bar) bar.style.display='none';
-  var btn=clone.querySelector('[data-cm="min"]'); if(btn) btn.innerHTML=I.minus;
-  return clone;
+  return cmWrapperSintetico((wrapper.dataset.cmTitle||'Gráfico')+' (cópia)', cmConteudoHTML(wrapper));
 }
 function animateIn(el){
   el.style.opacity='0'; el.style.transform='translateY(12px)';
@@ -57763,7 +57805,7 @@ function duplicateToZone(wrapper, zone){
 /* Duplicar para outra aba (navega e insere quando ela renderizar) */
 function duplicateToTab(wrapper, tab){
   _pendingClone = {
-    html: wrapper.querySelector('.cm-body').innerHTML,
+    html: cmConteudoHTML(wrapper),
     title: (wrapper.dataset.cmTitle||'Gráfico')+' (cópia)',
     tabId: tab.id,
     tabLabel: tab.label
@@ -57793,28 +57835,7 @@ function injectPendingClone(){
   }
   if(!zone) return; // tab not rendered yet, retry scheduled above
 
-  var wrapper=document.createElement('div');
-  wrapper.className='cm-wrapper';
-  wrapper.dataset.cmId='cm2_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
-  wrapper.dataset.cmTitle=pc.title;
-  wrapper.draggable=true;
-
-  var tb=document.createElement('div');
-  tb.className='cm-toolbar';
-  tb.innerHTML='<div class="cm-drag-handle"><span class="cm-drag-dots">'+I.dots+'</span><span class="cm-chart-label">'+pc.title.slice(0,45)+'</span></div>'
-    +'<div class="cm-btns"><button class="cm-btn" data-cm="min" title="Minimizar">'+I.minus+'</button><button class="cm-btn" data-cm="more" title="Opções">'+I.more+'</button></div>';
-
-  var body=document.createElement('div');
-  body.className='cm-body';
-  body.innerHTML=pc.html;
-
-  var bar=document.createElement('div');
-  bar.className='cm-collapsed-bar'; bar.style.display='none';
-  bar.innerHTML=I.chart+' <span style="margin-left:4px">'+pc.title.slice(0,35)+'</span><span style="margin-left:auto;font-size:10px;opacity:0.6">minimizado</span>';
-  bar.addEventListener('click',function(){setCollapsed(wrapper,false);});
-  bar.style.cursor='pointer';
-
-  wrapper.appendChild(tb); wrapper.appendChild(body); wrapper.appendChild(bar);
+  var wrapper=cmWrapperSintetico(pc.title, pc.html);
   zone.appendChild(wrapper);
   bindWrapper(wrapper);
   animateIn(wrapper);
@@ -57826,12 +57847,11 @@ function injectPendingClone(){
 /* Move para outra aba */
 function moveToTab(wrapper, tab){
   var title = wrapper.dataset.cmTitle||'Gráfico';
-  var html  = wrapper.querySelector('.cm-body').innerHTML;
+  var html  = cmConteudoHTML(wrapper);
   _pendingClone={html:html, title:title, tabId:tab.id, tabLabel:tab.label};
   // Persiste: oculta na origem e registra destino
   S.addMoved({title:title, html:html, tabId:tab.id, subTabId:null, tabLabel:tab.label});
-  wrapper.style.transition='opacity .22s'; wrapper.style.opacity='0';
-  setTimeout(function(){ wrapper.remove(); },250);
+  cmSumir(wrapper);
   if(tab.btn) tab.btn.click();
   toast('📦 Movendo para '+tab.label+'...');
   setTimeout(function(){ injectPendingClone(); },700);
@@ -57848,6 +57868,16 @@ function duplicateTo(wrapper, zone, nearby){
 
 /* ── Move ── */
 function moveTo(wrapper, zone){
+  /* [cm-sem-mover] card real não muda de lugar; move-se uma cópia. */
+  if(wrapper.classList.contains('cm-inplace')){
+    var copia=makeClone(wrapper);
+    copia.dataset.cmTitle=wrapper.dataset.cmTitle||'Gráfico';
+    zone.appendChild(copia); bindWrapper(copia); animateIn(copia);
+    cmSumir(wrapper);
+    copia.scrollIntoView({behavior:'smooth',block:'center'});
+    toast('📦 Movido para: '+(zone.dataset.cmLabel||'outra seção'));
+    return;
+  }
   zone.appendChild(wrapper);
   wrapper.scrollIntoView({behavior:'smooth',block:'center'});
   wrapper.style.outline='2px solid #007AFF';
@@ -57943,14 +57973,21 @@ function bindWrapper(wrapper){
   var handle=wrapper.querySelector('.cm-drag-handle');
   var btnMin=wrapper.querySelector('[data-cm="min"]');
   var btnMore=wrapper.querySelector('[data-cm="more"]');
+  /* [cm-sem-mover] Reordenar arrastando move o nó de lugar — proibido num
+     card real, que pertence ao React. Só o card duplicado/movido (wrapper
+     sintético, que o React nem conhece) continua arrastável. */
+  var _real=wrapper.classList.contains('cm-inplace');
+  if(_real){ wrapper.draggable=false; if(handle) handle.style.cursor='default'; }
 
-  if(handle){
+  if(handle && !_real){
     handle.addEventListener('dragstart',function(e){onDragStart(wrapper,e);});
     handle.addEventListener('dragend',function(){onDragEnd(wrapper);});
     bindTouchDrag(wrapper,handle);
   }
-  wrapper.addEventListener('dragover',function(e){onDragOver(wrapper,e);});
-  wrapper.addEventListener('drop',function(e){onDrop(wrapper,e);});
+  if(!_real){
+    wrapper.addEventListener('dragover',function(e){onDragOver(wrapper,e);});
+    wrapper.addEventListener('drop',function(e){onDrop(wrapper,e);});
+  }
 
   if(btnMin) btnMin.addEventListener('click',function(e){
     e.stopPropagation();
@@ -58005,27 +58042,34 @@ function wrapCard(card, zoneEl){
     return;
   }
 
-  var wrapper=document.createElement('div');
-  wrapper.className='cm-wrapper';
+  /* [cm-sem-mover] O CARD É O PRÓPRIO WRAPPER.
+     Antes daqui saía `body.appendChild(card)`: o card, que é um nó
+     renderizado pelo React, era arrancado do container e enfiado dentro de
+     um <div class="cm-body">. O React continuava achando que aquele nó era
+     filho direto do container original, então no render seguinte chamava
+     container.insertBefore(novaLinha, card) — e o navegador respondia
+     "NotFoundError: The object can not be found here", que na tela virava
+     "Algo deu errado" e, no iPhone, o app fechando sozinho.
+     Era o que acontecia no relatório de Faturas ao escolher um mês anterior:
+     a lista CRESCIA e o React precisava inserir linhas antes do card TOTAL,
+     que já não estava mais lá. Escolher setembro só ENCOLHIA a lista (só
+     remoções) e por isso não quebrava.
+     Regra: nada fora do React pode mudar um nó de lugar. A barra de
+     ferramentas e a barra de "minimizado" entram como filhos EXTRA do card
+     (isso o React tolera — ele só mexe nos filhos que ele mesmo criou). */
+  var wrapper=card;
+  try {
+  wrapper.classList.add('cm-wrapper','cm-inplace');
   wrapper.dataset.cmId=id;
   wrapper.dataset.cmTitle=title;
-  wrapper.draggable=true;
 
-  card.parentNode.insertBefore(wrapper,card);
-
-  // Toolbar
   var tb=document.createElement('div');
-  try {
   tb.className='cm-toolbar';
-  tb.innerHTML='<div class="cm-drag-handle" title="Arrastar para reorganizar"><span class="cm-drag-dots">'+I.dots+'</span><span class="cm-chart-label">'+title.slice(0,45)+'</span></div>'
+  tb.innerHTML='<div class="cm-drag-handle"><span class="cm-drag-dots">'+I.dots+'</span><span class="cm-chart-label">'+title.slice(0,45)+'</span></div>'
     +'<div class="cm-btns">'
     +'<button class="cm-btn" data-cm="min" title="Minimizar">'+I.minus+'</button>'
     +'<button class="cm-btn" data-cm="more" title="Opções">'+I.more+'</button>'
     +'</div>';
-
-  var body=document.createElement('div');
-  body.className='cm-body';
-  body.appendChild(card);
 
   var bar=document.createElement('div');
   bar.className='cm-collapsed-bar';
@@ -58034,15 +58078,15 @@ function wrapCard(card, zoneEl){
   bar.addEventListener('click',function(){setCollapsed(wrapper,false);});
   bar.style.cursor='pointer';
 
-  wrapper.appendChild(tb);
-  wrapper.appendChild(body);
+  wrapper.insertBefore(tb, wrapper.firstChild);
   wrapper.appendChild(bar);
 
   bindWrapper(wrapper);
   } catch(e) {
-    // Safety: if DOM manipulation fails (e.g. React already moved the node), abort silently
     wrapped.delete(card);
-    if(wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
+    var _tb=card.querySelector(':scope > .cm-toolbar'); if(_tb) _tb.remove();
+    var _bar=card.querySelector(':scope > .cm-collapsed-bar'); if(_bar) _bar.remove();
+    card.classList.remove('cm-wrapper','cm-inplace');
   }
 }
 
@@ -58113,24 +58157,7 @@ function injectMovedCards(){
     var zone=document.querySelector('.cm-zone');
     if(!zone){ wrapAll(); zone=document.querySelector('.cm-zone'); }
     if(!zone) return;
-    var wrapper=document.createElement('div');
-    wrapper.className='cm-wrapper';
-    wrapper.dataset.cmId='cm2_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
-    wrapper.dataset.cmTitle=m.title;
-    wrapper.draggable=true;
-    var tb=document.createElement('div');
-    tb.className='cm-toolbar';
-    tb.innerHTML='<div class="cm-drag-handle"><span class="cm-drag-dots">'+I.dots+'</span><span class="cm-chart-label">'+m.title.slice(0,45)+'</span></div>'
-      +'<div class="cm-btns"><button class="cm-btn" data-cm="min" title="Minimizar">'+I.minus+'</button><button class="cm-btn" data-cm="more" title="Opções">'+I.more+'</button></div>';
-    var body=document.createElement('div');
-    body.className='cm-body';
-    body.innerHTML=m.html;
-    var bar=document.createElement('div');
-    bar.className='cm-collapsed-bar'; bar.style.display='none';
-    bar.innerHTML=I.chart+' <span style="margin-left:4px">'+m.title.slice(0,35)+'</span><span style="margin-left:auto;font-size:10px;opacity:0.6">minimizado</span>';
-    bar.addEventListener('click',function(){setCollapsed(wrapper,false);});
-    bar.style.cursor='pointer';
-    wrapper.appendChild(tb); wrapper.appendChild(body); wrapper.appendChild(bar);
+    var wrapper=cmWrapperSintetico(m.title, m.html);
     zone.appendChild(wrapper);
     bindWrapper(wrapper);
     animateIn(wrapper);

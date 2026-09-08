@@ -26845,7 +26845,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
               orcCats: _orcCats, setOrcCats: _setOrcCats,
               orcCatsMod: _orcCatsMod, setOrcCatsMod: _setOrcCatsMod,
               contratos: contratos, despesas: despesas, receitas: receitas,
-              manutencoes: manutencoes, multas: multas,
+              manutencoes: manutencoes, multas: multas, contas: contas,
               dashMes: dashMes, setDashMes: setDashMes, mesAtual: mesAtual,
               prevDashMes: prevDashMes, nextDashMes: nextDashMes,
               prevBannerTouch: prevBannerTouch, prevBannerWheel: prevBannerWheel,
@@ -38386,12 +38386,50 @@ async function baixarReceitaItem(receitas, contratos, receitaId, dataPag) {
   return _resR;
 }
 
+/* ═══ [contas-fluxo] Contas a pagar/receber entram no dinheiro ═══════════
+
+   A tabela `contas` guarda contas a pagar e a receber (campo `tipo`:
+   "pagar" | "receber"). Elas apareciam na Agenda e nos alertas do Início,
+   mas NÃO entravam em cálculo de dinheiro nenhum: o fluxo de caixa somava
+   contratos, receitas, despesas, manutenções e multas e simplesmente
+   ignorava as contas — dinheiro que sai (ou entra) de verdade e não
+   aparecia em lugar nenhum. Pedido do usuário: "todas as contas devem
+   alimentar o fluxo de caixa".
+
+   Mesma regra de data que despesas e receitas já usam: enquanto está em
+   aberto vale o VENCIMENTO (é quando o dinheiro deve sair); depois de paga
+   vale a DATA DO PAGAMENTO (é quando saiu de fato). */
+function contaEhReceber(c) { return String((c && c.tipo) || "pagar") === "receber"; }
+function contaCancelada(c) { return !c || c.status === "cancelado"; }
+function contaEstaPaga(c) { return !!c && (c.status === "pago" || c.status === "recebido" || !!c.data_pagamento); }
+function contaDataFluxo(c) {
+  if (!c) return "";
+  var dt = contaEstaPaga(c) ? (c.data_pagamento || c.vencimento) : c.vencimento;
+  return String(dt || "").slice(0, 10);
+}
+function contasDoMesFluxo(contas, mes) {
+  return (contas || []).filter(function(c){
+    if (contaCancelada(c)) return false;
+    var dt = contaDataFluxo(c);
+    return !!dt && dt.slice(0, 7) === mes;
+  });
+}
+/* {entrada, saida} do mês — uma conta "receber" entra, uma "pagar" sai. */
+function totaisContasMes(contas, mes) {
+  var _ent = 0, _sai = 0;
+  contasDoMesFluxo(contas, mes).forEach(function(c){
+    var v = parseFloat(c.valor || 0) || 0;
+    if (contaEhReceber(c)) _ent += v; else _sai += v;
+  });
+  return { entrada: _ent, saida: _sai };
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  PessoalDash v5 — Template 4 (header gradient) + Template 5 (timeline)
 //  com previsão de despesas e receitas
 // ═══════════════════════════════════════════════════════════════════
 function PessoalDash({
-  orcItens, contratos, despesas, receitas, manutencoes, multas, desktop, setTab,
+  orcItens, contratos, despesas, receitas, manutencoes, multas, contas, desktop, setTab,
   dashMes, setDashMes, mesAtual, prevDashMes, nextDashMes,
   prevBannerTouch, prevBannerWheel,
   pModal, setPModal, pForm, setPForm,
@@ -38740,7 +38778,7 @@ function PessoalDash({
     /* ══ Orçamento Pessoal ══ */
     ,React.createElement(OrcamentoPessoalInline,{
         contratos:contratos,despesas:despesas,receitas:receitas,
-        manutencoes:manutencoes,multas:multas,
+        manutencoes:manutencoes,multas:multas,contas:contas,
         filtroMes:_mes,setFiltroMes:setDashMes,
         /* _pesItens é a cópia LOCAL do PessoalDash (o que os gráficos daqui
            leem) — mas orcItens (prop de App) e _orcFresh (estado de Início)
@@ -38763,10 +38801,10 @@ function PessoalDash({
 
 // OrcamentoPessoalInline: versão para embutir na Dashboard (sem cabeçalho nem nav de meses próprios)
 // Usa filtroMes/setFiltroMes do Inicio (dashMes)
-function OrcamentoPessoalInline({ contratos, despesas, receitas, manutencoes, multas, filtroMes, setFiltroMes, onItensChange, deepLink, setDeepLink }) {
+function OrcamentoPessoalInline({ contratos, despesas, receitas, manutencoes, multas, contas, filtroMes, setFiltroMes, onItensChange, deepLink, setDeepLink }) {
   return React.createElement(OrcamentoPessoal, {
     contratos: contratos, despesas: despesas, receitas: receitas,
-    manutencoes: manutencoes, multas: multas,
+    manutencoes: manutencoes, multas: multas, contas: contas,
     toast: function(msg, type) { window.dispatchEvent(new CustomEvent('ag:toast', { detail: { msg: msg, type: type || 'success' } })); },
     filtroMes: filtroMes, setFiltroMes: setFiltroMes,
     onItensChange: onItensChange,
@@ -38775,7 +38813,7 @@ function OrcamentoPessoalInline({ contratos, despesas, receitas, manutencoes, mu
   });
 }
 
-function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, toast, onItensChange, filtroMes: _filtroMesProp, setFiltroMes: _setFiltroMesProp, inlineMode, deepLink, setDeepLink }) {
+function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, contas, toast, onItensChange, filtroMes: _filtroMesProp, setFiltroMes: _setFiltroMesProp, inlineMode, deepLink, setDeepLink }) {
   const [itens, setItensRaw] = useState([]);
   const [loading, setLoading] = useState(true);
   function setItens(updater) {
@@ -39429,13 +39467,18 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
   // Saldo final do fluxo de caixa da locadora para o mês m
   // Diferença de _resultLocBanner: inclui Retirada de Lucro e Ajuste de Saldo nas despesas
+  /* [contas-fluxo] Este é o OUTRO "fluxo de caixa" do sistema (o do mês, lido
+     pelo painel do Início). Se ele ignorar as contas e o da tela Financeiro
+     não, os dois passam a dar números diferentes para o mesmo caixa — que é
+     exatamente a divergência que a regra [baixa-unica] existe pra evitar. */
   function _saldoFluxoMesLoc(m) {
     var cts=(contratos||[]).filter(function(c){if(!c.status||c.status==='cancelado')return false;if(c.status_pagamento==='pago'&&c.data_pagamento)return c.data_pagamento.slice(0,7)===m;return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m;});
     var recAv=(receitas||[]).filter(function(r){return !r.ref_fatura&&receitaDoMes(r,m);});
     var prev=cts.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+recAv.reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
     var desp=resolverDespesasDoMes(despesas||[],m).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
     var man=filtrarManParaBarras(manutencoes,despesas,m).reduce(function(s,m2){return s+parseFloat(m2.custo||0);},0);
-    return prev-desp-man;
+    var _ctas=totaisContasMes(contas,m); // [contas-fluxo]
+    return prev+_ctas.entrada-desp-man-_ctas.saida;
   }
 
   // Função auxiliar: lucro da locadora para um dado mês de referência (modo previsto)
@@ -42683,21 +42726,31 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         if (!dt) return;
         ev.push({ dia: dt.slice(0,10), kind:"mul", val: parseFloat(m.valor||0), label: m.descricao || "Multa", cat:"Multas", status: m.status || "pendente" });
       });
+      /* [contas-fluxo] Contas a pagar/receber: dinheiro que sai e entra de
+         verdade e que este fluxo simplesmente não enxergava. */
+      (contas || []).forEach(function(c){
+        if (contaCancelada(c)) return;
+        var dt = contaDataFluxo(c);
+        if (!dt) return;
+        ev.push({ dia: dt, kind: contaEhReceber(c) ? "rec" : "cont", val: parseFloat(c.valor||0),
+                  label: c.descricao || "Conta", cat: c.categoria || "Contas", status: c.status || "pendente" });
+      });
 
       function aggregate(group){
         var keys = Object.keys(group).sort();
         var acc = 0;
         return keys.map(function(k){
           var lst = group[k];
-          var rec = 0, desp = 0, man = 0, mul = 0;
+          var rec = 0, desp = 0, man = 0, mul = 0, cont = 0;
           lst.forEach(function(x){
             if (x.kind === "rec") rec += x.val;
             else if (x.kind === "desp") desp += x.val;
             else if (x.kind === "man") man += x.val;
+            else if (x.kind === "cont") cont += x.val;   // [contas-fluxo]
             else mul += x.val;
           });
-          var saldo = rec - desp - man - mul; acc += saldo;
-          return { key: k, eventos: lst, rec: rec, desp: desp, man: man, mul: mul, saldo: saldo, acc: acc };
+          var saldo = rec - desp - man - mul - cont; acc += saldo;
+          return { key: k, eventos: lst, rec: rec, desp: desp, man: man, mul: mul, cont: cont, saldo: saldo, acc: acc };
         });
       }
 
@@ -42716,7 +42769,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         : serieAscFull;
       var serie = sort === "asc" ? serieAsc.slice() : serieAsc.slice().reverse();
       var totRec = serieAsc.reduce(function(s,r){ return s + r.rec; }, 0);
-      var totOut = serieAsc.reduce(function(s,r){ return s + r.desp + r.man + r.mul; }, 0);
+      var totOut = serieAsc.reduce(function(s,r){ return s + r.desp + r.man + r.mul + r.cont; }, 0); // [contas-fluxo]
       var saldoFinal = totRec - totOut;
       var maxAbs = Math.max.apply(null, serieAsc.map(function(r){ return Math.abs(r.saldo); }).concat([1]));
 
@@ -42796,7 +42849,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           { lbl:"Receitas", val: row.rec, c: P.green },
           { lbl:"Despesas", val: row.desp, c: P.red },
           { lbl:"Manutenção", val: row.man, c: P.purple },
-          { lbl:"Multas", val: row.mul, c: P.orange }
+          { lbl:"Multas", val: row.mul, c: P.orange },
+          { lbl:"Contas", val: row.cont, c: P.blue }   // [contas-fluxo]
         ].filter(function(p){ return p.val > 0; });
         return React.createElement('div', { key: row.key, style: { paddingBottom: i === serie.length - 1 ? 0 : 10 } }
           , React.createElement('div', { style: { borderRadius: 14, background:"var(--c-card)", border:"0.5px solid var(--c-border)", padding:"12px 14px" } }
@@ -42898,8 +42952,9 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         var despAv = (despesas||[]).filter(function(d){ return !d.manutencao_id && despesaVisivelNoMes(d, m); }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
         var manM = (manutencoes||[]).filter(function(mn){ var dt = mn.data_previsao_pagamento || mn.data_pagamento || mn.data_entrada || ""; return dt.slice(0,7) === m; }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
         var multM = (multas||[]).filter(function(mu){ return (mu.vencimento||mu.data||"").slice(0,7) === m; }).reduce(function(s,mu){ var v = parseFloat(mu.valor||0); var cob = (mu.cobrado_cliente==="pago"||mu.cobrado_cliente==="pendente") ? parseFloat(mu.valor_cobrado||mu.valor||0) : 0; return s+Math.max(0,v-cob); },0);
-        var inflow = recCt + recAv;
-        var outflow = despAv + manM + multM;
+        var contM = totaisContasMes(contas, m); // [contas-fluxo]
+        var inflow = recCt + recAv + contM.entrada;
+        var outflow = despAv + manM + multM + contM.saida;
         return { mes: m, inflow: inflow, outflow: outflow, saldo: inflow - outflow };
       });
       var saldoAcc = 0;

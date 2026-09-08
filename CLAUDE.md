@@ -23,6 +23,13 @@ CLAUDE.md
 - Componentes definidos como funções no escopo global, antes do `ReactDOM.render`
 - Estilos inline via objeto `style={{}}`
 - Paleta de cores centralizada no objeto `C` (passado como prop)
+- **`SwipeRow`**: o botão desenha **ícone e texto separados**. Rótulo que já
+  começa com emoji (`"💸 Baixar"`, `"✅ Receber"`, `"↩ Estornar"`) tem o
+  símbolo extraído e usado COMO ícone — não repita o emoji esperando que ele
+  apareça no texto. Antes disso o botão saía com o emoji duas vezes e o texto
+  cortado dentro dos 72px, a ponto de não dar pra saber qual era a ação.
+  Toda linha com "Baixar" deve oferecer **"Editar" ao lado**: um único botão
+  revelado no swipe não se identifica sozinho.
 
 ## Atualizar o ícone PWA via anexo
 

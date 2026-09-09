@@ -171,6 +171,70 @@ polyfill, "melhoria visual" em JS puro): só acrescente. Se a ideia exige mover
 um elemento renderizado pelo React, ela está errada — resolva no React ou por
 CSS (`order`, `display`), nunca movendo o nó.
 
+## Nada anima propriedade cara para sempre — `[bateria]` — PERMANENTE
+
+Com o app **parado** na tela inicial, ele queimava **16% de um núcleo**,
+continuamente. Medido pelo protocolo do Chrome (`Performance.getMetrics`), em
+30s: **825 layouts** e **1308 recálculos de estilo** — cerca de 30 por segundo,
+com ninguém tocando na tela.
+
+Causa: **animação infinita em propriedade que o navegador não manda pra GPU.**
+Só `transform` e `opacity` são compostas. Tudo o mais (`box-shadow`, `left`,
+`top`, `width`, `filter`, `background-position`…) repinta ou refaz layout **a
+cada quadro, no processador principal, para sempre**.
+
+Os três achados, em ordem de custo:
+
+1. **`ag-today-pulse`** — 4 linhas do Dashboard pulsando `box-shadow`. Sozinho:
+   **15,9% → 7,6%**. Virou brilho **estático** (`_hojeRowGlow`): o vermelho e o
+   anel é que dizem "vence hoje"; a respiração não acrescentava informação.
+2. **`ag-bar-shimmer`** — o brilho da barra de progresso animava **`left`**
+   (layout a cada quadro) e, pior, **rodava desde o carregamento por baixo de
+   uma barra invisível**: `opacity:0` **não pausa animação**. Agora anima
+   `transform` e só existe sob `#ag-progress-bar.ag-bar-active`.
+3. **blobs decorativos do fundo** — dois círculos de ~380px a 4-5% de opacidade
+   escalando para sempre, em **todas** as telas. Animação removida; o gradiente
+   ficou.
+
+Resultado: **16,2% → 6,5% de um núcleo**; layouts 825 → 37; recálculos de
+estilo 1308 → 308.
+
+**Regras permanentes:**
+
+- Animação **infinita** só pode mexer em **`transform`** e **`opacity`**.
+  Precisa de outro efeito? Ponha o efeito num pseudo-elemento e anime a
+  **opacidade dele**; se o elemento já usa `::before` e `::after` (como
+  `.agk2-ev-card`), promova a camada com `will-change` e meça.
+- `opacity:0`, `visibility:hidden` e `display:none` no PAI **não pausam** a
+  animação do filho. Elemento que vive no DOM desde o carregamento (barra de
+  progresso, overlay, skeleton) só pode animar sob uma classe de estado.
+- Efeito **decorativo** não anima para sempre. Se ninguém consegue apontar a
+  informação que o movimento carrega, ele é custo puro.
+- Antes de declarar concluída qualquer mudança visual com `animation:`, rodar
+  `node tests/run.js` — o grupo *"Nada anima propriedade cara para sempre"* lê
+  os `@keyframes` de toda animação infinita e falha se alguma tocar em
+  propriedade de layout/pintura.
+
+### Decorador de DOM não varre o documento a cada mutação
+
+Segundo foco, menor mas do mesmo tipo: seis `MutationObserver` sobre
+`document` inteiro, vários rodando `querySelectorAll` no documento **uma vez
+por mutação** — e o app se re-renderiza sozinho a cada poucos segundos
+(cartões que alternam de face).
+
+- Existe **um agendador só**: **`window.__agIdle(chave, fn, ms)`** — junta a
+  rajada de mutações numa passada e **não roda nada em segundo plano**
+  (dispara o pendente quando a tela volta a ficar visível).
+- O observador do **FAB** vigiava `style` em todo o documento; o React reescreve
+  `style` inline o tempo todo. Ficou só `class`, que é o que marca a aba ativa.
+- O **Chart Manager** só agenda varredura quando entrou um `.lg-card`
+  (`_cmTemCard`).
+- **Seletor de style é kebab-case.** `div[style*="borderRadius"]` casava com
+  **zero** elementos — o DOM serializa `border-radius`. A "Strategy 2" do Chart
+  Manager e a `isChartCard` que ela usava foram **removidas**: varriam o
+  documento inteiro para nada. Corrigir o seletor não era opção — passaria a
+  embrulhar centenas de divs de uma hora pra outra.
+
 ## SQL de migração — sempre mostrar para copiar
 
 Sempre que uma tarefa criar ou alterar um arquivo em `sql/` (nova tabela, coluna,

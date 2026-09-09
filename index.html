@@ -240,7 +240,13 @@ input[type=file]{display:none}
 .ag-cron-row-atraso{animation:ag-alert-atraso-row 1.2s ease-in-out infinite !important;}
 .ag-banner-2d{animation:ag-alert-2d-card 1.6s ease-in-out infinite !important;}
 .ag-banner-atraso{animation:ag-alert-atraso-card 1.4s ease-in-out infinite !important;}
-@keyframes ag-today-pulse{0%,100%{box-shadow:0 1px 8px rgba(0,0,0,0.08),0 0 0 0 rgba(255,59,48,0)}55%{box-shadow:0 4px 20px rgba(255,59,48,0.20),0 0 0 2px rgba(255,59,48,0.18)}}
+/* [bateria] Era o item mais caro da tela: 4 linhas pulsando `box-shadow`
+   custavam sozinhas ~8 pontos percentuais de CPU (15,9% → 7,6% de um núcleo
+   ao desligar). box-shadow é propriedade de PINTURA — não vai pra GPU, então
+   cada quadro repintava a linha inteira, para sempre.
+   O brilho vermelho + o anel continuam: eles é que dizem "esta linha vence
+   hoje". Só a respiração saiu — ela não acrescentava informação nenhuma.
+   O brilho fixo é aplicado por `_hojeRowGlow` (busque por esse nome). */
 @keyframes ag-m4-pulse{0%,100%{box-shadow:0 0 0 0 var(--m4-pulse-color,transparent)}50%{box-shadow:0 0 0 4px var(--m4-pulse-color,transparent)}}
 /* dia com pendência que já passou (atrasado) — esmaece em vez de piscar em anel,
    pra diferenciar visualmente de "vence hoje" (que continua com o anel pulsante). */
@@ -431,7 +437,10 @@ body.indigo #ag-liquid-blob {
   border-radius:50%;
   background:radial-gradient(circle,rgba(0,122,255,0.055) 0%,transparent 70%);
   top:-80px;right:-60px;
-  animation:ag-blob1 14s ease-in-out infinite;
+  /* [bateria] animação infinita removida: dois círculos de ~380px com
+     radial-gradient a 4-5% de opacidade escalando pra sempre mantinham o
+     compositor do celular acordado em TODAS as telas, 24h por dia, por um
+     movimento de 18px que ninguém enxerga. O visual (o gradiente) fica. */
 }
 #ag-bg-blob .b2{
   position:absolute;
@@ -439,8 +448,6 @@ body.indigo #ag-liquid-blob {
   border-radius:50%;
   background:radial-gradient(circle,rgba(52,199,89,0.04) 0%,transparent 70%);
   bottom:80px;left:-80px;
-  animation:ag-blob2 17s ease-in-out infinite;
-  animation-delay:-5s;
 }
 body.dark #ag-bg-blob .b1{background:radial-gradient(circle,rgba(0,122,255,0.07) 0%,transparent 70%);}
 body.dark #ag-bg-blob .b2{background:radial-gradient(circle,rgba(52,199,89,0.05) 0%,transparent 70%);}
@@ -2782,12 +2789,26 @@ body.indigo .ag-float-input:not(:placeholder-shown) ~ .ag-float-label{
   transition:width 1.2s cubic-bezier(0.34,1.20,0.64,1);
   position:relative;overflow:hidden;
 }
-@keyframes ag-bar-shimmer{0%{left:-100%}60%,100%{left:160%}}
+/* [bateria] Este brilho era o maior consumo do app: ~11% de um núcleo,
+   o tempo todo, com a tela parada.
+   Dois erros somados:
+   1. animava `left`, que é propriedade de LAYOUT — o navegador recalculava
+      posição e estilo a CADA QUADRO (≈30 layouts por segundo), no processador
+      principal, em vez de deixar com a GPU;
+   2. a barra de progresso vive no DOM desde o primeiro carregamento e só some
+      por `opacity:0` — e opacidade zero NÃO pausa animação. Ou seja: o brilho
+      corria para sempre por baixo de uma barra invisível.
+   Agora anima `transform` (vai pra GPU, sem layout) e só existe enquanto a
+   barra está de fato ativa. */
+@keyframes ag-bar-shimmer{0%{transform:translateX(-100%) skewX(-18deg)}60%,100%{transform:translateX(266%) skewX(-18deg)}}
 #ag-progress-fill::after{
   content:'';position:absolute;
-  top:0;left:-100%;width:60%;height:100%;
+  top:0;left:0;width:60%;height:100%;
   background:linear-gradient(90deg,transparent,rgba(255,255,255,0.50),transparent);
-  transform:skewX(-18deg);
+  transform:translateX(-100%) skewX(-18deg);
+  will-change:transform;
+}
+#ag-progress-bar.ag-bar-active #ag-progress-fill::after{
   animation:ag-bar-shimmer 1.4s ease-in-out infinite;
 }
 
@@ -16615,7 +16636,11 @@ body.onix .agk2-ev-card .agk2-ev-val{ color:var(--flag-mid); }
 .ag-panel-flag.ag-pf-noseam::after{ display:none; }
 /* Vencido/atrasado: o pulso (blink) já sinaliza — mesma animação usada no
    selo redondo antigo (ag-tw-blink), só que aplicada na bandeira inteira. */
-.ag-panel-flag.ag-pf-blink{ animation:ag-tw-blink 2.4s ease-in-out infinite; }
+/* [bateria] São até ~32 elementos piscando ao mesmo tempo no Dashboard.
+   Opacidade só é barata quando a camada está promovida — sem isso o
+   navegador recalcula estilo de todos eles a cada quadro. */
+[style*="ag-tw-blink"]{will-change:opacity;}
+.ag-panel-flag.ag-pf-blink{ will-change:opacity; animation:ag-tw-blink 2.4s ease-in-out infinite; }
 /* [bandeira-diagonal-clara] Card de Multas (lista expansível) — o card tem
    muitas seções/filhos (pipeline expansível, histórico, swipe), então em
    vez de reestruturar tudo pra um flex com bandeira de verdade, a bandeira
@@ -16675,6 +16700,9 @@ body.midnight .ag-panel-flag::after, body.onix .ag-panel-flag::after{
    sinalizando (nunca opacity — senão parece que o cartão está sumindo). */
 .agk2-ev-card.agk2-ev-pulsa{
   animation:agk2-ev-pulse 3.4s ease-in-out infinite;
+  /* [bateria] `filter` repinta no processador principal a cada quadro; com a
+     camada promovida a animação passa a rodar na GPU. */
+  will-change:filter;
 }
 @keyframes agk2-ev-pulse{
   0%,100%{ filter:brightness(1); }
@@ -26098,7 +26126,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   function _hojeBlinkDot() {
     return React.createElement('span', { style:{ display:'inline-block', width:7, height:7, borderRadius:"50%", background:C.red, marginRight:5, verticalAlign:"middle", boxShadow:"0 0 5px "+C.red+"99", animation:"ag-tw-blink 2.4s ease-in-out infinite", flexShrink:0 } });
   }
-  var _hojeRowGlow = { animation:"ag-today-pulse 1.6s ease-in-out infinite" };
+  /* [bateria] Antes: animation:"ag-today-pulse ..." — pulso infinito de
+     box-shadow. Agora é o mesmo brilho, parado. Ver .ag-hoje-glow no CSS. */
+  var _hojeRowGlow = { boxShadow:"0 4px 20px rgba(255,59,48,0.20), 0 0 0 2px rgba(255,59,48,0.18)" };
   // Azul (um pouco mais escuro) para o número do faturamento e o mês vigente
   const _azulFat = (document.body.classList.contains("dark")||document.body.classList.contains("dim")||document.body.classList.contains("indigo")||document.body.classList.contains("midnight")||document.body.classList.contains("onix")) ? "#8aa8bd" : "#4a6f8a";
   // Cor do texto do mês: atual=mesmo azul do número, anterior=vermelho, futuro=verde
@@ -38481,6 +38511,25 @@ async function baixarReceitaItem(receitas, contratos, receitaId, dataPag) {
    não recebe o prop `toast`. Existe para que NENHUMA ação disparada por toque
    termine em silêncio: "cliquei e não aconteceu nada" já custou várias
    rodadas de investigação neste projeto. */
+/* [bateria] Agendador único dos decoradores de DOM.
+   Vários observadores varriam o documento inteiro a CADA mutação — e o app
+   re-renderiza sozinho a cada poucos segundos (cartões que alternam de face).
+   Isso mantinha o celular trabalhando à toa o tempo todo, com a tela parada.
+   Aqui a rajada de mutações vira UMA passada, e nada roda com o app em
+   segundo plano. Quem volta a ficar visível dispara a passada pendente. */
+window.__agIdle = window.__agIdle || (function(){
+  var _t = {}, _pend = {};
+  document.addEventListener("visibilitychange", function(){
+    if (document.hidden) return;
+    for (var k in _pend) { var f = _pend[k]; delete _pend[k]; f(); }
+  });
+  return function(chave, fn, ms){
+    if (document.hidden) { _pend[chave] = fn; return; }
+    clearTimeout(_t[chave]);
+    _t[chave] = setTimeout(function(){ if (document.hidden) { _pend[chave] = fn; return; } fn(); }, ms || 200);
+  };
+})();
+
 function _agAvisar(msg, tipo) {
   try { window.dispatchEvent(new CustomEvent("ag:toast", { detail: { msg: msg, type: tipo || "error" } })); }
   catch(e) { console.warn("aviso", msg, e); }
@@ -56966,14 +57015,17 @@ if (!__viewerMode) {
 
   // Detecta abertura/fechamento do painel via MutationObserver
   new MutationObserver(function() {
-    syncExpanded();
-    if (isPanelOpen()) {
-      // Painel aberto → garante banner visível, remove hidden
-      hidden = false;
-      var b = banner();
-      if (b) { b.classList.remove('banner-hidden'); b.classList.add('banner-expanded'); }
-    }
-    attach();
+    /* [bateria] rodava por mutação; a rajada de um re-render vira uma passada. */
+    window.__agIdle("dock-banner", function(){
+      syncExpanded();
+      if (isPanelOpen()) {
+        // Painel aberto → garante banner visível, remove hidden
+        hidden = false;
+        var b = banner();
+        if (b) { b.classList.remove('banner-hidden'); b.classList.add('banner-expanded'); }
+      }
+      attach();
+    }, 150);
   }).observe(document.body || document.documentElement, { childList: true, subtree: true });
 
   document.addEventListener('click', function(e) {
@@ -57104,7 +57156,10 @@ if (!__viewerMode) {
     document.querySelectorAll('.lg-pill,.lg-nav-btn,button:not([data-no-ripple])').forEach(attachRipple);
     document.querySelectorAll('.lg-nav-btn').forEach(attachBounce);
   }
-  new MutationObserver(scan).observe(document.body || document.documentElement, { childList: true, subtree: true });
+  /* [bateria] scan() faz dois querySelectorAll no documento inteiro; sem
+     agendador ele rodava uma vez por mutação (dezenas por segundo). */
+  new MutationObserver(function(){ window.__agIdle("ripple-scan", scan, 250); })
+    .observe(document.body || document.documentElement, { childList: true, subtree: true });
   document.addEventListener('DOMContentLoaded', scan);
   if (document.body) scan();
 
@@ -58025,17 +58080,10 @@ function bindWrapper(wrapper){
 var wrapped=new WeakSet();
 var zoneSeq=0;
 
-/* Determine if a card-like element is a "chart/data card" worth wrapping */
-function isChartCard(el){
-  // Has canvas (Chart.js)
-  if(el.querySelector('canvas')) return true;
-  // Has SVG with path/line/rect (inline charts)
-  if(el.querySelector('svg path,svg rect,svg line,svg circle,svg polyline')) return true;
-  // Has a bar-like structure (divs with inline height styles that suggest bars)
-  var styles=el.getAttribute('style')||'';
-  if(/borderRadius.*16|borderRadius.*20/.test(styles) && el.querySelector('[style*="height"]')) return true;
-  return false;
-}
+/* [bateria] `isChartCard` foi removida junto com a "Strategy 2": era a única
+   chamadora, e a função ainda rodava querySelector('svg path,...') em cada
+   candidato do documento. Ela também testava /borderRadius/ contra o atributo
+   style, que o DOM escreve em kebab-case — nunca casava. */
 
 function wrapCard(card, zoneEl){
   if(wrapped.has(card)) return;
@@ -58138,21 +58186,14 @@ function wrapAll(root){
     wrapCard(card, zone);
   });
 
-  // Strategy 2: Chart-like divs with inline card style (background:C.card + borderRadius)
-  // These are the graficos tab cards that use style= directly without lg-card class
-  root.querySelectorAll('div[style*="borderRadius"]').forEach(function(el){
-    if(wrapped.has(el)||el.closest('.cm-wrapper')||el.closest('.lg-modal')||el.classList.contains('cm-wrapper')||el.closest('[data-no-cm]')||el.closest('.pg-fade')) return;
-    if(el.classList.contains('cm-body')||el.classList.contains('cm-toolbar')) return;
-    if(!isChartCard(el)) return;
-    // Must be a "top-level" card — not nested inside another card-like div
-    if(el.parentElement && el.parentElement.closest('div[style*="borderRadius"]') && 
-       !el.parentElement.classList.contains('cm-zone') &&
-       !el.parentElement.classList.contains('cm-wrapper')) return;
-    var zone=el.parentElement;
-    if(!zone||zone===document.body) return;
-    ensureZone(zone);
-    wrapCard(el, zone);
-  });
+  /* [bateria] A "Strategy 2" foi REMOVIDA: ela procurava
+     div[style*="borderRadius"], mas o DOM serializa CSS em kebab-case
+     (border-radius), então o seletor casava com ZERO elementos — nunca
+     embrulhou nada em nenhuma tela. O que ela fazia de verdade era varrer o
+     documento inteiro e rodar isChartCard() (que por sua vez faz querySelector
+     de svg em cada candidato) a cada re-render, para nada.
+     Corrigir o seletor não é opção: passaria a embrulhar centenas de divs de
+     uma hora pra outra, mudança visual que ninguém pediu. */
 }
 
 /* ── Injecta cards movidos na aba/sub-aba destino ── */
@@ -58185,15 +58226,27 @@ function injectMovedCards(){
 }
 
 /* ── Debounced mutation scan ── */
-var _scanTimer;
 function scheduleScan(){
-  clearTimeout(_scanTimer);
-  _scanTimer=setTimeout(function(){ wrapAll(); injectMovedCards(); setTimeout(updateTray,100); }, 300);
+  window.__agIdle("cm-scan", function(){ wrapAll(); injectMovedCards(); setTimeout(updateTray,100); }, 500);
 }
 
+/* [bateria] Só vale varrer quando entrou um card de verdade. Antes qualquer
+   nó novo (um texto que mudou, um cartão que alterna de face) disparava a
+   varredura do documento inteiro. */
+function _cmTemCard(muts){
+  for (var i=0;i<muts.length;i++){
+    var add=muts[i].addedNodes;
+    for (var j=0;j<add.length;j++){
+      var n=add[j];
+      if (!n || n.nodeType!==1) continue;
+      if (n.classList && n.classList.contains("lg-card")) return true;
+      if (n.querySelector && n.querySelector(".lg-card")) return true;
+    }
+  }
+  return false;
+}
 new MutationObserver(function(muts){
-  var hasNew=muts.some(function(m){ return m.addedNodes.length>0; });
-  if(hasNew) scheduleScan();
+  if(_cmTemCard(muts)) scheduleScan();
 }).observe(document.documentElement,{childList:true,subtree:true});
 
 // Tab click → rescan with fresh zone label
@@ -58639,12 +58692,15 @@ document.addEventListener('click', function(e){
 }, {passive:true});
 
 /* ── Observa mudanças no DOM para atualizar FAB ── */
-var _fabTimer;
 function scheduleFabUpdate(){
-  clearTimeout(_fabTimer);
-  _fabTimer = setTimeout(updateFab, 280);
+  window.__agIdle("fab", updateFab, 400);
 }
 
+/* [bateria] Era o observador mais caro do app: vigiava `style` em TODO o
+   documento, e o React reescreve style inline o tempo todo — só ele recebia
+   mais mutações que todos os outros somados. O FAB depende da ABA ativa, que
+   se marca por classe (.lg-nav-btn-active); `style` nunca dizia nada sobre
+   isso. */
 new MutationObserver(function(muts){
   var relevant = muts.some(function(m){
     return m.addedNodes.length || m.type==='attributes';
@@ -58652,7 +58708,7 @@ new MutationObserver(function(muts){
   if(relevant) scheduleFabUpdate();
 }).observe(document.documentElement,{
   childList:true, subtree:true,
-  attributes:true, attributeFilter:['class','style']
+  attributes:true, attributeFilter:['class']
 });
 
 // Init
@@ -58841,10 +58897,12 @@ else document.addEventListener('DOMContentLoaded',function(){ setTimeout(updateF
   /* Re-decora após mudanças no DOM (React re-renders) */
   var _sbObs = new MutationObserver(function(muts){
     if (!isDesktop()) return;
-    var sb = getSidebar();
-    if (sb && !sb.dataset.agDecorated) decorateSidebar(sb);
-    /* Garante labels nos novos botões */
-    if (sb) sb.querySelectorAll('button[data-tab-id]').forEach(addLabelToBtn);
+    window.__agIdle("sidebar", function(){
+      var sb = getSidebar();
+      if (sb && !sb.dataset.agDecorated) decorateSidebar(sb);
+      /* Garante labels nos novos botões */
+      if (sb) sb.querySelectorAll('button[data-tab-id]').forEach(addLabelToBtn);
+    }, 250);
   });
   _sbObs.observe(document.body, { childList:true, subtree:true });
 

@@ -183,28 +183,41 @@ Só `transform` e `opacity` são compostas. Tudo o mais (`box-shadow`, `left`,
 `top`, `width`, `filter`, `background-position`…) repinta ou refaz layout **a
 cada quadro, no processador principal, para sempre**.
 
-Os três achados, em ordem de custo:
+**Nenhuma animação foi desligada — pedido explícito do usuário: "não desative
+animações".** Todas continuam na tela; o que mudou foi **o que cada uma anima**.
 
 1. **`ag-today-pulse`** — 4 linhas do Dashboard pulsando `box-shadow`. Sozinho:
-   **15,9% → 7,6%**. Virou brilho **estático** (`_hojeRowGlow`): o vermelho e o
-   anel é que dizem "vence hoje"; a respiração não acrescentava informação.
+   **15,9% → 7,6%**. O pulso continua, agora numa **camada própria**
+   (`.ag-hoje-glow`) que anima **opacidade**. A camada é **irmã** da
+   `.ag-swipe-wrap`, nunca filha: a wrap tem `overflow:hidden` (pro swipe) e
+   cortaria o brilho. Quem a desenha é o prop **`glow`** do `SwipeRow` —
+   sem ele a linha não ganha nenhum elemento a mais.
 2. **`ag-bar-shimmer`** — o brilho da barra de progresso animava **`left`**
    (layout a cada quadro) e, pior, **rodava desde o carregamento por baixo de
    uma barra invisível**: `opacity:0` **não pausa animação**. Agora anima
-   `transform` e só existe sob `#ag-progress-bar.ag-bar-active`.
-3. **blobs decorativos do fundo** — dois círculos de ~380px a 4-5% de opacidade
-   escalando para sempre, em **todas** as telas. Animação removida; o gradiente
-   ficou.
+   `transform` e só existe sob `#ag-progress-bar.ag-bar-active` — o brilho
+   visível é idêntico; o que parou foi o brilho que ninguém via.
+3. **blobs decorativos do fundo** — continuam animando (`translate`+`scale`,
+   as duas propriedades que vão pra GPU), agora com `will-change:transform`
+   pra garantir camada própria.
 
-Resultado: **16,2% → 6,5% de um núcleo**; layouts 825 → 37; recálculos de
-estilo 1308 → 308.
+`agk2-ev-pulse` (`filter`) e `ag-tw-blink` (até ~32 elementos piscando ao mesmo
+tempo) seguem rodando, com `will-change` pra irem pra GPU em vez de recalcular
+estilo no processador principal.
+
+Resultado: **16,2% → 7,5% de um núcleo**; layouts 825 → 38; recálculos de
+estilo 1308 → 371 — com todas as animações na tela.
 
 **Regras permanentes:**
 
 - Animação **infinita** só pode mexer em **`transform`** e **`opacity`**.
-  Precisa de outro efeito? Ponha o efeito num pseudo-elemento e anime a
-  **opacidade dele**; se o elemento já usa `::before` e `::after` (como
-  `.agk2-ev-card`), promova a camada com `will-change` e meça.
+  Precisa de outro efeito? **Não desligue a animação** — mova o efeito para uma
+  camada própria (pseudo-elemento, ou um irmão quando o pai tem
+  `overflow:hidden`) e anime a **opacidade dela**. Se o elemento já usa
+  `::before` e `::after` (como `.agk2-ev-card`), promova a camada com
+  `will-change` e meça.
+- **Nunca "resolver" consumo apagando animação.** O usuário pediu o contrário,
+  em letras maiúsculas: o efeito fica, o custo é que sai.
 - `opacity:0`, `visibility:hidden` e `display:none` no PAI **não pausam** a
   animação do filho. Elemento que vive no DOM desde o carregamento (barra de
   progresso, overlay, skeleton) só pode animar sob uma classe de estado.

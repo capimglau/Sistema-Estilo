@@ -252,14 +252,21 @@ grupo("Nada anima propriedade cara para sempre");
   eq("nenhuma animação infinita mexe em propriedade cara",
     culpados.join(" · ") || "(nenhuma)", "(nenhuma)");
 
-  // O brilho da linha "vence hoje" virou estático de propósito.
-  ok("o brilho de hoje não pulsa mais", /_hojeRowGlow = \{ boxShadow:/.test(html));
+  // O pulso da linha "vence hoje" CONTINUA — mudou o que ele anima: a
+  // opacidade de uma camada própria (irmã da .ag-swipe-wrap, que tem
+  // overflow:hidden e cortaria o brilho), não mais o box-shadow da linha.
+  ok("o brilho de hoje continua pulsando", /@keyframes ag-hoje-glow-pulse\{0%,100%\{opacity:0\}55%\{opacity:1\}\}/.test(html));
+  ok("e pulsa numa camada própria, por opacidade", /\.ag-hoje-glow\{[\s\S]{0,200}will-change:opacity/.test(html));
+  ok("o SwipeRow desenha essa camada FORA da wrap que corta", /if \(!glow\) return _swWrap;/.test(html));
+  ok("ninguém anima mais box-shadow na linha", !/animation:"ag-today-pulse/.test(html));
   // O brilho da barra de progresso só existe enquanto a barra está ativa —
   // opacity:0 não pausa animação, e ela vive no DOM desde o carregamento.
   ok("o brilho da barra de progresso só roda com a barra ativa",
     /#ag-progress-bar\.ag-bar-active #ag-progress-fill::after\{\s*animation:ag-bar-shimmer/.test(html));
-  // Decoração de fundo não pode animar para sempre em todas as telas.
-  eq("os blobs de fundo não animam", (html.match(/animation:ag-blob[12]/g) || []).length, 0);
+  // Os blobs de fundo voltaram a animar — só transform, que vai pra GPU.
+  eq("os blobs de fundo animam", (html.match(/animation:ag-blob[12]/g) || []).length, 2);
+  eq("e cada um com camada própria",
+    (html.match(/will-change:transform;\s*\n\s*animation:ag-blob[12]/g) || []).length, 2);
 }
 
 grupo("Decoradores de DOM não varrem o documento a cada mutação");

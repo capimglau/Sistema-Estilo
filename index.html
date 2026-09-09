@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="6a4ae9c"/>
+<meta name="ag-build" content="77cae6c"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -240,13 +240,25 @@ input[type=file]{display:none}
 .ag-cron-row-atraso{animation:ag-alert-atraso-row 1.2s ease-in-out infinite !important;}
 .ag-banner-2d{animation:ag-alert-2d-card 1.6s ease-in-out infinite !important;}
 .ag-banner-atraso{animation:ag-alert-atraso-card 1.4s ease-in-out infinite !important;}
-/* [bateria] Era o item mais caro da tela: 4 linhas pulsando `box-shadow`
-   custavam sozinhas ~8 pontos percentuais de CPU (15,9% → 7,6% de um núcleo
-   ao desligar). box-shadow é propriedade de PINTURA — não vai pra GPU, então
-   cada quadro repintava a linha inteira, para sempre.
-   O brilho vermelho + o anel continuam: eles é que dizem "esta linha vence
-   hoje". Só a respiração saiu — ela não acrescentava informação nenhuma.
-   O brilho fixo é aplicado por `_hojeRowGlow` (busque por esse nome). */
+/* [bateria] O pulso da linha "vence hoje" CONTINUA — o que mudou é o que ele
+   anima. Antes animava `box-shadow` direto na linha: propriedade de PINTURA,
+   que não vai pra GPU, então o navegador repintava a linha inteira a cada
+   quadro, para sempre (só isso custava ~8 pontos percentuais de CPU).
+   Agora o brilho mora numa CAMADA PRÓPRIA por cima da linha, e o que pulsa é
+   a OPACIDADE dela — a única propriedade, junto de transform, que o navegador
+   entrega pra GPU. Mesmo efeito na tela, sem trabalho de processador.
+   A camada é irmã da .ag-swipe-wrap (que tem overflow:hidden e cortaria o
+   brilho) e é desenhada pelo prop `glow` do SwipeRow. */
+.ag-hoje-glow{
+  position:absolute;inset:0;pointer-events:none;
+  box-shadow:0 4px 20px rgba(255,59,48,0.20),0 0 0 2px rgba(255,59,48,0.18);
+  opacity:0;will-change:opacity;
+  animation:ag-hoje-glow-pulse 1.6s ease-in-out infinite;
+}
+@keyframes ag-hoje-glow-pulse{0%,100%{opacity:0}55%{opacity:1}}
+@media (prefers-reduced-motion: reduce){
+  .ag-hoje-glow{animation:none;opacity:1;}
+}
 @keyframes ag-m4-pulse{0%,100%{box-shadow:0 0 0 0 var(--m4-pulse-color,transparent)}50%{box-shadow:0 0 0 4px var(--m4-pulse-color,transparent)}}
 /* dia com pendência que já passou (atrasado) — esmaece em vez de piscar em anel,
    pra diferenciar visualmente de "vence hoje" (que continua com o anel pulsante). */
@@ -437,10 +449,11 @@ body.indigo #ag-liquid-blob {
   border-radius:50%;
   background:radial-gradient(circle,rgba(0,122,255,0.055) 0%,transparent 70%);
   top:-80px;right:-60px;
-  /* [bateria] animação infinita removida: dois círculos de ~380px com
-     radial-gradient a 4-5% de opacidade escalando pra sempre mantinham o
-     compositor do celular acordado em TODAS as telas, 24h por dia, por um
-     movimento de 18px que ninguém enxerga. O visual (o gradiente) fica. */
+  /* [bateria] Animam só transform (translate + scale) — as duas propriedades
+     que o navegador entrega pra GPU. `will-change` garante a camada própria,
+     senão o compositor pode decidir repintar o gradiente a cada quadro. */
+  will-change:transform;
+  animation:ag-blob1 14s ease-in-out infinite;
 }
 #ag-bg-blob .b2{
   position:absolute;
@@ -448,6 +461,9 @@ body.indigo #ag-liquid-blob {
   border-radius:50%;
   background:radial-gradient(circle,rgba(52,199,89,0.04) 0%,transparent 70%);
   bottom:80px;left:-80px;
+  will-change:transform;
+  animation:ag-blob2 17s ease-in-out infinite;
+  animation-delay:-5s;
 }
 body.dark #ag-bg-blob .b1{background:radial-gradient(circle,rgba(0,122,255,0.07) 0%,transparent 70%);}
 body.dark #ag-bg-blob .b2{background:radial-gradient(circle,rgba(52,199,89,0.05) 0%,transparent 70%);}
@@ -24231,7 +24247,7 @@ function HoldDeleteBtn({ onDelete, className, style, label, holdMs }) {
 /* ── EFFECT 10 · SwipeRow ── */
 /* Swipe ESQUERDA (←) → revela Baixar + Editar à DIREITA do conteúdo
    Swipe DIREITA  (→) → revela Excluir à ESQUERDA do conteúdo        */
-function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel, deleteLabel, action2, action2Label, action2Icon, action2Color, wrapStyle, innerStyle, onRight, rightLabel, rightIcon, rightColor, leftActions }) {
+function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel, deleteLabel, action2, action2Label, action2Icon, action2Color, wrapStyle, innerStyle, onRight, rightLabel, rightIcon, rightColor, leftActions, glow }) {
   var wrapRef = React.useRef(null);
   var _sw = React.useRef({ on:false, sx:0, sy:0, dx:0, dir:null, moved:false });
 
@@ -24372,7 +24388,11 @@ function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel
     return function(){ document.removeEventListener('touchstart', close); };
   }, []);
 
-  return React.createElement('div', { ref:wrapRef, className:'ag-swipe-wrap',
+  /* [bateria] `glow`: pulso da linha que vence hoje. A camada do brilho é
+     IRMÃ da .ag-swipe-wrap, nunca filha — a wrap tem overflow:hidden (pro
+     swipe) e cortaria o brilho. Ver .ag-hoje-glow no CSS. */
+  var _swRaio = (wrapStyle && wrapStyle.borderRadius != null) ? wrapStyle.borderRadius : 0;
+  var _swWrap = React.createElement('div', { ref:wrapRef, className:'ag-swipe-wrap',
       style: Object.assign({ '--sw-reveal': revealR+'px', '--sw-reveal-r': revealL+'px' }, wrapStyle||{}) },
 
     /* Ações ESQUERDA (swipe → revela): Excluir / lista customizada */
@@ -24412,6 +24432,14 @@ function SwipeRow({ children, onEdit, editLabel, onDelete, onBaixar, baixarLabel
       onMouseUp:swEnd,     onTouchEnd:swEnd,
       onMouseLeave:swEnd
     }, children)
+  );
+  if (!glow) return _swWrap;
+  /* Sem `glow` a linha continua sendo exatamente o que sempre foi — nenhum
+     elemento a mais no caminho de quem não pulsa. */
+  return React.createElement('div', { style:{ position:'relative' } },
+    _swWrap,
+    React.createElement('div', { className:'ag-hoje-glow', 'aria-hidden':'true',
+      style: _swRaio ? { borderRadius:_swRaio } : null })
   );
 }
 
@@ -26126,9 +26154,11 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   function _hojeBlinkDot() {
     return React.createElement('span', { style:{ display:'inline-block', width:7, height:7, borderRadius:"50%", background:C.red, marginRight:5, verticalAlign:"middle", boxShadow:"0 0 5px "+C.red+"99", animation:"ag-tw-blink 2.4s ease-in-out infinite", flexShrink:0 } });
   }
-  /* [bateria] Antes: animation:"ag-today-pulse ..." — pulso infinito de
-     box-shadow. Agora é o mesmo brilho, parado. Ver .ag-hoje-glow no CSS. */
-  var _hojeRowGlow = { boxShadow:"0 4px 20px rgba(255,59,48,0.20), 0 0 0 2px rgba(255,59,48,0.18)" };
+  /* [bateria] O pulso da linha "vence hoje" continua igual na tela; o que
+     mudou é onde ele mora. Antes era `animation:ag-today-pulse` no style da
+     própria linha, animando box-shadow (pintura a cada quadro, no
+     processador). Agora quem pulsa é a camada .ag-hoje-glow, por opacidade —
+     desenhada pelo prop `glow` do SwipeRow. Nada de estilo inline aqui. */
   // Azul (um pouco mais escuro) para o número do faturamento e o mês vigente
   const _azulFat = (document.body.classList.contains("dark")||document.body.classList.contains("dim")||document.body.classList.contains("indigo")||document.body.classList.contains("midnight")||document.body.classList.contains("onix")) ? "#8aa8bd" : "#4a6f8a";
   // Cor do texto do mês: atual=mesmo azul do número, anterior=vermelho, futuro=verde
@@ -30353,7 +30383,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
              mexe em dinheiro nenhum. */
           baixarLabel:'🔄 Renovar',
           onDelete:null,
-          wrapStyle: Object.assign({ borderRadius:14, boxShadow:_flagCardShadow() }, diasRest<=0 ? _hojeRowGlow : null),
+          wrapStyle: { borderRadius:14, boxShadow:_flagCardShadow() }, glow: !!(diasRest<=0),
           innerStyle: _flagCardBg()
         }, _inner);
       };
@@ -30408,7 +30438,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           onBaixar:function(){ _agBaixar({type:'desp',id:_did,mes:_dmes}); }, baixarLabel:'Baixar',
           onEdit:function(){ setFinDeepLink({subTab:'despesas',itemId:_did,mes:_dmes}); setTab('financeiro'); }, editLabel:'Editar',
           onDelete:null,
-          wrapStyle: Object.assign({ borderRadius:14, boxShadow:_flagCardShadow() }, isUrgenteDesp ? _hojeRowGlow : null),
+          wrapStyle: { borderRadius:14, boxShadow:_flagCardShadow() }, glow: !!(isUrgenteDesp),
           innerStyle: _flagCardBg()
         }, _inner);
       };
@@ -30464,7 +30494,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           action2:function(){ onItemNav({type:'contrato',id:_cid},'contratos'); },
           action2Label:'Ver', action2Icon:'\u{1F441}', action2Color:'rgba(0,122,255,0.92)',
           onDelete:null,
-          wrapStyle: Object.assign({ borderRadius:14, boxShadow:_flagCardShadow() }, isUrgenteRec ? _hojeRowGlow : null),
+          wrapStyle: { borderRadius:14, boxShadow:_flagCardShadow() }, glow: !!(isUrgenteRec),
           innerStyle: _flagCardBg()
         }, _inner);
       };
@@ -30542,7 +30572,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           action2:function(){ onItemNav(_navAlvo.alvo, _navAlvo.tab); },
           action2Label:'Ver', action2Icon:'\u{1F441}', action2Color:'rgba(0,122,255,0.92)',
           onDelete:null,
-          wrapStyle: Object.assign({ borderRadius:14, boxShadow:_flagCardShadow() }, urgente ? _hojeRowGlow : null),
+          wrapStyle: { borderRadius:14, boxShadow:_flagCardShadow() }, glow: !!(urgente),
           innerStyle: _flagCardBg()
         }, _inner);
       };
@@ -30656,7 +30686,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           // cartões (gap do grid, ver container abaixo) já separa um do
           // outro nas duas colunas do desktop, sem precisar mais do filete
           // lateral que a divisória por borda exigia.
-          wrapStyle: Object.assign({ borderRadius:14, boxShadow:_flagCardShadow() }, urgente ? _hojeRowGlow : null),
+          wrapStyle: { borderRadius:14, boxShadow:_flagCardShadow() }, glow: !!(urgente),
           innerStyle: _flagCardBg()
         }, _inner);
       };

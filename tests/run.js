@@ -224,6 +224,66 @@ eq("nenhum header x-api-key no cliente",
 eq("chave da IA não é lida do banco nem do localStorage",
   (semComentarios.match(/getItem\(\s*["']claude_api_key["']\s*\)|empresa\.claude_api_key/g) || []).length, 0);
 
+grupo("Nada anima propriedade cara para sempre");
+
+// Com o app PARADO na tela inicial, ele queimava 16% de um núcleo. Quase tudo
+// vinha de animação infinita em propriedade que o navegador não manda pra GPU:
+// `box-shadow` e `left` repintam/relayoutam a cada quadro, no processador
+// principal. Só o pulso de box-shadow de 4 linhas custava 8 pontos.
+{
+  // Propriedades que NÃO são compostas pela GPU: animar qualquer uma delas em
+  // laço infinito é trabalho de CPU a cada quadro, para sempre.
+  const caras = ["box-shadow","left","top","right","bottom","width","height",
+                 "margin","padding","background-position","letter-spacing"];
+  // Nomes de @keyframes usados por alguma animação infinita.
+  const infinitas = new Set();
+  for (const m of html.matchAll(/animation:\s*'?"?([A-Za-z0-9_-]+)[^;'"}]*infinite/g)) infinitas.add(m[1]);
+  ok("o arquivo declara animações infinitas (senão o teste não vigia nada)", infinitas.size > 5);
+
+  const culpados = [];
+  for (const nome of infinitas) {
+    const kf = html.match(new RegExp("@keyframes\\\\s+" + nome + "\\\\s*\\\\{(?:[^{}]|\\\\{[^{}]*\\\\})*\\\\}"));
+    if (!kf) continue;
+    for (const prop of caras) {
+      // procura a propriedade sendo animada (ex.: "box-shadow:" dentro do bloco)
+      if (new RegExp("(?:^|[{;\\\\s])" + prop + "\\\\s*:").test(kf[0])) culpados.push(nome + " anima " + prop);
+    }
+  }
+  eq("nenhuma animação infinita mexe em propriedade cara",
+    culpados.join(" · ") || "(nenhuma)", "(nenhuma)");
+
+  // O brilho da linha "vence hoje" virou estático de propósito.
+  ok("o brilho de hoje não pulsa mais", /_hojeRowGlow = \{ boxShadow:/.test(html));
+  // O brilho da barra de progresso só existe enquanto a barra está ativa —
+  // opacity:0 não pausa animação, e ela vive no DOM desde o carregamento.
+  ok("o brilho da barra de progresso só roda com a barra ativa",
+    /#ag-progress-bar\.ag-bar-active #ag-progress-fill::after\{\s*animation:ag-bar-shimmer/.test(html));
+  // Decoração de fundo não pode animar para sempre em todas as telas.
+  eq("os blobs de fundo não animam", (html.match(/animation:ag-blob[12]/g) || []).length, 0);
+}
+
+grupo("Decoradores de DOM não varrem o documento a cada mutação");
+// Vários observadores rodavam querySelectorAll no documento inteiro uma vez por
+// mutação — e o app se re-renderiza sozinho a cada poucos segundos.
+ok("existe um agendador único (__agIdle) que junta a rajada e para em segundo plano",
+  /window\.__agIdle = window\.__agIdle \|\|/.test(html) && /if \(document\.hidden\)/.test(html));
+eq("nenhum observador chama scan/updateFab direto, sem agendador",
+  (html.match(/new MutationObserver\(scan\)/g) || []).length, 0);
+ok("o Chart Manager só varre quando entrou um card",
+  /function _cmTemCard\(muts\)/.test(html));
+ok("o observador do FAB não vigia mais `style` do documento inteiro",
+  /attributeFilter:\['class'\]\s*\n?\s*\}\);/.test(html) || !/attributeFilter:\['class','style'\]/.test(html));
+// O seletor camelCase nunca casa com nada: o DOM serializa CSS em kebab-case.
+// Só vale para SELETORES USADOS EM CONSULTA — sem os comentários, que citam o
+// seletor errado justamente para explicar por que ele foi removido.
+{
+  const semCom = html.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  eq("nenhuma consulta ao DOM procura style em camelCase",
+    (semCom.match(/querySelector(?:All)?\([^)]*\[style\*="[a-z]+[A-Z]/g) || []).length, 0);
+}
+ok("a varredura cara do Chart Manager (isChartCard) saiu junto",
+  !/function isChartCard\(/.test(html));
+
 grupo("Fatura emitida não migra de mês");
 
 // Mudar a previsão de pagamento de um contrato chamava criarFaturaPrevista, que

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="77cae6c"/>
+<meta name="ag-build" content="c292882"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -23608,6 +23608,47 @@ function faturaContratoEmitida(refKey, receitas) {
     return r.ref_fatura === refKey && (r.status === "emitida" || r.status === "recebido" || r.status === "parcial" || r.status === "isento" || !!r.numero_fatura || !!r.data_emissao);
   });
 }
+/* ── Emissão de fatura dispensada — `[emissao-dispensada]` ────────────────
+   Nem toda locação vira nota: há empresa que simplesmente não recebe fatura.
+   Pra essas, o aviso "Emitir Fatura" cobrava pra sempre — não existe nada no
+   banco que o faça sumir, porque a fatura nunca vai ser emitida mesmo.
+
+   O cartão "Emitir Fatura" da Agenda passou a aceitar "Marcar como resolvido"
+   (ver _agk2ModalAcao) e, quando marcado, some de TODOS os avisos de emissão
+   de uma vez — Agenda, calendário de Alertas, painel "Boletos a emitir",
+   etiqueta do card de Contratos e o .ics exportado. Um só lugar decide isso:
+   `faturaEmissaoDispensada(c)`. Quem for criar um aviso NOVO de emissão
+   pergunta a ela também, senão o usuário resolve num lugar e continua sendo
+   cobrado no outro.
+
+   Isso NÃO quita dinheiro nenhum e não fere `[agenda-resolvido-nao-quita]`:
+   o cartão de emissão não tem baixa (`fluxo: null`, não entra em soma de
+   caixa) e o recebimento do contrato continua cobrando normalmente no seu
+   próprio cartão ("Pgto Contrato", `acao:"baixar"`). O que sai de cena é só
+   o lembrete de emitir o documento.
+
+   A marca vale por VENCIMENTO (a chave carrega a data da emissão): no ciclo
+   seguinte o aviso volta sozinho — mesma regra do licenciamento/CNH. */
+// Dia em que a fatura do contrato deveria ser emitida: 20 dias antes da
+// previsão de pagamento. Mesma conta em todos os avisos de emissão.
+function faturaEmissaoDataISO(c) {
+  if (!c || !c.previsao_pagamento) return "";
+  var d = new Date(c.previsao_pagamento + "T12:00:00");
+  d.setDate(d.getDate() - 20);
+  return d.toISOString().split("T")[0];
+}
+// Chave do cartão "Emitir Fatura" na Agenda (agenda_adiamentos). Tem que ser
+// IDÊNTICA em todo aviso de emissão — chave diferente = "resolvido" some com
+// um aviso e deixa os outros cobrando.
+function faturaEmissaoChave(c) {
+  var dt = faturaEmissaoDataISO(c);
+  return (c && c.id != null && dt) ? ("emissao|" + c.id + "|" + dt) : "";
+}
+// O usuário já disse que não emite esta fatura (ou adiou o aviso)?
+function faturaEmissaoDispensada(c, agora) {
+  var k = faturaEmissaoChave(c);
+  return !!k && agAdiaOculto(k, agora);
+}
 // Próximo número sequencial de fatura (FAT-00001, FAT-00002, ...) — usado em TODOS os locais de
 // emissão (tela de Faturas, card de Contratos) para manter a numeração consistente.
 function proximoNumeroFatura(receitas) {
@@ -26609,6 +26650,11 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
     return true; // ativo, concluido ou qualquer status — se não pagou e venceu, alerta
   });
   const contratosVencendo = contratos.filter(c => c.status === "ativo" && c.data_fim && c.data_fim >= hoje && c.data_fim <= str1 && !renovadosIds.has(c.id));
+  /* Instante de agora no formato do mapa de adiados/resolvidos da Agenda —
+     usado por todos os filtros deste painel que respeitam esse mapa
+     (emissão de fatura, prazo de notificação de multa). Um só, calculado
+     antes do primeiro uso. */
+  var _agoraAdiaSc = agAdiaAgora();
   const contratosParaFaturar = contratos.filter(c => {
     if (c.status === "cancelado") return false;
     if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false;
@@ -26616,6 +26662,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
     if (!(c.previsao_pagamento >= hoje && c.previsao_pagamento <= str20)) return false;
     // Alerta "Emitir fatura" some quando a fatura foi EMITIDA (ou recebida/parcial),
     // não apenas quando o pagamento foi recebido — emitir já cumpre a tarefa.
+    // …ou quando o usuário disse que não emite fatura pra esse cliente
+    // (ver [emissao-dispensada]).
+    if (faturaEmissaoDispensada(c, _agoraAdiaSc)) return false;
     var mesRef = c.previsao_pagamento.slice(0, 7);
     var rkEmit = "fat_" + c.id + "_" + mesRef;
     return !faturaContratoEmitida(rkEmit, receitas);
@@ -26701,8 +26750,8 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   // Prazo de indicação de condutor ao órgão
   var _str5notif = new Date(_brNowMs()+5*864e5).toISOString().split("T")[0];
   /* agAdiaOculto: o mesmo prazo adiado/resolvido pelo cartao da Agenda sai
-     tambem destes dois contadores — chave identica a de buildAgendaEventos. */
-  var _agoraAdiaSc = agAdiaAgora();
+     tambem destes dois contadores — chave identica a de buildAgendaEventos.
+     (_agoraAdiaSc vem lá de cima, junto de contratosParaFaturar.) */
   const multasPrazoNotifVencido  = (multas||[]).filter(function(m){ if(m.status==="cancelada"||m.status==="cancelado")return false; if(indicacaoCondutorResolvida(m))return false; var prazo=m.prazo_notificacao_orgao||m.vencimento||""; if(agAdiaOculto("multa_notif|"+m.id+"|"+prazo,_agoraAdiaSc))return false; return prazo&&prazo<hoje; });
   const multasPrazoNotifVencendo = (multas||[]).filter(function(m){ if(m.status==="cancelada"||m.status==="cancelado")return false; if(indicacaoCondutorResolvida(m))return false; var prazo=m.prazo_notificacao_orgao||m.vencimento||""; if(agAdiaOculto("multa_notif|"+m.id+"|"+prazo,_agoraAdiaSc))return false; return prazo&&prazo>=hoje&&prazo<=_str5notif; });
 
@@ -27543,17 +27592,18 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         if (!c.previsao_pagamento) return;
         var _mesRefEmit=c.previsao_pagamento.slice(0,7);
         if (faturaContratoEmitida("fat_"+c.id+"_"+_mesRefEmit, receitas)) return;
-        var _dtE=new Date(c.previsao_pagamento+"T12:00:00"); _dtE.setDate(_dtE.getDate()-20);
-        var _dtEStr=_dtE.toISOString().split("T")[0];
+        var _dtEStr=faturaEmissaoDataISO(c);
         var cl=(clientes||[]).find(function(x){return x.id==c.cliente_id;});
         var ve=(veiculos||[]).find(function(x){return x.id==c.veiculo_id;});
+        /* chave = faturaEmissaoChave(c): "resolvido" no cartão da Agenda
+           tira o alerta daqui também ([emissao-dispensada]). */
         _alertaAdd(_dtEStr, function(_venc,_ant){ return {
           emoji:"🧾", cor:_venc?C.red:C.blue,
           titulo:"Emitir fatura/boleto — "+((cl&&cl.nome)||"Contrato #"+c.id),
           resumo:"Emitir fatura/boleto",
           sub:(ve&&ve.placa||"--")+" · pagamento previsto "+_fmtDc(c.previsao_pagamento)+(_venc?" · emissão atrasada":"")+_antecipadoTxt(_ant),
           onClick:function(){ onItemNav({type:"contrato",id:c.id},"contratos"); setAlertaDaySheet(null); }
-        }; }, "emissao|"+c.id+"|"+_dtEStr);
+        }; }, faturaEmissaoChave(c));
       });
       (multas||[]).forEach(function(m){
         if (!m.vencimento || m.status==="pago") return;
@@ -29916,6 +29966,12 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
          _ctsFatMes/_emitidosList) ainda não emitidos — mantém os totais do card
          coerentes com "X de Y emitidos" do cabeçalho, que também é escopado ao mês. */
       var _aEmitirMes = _ctsFatMes.filter(function(c){
+        /* Fatura que o usuário disse que não emite (cartão da Agenda marcado
+           como resolvido) não é boleto pendente — ver [emissao-dispensada].
+           Vale para o número/valor do card E para a lista de prioridade
+           abaixo: mostrar num lugar e esconder no outro é a divergência que
+           essa regra existe pra evitar. */
+        if (faturaEmissaoDispensada(c, _agoraAdiaSc)) return false;
         var mesRef = c.previsao_pagamento.slice(0,7);
         return !faturaContratoEmitida('fat_'+c.id+'_'+mesRef, receitas);
       });
@@ -29926,6 +29982,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
          no anterior, se vencido) também precisa aparecer como aviso antecipado. */
       var _aEmitirList = (contratos||[]).filter(function(c){
         if (c.status==='cancelado' || c.status_pagamento==='isento' || !c.previsao_pagamento) return false;
+        if (faturaEmissaoDispensada(c, _agoraAdiaSc)) return false; // [emissao-dispensada]
         var mesRef = c.previsao_pagamento.slice(0,7);
         if (faturaContratoEmitida('fat_'+c.id+'_'+mesRef, receitas)) return false;
         var dias = _diasAteVenc(c.previsao_pagamento);
@@ -33664,6 +33721,18 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   function _talvezVoltarInicio(){
     if (_voltarInicioRef.current) { _voltarInicioRef.current = false; if (setTab) setTab("inicio"); }
   }
+  /* [emissao-dispensada] O card do contrato lê agAdiaMapa() direto (via
+     faturaEmissaoDispensada) pra saber se a emissão foi dispensada. Esse mapa
+     vive FORA do React: sem este gatilho, marcar "não emitir" na Agenda só
+     apagaria a etiqueta "Emitir fatura" daqui no próximo reload — mesmo
+     motivo do _setAdiaVersaoInicio em Inicio. */
+  const [, _setAdiaVersaoCt] = React.useState(0);
+  React.useEffect(function() {
+    var vivo = true;
+    function onSync() { if (vivo) _setAdiaVersaoCt(function(v){ return v+1; }); }
+    document.addEventListener("ag:adia-sync", onSync);
+    return function(){ vivo = false; document.removeEventListener("ag:adia-sync", onSync); };
+  }, []);
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({});
   const [edit, setEdit] = useState(null);
@@ -34931,7 +35000,12 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         var _cardAccent = (contratoVenceHoje||pagAtrasado) ? C.red : contratoVenceEm3 ? C.orange : dimEncerrado ? C.gray : isPago ? C.green : isParcial ? C.teal : isIsento ? C.gray : C.orange;
         var cardStyle = Object.assign({ position: "relative", display: "flex", alignItems: "stretch", overflow: "hidden" }, _flagCardBg(), { borderRadius: 16 });
         var _str20 = new Date(_brNowMs() + 20*864e5).toISOString().split("T")[0];
-        var faturaAEmitir = c.status !== "cancelado" && c.status !== "concluido" && isPendente && c.previsao_pagamento && c.previsao_pagamento >= hoje && c.previsao_pagamento <= _str20 && !faturaContratoEmitida("fat_"+c.id+"_"+c.previsao_pagamento.slice(0,7), receitas);
+        /* [emissao-dispensada] Contrato de empresa que não recebe fatura: o
+           usuário já marcou o cartão da Agenda como resolvido, então o card
+           não pode continuar pulsando em vermelho nem alternando "Emitir
+           fatura" — é o mesmo aviso, no último lugar em que ainda aparecia. */
+        var _emissaoDispensada = faturaEmissaoDispensada(c);
+        var faturaAEmitir = !_emissaoDispensada && c.status !== "cancelado" && c.status !== "concluido" && isPendente && c.previsao_pagamento && c.previsao_pagamento >= hoje && c.previsao_pagamento <= _str20 && !faturaContratoEmitida("fat_"+c.id+"_"+c.previsao_pagamento.slice(0,7), receitas);
         var _cardClass = periodoExpirado ? "ag-expirado" : (contratoVenceHoje||pagAtrasado) ? "ag-urgent" : faturaAEmitir ? "ag-urgent" : "";
         // Etiqueta vertical de previsão/pagamento (lateral esquerda do card)
         var _dataEtiquetaCard = isPago ? c.data_pagamento : c.previsao_pagamento;
@@ -34946,7 +35020,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         var etiquetaLabelCard = isPago ? "pago" : (isPendente && faturaEmitidaCard) ? "emitida" : null;
         // Fatura ainda não emitida: etiqueta esmaece e alterna com "Emitir fatura" —
         // dispensa o aviso "Fatura não emitida" no resto do card.
-        var mostraAlternarEmitir = !faturaEmitidaCard && c.status !== "cancelado";
+        var mostraAlternarEmitir = !faturaEmitidaCard && !_emissaoDispensada && c.status !== "cancelado";
 
         return React.createElement(React.Fragment, { key: c.id }
         , React.createElement(SwipeRow, {
@@ -49167,9 +49241,7 @@ function buildAgendaEventos(ctx) {
     if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return;
     var refKey = "fat_" + c.id + "_" + c.previsao_pagamento.slice(0,7);
     if (faturaContratoEmitida(refKey, receitas)) return;
-    var dtEmissao = new Date(c.previsao_pagamento + "T12:00:00");
-    dtEmissao.setDate(dtEmissao.getDate() - 20);
-    var dtEmissaoStr = dtEmissao.toISOString().split("T")[0];
+    var dtEmissaoStr = faturaEmissaoDataISO(c);
     var cl = clientes.find(function(x){return x.id==c.cliente_id;});
     var ve = veiculos.find(function(x){return x.id==c.veiculo_id;});
     eventos.push({
@@ -49186,6 +49258,11 @@ function buildAgendaEventos(ctx) {
          já entra como "Pgto Contrato" na data do vencimento, e contar os dois
          inflaria o total do mês. */
       valor: numV(c.valor_total), fluxo: null,
+      /* chave explícita (é a mesma do fallback lá embaixo) porque os OUTROS
+         avisos de emissão a montam por faturaEmissaoChave — ver
+         [emissao-dispensada]. Se as duas divergirem, "resolvido" tira o
+         cartão da Agenda e deixa o resto cobrando. */
+      chave: faturaEmissaoChave(c),
       tab: "financeiro", id: c.id, acao: "emitir", mesFat: c.previsao_pagamento.slice(0,7)
     });
   });
@@ -49710,7 +49787,13 @@ function buildAgendaEventos(ctx) {
          sumia da Agenda, o banco continuava sem a baixa e todos os painéis
          seguiam cobrando "a pagar". Então `resolvido` nunca oculta cartão
          com ação de baixa/renovação; só o adiamento (`ate`) vale pra eles,
-         e adiar apenas reposiciona o cartão na nova data, nunca o apaga. */
+         e adiar apenas reposiciona o cartão na nova data, nunca o apaga.
+
+         "Emitir Fatura" (acao:"emitir") NÃO é baixa e por isso continua
+         resolvível: emitir é papelada, não dinheiro — o recebimento tem
+         cartão próprio ("Pgto Contrato", acao:"baixar") que segue cobrando.
+         É o que atende a empresa pra quem não se emite fatura nenhuma
+         (ver [emissao-dispensada]). */
       var _temBaixaReal = ev.acao === "baixar" || ev.acao === "renovar";
       if (r.resolvido && !_temBaixaReal) return acc;
       if (r.ate) { ev = Object.assign({}, ev, { data: String(r.ate).slice(0,10), adiadoPara: r.ate }); }
@@ -50440,7 +50523,12 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
                                        não tem como saber que o despachante já pagou o
                                        licenciamento, então ali o usuário adia pra depois ou
                                        marca como resolvido — e o alerta para de aparecer. */
-                                    if ((ev.acao === "renovar" || ev.acao === "baixar") && ev.id != null) {
+                                    /* "Emitir Fatura" entra aqui junto: a janela dele oferece
+                                       Emitir, Adiar e "Não emitir — marcar como resolvido",
+                                       que é a saída pra empresa que não recebe fatura
+                                       (ver [emissao-dispensada]). Antes o toque ia direto
+                                       pro Financeiro e o aviso não tinha como sair de cena. */
+                                    if ((ev.acao === "renovar" || ev.acao === "baixar" || ev.acao === "emitir") && ev.id != null) {
                                       setAcaoData(isoHoje); setAdiarAberto(false); setAdiarQuando("");
                                       setAcaoModal(ev);
                                       return;
@@ -50627,7 +50715,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
       db.patch("veiculos", ev.id, { licenciado:true }).catch(function(e){ console.warn("marcar licenciado", e); });
     }
     var msg = reg.resolvido
-      ? "Resolvido — sai da Agenda"
+      ? (ev.acao === "emitir" ? "Sem fatura — o aviso sai da Agenda e dos alertas" : "Resolvido — sai da Agenda")
       : "Adiado para " + _agk2QuandoLegivel(reg.ate);
     if (window._agUndo) {
       window._agUndo(msg, function(){
@@ -50705,6 +50793,16 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
       if (setTab) setTab("contratos");
       return;
     }
+    /* Emitir fatura: quem emite continua sendo o fluxo do Financeiro
+       (_emitirFaturaFluxo, com o mesmo confirm e a mesma numeração de
+       sempre) — a Agenda só leva até lá. Sem confirmar ("Abrir em
+       Financeiro"), abre a aba Faturas no mês certo sem emitir nada. */
+    if (ev.acao === "emitir") {
+      if (!setFinDeepLink) return;
+      setFinDeepLink(Object.assign({ subTab: "faturas", acao: confirmado ? "emitir" : null, itemId: ev.id, mes: ev.mesFat }, _volta));
+      if (setTab) setTab("financeiro");
+      return;
+    }
     if (ev.tipo === "pagamento") {
       if (!setCtDeepLink) return;
       setCtDeepLink(Object.assign({ acao: confirmado ? "baixar" : "editar", itemId: ev.id, data: confirmado ? data : null }, _volta));
@@ -50730,11 +50828,19 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
 function _agk2ModalAcao(o) {
   var ev = o.ev;
   var ehRenovar = ev.acao === "renovar";
+  /* Emitir fatura: não é baixa, não pede data e — diferente dos outros
+     cartões com ação — pode ser dado por resolvido, pra empresa que não
+     recebe fatura (ver [emissao-dispensada]). */
+  var ehEmitir = ev.acao === "emitir";
   var ehContrato = ehRenovar || ev.tipo === "pagamento";
   /* Cartão que o sistema não resolve sozinho (licenciamento, IPVA, CNH,
      pneus, reserva…): não há baixa a fazer, então a ação principal vira
      "dar por resolvido". */
   var semAcao = !ev.acao;
+  /* Cartão sem dinheiro a quitar por trás — o "resolvido" só cala o
+     lembrete, não some com nenhuma pendência financeira. Nos cartões de
+     baixa/renovação esse botão não existe, de propósito. */
+  var podeResolver = semAcao || ehEmitir;
   /* ev.tipo é a CATEGORIA do cartão ("orcamento" pros pessoais, por exemplo)
      — pra saber se é entrada ou saída de dinheiro (título/rótulo/data certos
      no sheet) usa ev.fluxo ("in"/"out", já vem de buildAgendaEventos em todo
@@ -50742,16 +50848,21 @@ function _agk2ModalAcao(o) {
   var ehReceitaFin = ev.tipo === "receita" || ev.fluxo === "in";
   var titulo = semAcao ? (M4_CAT_LABEL[ev.tipo] || "Pendência")
              : ehRenovar ? "Renovar contrato"
+             : ehEmitir ? "Emitir fatura"
              : ev.tipo === "pagamento" ? "Receber contrato"
              : ehReceitaFin ? "Baixar receita" : "Baixar despesa";
   var rotuloOk = semAcao ? "Marcar como resolvido"
                : ehRenovar ? "Renovar"
+               : ehEmitir ? "Emitir"
                : ev.tipo === "pagamento" ? "Receber" : "Baixar";
   /* Cartão com lançamento de verdade por trás (despesa/receita/contrato/item
      do orçamento pessoal): o botão secundário vira "Editar" — leva direto
      pro formulário de edição do lançamento, não só pra aba. Cartão sem ação
      (documento do veículo, CNH, reserva…) continua só navegando. */
-  var temLancamento = !semAcao && ev.id != null;
+  /* Emitir é exceção: o destino é a aba Faturas (a fatura ainda nem existe
+     como lançamento pra editar), então o secundário continua sendo "abrir
+     em", não "editar". */
+  var temLancamento = !semAcao && !ehEmitir && ev.id != null;
   var rotuloIr = temLancamento ? "✏️ Editar" : "Abrir em " + (AGK2_TAB_NOME[ev.tab] || (ehContrato ? "Contratos" : "Financeiro"));
   var tone = _agk2Tone(ev.tipo);
   var atraso = _agk2Atraso(ev.data, _brNow().toISOString().split("T")[0]);
@@ -50771,17 +50882,25 @@ function _agk2ModalAcao(o) {
           , (ev.detalhe || ev.sub) ? (" · " + (ev.detalhe || ev.sub)) : ""
         )
         , React.createElement('div', { style:{ fontSize:12, color:"var(--c-sub)" } }
-          , (ehRenovar ? "Vence em " : "Previsto para ") + fmtD(ev.data)
+          , (ehRenovar ? "Vence em " : ehEmitir ? "Emitir em " : "Previsto para ") + fmtD(ev.data)
           , atraso ? React.createElement('span', { style:{ marginLeft:8, fontWeight:800, color:"#C0392F" } }, "· " + atraso) : null
         )
       )
       /* Renovar não tem data a escolher: a renovação é sempre a partir do fim
          do contrato atual, como no fluxo da tela de Contratos. */
-      , (!ehRenovar && !semAcao && !o.adiarAberto) && React.createElement(Lbl, { label: ehReceitaFin ? "📅 Data do recebimento" : "📅 Data do pagamento" }
+      , (!ehRenovar && !ehEmitir && !semAcao && !o.adiarAberto) && React.createElement(Lbl, { label: ehReceitaFin ? "📅 Data do recebimento" : "📅 Data do pagamento" }
         , React.createElement('input', { style:FI, type:"date", value:o.data, onChange:function(e){ o.setData(e.target.value); } })
       )
       , (ehRenovar && !o.adiarAberto) && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
         , "Renova por mais 30 dias a partir do fim do contrato atual, criando o contrato seguinte e a fatura prevista dele."
+      )
+      /* [emissao-dispensada] O texto diz as duas coisas que o usuário precisa
+         saber antes de tocar em "Não emitir": o aviso some de todo lugar, e o
+         dinheiro continua sendo cobrado. */
+      , (ehEmitir && !o.adiarAberto) && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
+        , "Emitir abre a fatura deste contrato no Financeiro, com o mesmo número e confirmação de sempre."
+        , React.createElement('br')
+        , "Não emite fatura para este cliente? Toque em \"Não emitir\": o aviso sai da Agenda, dos alertas, do painel de boletos e do card do contrato até o próximo vencimento. O recebimento continua sendo cobrado normalmente."
       )
       , (semAcao && !o.adiarAberto) && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
         , "Esta pendência se resolve fora do sistema. Marque como resolvida para tirá-la da Agenda — ela volta sozinha no próximo vencimento."
@@ -50820,13 +50939,22 @@ function _agk2ModalAcao(o) {
         : React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:8, marginTop:2 } }
           , React.createElement('button', {
               className:bCls(Btn(C.green)), onClick: semAcao ? o.onResolver : o.onConfirmar,
-              disabled: !semAcao && !ehRenovar && !o.data,
-              style: Object.assign({}, bStyle(Btn(C.green)), { width:"100%", textAlign:"center", opacity: (!semAcao && !ehRenovar && !o.data) ? 0.5 : 1 })
+              disabled: !semAcao && !ehRenovar && !ehEmitir && !o.data,
+              style: Object.assign({}, bStyle(Btn(C.green)), { width:"100%", textAlign:"center", opacity: (!semAcao && !ehRenovar && !ehEmitir && !o.data) ? 0.5 : 1 })
             }, rotuloOk)
           , React.createElement('div', { style:{ display:"flex", gap:8 } }
             , React.createElement('button', { className:bCls(Ghost(C.sub)), style:Object.assign({}, bStyle(Ghost(C.sub)), { flex:1, textAlign:"center" }), onClick:o.abrirAdiar }, "Adiar")
             , React.createElement('button', { className:bCls(Ghost(C.blue)), style:Object.assign({}, bStyle(Ghost(C.blue)), { flex:1, textAlign:"center" }), onClick:o.onIrPara }, rotuloIr)
           )
+          /* [emissao-dispensada] Terceira linha, só no cartão de emissão: a
+             ação principal ali é emitir, então "não emitir" não pode roubar o
+             lugar dela — mas precisa caber na janela sem virar um quarto botão
+             espremido na mesma linha (390px não comporta três). */
+          , (podeResolver && !semAcao) && React.createElement('button', {
+              className:bCls(Ghost(C.sub)),
+              style:Object.assign({}, bStyle(Ghost(C.sub)), { width:"100%", textAlign:"center" }),
+              onClick:o.onResolver
+            }, "🚫 Não emitir — marcar como resolvido")
         )
     )
   );
@@ -50930,9 +51058,11 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
       if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return;
       var refKey = "fat_" + c.id + "_" + c.previsao_pagamento.slice(0,7);
       if (faturaContratoEmitida(refKey, receitas)) return;
-      var dtE = new Date(c.previsao_pagamento + "T12:00:00");
-      dtE.setDate(dtE.getDate() - 20);
-      var dtEStr = dtE.toISOString().split("T")[0];
+      /* [emissao-dispensada] o .ics vai pro calendário do celular e não tem
+         como ser "resolvido" depois — o que o usuário dispensou não pode
+         sair daqui pra cobrar de novo lá fora. */
+      if (faturaEmissaoDispensada(c)) return;
+      var dtEStr = faturaEmissaoDataISO(c);
       var cl = (clientes||[]).find(function(x){ return x.id == c.cliente_id; });
       var ve = (veiculos||[]).find(function(x){ return x.id == c.veiculo_id; });
       eventosEmissao.push({

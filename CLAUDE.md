@@ -257,7 +257,7 @@ Nunca assumir que o usuário vai abrir o arquivo sozinho para rodar no Supabase.
 
 ## Branch de desenvolvimento
 
-Branch ativo: `claude/despesa-pessoal-agenda-download-edit-954vzh`
+Branch ativo: `claude/resolved-option-no-invoice-pv3rx3`
 
 ## Consistência de implementação — OBRIGATÓRIO
 
@@ -595,7 +595,9 @@ Duas armadilhas relacionadas, já corrigidas — não reintroduzir:
 `agenda_adiamentos` (mapa `agAdiaMapa`/`agAdiaOculto`) existe pra pendência que
 se resolve **fora do sistema** — licenciamento, IPVA, CNH, pneus, revisão. O
 próprio modal diz isso, e o botão "Marcar como resolvido" só aparece quando o
-cartão **não tem ação de baixa** (`semAcao` em `_agk2ModalAcao`).
+cartão **não representa dinheiro a quitar** (`podeResolver` em
+`_agk2ModalAcao` — `semAcao`, mais o cartão de emissão de fatura descrito em
+[emissao-dispensada] logo abaixo).
 
 **Cartão COM baixa real (`ev.acao === "baixar"` ou `"renovar"` — contrato,
 despesa, receita, orçamento pessoal) tem fonte da verdade própria no banco** e
@@ -612,6 +614,52 @@ pra todos — mas adiar apenas **reposiciona** o cartão na nova data, nunca o
 apaga. Qualquer mecanismo novo de "esconder cartão" tem que respeitar isso:
 **nada que represente dinheiro em aberto pode ser ocultado por marcador de
 UI — só pela quitação real no banco.**
+
+### Emissão de fatura dispensada — `[emissao-dispensada]` — PERMANENTE
+
+Há empresa que **não recebe fatura**. Pra essas, o aviso "Emitir Fatura"
+cobrava pra sempre: não existe nada no banco que o faça sumir, porque a fatura
+nunca vai ser emitida. Aparecia em **seis lugares** ao mesmo tempo — Agenda,
+calendário de Alertas do Início, painel "Boletos a emitir", etiqueta girando no
+card de Contratos, o alerta do painel de contratos e o `.ics` exportado.
+
+O cartão **"Emitir Fatura"** da Agenda (`acao:"emitir"`) passou a abrir a
+janela de ação, com três saídas: **Emitir** (leva ao Financeiro, que emite com
+o mesmo número e confirmação de sempre), **Adiar** e **"🚫 Não emitir — marcar
+como resolvido"**.
+
+**Isso não fere `[agenda-resolvido-nao-quita]`:** emissão é papelada, não
+dinheiro. O cartão tem `fluxo: null` (não entra em soma de caixa nenhuma) e o
+recebimento continua cobrando no cartão próprio dele ("Pgto Contrato",
+`acao:"baixar"`), que segue **inocultável** por marcador de UI. Por isso
+`_temBaixaReal` no filtro final de `buildAgendaEventos` continua sendo só
+`"baixar" || "renovar"` — não inclua `"emitir"` ali.
+
+**A marca vale por vencimento**: a chave carrega a data da emissão, então no
+ciclo seguinte o aviso **volta sozinho** — mesma regra do licenciamento/CNH.
+
+Helpers únicos (escopo global do `index.html`) — **nunca refazer essa conta na
+mão**:
+
+- `faturaEmissaoDataISO(c)` — 20 dias antes de `previsao_pagamento`;
+- `faturaEmissaoChave(c)` — `"emissao|<id>|<data da emissão>"`, a chave em
+  `agenda_adiamentos`;
+- `faturaEmissaoDispensada(c, agora)` — a pergunta que **todo** aviso de
+  emissão faz antes de cobrar.
+
+**Aviso novo de emissão de fatura pergunta a `faturaEmissaoDispensada`.** Um
+que esqueça vira aviso zumbi: o usuário resolve num lugar e continua sendo
+cobrado no outro — que é o bug que essa regra existe pra evitar. Chave montada
+"na mão" em outro lugar tem o mesmo efeito, por isso a data da emissão é
+calculada **num lugar só**.
+
+Detalhe fácil de esquecer: `agAdiaMapa()` vive **fora do React**. Tela que lê
+essas funções precisa se inscrever em `ag:adia-sync` pra re-renderizar
+(`_setAdiaVersaoInicio` em `Inicio`, `_setAdiaVersaoCt` em `Contratos`) —
+sem isso a marca só aparece no próximo reload.
+
+Travado em `tests/run.js`, grupo *"Emissão de fatura dispensada sai de TODOS os
+avisos"*, que roda os helpers reais extraídos do `index.html`.
 
 ## Agenda do Dashboard — 3 cartões e 3 dias, o resto no baralho — REGRA PERMANENTE
 

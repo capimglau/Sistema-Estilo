@@ -69,6 +69,8 @@ function extrair(marcadores) {
       parcelaCC, numParcelasCC, ancoraParcelaCC, grupoParcelasCC,
       principalParcelaCC, formPrincipalCC,
       agk2CorteDias, AGK2_LIM_DIAS,
+      agAdiaMapa, agAdiaOculto, agAdiaAgora,
+      faturaEmissaoDataISO, faturaEmissaoChave, faturaEmissaoDispensada,
       mesDoLancamentoCt, lancamentosDoContrato, somaContratoBusca, resumoPorMesContratos
     };
   `);
@@ -117,6 +119,24 @@ const MARCADORES = [
     nome: "parcelas de cartão",
     de: "function parcelaCC(",
     ate: "// Fatura de contrato realmente EMITIDA",
+  },
+  {
+    // Emissão de fatura dispensada ([emissao-dispensada]): a chave do cartão
+    // "Emitir Fatura" da Agenda e a pergunta "o usuário já disse que não
+    // emite esta?". Todos os avisos de emissão do app passam por aqui — se
+    // divergirem, o usuário resolve num lugar e continua sendo cobrado no
+    // outro.
+    nome: "emissão de fatura dispensada",
+    de: "// Dia em que a fatura do contrato deveria ser emitida",
+    ate: "// Próximo número sequencial de fatura",
+  },
+  {
+    // O mapa de adiados/resolvidos da Agenda (agenda_adiamentos), que é quem
+    // responde `faturaEmissaoDispensada`. Sem localStorage (Node), a leitura
+    // local cai no catch e devolve {} — os testes injetam direto no mapa.
+    nome: "mapa de adiados/resolvidos da Agenda",
+    de: 'var AG_ADIA_TABELA = "agenda_adiamentos";',
+    ate: "/* Carrega o que está no banco por cima",
   },
 ];
 

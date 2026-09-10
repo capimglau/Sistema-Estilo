@@ -411,6 +411,79 @@ ok("o total da tela mostra o que vai sair", /TOTAL SELECIONADO \(/.test(rel));
 ok("qualquer fatura pode entrar no relatório, não só a emitível",
   !/var emitivel =/.test(rel));
 
+grupo("Emissão de fatura dispensada sai de TODOS os avisos");
+
+// Há empresa que simplesmente não recebe fatura. O aviso "Emitir Fatura"
+// cobrava pra sempre nessas — nada no banco o faz sumir, porque a fatura nunca
+// vai existir. O cartão da Agenda passou a aceitar "Marcar como resolvido" e,
+// marcado, o aviso some de TODOS os lugares de uma vez. Se cada lugar montar a
+// chave (ou a data da emissão) do seu jeito, o usuário resolve num e continua
+// sendo cobrado no outro — é isso que este grupo trava.
+const ctEmi = { id: 7, previsao_pagamento: "2026-09-25" };
+eq("a emissão é 20 dias antes da previsão de pagamento",
+  F.faturaEmissaoDataISO(ctEmi), "2026-09-05");
+eq("a chave é a mesma do cartão da Agenda (tipo|id|data)",
+  F.faturaEmissaoChave(ctEmi), "emissao|7|2026-09-05");
+eq("contrato sem previsão não tem chave (nem vira aviso)",
+  F.faturaEmissaoChave({ id: 7 }), "");
+eq("sem marca nenhuma, a fatura continua a emitir",
+  F.faturaEmissaoDispensada(ctEmi), false);
+F.agAdiaMapa()[F.faturaEmissaoChave(ctEmi)] = { resolvido: true };
+eq("marcada como resolvida, a emissão está dispensada",
+  F.faturaEmissaoDispensada(ctEmi), true);
+eq("um contrato dispensado não dispensa os outros",
+  F.faturaEmissaoDispensada({ id: 8, previsao_pagamento: "2026-09-25" }), false);
+// A marca carrega a data da emissão: no ciclo seguinte o aviso volta sozinho,
+// como no licenciamento/CNH — dispensar não é "nunca mais".
+eq("o vencimento seguinte volta a pedir emissão",
+  F.faturaEmissaoDispensada({ id: 7, previsao_pagamento: "2026-10-25" }), false);
+// Adiar também esconde (até a hora escolhida), sem apagar o aviso.
+F.agAdiaMapa()["emissao|9|2026-09-05"] = { ate: "2026-08-20T09:00" };
+eq("adiado some até a hora marcada",
+  F.faturaEmissaoDispensada({ id: 9, previsao_pagamento: "2026-09-25" }), true);
+F.agAdiaMapa()["emissao|9|2026-09-05"] = { ate: "2026-08-01T09:00" };
+eq("passado o adiamento, o aviso volta",
+  F.faturaEmissaoDispensada({ id: 9, previsao_pagamento: "2026-09-25" }), false);
+
+// O cartão da Agenda: dá pra resolver, e resolver não quita dinheiro nenhum.
+ok("o cartão 'Emitir Fatura' usa a chave compartilhada",
+  /chave: faturaEmissaoChave\(c\),/.test(html));
+ok("tocar no cartão de emissão abre a janela de ação (antes ia direto pro Financeiro)",
+  /ev\.acao === "renovar" \|\| ev\.acao === "baixar" \|\| ev\.acao === "emitir"/.test(html));
+ok("a janela do cartão de emissão oferece resolver",
+  /var podeResolver = semAcao \|\| ehEmitir;/.test(html));
+ok("o botão 'Não emitir' existe e chama o mesmo onResolver",
+  /Não emitir — marcar como resolvido/.test(html));
+// [agenda-resolvido-nao-quita] continua valendo: cartão COM baixa nunca é
+// escondido por marcador de UI. Emissão não é baixa — é papelada.
+ok("resolvido continua sem esconder cartão de baixa/renovação",
+  /var _temBaixaReal = ev\.acao === "baixar" \|\| ev\.acao === "renovar";/.test(html));
+eq("emissão não entra na conta de dinheiro do dia (fluxo null)",
+  /valor: numV\(c\.valor_total\), fluxo: null,/.test(html), true);
+// Emitir de verdade continua sendo do Financeiro — a Agenda só leva até lá.
+ok("a Agenda não emite fatura por conta própria",
+  /acao: confirmado \? "emitir" : null, itemId: ev\.id, mes: ev\.mesFat/.test(html));
+
+// Os outros lugares que avisavam "emitir fatura" — todos perguntam ao mesmo
+// helper. Um que esqueça vira aviso zumbi, que é o bug original.
+ok("o alerta do painel de contratos pergunta",
+  /if \(faturaEmissaoDispensada\(c, _agoraAdiaSc\)\) return false;[\s\S]{0,200}rkEmit/.test(html));
+ok("o calendário de Alertas usa a chave compartilhada",
+  /\}; \}, faturaEmissaoChave\(c\)\);/.test(html));
+ok("o painel 'Boletos a emitir' pergunta no total do mês e na lista",
+  (html.match(/if \(faturaEmissaoDispensada\(c, _agoraAdiaSc\)\) return false;/g) || []).length >= 3);
+ok("a etiqueta 'Emitir fatura' do card de Contratos pergunta",
+  /var _emissaoDispensada = faturaEmissaoDispensada\(c\);/.test(html) &&
+  /var faturaAEmitir = !_emissaoDispensada &&/.test(html) &&
+  /var mostraAlternarEmitir = !faturaEmitidaCard && !_emissaoDispensada/.test(html));
+ok("o .ics exportado não leva o que foi dispensado",
+  /if \(faturaEmissaoDispensada\(c\)\) return;/.test(html));
+ok("o card de Contratos se atualiza quando a Agenda marca (mapa vive fora do React)",
+  /_setAdiaVersaoCt/.test(html));
+// A data da emissão é calculada num lugar só: chave diferente = aviso zumbi.
+eq("ninguém mais recalcula '20 dias antes' na mão",
+  (html.match(/getDate\(\) *- *20/g) || []).length, 1);
+
 grupo("Chart Manager não pode mover nó do React");
 
 // O Chart Manager (minimizar/duplicar/mover card) percorre o DOM e decora

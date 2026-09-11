@@ -876,6 +876,20 @@ ok("a barra esmaece a fatia pendente", /function _rdBarraBg\(cor, total, pendent
 ok("e o valor a receber vai escrito", /\(opts\.rotuloPendente\|\|"a receber"\)\+" "\+_fmtBarVal\(_pend\)/.test(html));
 ok("no painel de despesas o rótulo é 'a pagar'", /rotuloPendente:"a pagar"/.test(html));
 
+/* A causa PRÁTICA do "recebi em 31/08 e aparece em setembro": a aba Faturas
+   era a única baixa de dinheiro do app que gravava `hoje` sem perguntar. Quem
+   recebe no fim do mês e registra dias depois não tinha como informar a data
+   real — e nenhuma regra de leitura conserta uma data gravada errada. */
+ok("marcar fatura como paga pergunta a data do recebimento",
+  /async function marcarPaga\(fat\) \{[\s\S]{0,900}__agPrompt\(\{ title: "Receber Fatura"[\s\S]{0,120}type1: "date"/.test(html));
+eq("nenhuma baixa grava a data de hoje sem perguntar",
+  (html.match(/var dtPag = hoje;|var dt = hoje;/g) || []).length, 0);
+// E sem campo no formulário não havia como corrigir o que já entrou errado.
+ok("a receita tem campo de data efetiva do recebimento",
+  /label: "Data Efetiva do Recebimento \(define o mês\)"[\s\S]{0,200}form\.data_pagamento/.test(html));
+ok("data de recebimento vazia grava null, não string vazia",
+  /if \(!payload\.data_pagamento\) payload\.data_pagamento = null;/.test(html));
+
 // Contrato: todo painel de dinheiro passa pela função única.
 eq("nenhum painel filtra contrato por previsão na mão",
   (html.match(/c\.previsao_pagamento *&& *c\.previsao_pagamento\.slice\(0,7\) *===|c\.previsao_pagamento&&c\.previsao_pagamento\.slice\(0,7\)===/g) || []).length, 0);

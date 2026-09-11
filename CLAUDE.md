@@ -838,6 +838,29 @@ mesmo depois de corrigido em outros pontos.
 lugar nenhum — é literalmente a regra do usuário: *"a data do efetivo pagamento
 é a competência do mês"*.
 
+### Toda baixa PERGUNTA a data — e dá pra corrigir depois
+
+Nenhuma regra de leitura conserta uma data **gravada errada**. O relato
+*"recebi em 31/08 e aparece em setembro"* sobreviveu a várias rodadas de
+correção de leitura porque tinha também uma causa de **escrita**:
+
+1. **`marcarPaga` (aba Faturas) gravava `hoje` sem perguntar.** Era a única
+   baixa de dinheiro do app sem prompt de data — lista de Receitas, Contratos,
+   Agenda e painéis do Início sempre perguntaram. Quem recebe no fim do mês e
+   registra dias depois **não tinha como informar a data real**, e o
+   lançamento caía no mês do clique.
+2. **O formulário de receita não tinha campo de data de recebimento.** Despesa
+   e manutenção sempre tiveram o equivalente ("Data Efetiva do Pagamento"); a
+   receita, não — então o que entrou com a data errada **não tinha onde ser
+   corrigido**. Hoje existe *"Data Efetiva do Recebimento (define o mês)"*.
+
+**Regra permanente: baixa de dinheiro em qualquer tela pergunta a data, com
+`hoje` só como sugestão; e todo tipo que tem `data_pagamento` tem o campo
+correspondente no formulário de edição.** Vazio grava `null`, nunca `""`;
+preencher a data marca o lançamento como recebido (quem informa quando o
+dinheiro entrou está dizendo que entrou). Travado em `tests/run.js`: a busca
+por `var dtPag = hoje;` tem que dar zero.
+
 ### A parte que ainda não andou fica esmaecida, com o valor escrito — `[barra-pendente]`
 
 Nos painéis **"Receitas por Cliente"** e **"Despesas por Categoria"** (nas duas

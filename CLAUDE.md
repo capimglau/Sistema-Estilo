@@ -728,11 +728,24 @@ as duas são legítimas**: a parcela de setembro (projetada, ainda prevista) e a
 parcela de março que saiu do caixa agora — são dois aluguéis diferentes. O que
 nunca pode é a **mesma** parcela aparecer duas vezes.
 
-⚠️ **Ainda fora da regra, por enquanto:** o **Orçamento Pessoal** tem a mesma
-estrutura de linha-filha (`recorrencia_origem_id`) e continua fixando a parcela
-no mês dela (`_projetar`, `baixarOrcPessoalItem` e os `some(...)` que procuram
-a filha por `x.data ?? x.mes`). Não foi alterado nesta rodada — aquela área já
-custou 5 rodadas de bug e merece uma passagem própria.
+**O Orçamento Pessoal segue a MESMA regra, com os mesmos dois conceitos.**
+Havia três cópias de `_vis`/`efetivoMes` (`calcSaldoOrcPessoalMes`,
+`PessoalDash` e a tela de Orçamento Pessoal), todas decidindo o mês por
+`data ?? mes` e ignorando a `data_pagamento`. Agora a conta é global:
+
+| função | devolve | quem usa |
+|---|---|---|
+| `orcMesDaParcela(it)` | de que **ocorrência** é a linha | a **baixa** (`mesAlvo`, ver `[baixa-unica]`) e a trava que esconde o template |
+| `orcMesEfetivo(it)` | em que mês **o dinheiro andou** | as **listas** e os totais |
+| `orcTemFilhaNoMes(itens, it, mes)` | a parcela do mês já tem linha própria? | `orcVisivelNoMes` |
+| `orcVisivelNoMes(it, itens, mes)` | a linha aparece neste mês? | `_vis` das duas cópias |
+
+`itemVisivelNoMes` e `itensProprios` (tela de Orçamento Pessoal) passaram a
+usar `orcMesEfetivo`; **`idsBaixados` continua por `orcMesDaParcela`** — é a
+mesma dupla de chaves de `resolverDespesasDoMes`, e trocar uma pela outra faz
+março voltar a mostrar a parcela como prevista, com a despesa duas vezes na
+tela. **`efetivoMes(it)` na tela continua sendo o mês da PARCELA** de
+propósito: é o que a baixa e a busca de linha-filha precisam.
 
 **Isso é LEITURA, não gravação.** Nada disso reescreve `ref_fatura`, número ou
 data de emissão: `[fatura-nao-migra]` continua valendo, e a aba **Faturas**
@@ -809,9 +822,14 @@ nenhuma tela reimplementa a soma.**
   Receita" continua histórico de propósito e por isso o título diz
   **"· desde o início"**. Todo painel mensal carrega o nome do mês no título
   (`"Receitas por Cliente · setembro de 2026"`).
-- **Contrato só entra quando NÃO tem receita vinculada** (`fat_<id>_<mes>`) —
-  é a mesma trava do Financeiro contra contar a locação duas vezes, uma pelo
-  contrato e outra pela fatura dele.
+- **Contrato só entra quando NÃO tem a fatura DESTA competência**
+  (`fat_<id>_<mes da previsão do contrato>`, comparação **exata**) — é a trava
+  contra contar a locação duas vezes, uma pelo contrato e outra pela fatura
+  dele. ⚠️ **Nunca por `startsWith("fat_"+c.id+"_")`**: com o prefixo, um
+  contrato que teve fatura em **qualquer** mês passado sumia do painel em
+  todos os meses seguintes, inclusive naquele em que a fatura ainda nem foi
+  criada — num contrato recorrente isso apagava o cliente do painel mês após
+  mês. Foi bug reportado ("no painel de receitas por cliente há erros").
 - **Manutenção com despesa vinculada (`manutencao_id`) não entra** — senão a
   categoria "Manutenção" dobra.
 - Relatórios › Gráficos tem **seletor de mês próprio** (`gMes` + `MesPicker`)

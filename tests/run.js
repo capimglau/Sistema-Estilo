@@ -522,6 +522,23 @@ eq("contrato sem receita vinculada entra pelo próprio valor", rdSoma(rdAgo, "Be
 eq("sem mês, soma o histórico inteiro", rdTudo.length, 3);
 eq("e continua sem duplicar o contrato faturado", rdSoma(rdTudo, "Alfa Locações"), 3000);
 // Cliente some do cadastro / receita sem vínculo nenhum: não pode sumir do total.
+/* Bug reportado no painel do Dashboard: a trava contra contar a locação duas
+   vezes olhava "qualquer fatura deste contrato", com startsWith. Um contrato
+   recorrente que já teve fatura em agosto sumia do painel em setembro — e em
+   todos os meses seguintes —, mesmo sem fatura criada para aquele mês. */
+const rdCtRec = [{ id: 30, cliente_id: 1, previsao_pagamento: "2026-09-30", valor_total: "2500", status: "ativo", status_pagamento: "previsto" }];
+const rdFatAgo = [{ id: 400, ref_fatura: "fat_30_2026-08", valor: "2500", status: "recebido", data_pagamento: "2026-08-20" }];
+eq("contrato com fatura de OUTRO mês continua no painel do mês dele",
+  rdSoma(F.rdLinhasReceitaCliente(rdFatAgo, rdCtRec, rdCli, "2026-09"), "Alfa Locações"), 2500);
+eq("e a fatura de agosto aparece em agosto, sem duplicar o contrato",
+  rdSoma(F.rdLinhasReceitaCliente(rdFatAgo, rdCtRec, rdCli, "2026-08"), "Alfa Locações"), 2500);
+// Com a fatura da PRÓPRIA competência, o contrato continua fora (senão dobra).
+const rdFatSet = [{ id: 401, ref_fatura: "fat_30_2026-09", valor: "2500", status: "emitida" }];
+eq("fatura da competência ainda trava o contrato",
+  rdSoma(F.rdLinhasReceitaCliente(rdFatSet, rdCtRec, rdCli, "2026-09"), "Alfa Locações"), 2500);
+eq("e o total não dobra",
+  F.rdLinhasReceitaCliente(rdFatSet, rdCtRec, rdCli, "2026-09").length, 1);
+
 eq("receita sem cliente nenhum cai num balde visível",
   F.rdLinhasReceitaCliente([{ id: 9, valor: "70", data: "2026-09-02" }], [], rdCli, "2026-09")[0].chave,
   "Avulsa / sem cliente");
@@ -718,6 +735,29 @@ eq("e a parcela de setembro entra como prevista",
 // A mesma parcela nunca duas vezes: em março, o template fica oculto pela filha.
 eq("a parcela de março não se repete em lugar nenhum",
   plMar.concat(plSet).filter(function(d){ return d.id === 50; }).length, 1);
+
+// 6. Orçamento Pessoal — mesma regra, mesma estrutura de linha-filha.
+const opTpl = { id: 70, recorrente: true, data: "2026-01-05", mes: "2026-01", tipo: "despesa", valor: "500" };
+const opFilhaMar = { id: 71, recorrencia_origem_id: 70, data: "2026-03-05", mes: "2026-03", data_pagamento: "2026-09-02", status: "pago", tipo: "despesa", valor: "500" };
+const opAvulso = { id: 72, data: "2026-08-31", mes: "2026-08", tipo: "receita", valor: "900" };
+eq("parcela pessoal de março paga em setembro conta em setembro",
+  F.orcMesEfetivo(opFilhaMar), "2026-09");
+eq("mas a PARCELA continua sendo a de março (é o que a baixa usa)",
+  F.orcMesDaParcela(opFilhaMar), "2026-03");
+eq("lançamento pessoal em aberto fica no mês dele",
+  F.orcMesEfetivo({ id: 73, data: "2026-08-10", mes: "2026-08" }), "2026-08");
+eq("o template recorrente não migra nunca",
+  F.orcMesEfetivo(Object.assign({}, opTpl, { data_pagamento: "2026-09-02" })), "2026-01");
+eq("a parcela paga aparece em setembro",
+  F.orcVisivelNoMes(opFilhaMar, [opTpl, opFilhaMar], "2026-09"), true);
+eq("e sai de março", F.orcVisivelNoMes(opFilhaMar, [opTpl, opFilhaMar], "2026-03"), false);
+// A trava do template é o que impede a mesma parcela de aparecer duas vezes.
+eq("o template não volta a projetar março",
+  F.orcVisivelNoMes(opTpl, [opTpl, opFilhaMar], "2026-03"), false);
+eq("mas continua projetando um mês sem parcela baixada",
+  F.orcVisivelNoMes(opTpl, [opTpl, opFilhaMar], "2026-04"), true);
+eq("avulso pessoal sem baixa fica no mês da previsão",
+  F.orcVisivelNoMes(opAvulso, [opAvulso], "2026-08"), true);
 
 // Nenhum painel de dinheiro pode voltar a montar essas datas na mão.
 eq("ninguém filtra multa por mês sem o helper",

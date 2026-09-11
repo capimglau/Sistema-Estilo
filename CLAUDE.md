@@ -698,21 +698,41 @@ virando dois) e ainda não foi pedida.
 data em que o dinheiro andou — 31/08 é agosto, 02/09 é setembro — não importa
 quando o lançamento foi criado nem para quando estava previsto.
 
-**Uma exceção só, com motivo — não "consertar" sem ler aqui:**
+**Quem decide o mês é o CAMPO `data_pagamento`, preenchido pelo usuário.**
+Palavras dele: *"se uma parcela é de março e eu quiser que ela seja baixada em
+março, eu vou colocar na data de pagamento a data de março, independente de ela
+ter sido paga em setembro. A data do efetivo pagamento é a competência do
+mês."* Ou seja: **não existe exceção de tipo** — existe uma data, e é ela que
+manda. Parcela de março paga em 02/09 pesa em **setembro**; se o usuário datar
+a baixa em março, pesa em **março**.
 
-**Recorrente não migra a data base.** Em `despesaDoMes`, `manVisivelNoMes` e
-`manDoMes`, o ramo recorrente continua projetando pela **previsão**. A projeção
-é feita mês a mês a partir dela; migrar a base faria a recorrente inteira pular
-de lugar e sumir dos meses seguintes. A baixa de uma parcela recorrente é
-resolvida pela **linha-filha do mês** (ver `[baixa-unica]`), e essa linha é
-fixada no **mês da parcela** de propósito: `[baixa-unica]` existe porque quitar
-hoje uma parcela atrasada de março, criando a linha em setembro, deixava março
-**em aberto para sempre** e setembro pago duas vezes.
-⚠️ **Ponto em aberto, decidir com o usuário antes de mexer:** essa fixação da
-linha-filha no mês da parcela é a única coisa no app que ainda contraria
-`[previsto-liquidado]` — pela regra do caixa, uma parcela de março quitada em
-setembro deveria pesar em setembro. As duas regras são dele e colidem aqui; não
-resolver por conta própria.
+**A única coisa que NÃO migra é o TEMPLATE da recorrente** — e isso não é
+exceção à regra, é outra coisa: o template não é um lançamento, é a régua que
+**projeta** as parcelas mês a mês (`despesaDoMes`, `despesaVisivelNoMes`,
+`manVisivelNoMes`, `manDoMes`). Migrar a data base dele faria a recorrente
+inteira pular de lugar e sumir dos meses seguintes. Cada **parcela** é a
+linha-filha (`recorrencia_origem_id`), e ela segue a regra como qualquer outro
+lançamento.
+
+**`resolverDespesasDoMes` usa DUAS chaves para a mesma linha-filha, de
+propósito** — mexer numa sem a outra reintroduz um bug conhecido:
+
+| o quê | por qual data | por quê |
+|---|---|---|
+| esconder o template | `data` da filha (**mês da parcela**) | a parcela de março já foi resolvida; se o template voltasse ali, a mesma despesa ficaria duas vezes na tela — prevista em março **e** paga em setembro (o bug que `[baixa-unica]` descreve) |
+| entrar no resultado do mês | `despesaDoMes` (**mês do pagamento**) | é onde o dinheiro saiu |
+
+Resultado: março fica sem nada (não houve caixa ali e a pendência foi
+resolvida) e setembro mostra a parcela paga. **Setembro mostra duas linhas, e
+as duas são legítimas**: a parcela de setembro (projetada, ainda prevista) e a
+parcela de março que saiu do caixa agora — são dois aluguéis diferentes. O que
+nunca pode é a **mesma** parcela aparecer duas vezes.
+
+⚠️ **Ainda fora da regra, por enquanto:** o **Orçamento Pessoal** tem a mesma
+estrutura de linha-filha (`recorrencia_origem_id`) e continua fixando a parcela
+no mês dela (`_projetar`, `baixarOrcPessoalItem` e os `some(...)` que procuram
+a filha por `x.data ?? x.mes`). Não foi alterado nesta rodada — aquela área já
+custou 5 rodadas de bug e merece uma passagem própria.
 
 **Isso é LEITURA, não gravação.** Nada disso reescreve `ref_fatura`, número ou
 data de emissão: `[fatura-nao-migra]` continua valendo, e a aba **Faturas**

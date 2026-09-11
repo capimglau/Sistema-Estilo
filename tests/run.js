@@ -541,27 +541,35 @@ eq("e não fica mais presa em agosto",
 const rdPendente = [{ id: 201, valor: "800", data: "2026-08-31", status: "previsto", cliente_id: 1 }];
 eq("receita em aberto continua no mês da previsão",
   rdSoma(F.rdLinhasReceitaCliente(rdPendente, [], rdCli, "2026-08"), "Alfa Locações"), 800);
-/* Contrato é a EXCEÇÃO, e por um motivo: o mês dele é a competência da
-   locação, a mesma que nomeia a fatura (`fat_<id>_<mes>`) e que por
-   [fatura-nao-migra] nunca muda. Se o contrato migrasse pelo pagamento, dois
-   contratos idênticos — um faturado, outro não — cairiam em meses diferentes.
-   Pagar adiantado não muda de que mês é o aluguel. */
-eq("contrato pago adiantado continua no mês da locação",
-  F.rdMesDoContrato({ previsao_pagamento: "2026-09-30", data_pagamento: "2026-08-31", status_pagamento: "pago" }), "2026-09");
-eq("contrato pago com atraso também não migra",
-  F.rdMesDoContrato({ previsao_pagamento: "2026-08-31", data_pagamento: "2026-09-02", status_pagamento: "pago" }), "2026-08");
-eq("contrato em aberto idem", F.rdMesDoContrato({ previsao_pagamento: "2026-08-31" }), "2026-08");
+/* [receita-caixa] Decisão do usuário: receita de contrato RECEBIDA conta no
+   mês em que o dinheiro entrou, não na competência do boleto. O contrato tem
+   que seguir a fatura — senão o contrato COM fatura cai num mês e o SEM
+   fatura noutro. */
+eq("contrato pago adiantado conta no mês do pagamento",
+  F.rdMesDoContrato({ previsao_pagamento: "2026-09-30", data_pagamento: "2026-08-31", status_pagamento: "pago" }), "2026-08");
+eq("contrato pago com atraso também segue o pagamento",
+  F.rdMesDoContrato({ previsao_pagamento: "2026-08-31", data_pagamento: "2026-09-02", status_pagamento: "pago" }), "2026-09");
+eq("contrato em aberto continua na previsão",
+  F.rdMesDoContrato({ previsao_pagamento: "2026-08-31" }), "2026-08");
+// Parcial fica na previsão: o valor que entra é o total previsto, e levá-lo
+// pro mês da parcela arrastaria junto o que ainda não entrou.
+eq("contrato parcial não migra",
+  F.rdMesDoContrato({ previsao_pagamento: "2026-09-30", data_pagamento: "2026-08-31", status_pagamento: "parcial" }), "2026-09");
 const rdCtAdiant = [{ id: 20, cliente_id: 2, previsao_pagamento: "2026-09-30", data_pagamento: "2026-08-31", valor_total: "900", status: "ativo", status_pagamento: "pago" }];
-eq("no painel, a locação de setembro fica em setembro",
-  rdSoma(F.rdLinhasReceitaCliente([], rdCtAdiant, rdCli, "2026-09"), "Beta ME"), 900);
-eq("e não aparece em agosto por ter sido paga em 31/08",
-  rdSoma(F.rdLinhasReceitaCliente([], rdCtAdiant, rdCli, "2026-08"), "Beta ME"), 0);
-/* O mesmo vale pela via da fatura: competência 09/26 recebida em 31/08 conta
-   em setembro — é o caso do print do usuário (Kablan · 09/26 · recebida 31/08). */
+eq("no painel, a locação paga em 31/08 aparece em agosto",
+  rdSoma(F.rdLinhasReceitaCliente([], rdCtAdiant, rdCli, "2026-08"), "Beta ME"), 900);
+eq("e sai de setembro", rdSoma(F.rdLinhasReceitaCliente([], rdCtAdiant, rdCli, "2026-09"), "Beta ME"), 0);
+/* O caso exato do print: Kablan · competência 09/26 · recebida em 31/08. */
 const rdFatAdiant = [{ id: 300, ref_fatura: "fat_20_2026-09", valor: "2640", status: "recebido", data_pagamento: "2026-08-31" }];
-eq("fatura 09/26 recebida em 31/08 conta em setembro",
-  rdSoma(F.rdLinhasReceitaCliente(rdFatAdiant, rdCtAdiant, rdCli, "2026-09"), "Beta ME"), 2640);
-eq("e não cai em agosto", rdSoma(F.rdLinhasReceitaCliente(rdFatAdiant, rdCtAdiant, rdCli, "2026-08"), "Beta ME"), 0);
+eq("fatura 09/26 recebida em 31/08 conta em AGOSTO",
+  rdSoma(F.rdLinhasReceitaCliente(rdFatAdiant, rdCtAdiant, rdCli, "2026-08"), "Beta ME"), 2640);
+eq("e não aparece mais em setembro",
+  rdSoma(F.rdLinhasReceitaCliente(rdFatAdiant, rdCtAdiant, rdCli, "2026-09"), "Beta ME"), 0);
+// Fatura ainda NÃO recebida continua na competência — é previsão, não caixa.
+const rdFatPrev = [{ id: 301, ref_fatura: "fat_20_2026-09", valor: "2640", status: "emitida" }];
+eq("fatura emitida e não paga fica na competência",
+  F.receitaDoMes(rdFatPrev[0], "2026-09"), true);
+eq("e não vaza pra agosto", F.receitaDoMes(rdFatPrev[0], "2026-08"), false);
 // A função do Financeiro é a fonte da regra — se alguém voltar a trocar por
 // receitaVisivelNoMes, as telas divergem de novo.
 ok("o helper pergunta a receitaDoMes, não a receitaVisivelNoMes",

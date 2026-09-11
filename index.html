@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="b698507"/>
+<meta name="ag-build" content="6955599"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -38415,17 +38415,53 @@ function computePrevisaoPessoal(itens, despesas, opts){
 // Estilo" do Início poder alternar e mostrar os números do Orçamento
 // Pessoal também (pedido do usuário), sem duplicar a lógica de
 // recorrência/retirada de lucro numa segunda cópia solta.
+/* ── Orçamento Pessoal: de que mês é um lançamento — `[previsto-liquidado]` ──
+   Mesma regra do resto do sistema, e pelos mesmos motivos. Havia três cópias
+   de `_vis`/`efetivoMes` espalhadas (calcSaldoOrcPessoalMes, PessoalDash e a
+   tela de Orçamento Pessoal), todas decidindo o mês só por `data ?? mes` e
+   ignorando a `data_pagamento`.
+
+   As DUAS datas existem de propósito, exatamente como em
+   `resolverDespesasDoMes` — trocar uma pela outra reintroduz duplicata:
+
+   - `orcMesDaParcela(it)`: de que ocorrência esta linha é. É o que a BAIXA usa
+     (`mesAlvo`, ver `[baixa-unica]`) e o que esconde o template quando a
+     parcela já tem linha-filha. Nunca sai do mês da parcela.
+   - `orcMesEfetivo(it)`: em que mês o dinheiro andou. Liquidado vale a
+     `data_pagamento`; em aberto vale a parcela. É o que as LISTAS e os totais
+     usam.
+
+   O TEMPLATE da recorrente não migra: ele não é lançamento, é a régua que
+   projeta as parcelas. */
+function orcMesDaParcela(it) {
+  if (!it) return "";
+  return (it.data && String(it.data).length >= 7) ? String(it.data).slice(0, 7) : (it.mes || "");
+}
+function orcMesEfetivo(it) {
+  if (!it) return "";
+  if (!it.recorrente && it.data_pagamento) return String(it.data_pagamento).slice(0, 7);
+  return orcMesDaParcela(it);
+}
+function orcTemFilhaNoMes(itens, it, mes) {
+  return (itens || []).some(function (x) {
+    return x.recorrencia_origem_id && String(x.recorrencia_origem_id) === String(it.id) && orcMesDaParcela(x) === mes;
+  });
+}
+function orcVisivelNoMes(it, itens, mes) {
+  if (!it || !mes) return false;
+  // Lançamento concreto (avulso ou linha-filha): manda o mês em que o dinheiro andou.
+  if (!it.recorrente) return orcMesEfetivo(it) === mes;
+  // Template: a parcela daquele mês já tem linha própria, não projetar de novo.
+  if (orcTemFilhaNoMes(itens, it, mes)) return false;
+  var base = orcMesDaParcela(it);
+  if (base === mes) return true;
+  return !!(base && base < mes);
+}
 function calcSaldoOrcPessoalMes(orcItens, despesas, mes) {
   var _puraRetIds = new Set((despesas||[]).filter(isRetLucroPura).map(function(d){return String(d.id);}));
   var _itSrc = (orcItens||[]).filter(function(it){ var _rid=_retLocDespId(it); return !_rid || _puraRetIds.has(_rid); });
-  function _vis(it,m){
-    var em=it.data?it.data.slice(0,7):it.mes;
-    if(em===m) return true;
-    if(it.recorrente&&em&&em<m){
-      return !_itSrc.some(function(x){return String(x.recorrencia_origem_id)===String(it.id)&&(x.data?x.data.slice(0,7):x.mes)===m;});
-    }
-    return false;
-  }
+  // [previsto-liquidado] conta única no escopo global — ver orcVisivelNoMes.
+  function _vis(it,m){ return orcVisivelNoMes(it, _itSrc, m); }
   function _projDate(dt,m){ var dia=parseInt(dt.slice(8,10),10); var aN=parseInt(m.slice(0,4),10),mN=parseInt(m.slice(5,7),10); var ult=new Date(aN,mN,0).getDate(); return m+'-'+(Math.min(dia,ult)<10?'0':'')+Math.min(dia,ult); }
   function _projetar(it,m){
     var em=it.data?it.data.slice(0,7):it.mes;
@@ -38757,14 +38793,8 @@ function PessoalDash({
   function _nomMesOf(m){ var s=new Date(m+'-15').toLocaleString('pt-BR',{month:'long',year:'numeric'}); return s.charAt(0).toUpperCase()+s.slice(1); }
   function _projDate(dt,m){ var dia=parseInt(dt.slice(8,10),10); var aN=parseInt(m.slice(0,4),10),mN=parseInt(m.slice(5,7),10); var ult=new Date(aN,mN,0).getDate(); return m+'-'+(Math.min(dia,ult)<10?'0':'')+Math.min(dia,ult); }
 
-  function _vis(it,m){
-    var em=it.data?it.data.slice(0,7):it.mes;
-    if(em===m) return true;
-    if(it.recorrente&&em&&em<m){
-      return !_itSrc.some(function(x){return String(x.recorrencia_origem_id)===String(it.id)&&(x.data?x.data.slice(0,7):x.mes)===m;});
-    }
-    return false;
-  }
+  // [previsto-liquidado] conta única no escopo global — ver orcVisivelNoMes.
+  function _vis(it,m){ return orcVisivelNoMes(it, _itSrc, m); }
   function _projetar(it,m){
     var em=it.data?it.data.slice(0,7):it.mes;
     if(em===m) return it;
@@ -39277,6 +39307,10 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
   // Filtra itens visíveis no mês selecionado
   function itemVisivelNoMes(it, mes) {
+    /* [previsto-liquidado] Lançamento concreto (avulso ou linha-filha) segue o
+       mês em que o dinheiro andou; só o TEMPLATE recorrente continua
+       projetando pela data da parcela. */
+    if (!it.recorrente) return orcMesEfetivo(it) === mes;
     var em = efetivoMes(it);
     if (em === mes) return true; // item do próprio mês (por data ou cadastro)
     if (!it.recorrente || !em || em >= mes) return false; // não recorrente ou futuro
@@ -39287,8 +39321,14 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     return diff < parseInt(it.prazo_recorrencia);
   }
 
-  var itensProprios = itens.filter(it => efetivoMes(it) === filtroMes);
-  var idsBaixados = new Set(itensProprios.filter(function(it){return it.recorrencia_origem_id;}).map(function(it){return String(it.recorrencia_origem_id);}));
+  /* [previsto-liquidado] A LISTA vai pelo mês em que o dinheiro andou — a
+     parcela de março paga em setembro aparece em setembro. */
+  var itensProprios = itens.filter(it => orcMesEfetivo(it) === filtroMes);
+  /* …mas a trava que impede o template de projetar de novo vai pelo MÊS DA
+     PARCELA da linha-filha, mesmo quando o pagamento caiu em outro mês. Sem
+     isso, março voltaria a mostrar a parcela como prevista e a mesma despesa
+     ficaria duas vezes na tela (o bug descrito em [baixa-unica]). */
+  var idsBaixados = new Set(itens.filter(function(it){ return it.recorrencia_origem_id && orcMesDaParcela(it) === filtroMes; }).map(function(it){return String(it.recorrencia_origem_id);}));
   var itensRecorrentes = itens.filter(function(it){return it.recorrente && efetivoMes(it) && efetivoMes(it) < filtroMes && itemVisivelNoMes(it, filtroMes) && !idsBaixados.has(String(it.id));});
   var todosVisiveis = itensProprios.concat(itensRecorrentes);
   // Deduplicação de segurança por id
@@ -41664,7 +41704,14 @@ function rdLinhasReceitaCliente(receitas, contratos, clientes, mes) {
        o número não bater com o Financeiro. É a mesma conta que o gráfico de
        12 meses já faz no modo "efetivadas". */
     if (mes && rdMesDoContrato(c) !== mes) return false;
-    if ((receitas || []).some(function (r) { return r.ref_fatura && String(r.ref_fatura).startsWith("fat_" + c.id + "_"); })) return false;
+    /* A trava contra contar a locação duas vezes tem que olhar a fatura DESTA
+       competência, não "qualquer fatura deste contrato". Com o `startsWith`
+       que estava aqui, um contrato que já teve fatura em QUALQUER mês passado
+       sumia do painel em todos os meses seguintes — inclusive naquele em que
+       a fatura ainda nem foi criada. Num contrato recorrente, isso apagava o
+       cliente do painel mês após mês. */
+    var _compCt = String(c.previsao_pagamento).slice(0, 7);
+    if ((receitas || []).some(function (r) { return r.ref_fatura === "fat_" + c.id + "_" + _compCt; })) return false;
     return true;
   });
   return _recs.map(function (r) {

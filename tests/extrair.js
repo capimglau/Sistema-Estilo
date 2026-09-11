@@ -71,8 +71,8 @@ function extrair(marcadores) {
       agk2CorteDias, AGK2_LIM_DIAS,
       agAdiaMapa, agAdiaOculto, agAdiaAgora,
       faturaEmissaoDataISO, faturaEmissaoChave, faturaEmissaoDispensada,
-      rdClienteDaReceita, rdLinhasReceitaCliente, rdLinhasDespesaCategoria,
-      receitaVisivelNoMes, manVisivelNoMes, resolverDespesasDoMes, isRetLucro,
+      rdClienteDaReceita, rdLinhasReceitaCliente, rdLinhasDespesaCategoria, rdMesDoContrato,
+      receitaVisivelNoMes, receitaDoMes, manVisivelNoMes, resolverDespesasDoMes, isRetLucro,
       mesDoLancamentoCt, lancamentosDoContrato, somaContratoBusca, resumoPorMesContratos
     };
   `);
@@ -128,7 +128,7 @@ const MARCADORES = [
     // e rdLinhasDespesaCategoria, testadas em "Receita por cliente".
     nome: "competência mensal de despesa/receita/manutenção",
     de: "function resolverDespesasDoMes(",
-    ate: "function receitaDoMes(",
+    ate: "function manDoMes(",
   },
   {
     nome: "retirada de lucro × ajuste de saldo",

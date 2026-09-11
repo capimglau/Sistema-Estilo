@@ -526,6 +526,39 @@ eq("receita sem cliente nenhum cai num balde visível",
   F.rdLinhasReceitaCliente([{ id: 9, valor: "70", data: "2026-09-02" }], [], rdCli, "2026-09")[0].chave,
   "Avulsa / sem cliente");
 
+// LIQUIDADO conta no mês em que o dinheiro entrou; PREVISTO, no mês da
+// previsão. É a regra da aba Financeiro (receitaDoMes) — e era exatamente aqui
+// que as telas discordavam: receitaVisivelNoMes olha só a `data` e ignora a
+// `data_pagamento`, então o recebimento de uma receita datada 31/08 que caiu em
+// setembro ficava preso em agosto no painel e aparecia em setembro no
+// Financeiro.
+const rdAtrasada = [{ id: 200, valor: "1200", data: "2026-08-31", data_pagamento: "2026-09-02", status: "recebido", cliente_id: 1 }];
+eq("receita de 31/08 recebida em setembro conta em SETEMBRO",
+  rdSoma(F.rdLinhasReceitaCliente(rdAtrasada, [], rdCli, "2026-09"), "Alfa Locações"), 1200);
+eq("e não fica mais presa em agosto",
+  rdSoma(F.rdLinhasReceitaCliente(rdAtrasada, [], rdCli, "2026-08"), "Alfa Locações"), 0);
+// Pendente continua pelo mês da previsão — sem data_pagamento não há caixa.
+const rdPendente = [{ id: 201, valor: "800", data: "2026-08-31", status: "previsto", cliente_id: 1 }];
+eq("receita em aberto continua no mês da previsão",
+  rdSoma(F.rdLinhasReceitaCliente(rdPendente, [], rdCli, "2026-08"), "Alfa Locações"), 800);
+// A outra metade da soma tem que seguir a MESMA regra, senão o painel fica
+// meio liquidado e meio previsto.
+eq("contrato pago com atraso conta no mês do pagamento",
+  F.rdMesDoContrato({ previsao_pagamento: "2026-08-31", data_pagamento: "2026-09-02", status_pagamento: "pago" }), "2026-09");
+eq("contrato parcial idem",
+  F.rdMesDoContrato({ previsao_pagamento: "2026-08-31", data_pagamento: "2026-09-02", status_pagamento: "parcial" }), "2026-09");
+eq("contrato em aberto continua na previsão",
+  F.rdMesDoContrato({ previsao_pagamento: "2026-08-31", status_pagamento: "previsto" }), "2026-08");
+const rdCtAtras = [{ id: 20, cliente_id: 2, previsao_pagamento: "2026-08-31", data_pagamento: "2026-09-02", valor_total: "900", status: "ativo", status_pagamento: "pago" }];
+eq("e o contrato liquidado migra junto no painel",
+  rdSoma(F.rdLinhasReceitaCliente([], rdCtAtras, rdCli, "2026-09"), "Beta ME"), 900);
+// A função do Financeiro é a fonte da regra — se alguém voltar a trocar por
+// receitaVisivelNoMes, as telas divergem de novo.
+ok("o helper pergunta a receitaDoMes, não a receitaVisivelNoMes",
+  /return mes \? receitaDoMes\(r, mes\) : true;/.test(html));
+ok("o gráfico de 12 meses conta a efetivada pelo mês do recebimento",
+  /r\.status==="recebido" && \(r\.data_pagamento\|\|r\.data\|\|""\)\.slice\(0,7\)===m/.test(html));
+
 // Despesa por categoria — mesmo tratamento, porque divide o card com a receita.
 const rdDesps = [
   { id: 1, categoria: "Combustivel", valor: "200", data: "2026-09-03" },

@@ -695,16 +695,28 @@ nenhuma tela reimplementa a soma.**
   `receitaVisivelNoMes` continua valendo para **projeção** de recorrente em
   série de 12/24 meses (é o que ela faz bem) — não para dizer de que mês é um
   lançamento.
-- **Locação é a exceção, e não migra de mês: `rdMesDoContrato(c)` é SEMPRE a
-  `previsao_pagamento`.** O mês do contrato é a competência da locação — a
-  mesma que nomeia a fatura dele (`fat_<id>_<mes da previsão>`) e que por
-  `[fatura-nao-migra]` nunca muda. Já esteve por `data_pagamento` quando pago,
-  e o resultado foi divergência silenciosa: o contrato COM fatura entrava pela
-  fatura (competência fixa) e o SEM fatura migrava pro mês em que foi pago —
-  dois contratos idênticos em meses diferentes. **Pagar adiantado ou com
-  atraso não muda de que mês é o aluguel.** É por isso que a fatura de
-  competência 09/26 recebida em 31/08 conta em **setembro**, e é o
-  comportamento certo, não um bug.
+- **Fatura de contrato RECEBIDA conta no mês do recebimento — `[receita-caixa]`.**
+  Decisão explícita do usuário, reafirmada depois de eu ter argumentado o
+  contrário: *"as receitas de contrato recebidas em 31/08 devem aparecer em
+  agosto e não em setembro"*. `receitaDoMes` migra o lançamento para o mês da
+  `data_pagamento` quando `status === "recebido"`; sem pagamento, vale a
+  competência do `ref_fatura` (previsão é previsão). `rdMesDoContrato(c)` faz o
+  mesmo pelo lado do contrato (`pago` → `data_pagamento`) — as duas **têm que
+  andar juntas**, senão o contrato COM fatura cai num mês e o SEM fatura
+  noutro. **PARCIAL não migra** nos dois: o valor que entra é o `valor_total`
+  previsto, e levá-lo pro mês da parcela arrastaria junto o que ainda não
+  entrou.
+  **Isso é LEITURA, não gravação** — `ref_fatura`, número e data de emissão
+  continuam intocados, então `[fatura-nao-migra]` segue valendo e a aba
+  **Faturas continua mostrando a competência** (ela monta a lista a partir do
+  contrato, não do `receitaDoMes`). Fatura é documento da competência; o
+  dinheiro é do mês em que entrou — as duas leituras convivem, cada uma na
+  sua tela.
+  Efeito colateral bom: dois caminhos de recebimento discordavam entre si —
+  `sincronizarRefFatura` (baixa pela tela de Contratos) já reescrevia a chave
+  para o mês do pagamento, enquanto `baixarReceitaItem` e a aba Faturas
+  mantinham a competência. A mesma fatura caía em meses diferentes conforme a
+  tela em que fosse baixada; agora a leitura é a mesma nos três.
 - **Acumulado só existe se estiver escrito na tela.** O "Top 5 Clientes por
   Receita" continua histórico de propósito e por isso o título diz
   **"· desde o início"**. Todo painel mensal carrega o nome do mês no título

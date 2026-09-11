@@ -24102,6 +24102,28 @@ function despesaDoMes(d, mes) {
 function receitaDoMes(r, mes) {
   if (!r || !mes) return false;
   if (r.ref_fatura) {
+    /* [receita-caixa] Fatura de contrato JÁ RECEBIDA conta no mês em que o
+       dinheiro entrou, não na competência do boleto — decisão explícita do
+       usuário: "as receitas de contrato recebidas em 31/08 devem aparecer em
+       agosto e não em setembro".
+
+       Isso é LEITURA, não gravação: `ref_fatura`, número e data de emissão
+       continuam intocados, então `[fatura-nao-migra]` segue valendo e a aba
+       Faturas continua listando a competência 09/26 em setembro (ela monta a
+       lista a partir do contrato, não desta função).
+
+       Também uniformiza dois caminhos de recebimento que discordavam entre si:
+       `sincronizarRefFatura` (baixa pela tela de Contratos) já reescrevia a
+       chave para o mês do pagamento, enquanto `baixarReceitaItem` e a aba
+       Faturas mantinham a competência. A mesma fatura caía em meses
+       diferentes conforme a tela em que fosse baixada; agora a leitura é a
+       mesma nos três.
+
+       Só `recebido` migra. PARCIAL fica na competência de propósito: ali o
+       valor exibido é o `valor_total` (previsto cheio, ver regra do contrato
+       parcial) e jogar isso pro mês da parcela levaria junto o que ainda não
+       entrou. */
+    if (r.status === "recebido" && r.data_pagamento) return String(r.data_pagamento).slice(0, 7) === mes;
     var mFat = r.ref_fatura.match(/^fat_\d+_(\d{4}-\d{2})$/);
     if (mFat) return mFat[1] === mes;
     // Parcelas CC (fat_{id}_cc_p{n}): usa data da parcela para determinar o mês
@@ -41551,18 +41573,17 @@ function rdClienteDaReceita(r, contratos, clientes) {
   }
   return "Avulsa / sem cliente";
 }
-/* Mês em que o contrato pesa no painel: SEMPRE a previsão de pagamento —
-   é a competência da locação, a mesma que nomeia a fatura dele
-   (`fat_<id>_<mes da previsão>`).
+/* [receita-caixa] Mês em que o contrato pesa no painel: PAGO vale a data em
+   que o dinheiro entrou; em aberto vale a previsão. Mesma regra que a fatura
+   dele passou a seguir em `receitaDoMes` — se as duas não andassem juntas, o
+   contrato COM fatura cairia num mês e o SEM fatura noutro.
 
-   Chegou a usar `data_pagamento` quando pago, e isso criou uma divergência
-   silenciosa: o contrato COM fatura entra pela fatura, que por
-   `[fatura-nao-migra]` nunca muda de mês; o contrato SEM fatura migrava pro
-   mês em que foi pago. Dois contratos idênticos, um faturado e outro não,
-   caindo em meses diferentes. Pagar adiantado (ou com atraso) não muda de
-   que mês é o aluguel. */
+   PARCIAL fica na previsão: o valor que entra no painel é o `valor_total`
+   (previsto cheio), e levar isso pro mês da parcela arrastaria junto o que
+   ainda não foi recebido. */
 function rdMesDoContrato(c) {
-  return String(c.previsao_pagamento || "").slice(0, 7);
+  var liquidado = c.status_pagamento === "pago" && c.data_pagamento;
+  return String(liquidado ? c.data_pagamento : (c.previsao_pagamento || "")).slice(0, 7);
 }
 function rdLinhasReceitaCliente(receitas, contratos, clientes, mes) {
   /* [rd-mes] `receitaDoMes`, NUNCA `receitaVisivelNoMes` — é a mesma função da

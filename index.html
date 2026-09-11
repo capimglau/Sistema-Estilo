@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="c921f03"/>
+<meta name="ag-build" content="23a2a7d"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -24238,6 +24238,15 @@ function multaDoMes(m, mes) { return !!mes && multaDataFluxo(m).slice(0, 7) === 
    está preenchido, é ELE que decide. As heurísticas antigas ficam só como
    retaguarda para as multas já cobradas antes deste campo existir — sem isso,
    todo atraso já sinalizado sumiria da tela de uma vez. */
+/* Boleto pedido ao órgão e ainda não devolvido, fora do prazo combinado.
+   Sem `prazo_boleto_orgao` (pedidos anteriores ao campo) não há atraso a
+   apontar — chutar um prazo aqui seria repetir o erro dos "30 dias". */
+function multaBoletoOrgaoPendente(m) { return !!m && !!m.boleto_orgao_solicitado && !m.boleto_orgao_recebido; }
+function multaBoletoOrgaoAtrasado(m, hoje) {
+  if (!multaBoletoOrgaoPendente(m)) return false;
+  var prazo = String((m && m.prazo_boleto_orgao) || "").slice(0, 10);
+  return !!prazo && prazo < String(hoje || "").slice(0, 10);
+}
 function multaCobrancaPendente(m) { return !!m && (m.cobrado_cliente || "nao") === "pendente"; }
 function multaCobrancaVenc(m) { return m ? String(m.vencimento_cobranca_cliente || "").slice(0, 10) : ""; }
 function multaCobrancaAtrasada(m, hoje) {
@@ -36378,7 +36387,7 @@ function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSel
                       var placa=ve?ve.placa:(m.placa||"—");
                       var isVenc=m.status!=="pago"&&m.vencimento&&m.vencimento<hojeStr;
                       var cobAtr=multaCobrancaAtrasada(m, hojeStr); // [multa-cobranca-venc]
-                      var temAtraso=isVenc||cobAtr;
+                      var temAtraso=isVenc||cobAtr||multaBoletoOrgaoAtrasado(m,hojeStr);
                       var _str2g=new Date(_brNowMs()+2*864e5).toISOString().split("T")[0];
                       var vence2d=!temAtraso&&m.status!=="pago"&&m.vencimento&&m.vencimento>=hojeStr&&m.vencimento<=_str2g;
                       var lblCor=m.status==="pago"?"#5a8a63":temAtraso?"#8f5060":"var(--c-text)";
@@ -36424,7 +36433,7 @@ function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSel
                               var _isSelR=onSelectMulta&&String(m.id)===String(selectedMultaId);
                               var _isVencR=m.status!=="pago"&&m.vencimento&&m.vencimento<hojeStr;
                               var _cobAtrR=multaCobrancaAtrasada(m, hojeStr); // [multa-cobranca-venc]
-                              var _temAtrasoR=_isVencR||_cobAtrR;
+                              var _temAtrasoR=_isVencR||_cobAtrR||multaBoletoOrgaoAtrasado(m,hojeStr);
                               var _str2R=new Date(_brNowMs()+2*864e5).toISOString().split("T")[0];
                               var _vence2dR=!_temAtrasoR&&m.status!=="pago"&&m.vencimento&&m.vencimento>=hojeStr&&m.vencimento<=_str2R;
                               return React.createElement("div",{
@@ -36451,6 +36460,9 @@ function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSel
                                                  Com o vencimento preenchido, mostra o prazo — e vermelho quando
                                                  já passou. Sem o campo (cobrança antiga), volta ao "Aguard.". */
                                               , curr&&step.id==="cobrado_cli"&&m.cobrado_cliente==="pendente"?React.createElement("div",{style:{fontSize:9,fontWeight:800,color:multaCobrancaAtrasada(m,hojeStr)?"#FF3B30":"#FF9500",textAlign:"center",whiteSpace:"nowrap"}},multaCobrancaVenc(m)?("vc "+multaCobrancaVenc(m).slice(8,10)+"/"+multaCobrancaVenc(m).slice(5,7)):"Aguard."):null
+                                              /* Mesma coisa na etapa do boleto do órgão: o prazo combinado
+                                                 aparece na bandeira, vermelho quando o órgão passou dele. */
+                                              , curr&&step.id==="boleto_solic"&&multaBoletoOrgaoPendente(m)&&m.prazo_boleto_orgao?React.createElement("div",{style:{fontSize:9,fontWeight:800,color:multaBoletoOrgaoAtrasado(m,hojeStr)?"#FF3B30":"#FF9500",textAlign:"center",whiteSpace:"nowrap"}},"ret "+String(m.prazo_boleto_orgao).slice(8,10)+"/"+String(m.prazo_boleto_orgao).slice(5,7)):null
                                           )
                                       );
                                   })
@@ -36789,7 +36801,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       // Normaliza IDs: "" → null (Postgres bigint rejeita string vazia)
       ["contrato_id","veiculo_id","cliente_id"].forEach(function(k){ if (payload[k] === "" || payload[k] === undefined) payload[k] = null; });
       // Normaliza datas: "" → null
-      ["data","vencimento","data_pagamento","data_notificacao","data_cobranca_cliente","vencimento_cobranca_cliente","data_solicitacao_boleto","data_boleto_recebido","prazo_notificacao_orgao"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
+      ["data","vencimento","data_pagamento","data_notificacao","data_cobranca_cliente","vencimento_cobranca_cliente","data_solicitacao_boleto","prazo_boleto_orgao","data_boleto_recebido","prazo_notificacao_orgao"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
       // Normaliza números: "" → null
       ["valor","valor_cobrado","pontos"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
       // Normaliza booleanos de boleto/cobrança: garante boolean ou null
@@ -36862,13 +36874,22 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, { status: "pendente", data_pagamento: null }) : x));
     toast("↩ Revertido");
   }
-  async function confirmarSolicitarBoleto(m, dt) {
-    await db.patch("multas", m.id, { boleto_orgao_solicitado: true, data_solicitacao_boleto: dt });
-    setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, { boleto_orgao_solicitado: true, data_solicitacao_boleto: dt }) : x));
+  async function confirmarSolicitarBoleto(m, dt, prazo) {
+    /* [multa-cobranca-venc] Mesma ideia da cobrança ao cliente, uma etapa
+       antes: sem prazo de retorno, o pedido ao órgão ficava parado por meses
+       sem a etapa nunca aparecer atrasada. */
+    var _patS = { boleto_orgao_solicitado: true, data_solicitacao_boleto: dt, prazo_boleto_orgao: prazo || null };
+    await db.patch("multas", m.id, _patS);
+    setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, _patS) : x));
     toast("📋 Boleto solicitado registrado!");
   }
   function solicitarBoleto(m) {
-    abrirAcaoModal(m, { titulo: "Registrar Boleto Solicitado", emoji: "📋", cor: "#B8915A", campoLabel: "📅 Data da solicitação do boleto ao órgão", onConfirm: function(dt){ return confirmarSolicitarBoleto(m, dt); } });
+    abrirAcaoModal(m, { titulo: "Registrar Boleto Solicitado", emoji: "📋", cor: "#B8915A",
+      campoLabel: "📅 Data da solicitação do boleto ao órgão",
+      campo2Label: "⏰ Prazo para o órgão devolver o boleto",
+      campo2DiasPadrao: 15,
+      campo2Ajuda: "Passou deste prazo sem o boleto chegar, a etapa aparece atrasada — é o que evita o pedido ficar parado no órgão sem ninguém notar.",
+      onConfirm: function(dt, prazo){ return confirmarSolicitarBoleto(m, dt, prazo); } });
   }
   async function confirmarReceberBoleto(m, dt) {
     await db.patch("multas", m.id, { boleto_orgao_recebido: true, data_boleto_recebido: dt });
@@ -37074,7 +37095,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         // do tempo expansível, não duplica mais no resumo do card.
         var cc = m.cobrado_cliente || "nao";
         var cobCliAtrasado = multaCobrancaAtrasada(m, hoje); // [multa-cobranca-venc]
-        var _temAtraso = vencida || cobCliAtrasado;
+        var _temAtraso = vencida || cobCliAtrasado || multaBoletoOrgaoAtrasado(m, hoje);
         var _pipeLen = _pipeline.length; var _bCor = _temAtraso ? C.red : ((stepIdx >= _pipeLen - 2) ? C.green : stepIdx >= (_pipeLen - 4) ? C.orange : (isContestado ? C.purple : C.orange));
         var isExpanded = expandedMulId === m.id;
         /* [bandeira-diagonal-clara] A bandeira à esquerda mostra a ETAPA ATUAL
@@ -41720,6 +41741,33 @@ function rdMesDoContrato(c) {
   var liquidado = (c.status_pagamento === "pago" || c.status_pagamento === "parcial") && c.data_pagamento;
   return String(liquidado ? c.data_pagamento : (c.previsao_pagamento || "")).slice(0, 7);
 }
+/* [previsto-liquidado] A receita de fatura nem sempre carrega a própria baixa.
+   Quando o recebimento é registrado pela tela de CONTRATOS, quem fica com
+   `status_pagamento` e `data_pagamento` é o contrato; a receita pode continuar
+   sem `data_pagamento` no banco. A lista do Financeiro compensava isso em
+   tempo de render (`Object.assign` com `ct.data_pagamento`) — este helper não,
+   então a fatura recebida em 31/08 continuava presa na competência de
+   setembro e o cliente aparecia no mês errado, com o valor somado por cima da
+   fatura prevista do mês (relato: "a Kablan aparece com mais de 7k em
+   setembro, sendo que foram pagos em 31/08").
+
+   Aqui a receita é lida JUNTO com o contrato dela antes de decidir o mês. Não
+   grava nada — é a mesma leitura que a tela de Faturas já fazia. */
+function rdReceitaComContrato(r, contratos) {
+  if (!r || !r.ref_fatura) return r;
+  var _m = String(r.ref_fatura).match(/^fat_(\d+)_/);
+  if (!_m) return r;
+  var ct = (contratos || []).find(function (c) { return String(c.id) === _m[1]; });
+  if (!ct || !ct.data_pagamento) return r;
+  var _liq = ct.status_pagamento === "pago" || ct.status_pagamento === "parcial";
+  if (!_liq) return r;
+  // Já tem baixa própria? Então a da receita manda — é a mais específica.
+  if ((r.status === "recebido" || r.status === "parcial") && r.data_pagamento) return r;
+  return Object.assign({}, r, {
+    status: r.status === "parcial" || ct.status_pagamento === "parcial" ? "parcial" : "recebido",
+    data_pagamento: r.data_pagamento || ct.data_pagamento
+  });
+}
 function rdLinhasReceitaCliente(receitas, contratos, clientes, mes) {
   /* [rd-mes] `receitaDoMes`, NUNCA `receitaVisivelNoMes` — é a mesma função da
      aba Financeiro › Receitas, e a diferença entre as duas é justamente o que
@@ -41728,7 +41776,9 @@ function rdLinhasReceitaCliente(receitas, contratos, clientes, mes) {
      setembro ficava em agosto aqui e aparecia em setembro no Financeiro.
      A regra boa é a do Financeiro: liquidada conta no mês em que entrou,
      pendente conta no mês da previsão. */
-  var _recs = (receitas || []).filter(function (r) { return mes ? receitaDoMes(r, mes) : true; });
+  // [previsto-liquidado] lê a baixa do contrato antes de decidir o mês.
+  var _recs = (receitas || []).map(function (r) { return rdReceitaComContrato(r, contratos); })
+    .filter(function (r) { return mes ? receitaDoMes(r, mes) : true; });
   /* Contrato entra só quando NÃO tem receita vinculada — é a mesma trava que o
      Financeiro usa pra não contar a locação duas vezes (uma pelo contrato,
      outra pela fatura dele). */

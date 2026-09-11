@@ -596,7 +596,7 @@ eq("e não vaza pra agosto", F.receitaDoMes(rdFatPrev[0], "2026-08"), false);
 ok("o helper pergunta a receitaDoMes, não a receitaVisivelNoMes",
   /return mes \? receitaDoMes\(r, mes\) : true;/.test(html));
 ok("o gráfico de 12 meses conta a efetivada pelo mês do recebimento",
-  /r\.status==="recebido" && \(r\.data_pagamento\|\|r\.data\|\|""\)\.slice\(0,7\)===m/.test(html));
+  /!!r\.data_pagamento && String\(r\.data_pagamento\)\.slice\(0,7\)===m;/.test(html));
 
 // Despesa por categoria — mesmo tratamento, porque divide o card com a receita.
 const rdDesps = [
@@ -889,6 +889,13 @@ ok("a receita tem campo de data efetiva do recebimento",
   /label: "Data Efetiva do Recebimento \(define o mês\)"[\s\S]{0,200}form\.data_pagamento/.test(html));
 ok("data de recebimento vazia grava null, não string vazia",
   /if \(!payload\.data_pagamento\) payload\.data_pagamento = null;/.test(html));
+
+/* PREMISSA MÁXIMA: a data da baixa vale para o sistema inteiro. Nenhuma
+   decisão de mês pode exigir `status` junto com a data — é a trava dupla que
+   fez o "recebi em 31/08 e aparece em setembro" voltar cinco vezes, cada vez
+   por um ponto diferente. */
+eq("nenhum filtro de mês exige status de recebimento junto com a data",
+  (html.match(/status===?"recebido" *&& *\(?r\.data_pagamento|status === "recebido" && \(?r\.data_pagamento/g) || []).length, 0);
 
 // Contrato: todo painel de dinheiro passa pela função única.
 eq("nenhum painel filtra contrato por previsão na mão",

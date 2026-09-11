@@ -613,6 +613,69 @@ ok("o acumulado que sobrou avisa que é acumulado",
 eq("ninguém soma receita por cliente fora do helper",
   (html.match(/recCli\[nome\] *\+=|recPorCliente\[key\] *\+=/g) || []).length, 0);
 
+grupo("Previsto até liquidar, liquidado no mês em que o dinheiro andou");
+
+// Regra do usuário, em uma frase: "toda receita ou despesa deve aparecer no mês
+// previsto e, após a liquidação, no mês liquidado". Vale para os CINCO tipos de
+// dinheiro do app — não adianta valer só para os que foram reclamados.
+const plPrev = "2026-08-31", plPago = "2026-09-02";
+
+// 1. Despesa avulsa
+eq("despesa em aberto fica no mês previsto",
+  F.despesaDoMes({ data: plPrev }, "2026-08"), true);
+eq("despesa paga migra pro mês do pagamento",
+  F.despesaDoMes({ data: plPrev, data_pagamento: plPago, status: "pago" }, "2026-09"), true);
+eq("e sai do mês previsto",
+  F.despesaDoMes({ data: plPrev, data_pagamento: plPago, status: "pago" }, "2026-08"), false);
+
+// 2. Receita avulsa
+eq("receita em aberto fica no mês previsto",
+  F.receitaDoMes({ data: plPrev }, "2026-08"), true);
+eq("receita recebida migra pro mês do recebimento",
+  F.receitaDoMes({ data: plPrev, data_pagamento: plPago, status: "recebido" }, "2026-09"), true);
+eq("e sai do mês previsto",
+  F.receitaDoMes({ data: plPrev, data_pagamento: plPago, status: "recebido" }, "2026-08"), false);
+
+// 3. Fatura de contrato (competência no ref_fatura)
+eq("fatura não paga fica na competência",
+  F.receitaDoMes({ ref_fatura: "fat_9_2026-09", status: "emitida" }, "2026-09"), true);
+eq("fatura recebida migra pro mês do recebimento",
+  F.receitaDoMes({ ref_fatura: "fat_9_2026-09", status: "recebido", data_pagamento: "2026-08-31" }, "2026-08"), true);
+eq("e sai da competência",
+  F.receitaDoMes({ ref_fatura: "fat_9_2026-09", status: "recebido", data_pagamento: "2026-08-31" }, "2026-09"), false);
+
+// 4. Manutenção — estava fora da regra: olhava a previsão e ignorava o pagamento.
+eq("manutenção em aberto fica na previsão",
+  F.manVisivelNoMes({ data_previsao_pagamento: plPrev }, "2026-08"), true);
+eq("manutenção paga migra pro mês do pagamento",
+  F.manVisivelNoMes({ data_previsao_pagamento: plPrev, data_pagamento: plPago }, "2026-09"), true);
+eq("e sai do mês previsto",
+  F.manVisivelNoMes({ data_previsao_pagamento: plPrev, data_pagamento: plPago }, "2026-08"), false);
+eq("manDoMes segue a mesma regra",
+  F.manDoMes({ data_previsao_pagamento: plPrev, data_pagamento: plPago }, "2026-09"), true);
+eq("e o mês de referência também",
+  F.manMesRefGlobal({ data_previsao_pagamento: plPrev, data_pagamento: plPago }), "2026-09");
+// Recorrente é a exceção nos dois (igual em despesaDoMes): a projeção é feita
+// mês a mês e a data base tem que continuar sendo a previsão.
+eq("manutenção recorrente continua projetando pela previsão",
+  F.manVisivelNoMes({ data_previsao_pagamento: "2026-03-10", data_pagamento: "2026-03-11", recorrente: true }, "2026-09"), true);
+
+// 5. Multa — também estava fora: só olhava vencimento/data.
+eq("multa em aberto pesa no vencimento",
+  F.multaDoMes({ vencimento: plPrev, status: "pendente" }, "2026-08"), true);
+eq("multa paga migra pro mês do pagamento",
+  F.multaDoMes({ vencimento: plPrev, status: "pago", data_pagamento: plPago }, "2026-09"), true);
+eq("e sai do mês do vencimento",
+  F.multaDoMes({ vencimento: plPrev, status: "pago", data_pagamento: plPago }, "2026-08"), false);
+eq("multa sem vencimento cai na data do registro",
+  F.multaDataFluxo({ data: "2026-08-10" }), "2026-08-10");
+
+// Nenhum painel de dinheiro pode voltar a montar essas datas na mão.
+eq("ninguém filtra multa por mês sem o helper",
+  (html.match(/\(mu\.vencimento\|\|mu\.data\|\|""\)\.slice\(0,7\) *===|\(mu\.data\|\|""\)\.slice\(0,7\)===m\|\|/g) || []).length, 0);
+ok("a manutenção tem data de fluxo própria", /function manDataFluxo\(m\)/.test(html));
+ok("a multa tem data de fluxo própria", /function multaDataFluxo\(m\)/.test(html));
+
 grupo("Chart Manager não pode mover nó do React");
 
 // O Chart Manager (minimizar/duplicar/mover card) percorre o DOM e decora

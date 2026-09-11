@@ -661,6 +661,56 @@ sem isso a marca só aparece no próximo reload.
 Travado em `tests/run.js`, grupo *"Emissão de fatura dispensada sai de TODOS os
 avisos"*, que roda os helpers reais extraídos do `index.html`.
 
+## Previsto até liquidar, liquidado no mês em que o dinheiro andou — `[previsto-liquidado]` — PERMANENTE
+
+**Regra do usuário, nas palavras dele: "toda receita ou despesa deve aparecer
+no mês previsto e, após a liquidação, no mês liquidado".**
+
+Enquanto está **em aberto**, o lançamento pesa no mês da **previsão**
+(vencimento / data prevista / competência). Depois de **liquidado**, ele
+**muda de mês**: passa a pesar no mês em que o dinheiro efetivamente entrou ou
+saiu (`data_pagamento`). Não é "aparece nos dois" — é **um mês só, e ele
+muda** quando a baixa acontece.
+
+Vale para **os cinco tipos de dinheiro do app**, sem exceção:
+
+| tipo | função única | em aberto | liquidado |
+|---|---|---|---|
+| despesa | `despesaDoMes(d, mes)` | `data` | `data_pagamento` |
+| receita avulsa | `receitaDoMes(r, mes)` | `data` | `data_pagamento` |
+| fatura de contrato | `receitaDoMes(r, mes)` | competência do `ref_fatura` | `data_pagamento` |
+| contrato | `rdMesDoContrato(c)` | `previsao_pagamento` | `data_pagamento` |
+| conta a pagar/receber | `contaDataFluxo(c)` | `vencimento` | `data_pagamento` |
+| manutenção | `manDataFluxo(m)` · `manVisivelNoMes` · `manDoMes` · `manMesRefGlobal` | `data_previsao_pagamento` | `data_pagamento` |
+| multa | `multaDataFluxo(m)` · `multaDoMes(m, mes)` · `multaMesRef(m)` | `vencimento` | `data_pagamento` |
+
+**Duas exceções, ambas com motivo — não "consertar" sem ler aqui:**
+
+1. **Recorrente não migra a data base.** Em `despesaDoMes`, `manVisivelNoMes` e
+   `manDoMes`, o ramo recorrente continua projetando pela **previsão**. A
+   projeção é feita mês a mês a partir dela; migrar a base faria a recorrente
+   inteira pular de lugar e sumir dos meses seguintes. A baixa de uma parcela
+   recorrente já é resolvida pela linha-filha do mês (ver `[baixa-unica]`).
+2. **PARCIAL não migra.** Em contrato e fatura parcial o valor que entra no
+   painel é o `valor_total` **previsto**, não a parcela — levar isso pro mês da
+   parcela arrastaria junto o que ainda não entrou.
+
+**Isso é LEITURA, não gravação.** Nada disso reescreve `ref_fatura`, número ou
+data de emissão: `[fatura-nao-migra]` continua valendo, e a aba **Faturas**
+continua listando a **competência** (ela monta a lista a partir do contrato,
+não do `receitaDoMes`). Fatura é o documento da competência; o dinheiro é do
+mês em que andou — as duas leituras convivem, cada uma na sua tela.
+
+**Painel novo de dinheiro não monta essa data na mão.** Filtro inline do tipo
+`(mu.vencimento||mu.data||"").slice(0,7) === mes` é exatamente o que deixava
+manutenção e multa presas no mês previsto para sempre, enquanto a despesa
+equivalente migrava — a mesma saída de caixa em dois meses diferentes conforme
+o painel. Use a função da tabela acima.
+
+Travado em `tests/run.js`, grupo *"Previsto até liquidar, liquidado no mês em
+que o dinheiro andou"*, que roda os helpers reais extraídos do `index.html`
+para os cinco tipos.
+
 ## Painel de distribuição é do MÊS, e a conta é uma só — `[rd-mes]` — PERMANENTE
 
 "Receitas por Cliente" e "Despesas por Categoria" existem em **duas telas** —

@@ -684,6 +684,41 @@ eq("liquidado em 02/09 pertence a setembro",
 eq("e o mês da previsão original não guarda mais nada",
   F.despesaDoMes({ data: "2026-05-10", data_pagamento: "2026-09-02" }, "2026-05"), false);
 
+/* Parcela de recorrente (linha-filha) era a última coisa do app que ficava
+   presa no mês da parcela, ignorando o pagamento. Quem decide é o usuário,
+   pelo campo: "se eu quiser que ela seja baixada em março, coloco na data de
+   pagamento a data de março". */
+const plFilhaMar = { id: 50, recorrencia_origem_id: 7, data: "2026-03-10", data_pagamento: "2026-09-02", status: "pago", valor: "300", categoria: "Aluguel" };
+eq("parcela de março paga em setembro conta em setembro",
+  F.despesaDoMes(plFilhaMar, "2026-09"), true);
+eq("e sai de março", F.despesaDoMes(plFilhaMar, "2026-03"), false);
+const plFilhaNoMes = { id: 51, recorrencia_origem_id: 7, data: "2026-03-10", data_pagamento: "2026-03-28", status: "pago", valor: "300" };
+eq("se o usuário datar o pagamento em março, fica em março",
+  F.despesaDoMes(plFilhaNoMes, "2026-03"), true);
+const plFilhaAberta = { id: 52, recorrencia_origem_id: 7, data: "2026-03-10", status: "previsto", valor: "300" };
+eq("parcela ainda em aberto continua no mês dela",
+  F.despesaDoMes(plFilhaAberta, "2026-03"), true);
+
+/* A mesma despesa não pode ficar duas vezes na tela: o template segue oculto
+   no MÊS DA PARCELA (regra [baixa-unica]) mesmo quando o pagamento caiu em
+   outro mês — senão março mostraria a parcela como prevista de novo. */
+const plTpl = { id: 7, recorrente: true, data: "2026-01-10", valor: "300", categoria: "Aluguel" };
+const plMar = F.resolverDespesasDoMes([plTpl, plFilhaMar], "2026-03");
+eq("março não mostra o template de volta", plMar.length, 0);
+/* Setembro mostra DUAS linhas, e as duas são legítimas: a parcela de setembro
+   (projetada pelo template, ainda prevista) e a parcela de março que foi paga
+   em setembro. São dois aluguéis diferentes — o do mês e o atrasado que saiu
+   do caixa agora. O que não pode é a MESMA parcela aparecer duas vezes. */
+const plSet = F.resolverDespesasDoMes([plTpl, plFilhaMar], "2026-09");
+eq("setembro mostra a parcela do mês e a atrasada que foi paga", plSet.length, 2);
+eq("a parcela de março paga está entre elas",
+  plSet.filter(function(d){ return d.id === 50; }).length, 1);
+eq("e a parcela de setembro entra como prevista",
+  plSet.filter(function(d){ return d.id === 7 && d.status === "previsto"; }).length, 1);
+// A mesma parcela nunca duas vezes: em março, o template fica oculto pela filha.
+eq("a parcela de março não se repete em lugar nenhum",
+  plMar.concat(plSet).filter(function(d){ return d.id === 50; }).length, 1);
+
 // Nenhum painel de dinheiro pode voltar a montar essas datas na mão.
 eq("ninguém filtra multa por mês sem o helper",
   (html.match(/\(mu\.vencimento\|\|mu\.data\|\|""\)\.slice\(0,7\) *===|\(mu\.data\|\|""\)\.slice\(0,7\)===m\|\|/g) || []).length, 0);

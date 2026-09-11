@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="230785b"/>
+<meta name="ag-build" content="b698507"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -23985,13 +23985,26 @@ function renderPrevisaoCaixaOpcao2(diasComMov, movDia, saldoRealizadoHdr, saldoA
 }
 
 function resolverDespesasDoMes(despesas, mes) {
+  /* [previsto-liquidado] DUAS chaves diferentes para a mesma linha-filha, e é
+     de propósito:
+
+     - `filhasDoMes` (que esconde o template) continua pela `data` da filha, ou
+       seja, pelo MÊS DA PARCELA. A parcela de março já foi resolvida; se o
+       template voltasse a aparecer ali, a mesma despesa ficaria duas vezes na
+       tela — prevista em março e paga em setembro. É o bug que `[baixa-unica]`
+       descreve.
+     - a ENTRADA da filha no resultado vai por `despesaDoMes`, que segue a
+       `data_pagamento` — a parcela de março paga em setembro conta em
+       setembro.
+
+     Resultado: março fica sem nada (não houve caixa em março, e a pendência
+     já foi resolvida) e setembro mostra a despesa paga, uma vez só. */
   var filhasDoMes = despesas.filter(function(d){ return d.recorrencia_origem_id && (d.data||"").slice(0,7) === mes; });
   var idsComFilha = new Set(filhasDoMes.map(function(d){ return String(d.recorrencia_origem_id); }));
-  console.log("[resolver] mes="+mes+" filhas:", filhasDoMes.map(function(d){return d.id+"->pai:"+d.recorrencia_origem_id;}), "idsComFilha:", Array.from(idsComFilha));
   var resultado = [];
   despesas.forEach(function(d) {
-    if (!despesaDoMes(d, mes) && !(d.recorrencia_origem_id && (d.data||"").slice(0,7) === mes)) return;
-    if (d.recorrente && idsComFilha.has(String(d.id))) { console.log("[resolver] OCULTANDO pai id="+d.id); return; } // oculta pai quando filha existe
+    if (!despesaDoMes(d, mes)) return;
+    if (d.recorrente && idsComFilha.has(String(d.id))) return; // oculta pai quando filha existe
     if (d.recorrente && (d.data||"").slice(0,7) !== mes) {
       var dia = (d.data||"").slice(8,10);
       var pagouEsteMes = d.data_pagamento && d.data_pagamento.slice(0,7) === mes;
@@ -24014,6 +24027,11 @@ function despRecorrentePagaNoMes(d, mes, todasDespesas) {
   return d.status === "pago" || (d.data_pagamento||"").slice(0,7) === mes;
 }
 function despesaVisivelNoMes(d, mes) {
+  /* [previsto-liquidado] Lançamento concreto já pago (avulso ou linha-filha de
+     recorrente) pesa no mês em que o dinheiro saiu. O template recorrente NÃO
+     entra aqui: é ele que esta função projeta mês a mês, e migrar a data base
+     faria a recorrente inteira pular de lugar. */
+  if (!d.recorrente && d.data_pagamento) return String(d.data_pagamento).slice(0, 7) === mes;
   var dataMes = (d.data || "").slice(0, 7);
   if (!dataMes) return false;
   if (dataMes === mes) return true;
@@ -24095,7 +24113,15 @@ function filtrarManParaBarras(manutencoes, despesas, mes) {
    ───────────────────────────────────────────────────────────────── */
 function despesaDoMes(d, mes) {
   if (!d || !mes) return false;
-  if (d.recorrencia_origem_id) return (d.data || "").slice(0, 7) === mes;
+  /* [previsto-liquidado] Linha-filha de recorrente (a parcela de um mês
+     específico): enquanto está em aberto pesa no mês da parcela; depois de
+     paga, pesa no mês em que o dinheiro saiu. Ficava presa no mês da parcela
+     e ignorava a `data_pagamento` — a única coisa do app que ainda contrariava
+     a regra.
+     Quem decide é o usuário, pelo campo: *"se uma parcela é de março e eu
+     quiser que ela seja baixada em março, eu coloco na data de pagamento a
+     data de março"*. A data do efetivo pagamento é a competência. */
+  if (d.recorrencia_origem_id) return String(d.data_pagamento || d.data || "").slice(0, 7) === mes;
   // Avulsa: paga → aparece somente no mês do pagamento; pendente → somente no mês da data
   if (!d.recorrente) {
     if (d.data_pagamento) return d.data_pagamento.slice(0, 7) === mes;

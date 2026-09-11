@@ -686,6 +686,18 @@ nenhuma tela reimplementa a soma.**
 - **`mes` = "YYYY-MM"** filtra a competência; **`mes` nulo** devolve o histórico
   inteiro. As duas leituras são legítimas — o que não pode é o acumulado se
   passar por mensal.
+- **LIQUIDADO conta no mês em que o dinheiro entrou; PREVISTO, no mês da
+  previsão.** Receita pergunta **`receitaDoMes`** (a função da aba Financeiro),
+  **nunca `receitaVisivelNoMes`** — essa olha só a `data` e ignora a
+  `data_pagamento`, então uma receita datada **31/08 e recebida em setembro**
+  ficava em agosto no painel e em setembro no Financeiro, e as telas
+  discordavam sobre o mesmo dinheiro. Contrato segue a mesma regra por
+  **`rdMesDoContrato(c)`** (pago/parcial → `data_pagamento`; em aberto →
+  `previsao_pagamento`): contar a receita pelo pagamento e o contrato pela
+  previsão deixa o painel meio liquidado, meio previsto.
+  `receitaVisivelNoMes` continua valendo para **projeção** de recorrente em
+  série de 12/24 meses (é o que ela faz bem) — não para dizer de que mês é um
+  lançamento.
 - **Acumulado só existe se estiver escrito na tela.** O "Top 5 Clientes por
   Receita" continua histórico de propósito e por isso o título diz
   **"· desde o início"**. Todo painel mensal carrega o nome do mês no título

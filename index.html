@@ -30973,7 +30973,13 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var recData = meses6.map(function(m){
         if (recMode === "efetivadas") {
           return contratos.filter(function(c){ var ref = (c.status_pagamento==="pago"||c.status_pagamento==="parcial")&&c.data_pagamento ? c.data_pagamento : c.previsao_pagamento; return ref && ref.slice(0,7)===m && (c.status_pagamento==="pago"||c.status_pagamento==="parcial"); }).reduce(function(s,c){ return s + (c.status_pagamento==="parcial" ? parseFloat(c.valor_pago||0) : parseFloat(c.valor_total||0)); },0)
-            + (receitas||[]).filter(function(r){ return !r.ref_fatura && receitaVisivelNoMes(r,m) && r.status==="recebido"; }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
+            /* [rd-mes] "Efetivadas" é dinheiro que ENTROU: o mês é o do
+               recebimento, igual ao contrato da linha acima. Com
+               receitaVisivelNoMes (que só olha a `data`) uma receita datada
+               31/08 e recebida em setembro entrava como efetivada em agosto,
+               enquanto o contrato equivalente ia pra setembro — as duas
+               metades da mesma barra em meses diferentes. */
+            + (receitas||[]).filter(function(r){ return !r.ref_fatura && r.status==="recebido" && (r.data_pagamento||r.data||"").slice(0,7)===m; }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
         } else {
           return contratos.filter(function(c){ var ref = c.previsao_pagamento; return ref && ref.slice(0,7)===m && c.status !== "cancelado"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
             + (receitas||[]).filter(function(r){ return !r.ref_fatura && receitaVisivelNoMes(r,m); }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
@@ -41545,8 +41551,22 @@ function rdClienteDaReceita(r, contratos, clientes) {
   }
   return "Avulsa / sem cliente";
 }
+/* Mês em que o contrato pesa no painel: pago/parcial vale a data em que o
+   dinheiro entrou; em aberto vale a previsão. Mesma ideia do `contaDataFluxo`
+   das contas e do `data_pagamento || data` das despesas — não inventar outra. */
+function rdMesDoContrato(c) {
+  var liquidado = (c.status_pagamento === "pago" || c.status_pagamento === "parcial") && c.data_pagamento;
+  return String(liquidado ? c.data_pagamento : (c.previsao_pagamento || "")).slice(0, 7);
+}
 function rdLinhasReceitaCliente(receitas, contratos, clientes, mes) {
-  var _recs = (receitas || []).filter(function (r) { return mes ? receitaVisivelNoMes(r, mes) : true; });
+  /* [rd-mes] `receitaDoMes`, NUNCA `receitaVisivelNoMes` — é a mesma função da
+     aba Financeiro › Receitas, e a diferença entre as duas é justamente o que
+     fazia as telas discordarem: `receitaVisivelNoMes` olha só a `data` e
+     ignora a `data_pagamento`, então uma receita datada 31/08 e RECEBIDA em
+     setembro ficava em agosto aqui e aparecia em setembro no Financeiro.
+     A regra boa é a do Financeiro: liquidada conta no mês em que entrou,
+     pendente conta no mês da previsão. */
+  var _recs = (receitas || []).filter(function (r) { return mes ? receitaDoMes(r, mes) : true; });
   /* Contrato entra só quando NÃO tem receita vinculada — é a mesma trava que o
      Financeiro usa pra não contar a locação duas vezes (uma pelo contrato,
      outra pela fatura dele). */
@@ -41554,7 +41574,13 @@ function rdLinhasReceitaCliente(receitas, contratos, clientes, mes) {
     if (!c.previsao_pagamento) return false;
     if (c.status === "cancelado" || c.status === "concluido") return false;
     if (c.renovado_para) return false;
-    if (mes && c.previsao_pagamento.slice(0, 7) !== mes) return false;
+    /* [rd-mes] Mesma regra da receita, na outra metade da soma: LIQUIDADO
+       conta no mês em que o dinheiro entrou, PREVISTO conta no mês da
+       previsão. Contar a receita pelo pagamento e o contrato pela previsão
+       deixaria o painel meio liquidado, meio previsto — a mistura que fazia
+       o número não bater com o Financeiro. É a mesma conta que o gráfico de
+       12 meses já faz no modo "efetivadas". */
+    if (mes && rdMesDoContrato(c) !== mes) return false;
     if ((receitas || []).some(function (r) { return r.ref_fatura && String(r.ref_fatura).startsWith("fat_" + c.id + "_"); })) return false;
     return true;
   });

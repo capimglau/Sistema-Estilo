@@ -24165,7 +24165,13 @@ function receitaDoMes(r, mes) {
        o lançamento junto. Atenção ao efeito, que é conhecido e aceito: o valor
        que migra é o `valor_total` previsto (a regra do contrato parcial manda
        exibir o cheio), então o restante a receber acompanha a parcela. */
-    if ((r.status === "recebido" || r.status === "parcial") && r.data_pagamento) return String(r.data_pagamento).slice(0, 7) === mes;
+    /* Basta EXISTIR data de pagamento. Exigir `status` junto era uma trava a
+       mais para a mesma pergunta, e bastava um caminho de baixa gravar a data
+       sem carimbar o status — ou carimbar "emitida"/"pago" em vez de
+       "recebido" — para a fatura recebida em 31/08 voltar a aparecer em
+       setembro. A regra do usuário é uma só: "a data do efetivo pagamento é a
+       competência do mês". */
+    if (r.data_pagamento) return String(r.data_pagamento).slice(0, 7) === mes;
     var mFat = r.ref_fatura.match(/^fat_\d+_(\d{4}-\d{2})$/);
     if (mFat) return mFat[1] === mes;
     // Parcelas CC (fat_{id}_cc_p{n}): usa data da parcela para determinar o mês
@@ -31043,7 +31049,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
             , React.createElement('div', { style:{ marginBottom:16 } }, React.createElement(BRLValue, { v: opts.total, size:17, weight:800, color:opts.color }))
             , opts.items.length === 0
               ? React.createElement('div', { style:{ padding:"18px 0", textAlign:"center", color:C.sub, fontSize:13 } }, opts.emptyMsg)
-              : FunnelBars(opts.items.map(function(it){ return { label: opts.firstNameOnly ? (it.key||"").trim().split(/\s+/)[0] : it.key, val: it.value, color: it.color, fullKey: it.key }; }), { C:C, onBarClick:opts.onBarClick })
+              /* [barra-pendente] `pend` viaja junto: a barra esmaece a fatia que
+                 ainda não andou e escreve o valor dela no balão. */
+              : FunnelBars(opts.items.map(function(it){ return { label: opts.firstNameOnly ? (it.key||"").trim().split(/\s+/)[0] : it.key, val: it.value, pend: it.pendente, color: it.color, fullKey: it.key }; }), { C:C, onBarClick:opts.onBarClick, rotuloPendente: opts.rotuloPendente })
           )
         );
       }
@@ -31055,13 +31063,13 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       return React.createElement('div', { style:{ display:"flex", flexDirection: RX.kpiFlexDir, gap:21, alignItems:"stretch" } }
         , _painelFunil({
             icon:"💸", title:"Despesas por Categoria", total:totalDespesaInicio, color:C.red,
-            items:despesaItems, emptyMsg:"Nenhuma despesa neste m\xeas",
+            items:despesaItems, emptyMsg:"Nenhuma despesa neste m\xeas", rotuloPendente:"a pagar",
             onTitleClick:function(){ setTab("financeiro"); },
             onBarClick:function(x,e){ e.stopPropagation(); setFinDeepLink({subTab:"despesas",cat:x.fullKey}); setTab("financeiro"); }
           })
         , _painelFunil({
             icon:"💰", title:"Receitas por Cliente", total:totalReceitaInicio, color:C.green,
-            items:receitaItems, emptyMsg:"Nenhuma receita neste m\xeas", firstNameOnly:true,
+            items:receitaItems, emptyMsg:"Nenhuma receita neste m\xeas", firstNameOnly:true, rotuloPendente:"a receber",
             onTitleClick:function(){ setTab("clientes"); }
           })
       );
@@ -41687,12 +41695,16 @@ function rdSum(list) { return list.reduce(function (s, r) { return s + r.valor; 
 // Agrupa {chave,valor}[] em itens {key,value,color,selected} pro componente —
 // mesma agregação nos dois anéis, só muda a paleta de cor.
 function rdGroupBy(rows, selSet, paleta) {
-  var sums = {};
-  rows.forEach(function (r) { sums[r.chave] = (sums[r.chave] || 0) + r.valor; });
-  return Object.keys(sums).map(function (k) { return { key: k, value: sums[k] }; })
+  var sums = {}, pend = {};
+  rows.forEach(function (r) {
+    sums[r.chave] = (sums[r.chave] || 0) + r.valor;
+    // `pendente` viaja junto com o total — é o que a barra esmaece.
+    pend[r.chave] = (pend[r.chave] || 0) + (r.pendente || 0);
+  });
+  return Object.keys(sums).map(function (k) { return { key: k, value: sums[k], pendente: pend[k] || 0 }; })
     .sort(function (a, b) { return b.value - a.value; })
     .map(function (it, idx) { return {
-      key: it.key, value: it.value, valueLabel: fmtBRL(it.value),
+      key: it.key, value: it.value, pendente: it.pendente, valueLabel: fmtBRL(it.value),
       color: paleta[it.key] || (Array.isArray(paleta) ? paleta[idx % paleta.length] : RD_PALETTE_FALLBACK[idx % RD_PALETTE_FALLBACK.length]),
       selected: selSet.has(it.key),
     }; });
@@ -41738,8 +41750,10 @@ function rdClienteDaReceita(r, contratos, clientes) {
    é o `valor_total` previsto, porque é o que a regra do contrato parcial
    manda exibir. */
 function rdMesDoContrato(c) {
-  var liquidado = (c.status_pagamento === "pago" || c.status_pagamento === "parcial") && c.data_pagamento;
-  return String(liquidado ? c.data_pagamento : (c.previsao_pagamento || "")).slice(0, 7);
+  // Mesma simplificação da receita: existe data de pagamento, ela manda.
+  // Depender do `status_pagamento` deixava o contrato no mês da previsão
+  // sempre que algum caminho gravasse a data sem atualizar o status.
+  return String((c && c.data_pagamento) || (c && c.previsao_pagamento) || "").slice(0, 7);
 }
 /* [previsto-liquidado] A receita de fatura nem sempre carrega a própria baixa.
    Quando o recebimento é registrado pela tela de CONTRATOS, quem fica com
@@ -41759,10 +41773,8 @@ function rdReceitaComContrato(r, contratos) {
   if (!_m) return r;
   var ct = (contratos || []).find(function (c) { return String(c.id) === _m[1]; });
   if (!ct || !ct.data_pagamento) return r;
-  var _liq = ct.status_pagamento === "pago" || ct.status_pagamento === "parcial";
-  if (!_liq) return r;
   // Já tem baixa própria? Então a da receita manda — é a mais específica.
-  if ((r.status === "recebido" || r.status === "parcial") && r.data_pagamento) return r;
+  if (r.data_pagamento) return r;
   return Object.assign({}, r, {
     status: r.status === "parcial" || ct.status_pagamento === "parcial" ? "parcial" : "recebido",
     data_pagamento: r.data_pagamento || ct.data_pagamento
@@ -41803,12 +41815,21 @@ function rdLinhasReceitaCliente(receitas, contratos, clientes, mes) {
     if ((receitas || []).some(function (r) { return r.ref_fatura === "fat_" + c.id + "_" + _compCt; })) return false;
     return true;
   });
+  /* `pendente` = quanto desse valor ainda NÃO entrou. É o que as barras
+     desenham esmaecido e escrevem como "a receber" — ver FunnelBars. Sem
+     data de pagamento, o lançamento inteiro está pendente; no parcial, só o
+     que falta (valor_total − valor_pago). */
   return _recs.map(function (r) {
-      return { chave: rdClienteDaReceita(r, contratos, clientes), valor: parseFloat(r.valor || 0), descricao: r.descricao || "Receita", data: r.data_pagamento || r.data, status: r.status };
+      var _v = parseFloat(r.valor || 0);
+      var _pend = r.data_pagamento ? 0 : _v;
+      if (r._valorPago) _pend = Math.max(0, _v - parseFloat(r._valorPago || 0));
+      return { chave: rdClienteDaReceita(r, contratos, clientes), valor: _v, pendente: _pend, descricao: r.descricao || "Receita", data: r.data_pagamento || r.data, status: r.status };
     })
     .concat(_cts.map(function (c) {
       var cl = (clientes || []).find(function (x) { return String(x.id) === String(c.cliente_id); });
-      return { chave: cl && cl.nome ? cl.nome : "Avulsa / sem cliente", valor: parseFloat(c.valor_total || 0), descricao: "Contrato #" + c.id, data: c.previsao_pagamento, status: c.status_pagamento };
+      var _vc = parseFloat(c.valor_total || 0);
+      var _pc = c.status_pagamento === "parcial" ? Math.max(0, _vc - parseFloat(c.valor_pago || 0)) : (c.data_pagamento ? 0 : _vc);
+      return { chave: cl && cl.nome ? cl.nome : "Avulsa / sem cliente", valor: _vc, pendente: _pc, descricao: "Contrato #" + c.id, data: c.previsao_pagamento, status: c.status_pagamento };
     }))
     .filter(function (r) { return r.valor > 0.005; });
 }
@@ -41824,15 +41845,27 @@ function rdLinhasDespesaCategoria(despesas, manutencoes, mes) {
   // histórico cru já traz cada lançamento uma vez.
   if (mes) _desps = resolverDespesasDoMes(_desps, mes);
   return _desps.map(function (d) {
-      return { chave: d.categoria || "Outros", valor: parseFloat(d.valor || 0), descricao: d.descricao || d.categoria || "Despesa", data: d.data_pagamento || d.data, status: d.status };
+      var _v = parseFloat(d.valor || 0);
+      return { chave: d.categoria || "Outros", valor: _v, pendente: d.data_pagamento ? 0 : _v, descricao: d.descricao || d.categoria || "Despesa", data: d.data_pagamento || d.data, status: d.status };
     })
     .concat(_mans.map(function (m) {
-      return { chave: "Manutenção", valor: parseFloat(m.custo || 0), descricao: m.descricao || "Manutenção", data: m.data_previsao_pagamento || m.data_entrada, status: m.status };
+      var _vm = parseFloat(m.custo || 0);
+      return { chave: "Manutenção", valor: _vm, pendente: m.data_pagamento ? 0 : _vm, descricao: m.descricao || "Manutenção", data: m.data_previsao_pagamento || m.data_entrada, status: m.status };
     }))
     .filter(function (r) { return r.valor > 0.005; });
 }
 
 function _fmtBarVal(v){ return fmtBRL(v); }
+/* [barra-pendente] Fundo de barra com a fatia pendente esmaecida no fim — a
+   mesma cor, translúcida, a partir da proporção já liquidada. Usado pelas
+   barras de Relatórios; FunnelBars monta o seu inline pela mesma fórmula. */
+function _rdBarraBg(cor, total, pendente) {
+  var p = parseFloat(pendente || 0), t = parseFloat(total || 0);
+  if (!(p > 0.005) || !(t > 0)) return cor;
+  var stop = Math.max(0, Math.min(100, ((t - p) / t) * 100)).toFixed(1) + "%";
+  var fraca = "color-mix(in srgb, " + cor + " 30%, transparent)";
+  return "linear-gradient(90deg, " + cor + " 0%, " + cor + " " + stop + ", " + fraca + " " + stop + ", " + fraca + " 100%)";
+}
 function _luminance(hex){ var r=parseInt(hex.slice(1,3),16)/255,g=parseInt(hex.slice(3,5),16)/255,b=parseInt(hex.slice(5,7),16)/255; return 0.299*r+0.587*g+0.114*b; }
 // Barras estilo "funil" (pontas abauladas + balão de valor) — uma cor por categoria/cliente
 function FunnelBars(items, opts) {
@@ -41842,7 +41875,14 @@ function FunnelBars(items, opts) {
   var n = items.length;
   if (n === 0) return null;
   var mx = items[0].val || 1;
-  var ROWH = 34;
+  /* [barra-pendente] A barra mostra o TOTAL do mês; a fatia que ainda não
+     entrou (ou não saiu) fica esmaecida no fim dela, e o valor a receber vem
+     escrito no balão. Antes a barra era sólida do começo ao fim e não havia
+     como saber, olhando o painel, quanto daquilo já é dinheiro no caixa.
+     A linha fica mais alta só quando existe pendência — mês todo liquidado
+     continua compacto como antes. */
+  var _temPend = items.some(function (x) { return (x.pend || 0) > 0.005; });
+  var ROWH = _temPend ? 40 : 34;
   return React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:7 } }
     , items.map(function(x, i){
         var textColor = _luminance(x.color) > 0.6 ? "var(--c-text)" : "#fff";
@@ -41852,13 +41892,28 @@ function FunnelBars(items, opts) {
            mostrando "~R$ 2,5" cortado). Com o teto, mesmo a maior barra deixa
            uma faixa livre à direita pro balão + a ponteira caberem inteiros. */
         var pct = Math.max(22, Math.round((x.val/mx)*74));
+        /* Corte entre o que já andou e o que falta, na proporção do valor —
+           um degradê de dois estágios com a mesma cor, a segunda parte
+           translúcida. Sem pendência, a cor sólida de sempre. */
+        var _pend = (x.pend || 0);
+        var _temP = _pend > 0.005 && x.val > 0;
+        var _stop = _temP ? (Math.max(0, Math.min(100, ((x.val - _pend) / x.val) * 100))).toFixed(1) + "%" : null;
+        var _corFraca = "color-mix(in srgb, " + x.color + " 30%, transparent)";
+        var _bgBarra = _temP
+          ? "linear-gradient(90deg, " + x.color + " 0%, " + x.color + " " + _stop + ", " + _corFraca + " " + _stop + ", " + _corFraca + " 100%)"
+          : x.color;
         return React.createElement('div', { key:i, onClick:function(e){ opts.onBarClick && opts.onBarClick(x, e); }, style:{ position:"relative", height:ROWH, cursor:opts.onBarClick?"pointer":"default" } }
-          , React.createElement('div', { style:{ position:"absolute", left:0, top:0, width:pct+"%", height:"100%", background:x.color, borderRadius:999, display:"flex", alignItems:"center", padding:"0 13px", boxSizing:"border-box", boxShadow:"0 1px 2px rgba(0,0,0,0.07)" } }
+          , React.createElement('div', { style:{ position:"absolute", left:0, top:0, width:pct+"%", height:"100%", background:_bgBarra, borderRadius:999, display:"flex", alignItems:"center", padding:"0 13px", boxSizing:"border-box", boxShadow:"0 1px 2px rgba(0,0,0,0.07)" } }
             , React.createElement('span', { style:{ fontSize:10.5, fontWeight:700, letterSpacing:0.1, color:textColor, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" } }, x.label||"")
           )
           , React.createElement('div', { style:{ position:"absolute", left:"calc("+pct+"% - 1px)", top:"50%", transform:"translateY(-50%)", zIndex:2, display:"flex", alignItems:"center", filter:"drop-shadow(0 1px 2px rgba(0,0,0,0.10))" } }
             , React.createElement('div', { style:{ width:0, height:0, borderTop:"5px solid transparent", borderBottom:"5px solid transparent", borderRight:"6px solid "+C.card } })
-            , React.createElement('div', { style:{ background:C.card, border:"1px solid "+C.border, borderRadius:999, padding:"3px 9px", fontSize:11, fontWeight:700, color:"var(--c-text)", whiteSpace:"nowrap" } }, _fmtBarVal(x.val))
+            , React.createElement('div', { style:{ background:C.card, border:"1px solid "+C.border, borderRadius:999, padding:_temP?"2px 9px 3px":"3px 9px", fontSize:11, fontWeight:700, color:"var(--c-text)", whiteSpace:"nowrap", textAlign:"right", lineHeight:1.15 } }
+                , React.createElement('div', null, _fmtBarVal(x.val))
+                /* O valor a receber/a pagar escrito, não só sugerido pela cor —
+                   é o número que o usuário pediu para aparecer. */
+                , _temP && React.createElement('div', { style:{ fontSize:9, fontWeight:700, color:C.sub, marginTop:1 } }, (opts.rotuloPendente||"a receber")+" "+_fmtBarVal(_pend))
+              )
           )
         );
       })
@@ -42644,7 +42699,16 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   var despFiltradas = resolverDespesasDoMes(despesas, filtroMes).filter(function(d){ return filtroCatDesp === "Retirada de Lucro" || filtroCatDesp === "Ajuste de Saldo" ? true : !isRetLucro(d); });
   // IDs dos contratos existentes — usado para filtrar receitas órfãs
   var _ctIdsExistentes = new Set((contratos||[]).map(function(c){ return String(c.id); }));
-  var recFiltradas = receitas.filter(r => receitaDoMes(r, filtroMes)).map(r => {
+  /* [previsto-liquidado] O `.map` logo abaixo já buscava a baixa no CONTRATO
+     (`ct.data_pagamento`) — mas só DEPOIS de filtrar. Com a receita sem
+     `data_pagamento` no banco (caso de quem recebeu pela tela de Contratos),
+     `receitaDoMes` devolvia a competência e a fatura recebida em 31/08
+     aparecia na lista de SETEMBRO — com a etiqueta mostrando "31 AGO", porque
+     aí sim o map já tinha lido o contrato. Era o mesmo dado dizendo duas
+     coisas na mesma linha.
+     `rdReceitaComContrato` roda ANTES do filtro: o mês é decidido com a baixa
+     na mão. */
+  var recFiltradas = receitas.map(r => rdReceitaComContrato(r, contratos)).filter(r => receitaDoMes(r, filtroMes)).map(r => {
     if (r.ref_fatura) {
       var m = r.ref_fatura.match(/^fat_(\d+)_/);
       if (m) {
@@ -45766,10 +45830,10 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
          lado a lado. Eram as duas acumuladas desde sempre, sem nenhum período
          escrito na tela: era o "acumulado" que o usuário viu no lugar do mês. */
       var despCatArr = rdGroupBy(rdLinhasDespesaCategoria(despesas, manutencoes, gMes), new Set(), RD_COR_CATEGORIA)
-        .slice(0,6).map(function(it){ return { cat: it.key, val: it.value }; });
+        .slice(0,6).map(function(it){ return { cat: it.key, val: it.value, pend: it.pendente }; });
       var totalDespCat = despCatArr.reduce(function(s,x){return s+x.val;},0)||1;
       var recCliArr = rdGroupBy(rdLinhasReceitaCliente(receitas, contratos, clientes, gMes), new Set(), RD_PALETTE_CLIENTE)
-        .slice(0,6).map(function(it){ return { nome: it.key, val: it.value }; });
+        .slice(0,6).map(function(it){ return { nome: it.key, val: it.value, pend: it.pendente }; });
       var totalRecCli = recCliArr.reduce(function(s,x){return s+x.val;},0)||1;
       var gMesNome = new Date(gMes+"-15").toLocaleString("pt-BR",{month:"long",year:"numeric"});
 
@@ -45912,10 +45976,12 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
                     , React.createElement('div', { style: { display:"flex", gap:6, flexShrink:0 } }
                       , React.createElement('span', { className:'ag-panel-value', style: { color:C.sub } }, pct.toFixed(1)+"%")
                       , React.createElement('span', { className:'ag-panel-value', style: { fontWeight:700, color:CORS_DESP[i]||"#FF3B30" } }, fmtBRL(x.val))
+                      , (x.pend > 0.005) && React.createElement('span', { className:'ag-panel-value', style: { fontSize:10, color:C.sub } }, "a pagar "+fmtBRL(x.pend))
                     )
                   )
+                  /* [barra-pendente] fatia esmaecida = o que ainda não saiu. */
                   , React.createElement('div', { style: { background:C.bg, borderRadius:999, height:6, overflow:"hidden" } }
-                    , React.createElement('div', { style: { height:6, width:pct+"%", background:CORS_DESP[i]||"#FF3B30", transition:"width .3s" } })
+                    , React.createElement('div', { style: { height:6, width:pct+"%", background:_rdBarraBg(CORS_DESP[i]||"#FF3B30", x.val, x.pend), transition:"width .3s" } })
                   )
                 );
               })
@@ -45941,10 +46007,11 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
                       , React.createElement('div', { style: { display:"flex", gap:6, flexShrink:0 } }
                         , React.createElement('span', { className:'ag-panel-value', style: { color:C.sub } }, pct.toFixed(1)+"%")
                         , React.createElement('span', { className:'ag-panel-value', style: { fontWeight:700, color:CORS_CLI[i]||"#34C759" } }, fmtBRL(x.val))
+                        , (x.pend > 0.005) && React.createElement('span', { className:'ag-panel-value', style: { fontSize:10, color:C.sub } }, "a receber "+fmtBRL(x.pend))
                       )
                     )
                     , React.createElement('div', { style: { background:C.bg, borderRadius:999, height:6, overflow:"hidden" } }
-                      , React.createElement('div', { style: { height:6, width:pct+"%", background:CORS_CLI[i]||"#34C759", transition:"width .3s" } })
+                      , React.createElement('div', { style: { height:6, width:pct+"%", background:_rdBarraBg(CORS_CLI[i]||"#34C759", x.val, x.pend), transition:"width .3s" } })
                     )
                   );
                 });

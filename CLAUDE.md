@@ -817,6 +817,46 @@ que falta. **Todo painel que decide o mês de uma fatura pelo `receitaDoMes`
 precisa passar por ela primeiro** — senão volta a ler um recebimento que está
 gravado no outro registro.
 
+⚠️ **A LISTA de Financeiro › Receitas era o caso mais visível disso, e demorou
+várias rodadas para ser achado.** Ela já buscava a baixa no contrato — mas no
+`.map`, **depois** do `.filter`. O mês era decidido sem a baixa e a etiqueta
+desenhada com ela: a fatura recebida em 31/08 aparecia na lista de **setembro**
+com "31 AGO" escrito no próprio card. O mesmo dado dizendo duas coisas na
+mesma linha. Ordem correta: **resolver primeiro, filtrar depois.**
+
+### A DATA manda sozinha — não peça status junto
+
+`receitaDoMes` (ramo `ref_fatura`) e `rdMesDoContrato` perguntavam
+`status === "recebido"/"parcial"` **além** da `data_pagamento`. Era uma segunda
+trava para a mesma pergunta, e bastava **um** caminho de baixa gravar a data
+sem carimbar o status — ou carimbar `"emitida"`/`"pago"` em vez de
+`"recebido"` — para o lançamento voltar ao mês da previsão. Foi por isso que o
+relato *"as receitas de 31/08 aparecem em setembro"* voltou várias vezes,
+mesmo depois de corrigido em outros pontos.
+
+**Existe `data_pagamento`? O mês é o dela. Ponto.** Sem condição de status em
+lugar nenhum — é literalmente a regra do usuário: *"a data do efetivo pagamento
+é a competência do mês"*.
+
+### A parte que ainda não andou fica esmaecida, com o valor escrito — `[barra-pendente]`
+
+Nos painéis **"Receitas por Cliente"** e **"Despesas por Categoria"** (nas duas
+telas), a barra mostra o **total do mês**; a fatia que ainda **não entrou/saiu**
+é desenhada na mesma cor, translúcida, a partir da proporção já liquidada — e o
+valor dela vem **escrito** ("a receber R$ X" / "a pagar R$ X"). Antes a barra
+era sólida do começo ao fim e não havia como saber, olhando o painel, quanto
+daquilo já é dinheiro no caixa.
+
+- `pendente` viaja na linha (`rdLinhasReceitaCliente`/`rdLinhasDespesaCategoria`)
+  e é somado por `rdGroupBy` junto com o total — **nunca recalcular na tela**.
+- Sem `data_pagamento`, o lançamento inteiro é pendente; no **parcial**, só o
+  que falta (`valor_total − valor_pago`).
+- `_rdBarraBg(cor, total, pendente)` monta o degradê; `FunnelBars` usa a mesma
+  fórmula inline e sobe a linha de 34px para 40px **só quando há pendência** —
+  mês todo liquidado continua compacto.
+- O rótulo vem do painel (`rotuloPendente`): "a receber" nas receitas, "a
+  pagar" nas despesas.
+
 **Painel novo de dinheiro não monta essa data na mão.** Filtro inline do tipo
 `(mu.vencimento||mu.data||"").slice(0,7) === mes` é exatamente o que deixava
 manutenção e multa presas no mês previsto para sempre, enquanto a despesa

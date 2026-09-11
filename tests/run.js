@@ -484,6 +484,84 @@ ok("o card de Contratos se atualiza quando a Agenda marca (mapa vive fora do Rea
 eq("ninguém mais recalcula '20 dias antes' na mão",
   (html.match(/getDate\(\) *- *20/g) || []).length, 1);
 
+grupo("Receita por cliente é do MÊS, e a conta é uma só");
+
+// "Receitas por Cliente" existe em duas telas. O do Dashboard somava a
+// competência do mês; o de Relatórios › Gráficos somava o histórico INTEIRO,
+// sem período nenhum na tela — o usuário lia um acumulado achando que era o
+// mês. E o de Relatórios só via receita com cliente_id: a fatura de contrato
+// (ref_fatura, sem esse campo) ficava de fora, e o contrato pago com receita
+// vinculada podia ser contado duas vezes.
+const rdCli = [{ id: 1, nome: "Alfa Locações" }, { id: 2, nome: "Beta ME" }];
+const rdCts = [
+  { id: 10, cliente_id: 1, previsao_pagamento: "2026-09-10", valor_total: "3000", status: "ativo", status_pagamento: "pago" },
+  { id: 11, cliente_id: 2, previsao_pagamento: "2026-08-10", valor_total: "2000", status: "ativo", status_pagamento: "pago" },
+];
+const rdRecs = [
+  { id: 100, ref_fatura: "fat_10_2026-09", valor: "3000", status: "emitida" }, // fatura do contrato 10
+  { id: 101, valor: "500", data: "2026-09-05", cliente_id: 2, descricao: "Avulsa" },
+];
+function rdSoma(linhas, nome) {
+  return linhas.filter(function (l) { return l.chave === nome; }).reduce(function (s, l) { return s + l.valor; }, 0);
+}
+const rdSet = F.rdLinhasReceitaCliente(rdRecs, rdCts, rdCli, "2026-09");
+const rdAgo = F.rdLinhasReceitaCliente(rdRecs, rdCts, rdCli, "2026-08");
+const rdTudo = F.rdLinhasReceitaCliente(rdRecs, rdCts, rdCli, null);
+
+eq("setembro traz só o que é de setembro", rdSet.length, 2);
+// O bug central: a fatura do contrato não tem cliente_id, e era ignorada.
+eq("a fatura do contrato vai pro cliente do contrato", rdSoma(rdSet, "Alfa Locações"), 3000);
+eq("receita avulsa com cliente entra no mês dela", rdSoma(rdSet, "Beta ME"), 500);
+// Contrato 10 tem receita vinculada (fat_10_...) — entrar também seria contar
+// a mesma locação duas vezes.
+eq("contrato com fatura vinculada não conta duas vezes", rdSet.length, 2);
+eq("agosto não enxerga nada de setembro", rdSoma(rdAgo, "Alfa Locações"), 0);
+eq("contrato sem receita vinculada entra pelo próprio valor", rdSoma(rdAgo, "Beta ME"), 2000);
+// Sem mês = histórico inteiro. É o que o "Top 5 Clientes" usa, e ele DIZ isso
+// no título — acumulado só vale quando está escrito na tela.
+eq("sem mês, soma o histórico inteiro", rdTudo.length, 3);
+eq("e continua sem duplicar o contrato faturado", rdSoma(rdTudo, "Alfa Locações"), 3000);
+// Cliente some do cadastro / receita sem vínculo nenhum: não pode sumir do total.
+eq("receita sem cliente nenhum cai num balde visível",
+  F.rdLinhasReceitaCliente([{ id: 9, valor: "70", data: "2026-09-02" }], [], rdCli, "2026-09")[0].chave,
+  "Avulsa / sem cliente");
+
+// Despesa por categoria — mesmo tratamento, porque divide o card com a receita.
+const rdDesps = [
+  { id: 1, categoria: "Combustivel", valor: "200", data: "2026-09-03" },
+  { id: 2, categoria: "Aluguel", valor: "900", data: "2026-08-03" },
+  { id: 3, categoria: "Retirada de Lucro", valor: "5000", data: "2026-09-04" },
+];
+// resolverDespesasDoMes ainda carrega um console.log de depuração do app —
+// silenciado aqui só pra não sujar a saída da suíte.
+const _logReal = console.log;
+console.log = function () {};
+const rdDespSet = F.rdLinhasDespesaCategoria(rdDesps, [], "2026-09");
+const rdDespMan = rdSoma(F.rdLinhasDespesaCategoria([{ id: 7, categoria: "Manutenção", valor: "400", data: "2026-09-09", manutencao_id: 55 }],
+  [{ id: 55, custo: "400", data_previsao_pagamento: "2026-09-09" }], "2026-09"), "Manutenção");
+console.log = _logReal;
+eq("despesa do mês certo", rdSoma(rdDespSet, "Combustivel"), 200);
+eq("agosto fica em agosto", rdSoma(rdDespSet, "Aluguel"), 0);
+eq("retirada de lucro não é despesa operacional", rdSoma(rdDespSet, "Retirada de Lucro"), 0);
+// Manutenção que já virou despesa contaria dobrado.
+eq("manutenção com despesa vinculada não dobra", rdDespMan, 400);
+
+// As duas telas têm que chamar a MESMA função — cópia local é o que fez elas
+// divergirem.
+ok("o Dashboard usa a fonte única",
+  /var rdReceitaRowsInicio = rdLinhasReceitaCliente\(receitas, contratos, clientes, dashMes\);/.test(html));
+ok("Relatórios usa a fonte única, com o mês escolhido",
+  /rdLinhasReceitaCliente\(receitas, contratos, clientes, gMes\)/.test(html));
+ok("Relatórios tem seletor de mês para a distribuição",
+  /React\.createElement\(MesPicker, \{ value: gMes, onChange: setGMes \}\)/.test(html));
+ok("o título do painel diz de que mês ele é",
+  /"Receitas por Cliente · " \+ gMesNome/.test(html) && /"Despesas por Categoria · " \+ gMesNome/.test(html));
+ok("o acumulado que sobrou avisa que é acumulado",
+  /Top 5 Clientes por Receita · desde o início/.test(html));
+// Nenhuma tela pode voltar a somar receita por cliente na mão.
+eq("ninguém soma receita por cliente fora do helper",
+  (html.match(/recCli\[nome\] *\+=|recPorCliente\[key\] *\+=/g) || []).length, 0);
+
 grupo("Chart Manager não pode mover nó do React");
 
 // O Chart Manager (minimizar/duplicar/mover card) percorre o DOM e decora

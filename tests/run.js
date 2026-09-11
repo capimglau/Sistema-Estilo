@@ -838,6 +838,44 @@ eq("contrato sem baixa não mexe na fatura",
   F.rdReceitaComContrato({ ref_fatura: "fat_41_2026-09", status: "emitida" },
     [{ id: 41, previsao_pagamento: "2026-09-30", status_pagamento: "previsto" }]).data_pagamento, undefined);
 
+/* A DATA manda sozinha: exigir `status` junto era uma segunda trava para a
+   mesma pergunta, e bastava um caminho de baixa gravar a data sem carimbar o
+   status (ou carimbar outro) para a fatura recebida em 31/08 voltar a aparecer
+   em setembro — o relato que se repetiu várias vezes. */
+eq("fatura com data de pagamento e status 'emitida' ainda migra",
+  F.receitaDoMes({ ref_fatura: "fat_9_2026-09", status: "emitida", data_pagamento: "2026-08-31" }, "2026-08"), true);
+eq("e sai da competência",
+  F.receitaDoMes({ ref_fatura: "fat_9_2026-09", status: "emitida", data_pagamento: "2026-08-31" }, "2026-09"), false);
+eq("contrato com data de pagamento e status estranho também migra",
+  F.rdMesDoContrato({ previsao_pagamento: "2026-09-30", data_pagamento: "2026-08-31", status_pagamento: "sei_la" }), "2026-08");
+// A lista do Financeiro decide o mês DEPOIS de ler o contrato — era ela que o
+// usuário via com a etiqueta "31 AGO" dentro do mês de setembro.
+ok("a lista do Financeiro lê o contrato antes de filtrar o mês",
+  /receitas\.map\(r => rdReceitaComContrato\(r, contratos\)\)\.filter\(r => receitaDoMes\(r, filtroMes\)\)/.test(html));
+
+/* [barra-pendente] O que ainda não entrou aparece esmaecido E escrito. */
+const bpRec = [
+  { id: 600, valor: "1000", data: "2026-09-10", cliente_id: 1 },                                  // a receber
+  { id: 601, valor: "500", data: "2026-09-02", data_pagamento: "2026-09-02", cliente_id: 1 },     // recebida
+];
+const bpLinhas = F.rdLinhasReceitaCliente(bpRec, [], rdCli, "2026-09");
+eq("linha sem pagamento fica inteira pendente",
+  bpLinhas.filter(function (l) { return l.valor === 1000; })[0].pendente, 1000);
+eq("linha paga não tem pendente",
+  bpLinhas.filter(function (l) { return l.valor === 500; })[0].pendente, 0);
+const bpGrupo = F.rdGroupBy(bpLinhas, new Set(), F.RD_PALETTE_CLIENTE);
+eq("o grupo soma o total", bpGrupo[0].value, 1500);
+eq("e carrega o pendente junto", bpGrupo[0].pendente, 1000);
+// Contrato parcial: só o que falta fica pendente.
+eq("parcial deixa pendente só o restante",
+  F.rdLinhasReceitaCliente([], [{ id: 60, cliente_id: 1, previsao_pagamento: "2026-09-30", valor_total: "3000", valor_pago: "1000", status: "ativo", status_pagamento: "parcial", data_pagamento: "2026-09-05" }], rdCli, "2026-09")[0].pendente, 2000);
+// Sem pendência a barra continua sólida — a fatia esmaecida só existe quando há o que esperar.
+eq("mês todo liquidado não esmaece nada", F.rdGroupBy(
+  F.rdLinhasReceitaCliente([bpRec[1]], [], rdCli, "2026-09"), new Set(), F.RD_PALETTE_CLIENTE)[0].pendente, 0);
+ok("a barra esmaece a fatia pendente", /function _rdBarraBg\(cor, total, pendente\)/.test(html));
+ok("e o valor a receber vai escrito", /\(opts\.rotuloPendente\|\|"a receber"\)\+" "\+_fmtBarVal\(_pend\)/.test(html));
+ok("no painel de despesas o rótulo é 'a pagar'", /rotuloPendente:"a pagar"/.test(html));
+
 // Contrato: todo painel de dinheiro passa pela função única.
 eq("nenhum painel filtra contrato por previsão na mão",
   (html.match(/c\.previsao_pagamento *&& *c\.previsao_pagamento\.slice\(0,7\) *===|c\.previsao_pagamento&&c\.previsao_pagamento\.slice\(0,7\)===/g) || []).length, 0);

@@ -765,6 +765,48 @@ eq("ninguém filtra multa por mês sem o helper",
 ok("a manutenção tem data de fluxo própria", /function manDataFluxo\(m\)/.test(html));
 ok("a multa tem data de fluxo própria", /function multaDataFluxo\(m\)/.test(html));
 
+grupo("A cobrança ao cliente tem vencimento próprio");
+
+// A etapa "Cobrado ao Cliente" gravava só a DATA DA COBRANÇA. Sem vencimento,
+// não havia como saber se o boleto do cliente está atrasado — e o app deduzia
+// por `m.vencimento` (que é o prazo do ÓRGÃO, já pago a essa altura) ou por
+// "cobrado há mais de 30 dias", chute igual para todo cliente.
+const mcHoje = "2026-09-11";
+eq("cobrança dentro do prazo não está atrasada",
+  F.multaCobrancaAtrasada({ cobrado_cliente: "pendente", data_cobranca_cliente: "2026-09-01", vencimento_cobranca_cliente: "2026-09-20" }, mcHoje), false);
+eq("passou do vencimento, está atrasada",
+  F.multaCobrancaAtrasada({ cobrado_cliente: "pendente", data_cobranca_cliente: "2026-08-01", vencimento_cobranca_cliente: "2026-09-05" }, mcHoje), true);
+// O prazo do órgão não manda mais quando existe prazo do cliente — era a
+// confusão principal: a multa vencida no órgão marcava o cliente como atrasado
+// mesmo com o boleto dele em dia.
+eq("vencimento do ÓRGÃO não atrasa a cobrança do cliente",
+  F.multaCobrancaAtrasada({ cobrado_cliente: "pendente", vencimento: "2026-01-10", vencimento_cobranca_cliente: "2026-09-30" }, mcHoje), false);
+eq("cobrança já paga nunca está atrasada",
+  F.multaCobrancaAtrasada({ cobrado_cliente: "pago", vencimento_cobranca_cliente: "2026-01-01" }, mcHoje), false);
+eq("multa nem cobrada ainda não entra nessa conta",
+  F.multaCobrancaAtrasada({ cobrado_cliente: "nao", vencimento_cobranca_cliente: "2026-01-01" }, mcHoje), false);
+// Retaguarda: cobranças registradas antes do campo existir não podem perder o
+// aviso de atraso que já mostravam.
+eq("sem o campo, o prazo do órgão vencido ainda atrasa",
+  F.multaCobrancaAtrasada({ cobrado_cliente: "pendente", vencimento: "2026-08-01" }, mcHoje), true);
+eq("sem o campo, cobrada há mais de 30 dias atrasa",
+  F.multaCobrancaAtrasada({ cobrado_cliente: "pendente", data_cobranca_cliente: "2026-07-01" }, mcHoje), true);
+eq("sem o campo e cobrada há pouco, não atrasa",
+  F.multaCobrancaAtrasada({ cobrado_cliente: "pendente", data_cobranca_cliente: "2026-09-05" }, mcHoje), false);
+eq("o vencimento é lido do campo próprio",
+  F.multaCobrancaVenc({ vencimento_cobranca_cliente: "2026-09-20" }), "2026-09-20");
+
+// Nenhuma tela pode voltar a deduzir o atraso na mão.
+eq("ninguém repete a heurística dos 30 dias",
+  (html.match(/data_cobranca_cliente *(&&|<)[^\n]{0,40}_30d/g) || []).length, 0);
+ok("a gravação da cobrança leva o vencimento",
+  /vencimento_cobranca_cliente: venc \|\| null/.test(html));
+ok("o modal pede o vencimento", /campo2Label: "⏰ Vencimento do boleto do cliente"/.test(html));
+
+// Contrato: todo painel de dinheiro passa pela função única.
+eq("nenhum painel filtra contrato por previsão na mão",
+  (html.match(/c\.previsao_pagamento *&& *c\.previsao_pagamento\.slice\(0,7\) *===|c\.previsao_pagamento&&c\.previsao_pagamento\.slice\(0,7\)===/g) || []).length, 0);
+
 grupo("Chart Manager não pode mover nó do React");
 
 // O Chart Manager (minimizar/duplicar/mover card) percorre o DOM e decora

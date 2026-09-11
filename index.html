@@ -30911,40 +30911,12 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
 
     /* ── PAINÉIS: Despesas por Categoria + Receitas por Cliente ── */
     , (() => {
-      function _rdClienteDaReceita(r){
-        var ctId = r.contrato_id;
-        if (!ctId && r.ref_fatura) { var m = r.ref_fatura.match(/^fat_(\d+)_/); if (m) ctId = m[1]; }
-        if (ctId) {
-          var ct = (contratos||[]).find(function(c){ return String(c.id) === String(ctId); });
-          if (ct) { var cl = (clientes||[]).find(function(x){ return x.id == ct.cliente_id; }); if (cl && cl.nome) return cl.nome; }
-        }
-        return "Avulsa / sem cliente";
-      }
-      // Contratos do mês ainda sem receita vinculada (mesma regra usada em
-      // Financeiro pra não contar duas vezes a mesma locação).
-      var _rdCtsDoMes = (contratos||[]).filter(function(c){
-        if (!c.previsao_pagamento) return false;
-        if (c.status === "cancelado" || c.status === "concluido") return false;
-        if (c.renovado_para) return false;
-        if (c.previsao_pagamento.slice(0,7) !== dashMes) return false;
-        if ((receitas||[]).some(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); })) return false;
-        return true;
-      });
-      var rdReceitaRowsInicio = (receitas||[]).filter(function(r){ return receitaVisivelNoMes(r, dashMes); })
-        .map(function(r){ return { chave: _rdClienteDaReceita(r), valor: parseFloat(r.valor||0), descricao: r.descricao||"Receita", data: r.data_pagamento||r.data, status: r.status }; })
-        .concat(_rdCtsDoMes.map(function(c){
-          var cl = (clientes||[]).find(function(x){ return x.id == c.cliente_id; });
-          return { chave: cl && cl.nome ? cl.nome : "Avulsa / sem cliente", valor: parseFloat(c.valor_total||0), descricao: "Contrato #"+c.id, data: c.previsao_pagamento, status: c.status_pagamento };
-        }))
-        .filter(function(r){ return r.valor>0.005; });
-      var _rdManFiltradas = (manutencoes||[]).filter(function(m){
-        if (!manVisivelNoMes(m, dashMes)) return false;
-        return !(despesas||[]).some(function(d){ return String(d.manutencao_id) === String(m.id); });
-      });
-      var rdDespesaRowsInicio = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), dashMes)
-        .map(function(d){ return { chave: d.categoria||"Outros", valor: parseFloat(d.valor||0), descricao: d.descricao||d.categoria||"Despesa", data: d.data_pagamento||d.data, status: d.status }; })
-        .concat(_rdManFiltradas.map(function(m){ return { chave:"Manutenção", valor: parseFloat(m.custo||0), descricao: m.descricao||"Manutenção", data: m.data_previsao_pagamento||m.data_entrada, status: m.status }; }))
-        .filter(function(r){ return r.valor>0.005; });
+      /* [rd-mes] A conta vive em rdLinhasReceitaCliente/rdLinhasDespesaCategoria
+         (escopo global) — a mesma que Relatórios › Gráficos usa. Antes cada
+         tela tinha a sua cópia e elas divergiam: aqui era a competência do
+         mês, lá era o histórico inteiro. */
+      var rdReceitaRowsInicio = rdLinhasReceitaCliente(receitas, contratos, clientes, dashMes);
+      var rdDespesaRowsInicio = rdLinhasDespesaCategoria(despesas, manutencoes, dashMes);
       var despesaItems = rdGroupBy(rdDespesaRowsInicio, new Set(), RD_COR_CATEGORIA);
       var receitaItems = rdGroupBy(rdReceitaRowsInicio, new Set(), RD_PALETTE_CLIENTE);
       var totalDespesaInicio = rdSum(rdDespesaRowsInicio);
@@ -41543,6 +41515,78 @@ function rdGroupBy(rows, selSet, paleta) {
     }; });
 }
 
+/* ── Receita por cliente e despesa por categoria — fonte ÚNICA — `[rd-mes]` ──
+   Os painéis "Receitas por Cliente" e "Despesas por Categoria" existem em
+   DUAS telas (Dashboard do Início e Relatórios › Gráficos) e cada uma
+   calculava do seu jeito. O do Início somava a competência do mês; o de
+   Relatórios somava **todo o histórico**, sem período nenhum — o usuário via
+   um acumulado onde esperava o mês. Pior: o de Relatórios só enxergava
+   receita com `cliente_id` preenchido, então toda fatura de contrato
+   (`ref_fatura`, que não tem esse campo) ficava de fora, e o mesmo dinheiro
+   podia entrar duas vezes quando o contrato pago também tinha receita com
+   cliente.
+
+   Agora a conta é uma só, aqui. `mes` = "YYYY-MM" filtra a competência;
+   `mes` nulo devolve o histórico inteiro (é o que o "Top 5 Clientes" usa, e
+   ele DIZ na tela que é desde o início). Quem criar painel novo de receita
+   por cliente chama estas funções — nunca refaz a soma na mão. */
+// De quem é esta receita: pelo contrato vinculado (direto ou via ref_fatura),
+// senão pelo cliente_id da própria receita.
+function rdClienteDaReceita(r, contratos, clientes) {
+  var ctId = r.contrato_id;
+  if (!ctId && r.ref_fatura) { var m = String(r.ref_fatura).match(/^fat_(\d+)_/); if (m) ctId = m[1]; }
+  if (ctId) {
+    var ct = (contratos || []).find(function (c) { return String(c.id) === String(ctId); });
+    if (ct) { var cl = (clientes || []).find(function (x) { return String(x.id) === String(ct.cliente_id); }); if (cl && cl.nome) return cl.nome; }
+  }
+  if (r.cliente_id) {
+    var cl2 = (clientes || []).find(function (x) { return String(x.id) === String(r.cliente_id); });
+    if (cl2 && cl2.nome) return cl2.nome;
+  }
+  return "Avulsa / sem cliente";
+}
+function rdLinhasReceitaCliente(receitas, contratos, clientes, mes) {
+  var _recs = (receitas || []).filter(function (r) { return mes ? receitaVisivelNoMes(r, mes) : true; });
+  /* Contrato entra só quando NÃO tem receita vinculada — é a mesma trava que o
+     Financeiro usa pra não contar a locação duas vezes (uma pelo contrato,
+     outra pela fatura dele). */
+  var _cts = (contratos || []).filter(function (c) {
+    if (!c.previsao_pagamento) return false;
+    if (c.status === "cancelado" || c.status === "concluido") return false;
+    if (c.renovado_para) return false;
+    if (mes && c.previsao_pagamento.slice(0, 7) !== mes) return false;
+    if ((receitas || []).some(function (r) { return r.ref_fatura && String(r.ref_fatura).startsWith("fat_" + c.id + "_"); })) return false;
+    return true;
+  });
+  return _recs.map(function (r) {
+      return { chave: rdClienteDaReceita(r, contratos, clientes), valor: parseFloat(r.valor || 0), descricao: r.descricao || "Receita", data: r.data_pagamento || r.data, status: r.status };
+    })
+    .concat(_cts.map(function (c) {
+      var cl = (clientes || []).find(function (x) { return String(x.id) === String(c.cliente_id); });
+      return { chave: cl && cl.nome ? cl.nome : "Avulsa / sem cliente", valor: parseFloat(c.valor_total || 0), descricao: "Contrato #" + c.id, data: c.previsao_pagamento, status: c.status_pagamento };
+    }))
+    .filter(function (r) { return r.valor > 0.005; });
+}
+function rdLinhasDespesaCategoria(despesas, manutencoes, mes) {
+  /* Manutenção com despesa vinculada já aparece como despesa — some as duas e
+     a categoria "Manutenção" dobra. */
+  var _mans = (manutencoes || []).filter(function (m) {
+    if (mes && !manVisivelNoMes(m, mes)) return false;
+    return !(despesas || []).some(function (d) { return String(d.manutencao_id) === String(m.id); });
+  });
+  var _desps = (despesas || []).filter(function (d) { return !isRetLucro(d); });
+  // resolverDespesasDoMes projeta a recorrente pro mês pedido; sem mês, o
+  // histórico cru já traz cada lançamento uma vez.
+  if (mes) _desps = resolverDespesasDoMes(_desps, mes);
+  return _desps.map(function (d) {
+      return { chave: d.categoria || "Outros", valor: parseFloat(d.valor || 0), descricao: d.descricao || d.categoria || "Despesa", data: d.data_pagamento || d.data, status: d.status };
+    })
+    .concat(_mans.map(function (m) {
+      return { chave: "Manutenção", valor: parseFloat(m.custo || 0), descricao: m.descricao || "Manutenção", data: m.data_previsao_pagamento || m.data_entrada, status: m.status };
+    }))
+    .filter(function (r) { return r.valor > 0.005; });
+}
+
 function _fmtBarVal(v){ return fmtBRL(v); }
 function _luminance(hex){ var r=parseInt(hex.slice(1,3),16)/255,g=parseInt(hex.slice(3,5),16)/255,b=parseInt(hex.slice(5,7),16)/255; return 0.299*r+0.587*g+0.114*b; }
 // Barras estilo "funil" (pontas abauladas + balão de valor) — uma cor por categoria/cliente
@@ -45011,6 +45055,12 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   const [tab, setTab] = useState("geral");
   const [de, setDe] = useState("");
   const [ate, setAte] = useState("");
+  /* [rd-mes] Mês dos painéis de distribuição da aba Gráficos ("Despesas por
+     Categoria" e "Receitas por Cliente"). Eles não tinham período nenhum e
+     somavam o histórico inteiro — o usuário lia aquilo como se fosse o mês.
+     Os campos De/Até desta tela são só da aba Faturas, por isso um seletor
+     próprio aqui. Começa no mês corrente. */
+  const [gMes, setGMes] = useState(_brNow().toISOString().slice(0,7));
   const [sortFat, setSortFat] = useState("data_desc");
   const [sortVei, setSortVei] = useState("receita_desc");
   const [sortInad, setSortInad] = useState("dias_desc");
@@ -45459,18 +45509,25 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
         return { mes: mes, label: nomeMesG(mes), pct: Math.min(100, Math.round(diasAlugados/totalVeicDias*100)) };
       });
 
-      // Top 5 clientes por receita
-      var recPorCliente = {};
-      contratos.filter(function(c){return c.status_pagamento==="pago";}).forEach(function(c){
-        var key = c.cliente_id; if (!recPorCliente[key]) recPorCliente[key]=0; recPorCliente[key]+=parseFloat(c.valor_total||0);
-      });
-      var top5cli = Object.keys(recPorCliente).map(function(id){ var cl=(clientes||[]).find(function(x){return x.id==id;}); return {nome:(cl&&cl.nome)||"#"+id, val:recPorCliente[id]}; }).sort(function(a,b){return b.val-a.val;}).slice(0,5);
+      /* [rd-mes] Top 5 clientes — este é DE PROPÓSITO o histórico inteiro (quem
+         mais faturou desde o início), e o título na tela diz isso. Antes ele
+         só somava contrato com status "pago": receita avulsa e fatura de
+         contrato não entravam, contra a regra de cobertura de dados. Agora
+         usa a fonte única, sem mês. */
+      var top5cli = rdGroupBy(rdLinhasReceitaCliente(receitas, contratos, clientes, null), new Set(), RD_PALETTE_CLIENTE)
+        .slice(0,5).map(function(it){ return { nome: it.key, val: it.value }; });
       var maxTopCli = top5cli.length > 0 ? top5cli[0].val : 1;
 
-      // Distribuição de despesas por categoria
-      var despCat = {}; (despesas||[]).forEach(function(d){ if(isRetLucro(d)) return; var k=d.categoria||"Outros"; if(!despCat[k])despCat[k]=0; despCat[k]+=parseFloat(d.valor||0); });
-      var despCatArr = Object.keys(despCat).map(function(k){return {cat:k,val:despCat[k]};}).sort(function(a,b){return b.val-a.val;}).slice(0,6);
+      /* [rd-mes] Distribuição do MÊS escolhido (gMes) — despesas e receitas
+         lado a lado. Eram as duas acumuladas desde sempre, sem nenhum período
+         escrito na tela: era o "acumulado" que o usuário viu no lugar do mês. */
+      var despCatArr = rdGroupBy(rdLinhasDespesaCategoria(despesas, manutencoes, gMes), new Set(), RD_COR_CATEGORIA)
+        .slice(0,6).map(function(it){ return { cat: it.key, val: it.value }; });
       var totalDespCat = despCatArr.reduce(function(s,x){return s+x.val;},0)||1;
+      var recCliArr = rdGroupBy(rdLinhasReceitaCliente(receitas, contratos, clientes, gMes), new Set(), RD_PALETTE_CLIENTE)
+        .slice(0,6).map(function(it){ return { nome: it.key, val: it.value }; });
+      var totalRecCli = recCliArr.reduce(function(s,x){return s+x.val;},0)||1;
+      var gMesNome = new Date(gMes+"-15").toLocaleString("pt-BR",{month:"long",year:"numeric"});
 
       // Ticket médio por mês
       var ticketMedio = meses12.map(function(mes){
@@ -45568,9 +45625,9 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
           )
         )
 
-        /* Top 5 clientes */
+        /* Top 5 clientes — histórico inteiro, e o título diz isso ([rd-mes]) */
         , top5cli.length > 0 && React.createElement('div', { style: CARD_G }
-          , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", marginBottom:10 } }, "Top 5 Clientes por Receita")
+          , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", marginBottom:10 } }, "Top 5 Clientes por Receita · desde o início")
           , top5cli.map(function(x,i){
               var pct = (x.val/maxTopCli)*100;
               return React.createElement('div', { key:i, style: { marginBottom:10 } }
@@ -45585,11 +45642,25 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
             })
         )
 
+        /* [rd-mes] Faixa de mês dos dois painéis de distribuição. Fica FORA
+           dos cards de propósito: card vazio não é renderizado, e se o
+           seletor morasse dentro dele o usuário ficaria preso num mês sem
+           movimento, sem nada pra clicar e voltar. */
+        , React.createElement('div', { style: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap", marginTop:4 } }
+          , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase" } }, "Distribuição do mês")
+          , React.createElement(MesPicker, { value: gMes, onChange: setGMes })
+        )
+
         /* Distribuição de Despesas por Categoria + Receitas por Cliente — lado a lado */
         , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 } }
-          , despCatArr.length > 0 && React.createElement('div', { style: CARD_G }
-            , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", marginBottom:10 } }, "Despesas por Categoria")
-            , despCatArr.map(function(x,i){
+          /* Card sempre presente: sumir com ele num mês sem despesa deixaria o
+             grid com metade vazia e ainda tiraria do usuário a pista de que
+             aquele mês não tem movimento. */
+          , React.createElement('div', { style: CARD_G }
+            , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", marginBottom:10 } }, "Despesas por Categoria · " + gMesNome)
+            , despCatArr.length === 0
+              ? React.createElement('div', { style: { fontSize:12, color:C.sub, textAlign:"center", paddingTop:16 } }, "Nenhuma despesa em " + gMesNome)
+              : despCatArr.map(function(x,i){
                 var pct = (x.val/totalDespCat)*100;
                 return React.createElement('div', { key:i, style: { marginBottom:9 } }
                   , React.createElement('div', { style: { display:"flex", justifyContent:"space-between", fontSize:11, marginBottom:2 } }
@@ -45606,27 +45677,17 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
               })
           )
           , React.createElement('div', { style: CARD_G }
-            , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", marginBottom:10 } }, "Receitas por Cliente")
+            , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:C.sub, textTransform:"uppercase", marginBottom:10 } }, "Receitas por Cliente · " + gMesNome)
             , (function(){
                 var CORS_CLI = ["#34C759","#007AFF","#AF52DE","#FF9500","#FF3B30","#5AC8FA"];
-                var recCli = {};
-                (contratos||[]).filter(function(c){ return c.status_pagamento==="pago"; }).forEach(function(c){
-                  var cl = (clientes||[]).find(function(x){ return x.id==c.cliente_id; });
-                  var nome = (cl&&cl.nome)||"Cliente #"+c.cliente_id;
-                  if(!recCli[nome]) recCli[nome]=0;
-                  recCli[nome]+=parseFloat(c.valor_total||0);
-                });
-                (receitas||[]).forEach(function(r){
-                  if(!r.cliente_id) return;
-                  var cl = (clientes||[]).find(function(x){ return x.id==r.cliente_id; });
-                  var nome = (cl&&cl.nome)||"Cliente #"+r.cliente_id;
-                  if(!recCli[nome]) recCli[nome]=0;
-                  recCli[nome]+=parseFloat(r.valor||0);
-                });
-                var arr = Object.keys(recCli).map(function(k){ return {nome:k, val:recCli[k]}; }).sort(function(a,b){ return b.val-a.val; }).slice(0,6);
-                var totalCli = arr.reduce(function(s,x){ return s+x.val; },0)||1;
+                /* [rd-mes] recCliArr vem de rdLinhasReceitaCliente(..., gMes) —
+                   a MESMA função do painel do Dashboard. A soma feita aqui
+                   dentro era o histórico inteiro, ignorava fatura de contrato
+                   (sem cliente_id) e podia contar o contrato pago duas vezes. */
+                var arr = recCliArr;
+                var totalCli = totalRecCli;
                 if(arr.length===0){
-                  return React.createElement('div', { style: { fontSize:12, color:C.sub, textAlign:"center", paddingTop:16 } }, "Nenhum dado disponível");
+                  return React.createElement('div', { style: { fontSize:12, color:C.sub, textAlign:"center", paddingTop:16 } }, "Nenhuma receita em " + gMesNome);
                 }
                 return arr.map(function(x,i){
                   var pct = (x.val/totalCli)*100;

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="a05255f"/>
+<meta name="ag-build" content="82bf6bd"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -24042,7 +24042,21 @@ function receitaVisivelNoMes(r, mes) {
   }
   return false;
 }
+/* [previsto-liquidado] Manutenção é despesa, e segue a mesma regra de todas
+   elas: enquanto está em aberto pesa no mês PREVISTO; depois de paga, pesa no
+   mês em que o dinheiro saiu. Antes olhava `data_previsao_pagamento` primeiro
+   e ignorava a `data_pagamento`, então uma manutenção prevista para agosto e
+   paga em setembro continuava em agosto para sempre — enquanto a despesa
+   equivalente migrava. Recorrente fica de fora, igual em `despesaDoMes`: lá a
+   projeção é feita mês a mês e a data base tem que continuar sendo a
+   previsão. */
+function manDataFluxo(m) {
+  if (!m) return "";
+  if (!m.recorrente && m.data_pagamento) return String(m.data_pagamento).slice(0, 10);
+  return String(m.data_previsao_pagamento || m.data_pagamento || m.data_entrada || "").slice(0, 10);
+}
 function manVisivelNoMes(m, mes) {
+  if (!m.recorrente && m.data_pagamento) return String(m.data_pagamento).slice(0, 7) === mes;
   var dataMes = (m.data_previsao_pagamento || m.data_pagamento || m.data_entrada || "").slice(0, 7);
   if (dataMes === mes) return true;
   if (m.recorrente && dataMes && dataMes < mes) {
@@ -24053,7 +24067,7 @@ function manVisivelNoMes(m, mes) {
   }
   return false;
 }
-function manMesRefGlobal(m) { return (m.data_previsao_pagamento || m.data_entrada || "").slice(0, 7); }
+function manMesRefGlobal(m) { return manDataFluxo(m).slice(0, 7); } // [previsto-liquidado]
 /* Filtra manutenções do mês para as barras do dashboard —
    exclui as que têm despesa vinculada (manutencao_id) e
    as recorrentes cuja filha já existe no mês. */
@@ -24152,6 +24166,9 @@ function receitaDoMes(r, mes) {
 }
 function manDoMes(m, mes) {
   if (!m || !mes) return false;
+  // [previsto-liquidado] paga → mês em que o dinheiro saiu (só não-recorrente,
+  // pelo mesmo motivo explicado em manVisivelNoMes).
+  if (!m.recorrente && m.data_pagamento) return String(m.data_pagamento).slice(0, 7) === mes;
   var dataMes = (m.data_previsao_pagamento || m.data_entrada || "").slice(0, 7);
   if (dataMes === mes) return true;
   if (m.recorrente && dataMes && dataMes < mes) {
@@ -24170,7 +24187,15 @@ function mesDe(d) { return (d || "").slice(0, 7); }
 function ctMesRef(c) { return mesDe(c.previsao_pagamento || c.data_fim); }
 function despMesRef(d) { return mesDe(d.data || d.data_pagamento); }
 function recMesRef(r) { return mesDe(r.data || r.data_pagamento); }
-function multaMesRef(m) { return mesDe(m.vencimento || m.data); }
+/* [previsto-liquidado] Multa também é despesa: em aberto pesa no vencimento,
+   paga pesa no dia em que saiu do caixa. Mesma forma do `contaDataFluxo`. */
+function multaDataFluxo(m) {
+  if (!m) return "";
+  if (m.status === "pago" && m.data_pagamento) return String(m.data_pagamento).slice(0, 10);
+  return String(m.vencimento || m.data || "").slice(0, 10);
+}
+function multaDoMes(m, mes) { return !!mes && multaDataFluxo(m).slice(0, 7) === mes; }
+function multaMesRef(m) { return multaDataFluxo(m).slice(0, 7); }
 var STATUS = {
   PAGO: "pago", RECEBIDO: "recebido", PREVISTO: "previsto", PENDENTE: "pendente",
   PARCIAL: "parcial", ISENTO: "isento",
@@ -43362,8 +43387,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         var recCt = ctsM.reduce(function(s,c){ if (c.status_pagamento==="pago"||c.status_pagamento==="isento") return s+parseFloat(c.valor_total||0); if (c.status_pagamento==="parcial") return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)); return s+parseFloat(c.valor_total||0); },0);
         var recAv = (receitas||[]).filter(function(r){ return !r.ref_fatura && receitaDoMes(r, m); }).reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
         var despAv = (despesas||[]).filter(function(d){ return !d.manutencao_id && despesaVisivelNoMes(d, m); }).reduce(function(s,d){ return s+parseFloat(d.valor||0); },0);
-        var manM = (manutencoes||[]).filter(function(mn){ var dt = mn.data_previsao_pagamento || mn.data_pagamento || mn.data_entrada || ""; return dt.slice(0,7) === m; }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
-        var multM = (multas||[]).filter(function(mu){ return (mu.vencimento||mu.data||"").slice(0,7) === m; }).reduce(function(s,mu){ var v = parseFloat(mu.valor||0); var cob = (mu.cobrado_cliente==="pago"||mu.cobrado_cliente==="pendente") ? parseFloat(mu.valor_cobrado||mu.valor||0) : 0; return s+Math.max(0,v-cob); },0);
+        // [previsto-liquidado] datas pelos helpers únicos — a conta na mão aqui
+        // ignorava o pagamento e prendia manutenção e multa no mês previsto.
+        var manM = (manutencoes||[]).filter(function(mn){ return manMesRefGlobal(mn) === m; }).reduce(function(s,mn){ return s+parseFloat(mn.custo||0); },0);
+        var multM = (multas||[]).filter(function(mu){ return multaDoMes(mu, m); }).reduce(function(s,mu){ var v = parseFloat(mu.valor||0); var cob = (mu.cobrado_cliente==="pago"||mu.cobrado_cliente==="pendente") ? parseFloat(mu.valor_cobrado||mu.valor||0) : 0; return s+Math.max(0,v-cob); },0);
         var contM = totaisContasMes(contas, m); // [contas-fluxo]
         var inflow = recCt + recAv + contM.entrada;
         var outflow = despAv + manM + multM + contM.saida;
@@ -43555,7 +43582,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         var recAv = (receitas||[]).filter(function(r){ return !r.ref_fatura&&receitaDoMes(r,m); });
         var despM = (despesas||[]).filter(function(d){ return !d.manutencao_id&&!isRetLucro(d)&&despesaVisivelNoMes(d,m); });
         var manM  = (manutencoes||[]).filter(function(mn){ return manMesRefGlobal(mn)===m; });
-        var multM = (multas||[]).filter(function(mu){ return (mu.data||"").slice(0,7)===m||(mu.vencimento||"").slice(0,7)===m; });
+        var multM = (multas||[]).filter(function(mu){ return multaDoMes(mu, m); }); // [previsto-liquidado]
         var recPrev = ctsM.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)+recAv.reduce(function(s,r){ return s+parseFloat(r.valor||0); },0);
         var recReal = ctsM.filter(function(c){ return c.status_pagamento==="pago"||c.status_pagamento==="isento"; }).reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0)
           +ctsM.filter(function(c){ return c.status_pagamento==="parcial"; }).reduce(function(s,c){ return s+parseFloat(c.valor_pago||0); },0)

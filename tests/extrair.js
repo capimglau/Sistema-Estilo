@@ -71,11 +71,12 @@ function extrair(marcadores) {
       agk2CorteDias, AGK2_LIM_DIAS,
       agAdiaMapa, agAdiaOculto, agAdiaAgora,
       faturaEmissaoDataISO, faturaEmissaoChave, faturaEmissaoDispensada,
-      rdClienteDaReceita, rdLinhasReceitaCliente, rdLinhasDespesaCategoria, rdMesDoContrato,
+      rdClienteDaReceita, rdLinhasReceitaCliente, rdLinhasDespesaCategoria, rdMesDoContrato, rdReceitaComContrato,
       receitaVisivelNoMes, receitaDoMes, manVisivelNoMes, resolverDespesasDoMes, isRetLucro,
       despesaDoMes, manDoMes, manDataFluxo, manMesRefGlobal, multaDataFluxo, multaDoMes,
       orcMesDaParcela, orcMesEfetivo, orcTemFilhaNoMes, orcVisivelNoMes,
       multaCobrancaPendente, multaCobrancaVenc, multaCobrancaAtrasada,
+      multaBoletoOrgaoPendente, multaBoletoOrgaoAtrasado,
       mesDoLancamentoCt, lancamentosDoContrato, somaContratoBusca, resumoPorMesContratos
     };
   `);

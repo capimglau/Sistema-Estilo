@@ -788,6 +788,35 @@ migração sumiria da tela de uma vez.
 **Nunca reaproveitar `m.vencimento` para prazo de cliente** — são dois prazos
 diferentes, de dois credores diferentes, na mesma multa.
 
+Uma etapa antes, **"Boleto Solicitado"** tinha o mesmo buraco: registrava a
+data do pedido e nada mais, então o pedido podia ficar parado no órgão por
+meses sem a etapa nunca aparecer atrasada. Ganhou
+**`multas.prazo_boleto_orgao`** (`sql/14-...`, sugere +15 dias) e
+**`multaBoletoOrgaoAtrasado(m, hoje)`**.
+⚠️ **Sem o campo preenchido não existe atraso** nessa etapa — chutar um prazo
+padrão seria repetir exatamente o erro dos "30 dias" que esta seção corrigiu.
+
+**Etapa nova no pipeline que espera resposta de terceiro precisa de PRAZO
+próprio**, não só da data do evento. Data sozinha registra o que aconteceu;
+prazo é o que torna a espera cobrável.
+
+### A fatura pode ter a baixa no CONTRATO, não nela
+
+Quando o recebimento é registrado pela tela de **Contratos**, quem fica com
+`status_pagamento` e `data_pagamento` é o **contrato** — a receita da fatura
+pode continuar sem `data_pagamento` no banco. A lista do Financeiro compensava
+isso em tempo de render (`Object.assign` com `ct.data_pagamento`); o helper do
+painel não, e a fatura recebida em 31/08 continuava presa na competência de
+setembro, somando por cima da fatura prevista do mês — relato: *"a Kablan
+aparece com mais de 7k em setembro, sendo que foram pagos em 31/08"*.
+
+**`rdReceitaComContrato(r, contratos)`** lê a receita de fatura JUNTO com o
+contrato dela antes de decidir o mês. É leitura, não gravação. Quando a receita
+tem baixa própria, ela manda (é a mais específica); o contrato só completa o
+que falta. **Todo painel que decide o mês de uma fatura pelo `receitaDoMes`
+precisa passar por ela primeiro** — senão volta a ler um recebimento que está
+gravado no outro registro.
+
 **Painel novo de dinheiro não monta essa data na mão.** Filtro inline do tipo
 `(mu.vencimento||mu.data||"").slice(0,7) === mes` é exatamente o que deixava
 manutenção e multa presas no mês previsto para sempre, enquanto a despesa

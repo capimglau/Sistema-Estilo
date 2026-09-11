@@ -753,6 +753,41 @@ continua listando a **competência** (ela monta a lista a partir do contrato,
 não do `receitaDoMes`). Fatura é o documento da competência; o dinheiro é do
 mês em que andou — as duas leituras convivem, cada uma na sua tela.
 
+**Contrato: `rdMesDoContrato(c)` em TODO painel de dinheiro.** Havia doze
+filtros inline espalhados (Dashboard, Financeiro, Contratos, Relatórios,
+PessoalDash, fluxo de 12 meses, rentabilidade por veículo, sheet do gráfico
+diário) — metade já fazia "pago → `data_pagamento`" e **nenhuma** cobria
+`parcial`, então a mesma locação caía em meses diferentes conforme o painel.
+Hoje são zero: `node tests/run.js` falha se um voltar.
+
+### A cobrança ao cliente tem vencimento próprio — `[multa-cobranca-venc]`
+
+A etapa **"Cobrado ao Cliente"** do pipeline de multas gravava só a **data da
+cobrança** (`data_cobranca_cliente`). Sem vencimento, não havia como saber se
+aquele boleto está em atraso — relato do usuário: *"aparece somente a data da
+cobrança, não há controle se está em atraso"*.
+
+O "atrasado" era deduzido por duas heurísticas que **não respondem a pergunta
+certa**:
+
+- **`m.vencimento`** é o prazo para pagar o **ÓRGÃO** — que nessa altura do
+  pipeline já foi pago. Uma multa vencida no órgão marcava o cliente como
+  atrasado mesmo com o boleto dele em dia.
+- **"cobrado há mais de 30 dias"** — chute fixo, igual para todo cliente.
+
+Agora existe **`multas.vencimento_cobranca_cliente`** (`sql/13-multas-vencimento-cobranca.sql`),
+pedido no modal de cobrança junto com a data (sugere +7 dias), e a pergunta tem
+**uma função só**: **`multaCobrancaAtrasada(m, hoje)`** — nenhuma tela deduz
+isso na mão (três cópias da heurística foram removidas). `multaCobrancaVenc(m)`
+e `multaCobrancaPendente(m)` completam o trio.
+
+As heurísticas antigas ficaram como **retaguarda**, e só valem quando o campo
+está vazio: sem isso, todo atraso já sinalizado nas multas cobradas antes da
+migração sumiria da tela de uma vez.
+
+**Nunca reaproveitar `m.vencimento` para prazo de cliente** — são dois prazos
+diferentes, de dois credores diferentes, na mesma multa.
+
 **Painel novo de dinheiro não monta essa data na mão.** Filtro inline do tipo
 `(mu.vencimento||mu.data||"").slice(0,7) === mes` é exatamente o que deixava
 manutenção e multa presas no mês previsto para sempre, enquanto a despesa

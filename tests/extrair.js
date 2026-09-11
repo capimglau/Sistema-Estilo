@@ -74,6 +74,7 @@ function extrair(marcadores) {
       rdClienteDaReceita, rdLinhasReceitaCliente, rdLinhasDespesaCategoria, rdMesDoContrato,
       receitaVisivelNoMes, receitaDoMes, manVisivelNoMes, resolverDespesasDoMes, isRetLucro,
       despesaDoMes, manDoMes, manDataFluxo, manMesRefGlobal, multaDataFluxo, multaDoMes,
+      orcMesDaParcela, orcMesEfetivo, orcTemFilhaNoMes, orcVisivelNoMes,
       mesDoLancamentoCt, lancamentosDoContrato, somaContratoBusca, resumoPorMesContratos
     };
   `);
@@ -135,6 +136,14 @@ const MARCADORES = [
     nome: "retirada de lucro × ajuste de saldo",
     de: "function isRetLucro(d) {",
     ate: "function isRetLucroPura(",
+  },
+  {
+    // Orçamento Pessoal: de que mês é um lançamento ([previsto-liquidado]).
+    // As duas datas — mês da parcela (baixa/trava do template) e mês efetivo
+    // (onde o dinheiro andou) — precisam continuar separadas.
+    nome: "mês do lançamento no Orçamento Pessoal",
+    de: "function orcMesDaParcela(it) {",
+    ate: "function calcSaldoOrcPessoalMes(",
   },
   {
     // Emissão de fatura dispensada ([emissao-dispensada]): a chave do cartão

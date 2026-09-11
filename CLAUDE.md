@@ -691,13 +691,20 @@ nenhuma tela reimplementa a soma.**
   **nunca `receitaVisivelNoMes`** — essa olha só a `data` e ignora a
   `data_pagamento`, então uma receita datada **31/08 e recebida em setembro**
   ficava em agosto no painel e em setembro no Financeiro, e as telas
-  discordavam sobre o mesmo dinheiro. Contrato segue a mesma regra por
-  **`rdMesDoContrato(c)`** (pago/parcial → `data_pagamento`; em aberto →
-  `previsao_pagamento`): contar a receita pelo pagamento e o contrato pela
-  previsão deixa o painel meio liquidado, meio previsto.
+  discordavam sobre o mesmo dinheiro.
   `receitaVisivelNoMes` continua valendo para **projeção** de recorrente em
   série de 12/24 meses (é o que ela faz bem) — não para dizer de que mês é um
   lançamento.
+- **Locação é a exceção, e não migra de mês: `rdMesDoContrato(c)` é SEMPRE a
+  `previsao_pagamento`.** O mês do contrato é a competência da locação — a
+  mesma que nomeia a fatura dele (`fat_<id>_<mes da previsão>`) e que por
+  `[fatura-nao-migra]` nunca muda. Já esteve por `data_pagamento` quando pago,
+  e o resultado foi divergência silenciosa: o contrato COM fatura entrava pela
+  fatura (competência fixa) e o SEM fatura migrava pro mês em que foi pago —
+  dois contratos idênticos em meses diferentes. **Pagar adiantado ou com
+  atraso não muda de que mês é o aluguel.** É por isso que a fatura de
+  competência 09/26 recebida em 31/08 conta em **setembro**, e é o
+  comportamento certo, não um bug.
 - **Acumulado só existe se estiver escrito na tela.** O "Top 5 Clientes por
   Receita" continua histórico de propósito e por isso o título diz
   **"· desde o início"**. Todo painel mensal carrega o nome do mês no título

@@ -551,10 +551,14 @@ eq("contrato pago com atraso também segue o pagamento",
   F.rdMesDoContrato({ previsao_pagamento: "2026-08-31", data_pagamento: "2026-09-02", status_pagamento: "pago" }), "2026-09");
 eq("contrato em aberto continua na previsão",
   F.rdMesDoContrato({ previsao_pagamento: "2026-08-31" }), "2026-08");
-// Parcial fica na previsão: o valor que entra é o total previsto, e levá-lo
-// pro mês da parcela arrastaria junto o que ainda não entrou.
-eq("contrato parcial não migra",
-  F.rdMesDoContrato({ previsao_pagamento: "2026-09-30", data_pagamento: "2026-08-31", status_pagamento: "parcial" }), "2026-09");
+// "Independente de ser parcial ou não": recebeu, o lançamento é do mês em que
+// recebeu. O valor que vai junto é o total previsto — efeito conhecido e aceito.
+eq("contrato parcial também migra",
+  F.rdMesDoContrato({ previsao_pagamento: "2026-09-30", data_pagamento: "2026-08-31", status_pagamento: "parcial" }), "2026-08");
+eq("fatura parcial também migra",
+  F.receitaDoMes({ ref_fatura: "fat_9_2026-09", status: "parcial", data_pagamento: "2026-08-31" }, "2026-08"), true);
+eq("e sai da competência",
+  F.receitaDoMes({ ref_fatura: "fat_9_2026-09", status: "parcial", data_pagamento: "2026-08-31" }, "2026-09"), false);
 const rdCtAdiant = [{ id: 20, cliente_id: 2, previsao_pagamento: "2026-09-30", data_pagamento: "2026-08-31", valor_total: "900", status: "ativo", status_pagamento: "pago" }];
 eq("no painel, a locação paga em 31/08 aparece em agosto",
   rdSoma(F.rdLinhasReceitaCliente([], rdCtAdiant, rdCli, "2026-08"), "Beta ME"), 900);
@@ -669,6 +673,16 @@ eq("e sai do mês do vencimento",
   F.multaDoMes({ vencimento: plPrev, status: "pago", data_pagamento: plPago }, "2026-08"), false);
 eq("multa sem vencimento cai na data do registro",
   F.multaDataFluxo({ data: "2026-08-10" }), "2026-08-10");
+
+/* "Independente da data de cadastro": o que manda depois da liquidação é a
+   data em que o dinheiro andou — 31/08 é agosto, 02/09 é setembro, não
+   importa quando o lançamento foi criado nem para quando estava previsto. */
+eq("liquidado em 31/08 pertence a agosto",
+  F.despesaDoMes({ data: "2026-05-10", data_pagamento: "2026-08-31" }, "2026-08"), true);
+eq("liquidado em 02/09 pertence a setembro",
+  F.despesaDoMes({ data: "2026-05-10", data_pagamento: "2026-09-02" }, "2026-09"), true);
+eq("e o mês da previsão original não guarda mais nada",
+  F.despesaDoMes({ data: "2026-05-10", data_pagamento: "2026-09-02" }, "2026-05"), false);
 
 // Nenhum painel de dinheiro pode voltar a montar essas datas na mão.
 eq("ninguém filtra multa por mês sem o helper",

@@ -803,6 +803,41 @@ ok("a gravação da cobrança leva o vencimento",
   /vencimento_cobranca_cliente: venc \|\| null/.test(html));
 ok("o modal pede o vencimento", /campo2Label: "⏰ Vencimento do boleto do cliente"/.test(html));
 
+// Mesma ideia uma etapa antes: pedido de boleto ao órgão sem prazo de retorno
+// ficava parado por meses sem a etapa nunca aparecer atrasada.
+eq("boleto pedido dentro do prazo não atrasa",
+  F.multaBoletoOrgaoAtrasado({ boleto_orgao_solicitado: true, prazo_boleto_orgao: "2026-09-30" }, mcHoje), false);
+eq("órgão passou do prazo sem devolver, atrasou",
+  F.multaBoletoOrgaoAtrasado({ boleto_orgao_solicitado: true, prazo_boleto_orgao: "2026-09-01" }, mcHoje), true);
+eq("boleto já recebido não atrasa",
+  F.multaBoletoOrgaoAtrasado({ boleto_orgao_solicitado: true, boleto_orgao_recebido: true, prazo_boleto_orgao: "2026-01-01" }, mcHoje), false);
+// Sem o campo não se inventa prazo — seria repetir o erro dos "30 dias".
+eq("pedido antigo, sem prazo, não vira atraso chutado",
+  F.multaBoletoOrgaoAtrasado({ boleto_orgao_solicitado: true }, mcHoje), false);
+ok("o modal de solicitar boleto pede o prazo",
+  /campo2Label: "⏰ Prazo para o órgão devolver o boleto"/.test(html));
+
+/* [previsto-liquidado] A fatura recebida PELA TELA DE CONTRATOS deixa a baixa
+   no contrato — a receita pode ficar sem data_pagamento no banco. Sem ler o
+   contrato junto, a fatura ficava presa na competência e o cliente aparecia no
+   mês errado, somando por cima da fatura prevista do mês (relato: "a Kablan
+   aparece com mais de 7k em setembro, sendo que foram pagos em 31/08"). */
+const kbCt = [{ id: 40, cliente_id: 1, previsao_pagamento: "2026-09-30", valor_total: "2640", status: "ativo", status_pagamento: "pago", data_pagamento: "2026-08-31" }];
+const kbRecSemBaixa = [{ id: 500, ref_fatura: "fat_40_2026-09", valor: "2640", status: "emitida" }];
+eq("a receita da fatura herda a baixa do contrato",
+  F.rdReceitaComContrato(kbRecSemBaixa[0], kbCt).data_pagamento, "2026-08-31");
+eq("a fatura recebida em 31/08 conta em agosto",
+  rdSoma(F.rdLinhasReceitaCliente(kbRecSemBaixa, kbCt, rdCli, "2026-08"), "Alfa Locações"), 2640);
+eq("e sai de setembro",
+  rdSoma(F.rdLinhasReceitaCliente(kbRecSemBaixa, kbCt, rdCli, "2026-09"), "Alfa Locações"), 0);
+// A baixa da própria receita, quando existe, é a mais específica e continua mandando.
+eq("baixa própria da receita tem prioridade sobre a do contrato",
+  F.rdReceitaComContrato({ ref_fatura: "fat_40_2026-09", status: "recebido", data_pagamento: "2026-09-05" }, kbCt).data_pagamento, "2026-09-05");
+// Contrato ainda em aberto não empurra a fatura para lugar nenhum.
+eq("contrato sem baixa não mexe na fatura",
+  F.rdReceitaComContrato({ ref_fatura: "fat_41_2026-09", status: "emitida" },
+    [{ id: 41, previsao_pagamento: "2026-09-30", status_pagamento: "previsto" }]).data_pagamento, undefined);
+
 // Contrato: todo painel de dinheiro passa pela função única.
 eq("nenhum painel filtra contrato por previsão na mão",
   (html.match(/c\.previsao_pagamento *&& *c\.previsao_pagamento\.slice\(0,7\) *===|c\.previsao_pagamento&&c\.previsao_pagamento\.slice\(0,7\)===/g) || []).length, 0);

@@ -661,6 +661,49 @@ sem isso a marca só aparece no próximo reload.
 Travado em `tests/run.js`, grupo *"Emissão de fatura dispensada sai de TODOS os
 avisos"*, que roda os helpers reais extraídos do `index.html`.
 
+## Painel de distribuição é do MÊS, e a conta é uma só — `[rd-mes]` — PERMANENTE
+
+"Receitas por Cliente" e "Despesas por Categoria" existem em **duas telas** —
+Dashboard do Início e Relatórios › Gráficos — e cada uma tinha a sua própria
+soma. O Dashboard somava a competência do mês; o de Relatórios somava **o
+histórico inteiro**, sem período nenhum escrito na tela. O usuário lia aquilo
+como se fosse o mês e via um acumulado ("o gráfico não mostra o valor do mês").
+
+O de Relatórios ainda errava a cobertura: só enxergava receita com
+`cliente_id` preenchido, então **toda fatura de contrato** (`ref_fatura`, que
+não tem esse campo) ficava de fora; e o contrato pago com receita vinculada
+podia ser contado **duas vezes**.
+
+**Regra permanente: a conta vive em UMA função por painel, no escopo global, e
+nenhuma tela reimplementa a soma.**
+
+| painel | função única |
+|---|---|
+| Receitas por Cliente | `rdLinhasReceitaCliente(receitas, contratos, clientes, mes)` |
+| Despesas por Categoria | `rdLinhasDespesaCategoria(despesas, manutencoes, mes)` |
+| de quem é a receita | `rdClienteDaReceita(r, contratos, clientes)` |
+
+- **`mes` = "YYYY-MM"** filtra a competência; **`mes` nulo** devolve o histórico
+  inteiro. As duas leituras são legítimas — o que não pode é o acumulado se
+  passar por mensal.
+- **Acumulado só existe se estiver escrito na tela.** O "Top 5 Clientes por
+  Receita" continua histórico de propósito e por isso o título diz
+  **"· desde o início"**. Todo painel mensal carrega o nome do mês no título
+  (`"Receitas por Cliente · setembro de 2026"`).
+- **Contrato só entra quando NÃO tem receita vinculada** (`fat_<id>_<mes>`) —
+  é a mesma trava do Financeiro contra contar a locação duas vezes, uma pelo
+  contrato e outra pela fatura dele.
+- **Manutenção com despesa vinculada (`manutencao_id`) não entra** — senão a
+  categoria "Manutenção" dobra.
+- Relatórios › Gráficos tem **seletor de mês próprio** (`gMes` + `MesPicker`)
+  para os painéis de distribuição: os campos "De/Até" daquela tela são só da
+  aba Faturas, e um painel sem período volta a mentir sobre o que mostra.
+
+Painel novo de receita por cliente ou despesa por categoria — em qualquer tela
+— **chama essas funções**. Travado em `tests/run.js`, grupo *"Receita por
+cliente é do MÊS, e a conta é uma só"*, que roda os helpers reais extraídos do
+`index.html` e falha se alguma tela voltar a somar na mão.
+
 ## Agenda do Dashboard — 3 cartões e 3 dias, o resto no baralho — REGRA PERMANENTE
 
 A Agenda embutida no Início **nunca** cresce livre: ela termina num ponto fixo

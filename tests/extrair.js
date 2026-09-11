@@ -71,6 +71,8 @@ function extrair(marcadores) {
       agk2CorteDias, AGK2_LIM_DIAS,
       agAdiaMapa, agAdiaOculto, agAdiaAgora,
       faturaEmissaoDataISO, faturaEmissaoChave, faturaEmissaoDispensada,
+      rdClienteDaReceita, rdLinhasReceitaCliente, rdLinhasDespesaCategoria,
+      receitaVisivelNoMes, manVisivelNoMes, resolverDespesasDoMes, isRetLucro,
       mesDoLancamentoCt, lancamentosDoContrato, somaContratoBusca, resumoPorMesContratos
     };
   `);
@@ -119,6 +121,19 @@ const MARCADORES = [
     nome: "parcelas de cartão",
     de: "function parcelaCC(",
     ate: "// Fatura de contrato realmente EMITIDA",
+  },
+  {
+    // Competência: o que cai em cada mês (despesa, receita, manutenção),
+    // incluindo a projeção da recorrente. É a base de rdLinhasReceitaCliente
+    // e rdLinhasDespesaCategoria, testadas em "Receita por cliente".
+    nome: "competência mensal de despesa/receita/manutenção",
+    de: "function resolverDespesasDoMes(",
+    ate: "function receitaDoMes(",
+  },
+  {
+    nome: "retirada de lucro × ajuste de saldo",
+    de: "function isRetLucro(d) {",
+    ate: "function isRetLucroPura(",
   },
   {
     // Emissão de fatura dispensada ([emissao-dispensada]): a chave do cartão

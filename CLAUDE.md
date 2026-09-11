@@ -259,6 +259,52 @@ Nunca assumir que o usuário vai abrir o arquivo sozinho para rodar no Supabase.
 
 Branch ativo: `claude/resolved-option-no-invoice-pv3rx3`
 
+## A DATA DA BAIXA VALE PARA O SISTEMA INTEIRO — PREMISSA MÁXIMA
+
+**Palavras do usuário: "a premissa da lógica da data de baixa é para o sistema
+inteiro e todos os gráficos e painéis".**
+
+Não é regra de uma tela, de um painel nem de um tipo de lançamento. É premissa
+do produto:
+
+> **Um lançamento pertence ao mês da sua `data_pagamento`. Sem baixa, pertence
+> ao mês da previsão. Isso vale em TODA tela, TODO painel, TODO gráfico, TODO
+> KPI, TODO relatório e TODO fluxo de caixa — sem exceção de tipo, de status ou
+> de origem do dado.**
+
+Três coisas que **já causaram bug aqui** e não podem voltar:
+
+1. **Nunca exija `status` junto com a data.** Perguntar
+   `status === "recebido" && data_pagamento` é uma segunda trava para a mesma
+   pergunta: basta um dos vários caminhos de baixa gravar a data sem carimbar o
+   status — ou carimbar outro — e o lançamento volta para o mês da previsão.
+   Foi por isso que *"recebi em 31/08 e aparece em setembro"* voltou **cinco
+   vezes**, cada vez por um ponto diferente. **Existe `data_pagamento`? O mês é
+   o dela. Ponto.**
+2. **Resolva ANTES de filtrar.** Quando o dado precisa ser completado para
+   decidir o mês (fatura cuja baixa está no contrato — `rdReceitaComContrato`),
+   o enriquecimento vem **antes** do `.filter`. A lista do Financeiro fazia
+   depois: decidia o mês sem a baixa e desenhava a etiqueta com ela, mostrando
+   "31 AGO" dentro do mês de setembro — o mesmo dado dizendo duas coisas na
+   mesma linha.
+3. **Toda baixa pergunta a data.** Regra de leitura nenhuma conserta data
+   gravada errada — ver *"Toda baixa PERGUNTA a data"* em
+   `[previsto-liquidado]`.
+
+**Checklist obrigatório antes de declarar concluído qualquer painel, gráfico,
+KPI ou relatório que envolva dinheiro:**
+
+1. `grep` por `.slice(0,7) ===` e `.slice(0, 7) ===` perto de `previsao_`,
+   `vencimento`, `\.data` — **todo filtro de mês montado na mão é suspeito**.
+   Use a função única do tipo (tabela em `[previsto-liquidado]`).
+2. `grep` por `status === "recebido"`, `status_pagamento === "pago"` e
+   `"parcial"` **dentro de decisão de mês** — não pode existir nenhum.
+3. Rode `node tests/run.js`: os grupos *"Previsto até liquidar…"*, *"Receita
+   por cliente é do MÊS…"* e o contador de filtros inline falham se um voltar.
+
+A regra completa, com a tabela de funções por tipo e as armadilhas de
+recorrente/parcial, está em **`[previsto-liquidado]`** mais abaixo.
+
 ## Consistência de implementação — OBRIGATÓRIO
 
 Sempre que uma mudança afetar um cálculo ou resultado (ex: fórmula de receita, saldo, lucro), implementar em **todos os locais afetados** do app — painéis, gráficos, fluxo de caixa, previsão, navegação mensal, sub-tabs, etc. **Nunca atualizar só um ponto isolado.**

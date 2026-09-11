@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="6955599"/>
+<meta name="ag-build" content="c921f03"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -24225,6 +24225,32 @@ function multaDataFluxo(m) {
   return String(m.vencimento || m.data || "").slice(0, 10);
 }
 function multaDoMes(m, mes) { return !!mes && multaDataFluxo(m).slice(0, 7) === mes; }
+/* ── Cobrança ao cliente: em atraso? — `[multa-cobranca-venc]` ────────────
+   A etapa "Cobrado ao Cliente" gravava só a DATA DA COBRANÇA. Sem vencimento,
+   não havia como saber se aquele boleto está atrasado — e o app deduzia por
+   duas heurísticas que não respondem a pergunta certa:
+
+   - `m.vencimento` é o prazo para pagar o **órgão**, que nessa altura do
+     pipeline já foi pago; não tem relação com o prazo dado ao cliente;
+   - "cobrado há mais de 30 dias" é chute fixo, igual para todo cliente.
+
+   Agora existe `vencimento_cobranca_cliente` (ver `sql/13-...`). Quando ele
+   está preenchido, é ELE que decide. As heurísticas antigas ficam só como
+   retaguarda para as multas já cobradas antes deste campo existir — sem isso,
+   todo atraso já sinalizado sumiria da tela de uma vez. */
+function multaCobrancaPendente(m) { return !!m && (m.cobrado_cliente || "nao") === "pendente"; }
+function multaCobrancaVenc(m) { return m ? String(m.vencimento_cobranca_cliente || "").slice(0, 10) : ""; }
+function multaCobrancaAtrasada(m, hoje) {
+  if (!multaCobrancaPendente(m)) return false;
+  var hj = String(hoje || "").slice(0, 10);
+  var venc = multaCobrancaVenc(m);
+  if (venc) return venc < hj;
+  // Retaguarda (cobranças anteriores ao campo): prazo do órgão já vencido, ou
+  // cobrada há mais de 30 dias sem retorno.
+  var _30d = new Date(new Date(hj + "T12:00:00").getTime() - 30 * 86400000).toISOString().slice(0, 10);
+  if (m.vencimento && String(m.vencimento).slice(0, 10) < hj) return true;
+  return !!(m.data_cobranca_cliente && String(m.data_cobranca_cliente).slice(0, 10) < _30d);
+}
 function multaMesRef(m) { return multaDataFluxo(m).slice(0, 7); }
 var STATUS = {
   PAGO: "pago", RECEBIDO: "recebido", PREVISTO: "previsto", PENDENTE: "pendente",
@@ -26532,12 +26558,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   const totalFrota = veiculos.filter(v => v.status !== "inativo" && v.status !== "vendido").length;
   const taxaOcup = totalFrota > 0 ? Math.round((alugados / totalFrota) * 100) : 0;
 
-  const ctsMes = contratos.filter(c => {
-    // Contratos pagos: usa o mês do pagamento real (data_pagamento) se disponível
-    if (c.status_pagamento === "pago" && c.data_pagamento) return c.data_pagamento.slice(0,7) === dashMes;
-    // Demais: usa mês da previsão
-    return c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === dashMes;
-  });
+  // [previsto-liquidado] rdMesDoContrato: liquidado (pago OU parcial) conta no
+  // mês em que o dinheiro entrou; em aberto, no mês da previsão.
+  const ctsMes = contratos.filter(c => rdMesDoContrato(c) === dashMes);
   const recAvDash = (receitas||[]).filter(function(r){ return !r.ref_fatura && receitaDoMes(r, dashMes); });
   const recMes = ctsMes.filter(c => c.status_pagamento === "pago").reduce((s,c) => s+parseFloat(c.valor_total||0),0)
     + ctsMes.filter(c => c.status_pagamento === "parcial" && c.valor_pago).reduce((s,c) => s+parseFloat(c.valor_pago||0),0)
@@ -26676,10 +26699,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   var _sim60  = prevMes*0.6 - (_dmBannerDesp+_dmBannerMan);
   try {
     var _spkArr = [];
-    for (var _si=5;_si>=0;_si--){ var _sd=new Date(dashMes+"-15"); _sd.setMonth(_sd.getMonth()-_si); var _sm=_sd.toISOString().slice(0,7); var _sc=contratos.filter(function(c){return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===_sm&&c.status!=="cancelado";}); var _sr=(receitas||[]).filter(function(r){return !r.ref_fatura&&receitaDoMes(r,_sm);}); _spkArr.push(_sc.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+_sr.reduce(function(s,r){return s+parseFloat(r.valor||0);},0)); }
+    for (var _si=5;_si>=0;_si--){ var _sd=new Date(dashMes+"-15"); _sd.setMonth(_sd.getMonth()-_si); var _sm=_sd.toISOString().slice(0,7); var _sc=contratos.filter(function(c){return rdMesDoContrato(c)===_sm&&c.status!=="cancelado";}); var _sr=(receitas||[]).filter(function(r){return !r.ref_fatura&&receitaDoMes(r,_sm);}); _spkArr.push(_sc.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+_sr.reduce(function(s,r){return s+parseFloat(r.valor||0);},0)); }
     _spkMeses=_spkArr; _spkMax=Math.max.apply(null,_spkArr)||1;
     var _spts=_spkArr.map(function(v,i){return [i*44,Math.round(28-(v/_spkMax)*24)];}); var _spd="M"+_spts[0][0]+","+_spts[0][1]; for(var _sk=1;_sk<_spts.length;_sk++){_spd+=" C"+(_spts[_sk-1][0]+15)+","+_spts[_sk-1][1]+" "+(_spts[_sk][0]-15)+","+_spts[_sk][1]+" "+_spts[_sk][0]+","+_spts[_sk][1];} _spkPath=_spd;
-    var _mant=(function(){var _d=new Date(dashMes+"-15");_d.setMonth(_d.getMonth()-1);return _d.toISOString().slice(0,7);})(); var _manc=contratos.filter(function(c){return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===_mant&&c.status!=="cancelado";}); var _manr=(receitas||[]).filter(function(r){return !r.ref_fatura&&receitaDoMes(r,_mant);}); var _manv=_manc.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+_manr.reduce(function(s,r){return s+parseFloat(r.valor||0);},0); _tendPct=_manv>0?Math.round((prevMes-_manv)/_manv*100):0; var _recMesAntVal=_manc.filter(function(c){return c.status_pagamento==="pago";}).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+_manc.filter(function(c){return c.status_pagamento==="parcial"&&c.valor_pago;}).reduce(function(s,c){return s+parseFloat(c.valor_pago||0);},0)+_manr.filter(function(r){return r.status==="recebido"&&(!r.recorrente||(r.data_pagamento||"").slice(0,7)===_mant);}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0); _recMesPct=_recMesAntVal>0?Math.round((recMes-_recMesAntVal)/_recMesAntVal*100):0;
+    var _mant=(function(){var _d=new Date(dashMes+"-15");_d.setMonth(_d.getMonth()-1);return _d.toISOString().slice(0,7);})(); var _manc=contratos.filter(function(c){return rdMesDoContrato(c)===_mant&&c.status!=="cancelado";}); var _manr=(receitas||[]).filter(function(r){return !r.ref_fatura&&receitaDoMes(r,_mant);}); var _manv=_manc.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+_manr.reduce(function(s,r){return s+parseFloat(r.valor||0);},0); _tendPct=_manv>0?Math.round((prevMes-_manv)/_manv*100):0; var _recMesAntVal=_manc.filter(function(c){return c.status_pagamento==="pago";}).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+_manc.filter(function(c){return c.status_pagamento==="parcial"&&c.valor_pago;}).reduce(function(s,c){return s+parseFloat(c.valor_pago||0);},0)+_manr.filter(function(r){return r.status==="recebido"&&(!r.recorrente||(r.data_pagamento||"").slice(0,7)===_mant);}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0); _recMesPct=_recMesAntVal>0?Math.round((recMes-_recMesAntVal)/_recMesAntVal*100):0;
     var _dmDAnt=resolverDespesasDoMes((despesas||[]).filter(function(d){return !isRetLucro(d);}),_mant).reduce(function(s,d){return s+parseFloat(d.valor||0);},0); var _dmMAnt=filtrarManParaBarras(manutencoes,despesas,_mant).reduce(function(s,m){return s+parseFloat(m.custo||0);},0); _resultPrevAnt=_manv-_dmDAnt-_dmMAnt; _despTotalKpiAnt=_dmDAnt; _manTotalKpiAnt=_dmMAnt;
     if(dashMes===mesAtual){var _dp2=resolverDespesasDoMes((despesas||[]).filter(function(d){return !isRetLucro(d);}),dashMes).filter(function(d){return d.status!=="pago"&&!d.data_pagamento&&d.data&&d.data>=hoje;}); var _cp2=ctsMes.filter(function(c){return c.status_pagamento!=="pago"&&c.status_pagamento!=="isento";}); var _tdp=_dp2.reduce(function(s,d){return s+parseFloat(d.valor||0);},0); var _tcp=_cp2.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0); if(_tdp>_tcp&&_tdp>0){var _dc=_dp2.reduce(function(mn,d){return(!mn||d.data<mn)?d.data:mn;},null); _alertaSaldoNeg={valor:_tdp-_tcp,dia:_dc};}}
   } catch(_e){ console.warn("[AG] dash extras:",_e); }
@@ -29202,10 +29225,8 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 var _mesSheet = chartDaySheetMes || dashMes;
                 var _inDay = function(dt){ return dt && dt.slice(0,7)===_mesSheet && parseInt(dt.slice(8,10),10)===_day; };
                 /* ── ENTRADAS do caixa ── (fonte: arrays brutos, p/ funcionar em qualquer mês do gráfico) */
-                var _ctsSheet = (contratos||[]).filter(function(c){
-                  if (c.status_pagamento==="pago" && c.data_pagamento) return c.data_pagamento.slice(0,7)===_mesSheet;
-                  return c.previsao_pagamento && c.previsao_pagamento.slice(0,7)===_mesSheet;
-                });
+                // [previsto-liquidado] rdMesDoContrato cobre pago E parcial.
+                var _ctsSheet = (contratos||[]).filter(function(c){ return rdMesDoContrato(c)===_mesSheet; });
                 var _ctsDay = _ctsSheet.filter(function(c){
                   var isPgoParcial=c.status_pagamento==="pago"||c.status_pagamento==="isento"||c.status_pagamento==="parcial";
                   var dt = isPgoParcial ? (c.data_pagamento||c.previsao_pagamento) : c.previsao_pagamento;
@@ -30272,7 +30293,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         .slice().sort(function(a,b){ return (a.data||'').localeCompare(b.data||''); });
 
       var _recList = (contratos||[]).filter(function(c){
-        var _inMes = c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === dashMes;
+        var _inMes = rdMesDoContrato(c) === dashMes; // [previsto-liquidado]
         /* contratos vencidos de meses anteriores continuam aparecendo ao navegar para o mês atual */
         var _vencidoOutroMes = dashMes===mesAtual && c.previsao_pagamento && c.previsao_pagamento < hoje && c.previsao_pagamento.slice(0,7) !== dashMes;
         return c.status !== 'cancelado'
@@ -31812,7 +31833,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
       // ── Receita: contratos são a fonte única de verdade ───────────────────
       var recTotal, nCtsMes;
       if(md==='previsto') {
-        var _c = cts.filter(function(c){ return c.previsao_pagamento && c.previsao_pagamento.slice(0,7)===mesFmt; });
+        var _c = cts.filter(function(c){ return rdMesDoContrato(c)===mesFmt; }); // [previsto-liquidado]
         nCtsMes = _c.length;
         recTotal = _c.reduce(function(s,c){ return s+parseFloat(c.valor_total||0); },0);
       } else {
@@ -34737,7 +34758,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   // Barra "Recebimento do mês": independente do filtro/lista abaixo — navega por mês via swipe.
   function _addMKpiBar(b, n) { var d = new Date(b + "-15"); d.setMonth(d.getMonth() + n); return d.toISOString().slice(0, 7); }
   function _labelMesKpiBar(ym) { var p = (ym||"").split("-"); if (p.length !== 2) return ym; var idx = parseInt(p[1],10)-1; return (MESES_PT_CT[idx]||"").toUpperCase(); }
-  var ctsMesBar = contratos.filter(function(c){ return c.status !== "cancelado" && c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === kpiMesBar; });
+  var ctsMesBar = contratos.filter(function(c){ return c.status !== "cancelado" && rdMesDoContrato(c) === kpiMesBar; }); // [previsto-liquidado]
   var totalMesBar = ctsMesBar.reduce(function(s,c){ return s + parseFloat(c.valor_total||0); }, 0);
   var kpiPagoMesBar = ctsMesBar.filter(function(c){ return c.status_pagamento==="pago"||c.status_pagamento==="parcial"; }).reduce(function(s,c){ return s+(c.status_pagamento==="parcial"?parseFloat(c.valor_pago||0):parseFloat(c.valor_total||0)); }, 0);
   var kpiReceberMesBar = ctsMesBar.filter(function(c){ return c.status_pagamento!=="pago" && c.status_pagamento!=="isento"; }).reduce(function(s,c){ return s+Math.max(0,parseFloat(c.valor_total||0)-parseFloat(c.valor_pago||0)); }, 0);
@@ -36356,8 +36377,7 @@ function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSel
                       var ve=getMVe(m);
                       var placa=ve?ve.placa:(m.placa||"—");
                       var isVenc=m.status!=="pago"&&m.vencimento&&m.vencimento<hojeStr;
-                      var _30d=new Date(_brNowMs()-30*86400000).toISOString().split("T")[0];
-                      var cobAtr=(m.cobrado_cliente||"nao")==="pendente"&&((m.vencimento&&m.vencimento<hojeStr)||(m.data_cobranca_cliente&&m.data_cobranca_cliente<_30d));
+                      var cobAtr=multaCobrancaAtrasada(m, hojeStr); // [multa-cobranca-venc]
                       var temAtraso=isVenc||cobAtr;
                       var _str2g=new Date(_brNowMs()+2*864e5).toISOString().split("T")[0];
                       var vence2d=!temAtraso&&m.status!=="pago"&&m.vencimento&&m.vencimento>=hojeStr&&m.vencimento<=_str2g;
@@ -36403,8 +36423,7 @@ function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSel
                               var prazoCor=prazoVenc?"#FF3B30":"#FF9500";
                               var _isSelR=onSelectMulta&&String(m.id)===String(selectedMultaId);
                               var _isVencR=m.status!=="pago"&&m.vencimento&&m.vencimento<hojeStr;
-                              var _30dR=new Date(_brNowMs()-30*86400000).toISOString().split("T")[0];
-                              var _cobAtrR=(m.cobrado_cliente||"nao")==="pendente"&&((m.vencimento&&m.vencimento<hojeStr)||(m.data_cobranca_cliente&&m.data_cobranca_cliente<_30dR));
+                              var _cobAtrR=multaCobrancaAtrasada(m, hojeStr); // [multa-cobranca-venc]
                               var _temAtrasoR=_isVencR||_cobAtrR;
                               var _str2R=new Date(_brNowMs()+2*864e5).toISOString().split("T")[0];
                               var _vence2dR=!_temAtrasoR&&m.status!=="pago"&&m.vencimento&&m.vencimento>=hojeStr&&m.vencimento<=_str2R;
@@ -36428,7 +36447,10 @@ function GraficoMultas({ multas: allMultas, veiculos, clientes, contratos, onSel
                                               , done&&evDate?React.createElement("div",{style:{fontSize:10,fontWeight:600,color:step.cor+"CC",textAlign:"center",whiteSpace:"nowrap"}},(evDate.slice(8,10)+"/"+evDate.slice(5,7))):null
                                               , curr&&evDate?React.createElement("div",{style:{fontSize:10,fontWeight:700,color:step.cor,textAlign:"center",whiteSpace:"nowrap"}},(evDate.slice(8,10)+"/"+evDate.slice(5,7))):null
                                               , curr&&prazo?React.createElement("div",{style:{fontSize:10,fontWeight:800,color:prazoCor,textAlign:"center",whiteSpace:"nowrap"}},(prazo.slice(8,10)+"/"+prazo.slice(5,7))):null
-                                              , curr&&step.id==="cobrado_cli"&&m.cobrado_cliente==="pendente"?React.createElement("div",{style:{fontSize:9,fontWeight:800,color:"#FF9500",textAlign:"center",whiteSpace:"nowrap"}},"Aguard."):null
+                                              /* [multa-cobranca-venc] "Aguard." sozinho não dizia até quando.
+                                                 Com o vencimento preenchido, mostra o prazo — e vermelho quando
+                                                 já passou. Sem o campo (cobrança antiga), volta ao "Aguard.". */
+                                              , curr&&step.id==="cobrado_cli"&&m.cobrado_cliente==="pendente"?React.createElement("div",{style:{fontSize:9,fontWeight:800,color:multaCobrancaAtrasada(m,hojeStr)?"#FF3B30":"#FF9500",textAlign:"center",whiteSpace:"nowrap"}},multaCobrancaVenc(m)?("vc "+multaCobrancaVenc(m).slice(8,10)+"/"+multaCobrancaVenc(m).slice(5,7)):"Aguard."):null
                                           )
                                       );
                                   })
@@ -36471,6 +36493,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   const [notifData, setNotifData] = useState("");
   const [acaoModal, setAcaoModal] = useState(null);
   const [acaoModalData, setAcaoModalData] = useState("");
+  const [acaoModalData2, setAcaoModalData2] = useState(""); // [multa-cobranca-venc] vencimento da cobranca
   const [aitDiag, setAitDiag] = useState(null); // diagnóstico da última extração de AIT (banner no modal)
 
   React.useEffect(function() {
@@ -36766,7 +36789,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
       // Normaliza IDs: "" → null (Postgres bigint rejeita string vazia)
       ["contrato_id","veiculo_id","cliente_id"].forEach(function(k){ if (payload[k] === "" || payload[k] === undefined) payload[k] = null; });
       // Normaliza datas: "" → null
-      ["data","vencimento","data_pagamento","data_notificacao","data_cobranca_cliente","data_solicitacao_boleto","data_boleto_recebido","data_cobranca_cliente","prazo_notificacao_orgao"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
+      ["data","vencimento","data_pagamento","data_notificacao","data_cobranca_cliente","vencimento_cobranca_cliente","data_solicitacao_boleto","data_boleto_recebido","prazo_notificacao_orgao"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
       // Normaliza números: "" → null
       ["valor","valor_cobrado","pontos"].forEach(function(k){ if (payload[k] === "") payload[k] = null; });
       // Normaliza booleanos de boleto/cobrança: garante boolean ou null
@@ -36815,6 +36838,10 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
     _armarVoltarInicioMt();
     setAcaoModal(Object.assign({ multa: m }, cfg));
     setAcaoModalData(_brNow().toISOString().split("T")[0]);
+    /* [multa-cobranca-venc] Segundo campo opcional (`campo2Label`) — hoje só a
+       cobrança ao cliente usa, pro vencimento do boleto. Sugere +7 dias, que é
+       o prazo que a locadora dá na prática; o usuário troca se for outro. */
+    setAcaoModalData2(cfg && cfg.campo2Label ? (function(){ var d=_brNow(); d.setDate(d.getDate()+(cfg.campo2DiasPadrao||7)); return d.toISOString().split("T")[0]; })() : "");
   }
   /* Igual a fecharNotifModal: se a ação veio de fora (deep-link do painel
      "Multas pendentes" do Início), fechar o modal — confirmando ou
@@ -36851,13 +36878,21 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   function receberBoleto(m) {
     abrirAcaoModal(m, { titulo: "Registrar Boleto Recebido", emoji: "💳", cor: "#B8915A", campoLabel: "📅 Data de recebimento do boleto", onConfirm: function(dt){ return confirmarReceberBoleto(m, dt); } });
   }
-  async function confirmarCobrarCliente(m, dt) {
-    await db.patch("multas", m.id, { cobrado_cliente: "pendente", data_cobranca_cliente: dt });
-    setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, { cobrado_cliente: "pendente", data_cobranca_cliente: dt }) : x));
+  async function confirmarCobrarCliente(m, dt, venc) {
+    /* [multa-cobranca-venc] O vencimento do boleto do cliente é campo próprio —
+       nunca reaproveitar `m.vencimento`, que é o prazo do ÓRGÃO e nessa altura
+       já foi pago. É ele que diz se a cobrança está em atraso. */
+    var _pat = { cobrado_cliente: "pendente", data_cobranca_cliente: dt, vencimento_cobranca_cliente: venc || null };
+    await db.patch("multas", m.id, _pat);
+    setMultas(p => p.map(x => x.id === m.id ? Object.assign({}, x, _pat) : x));
     toast("📬 Cobrança ao cliente registrada!");
   }
   function cobrarCliente(m) {
-    abrirAcaoModal(m, { titulo: "Registrar Cobrança ao Cliente", emoji: "📬", cor: "#8AABCC", campoLabel: "📅 Data da cobrança ao cliente", onConfirm: function(dt){ return confirmarCobrarCliente(m, dt); } });
+    abrirAcaoModal(m, { titulo: "Registrar Cobrança ao Cliente", emoji: "📬", cor: "#8AABCC",
+      campoLabel: "📅 Data da cobrança ao cliente",
+      campo2Label: "⏰ Vencimento do boleto do cliente",
+      campo2Ajuda: "É este prazo que diz se a cobrança está atrasada. Sem ele, a multa fica sem controle de vencimento.",
+      onConfirm: function(dt, venc){ return confirmarCobrarCliente(m, dt, venc); } });
   }
   async function clientePagou(m) {
     if (!confirm("Confirmar recebimento do pagamento do cliente?")) return;
@@ -37038,8 +37073,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         // detalhe completo (Locadora→Órgão, Cliente→Reembolso) mora na linha
         // do tempo expansível, não duplica mais no resumo do card.
         var cc = m.cobrado_cliente || "nao";
-        var _30d = new Date(_brNowMs()-30*86400000).toISOString().split("T")[0];
-        var cobCliAtrasado = cc === "pendente" && ((m.vencimento && m.vencimento < hoje) || (m.data_cobranca_cliente && m.data_cobranca_cliente < _30d));
+        var cobCliAtrasado = multaCobrancaAtrasada(m, hoje); // [multa-cobranca-venc]
         var _temAtraso = vencida || cobCliAtrasado;
         var _pipeLen = _pipeline.length; var _bCor = _temAtraso ? C.red : ((stepIdx >= _pipeLen - 2) ? C.green : stepIdx >= (_pipeLen - 4) ? C.orange : (isContestado ? C.purple : C.orange));
         var isExpanded = expandedMulId === m.id;
@@ -37624,9 +37658,14 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
             , React.createElement(Lbl, { label: acaoModal.campoLabel }
               , React.createElement('input', { style: FI, type: "date", value: acaoModalData, onChange: function(e){ setAcaoModalData(e.target.value); } })
             )
+            /* [multa-cobranca-venc] Segundo campo, só quando a ação pede. */
+            , acaoModal.campo2Label && React.createElement(Lbl, { label: acaoModal.campo2Label }
+              , React.createElement('input', { style: FI, type: "date", value: acaoModalData2, onChange: function(e){ setAcaoModalData2(e.target.value); } })
+            )
+            , acaoModal.campo2Ajuda && React.createElement('div', { style: { fontSize: 12, color: C.sub, lineHeight: 1.45, marginTop: -4 } }, acaoModal.campo2Ajuda)
             , React.createElement('div', { style: { display: "flex", gap: 10, justifyContent: "flex-end" } }
               , React.createElement('button', { className: bCls(Ghost(C.sub)), style: bStyle(Ghost(C.sub)), onClick: fecharAcaoModal }, "Cancelar")
-              , React.createElement('button', { className: bCls(Btn(C.green)), style: bStyle(Btn(C.green)), onClick: async function(){ if (!acaoModalData) return; await acaoModal.onConfirm(acaoModalData); fecharAcaoModal(); } }, acaoModal.emoji + " Confirmar")
+              , React.createElement('button', { className: bCls(Btn(C.green)), style: bStyle(Btn(C.green)), onClick: async function(){ if (!acaoModalData) return; await acaoModal.onConfirm(acaoModalData, acaoModalData2); fecharAcaoModal(); } }, acaoModal.emoji + " Confirmar")
             )
           )
         );
@@ -38803,7 +38842,7 @@ function PessoalDash({
   }
   // Mesma fórmula do banner da locadora (resultPrevBanner = prevMes - despesas - manutencoes)
   function _resultPrevLoc(m){
-    var cts=(contratos||[]).filter(function(c){if(!c.status||c.status==='cancelado')return false;if(c.status_pagamento==='pago'&&c.data_pagamento)return c.data_pagamento.slice(0,7)===m;return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m;});
+    var cts=(contratos||[]).filter(function(c){if(!c.status||c.status==='cancelado')return false;return rdMesDoContrato(c)===m;});
     var recAv=(receitas||[]).filter(function(r){return !r.ref_fatura&&receitaDoMes(r,m);});
     var prev=cts.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+recAv.reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
     var desp=resolverDespesasDoMes(despesas||[],m).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
@@ -39854,7 +39893,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
 
   // Resultado Previsto da Locadora — mesma fórmula do banner da Início
   function _resultLocBanner(m) {
-    var cts=(contratos||[]).filter(function(c){if(!c.status||c.status==='cancelado')return false;if(c.status_pagamento==='pago'&&c.data_pagamento)return c.data_pagamento.slice(0,7)===m;return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m;});
+    var cts=(contratos||[]).filter(function(c){if(!c.status||c.status==='cancelado')return false;return rdMesDoContrato(c)===m;});
     var recAv=(receitas||[]).filter(function(r){return !r.ref_fatura&&receitaDoMes(r,m);});
     var prev=cts.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+recAv.reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
     var desp=resolverDespesasDoMes((despesas||[]).filter(function(d){return !isRetLucro(d);}),m).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
@@ -39869,7 +39908,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
      não, os dois passam a dar números diferentes para o mesmo caixa — que é
      exatamente a divergência que a regra [baixa-unica] existe pra evitar. */
   function _saldoFluxoMesLoc(m) {
-    var cts=(contratos||[]).filter(function(c){if(!c.status||c.status==='cancelado')return false;if(c.status_pagamento==='pago'&&c.data_pagamento)return c.data_pagamento.slice(0,7)===m;return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m;});
+    var cts=(contratos||[]).filter(function(c){if(!c.status||c.status==='cancelado')return false;return rdMesDoContrato(c)===m;});
     var recAv=(receitas||[]).filter(function(r){return !r.ref_fatura&&receitaDoMes(r,m);});
     var prev=cts.reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0)+recAv.reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
     var desp=resolverDespesasDoMes(despesas||[],m).reduce(function(s,d){return s+parseFloat(d.valor||0);},0);
@@ -40650,7 +40689,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     , subTab === 'projecao' && (function(){
       var mesesPO2=[]; for(var mip2=0;mip2<6;mip2++){var dpx2=_brNow();dpx2.setUTCDate(1);dpx2.setUTCMonth(dpx2.getUTCMonth()+mip2);mesesPO2.push(dpx2.toISOString().slice(0,7));}
       var projPessoal2=mesesPO2.map(function(mes){
-        var recLoc3=contratos.filter(function(c){if(c.status==='cancelado')return false;if(c.status_pagamento==='pago'&&c.data_pagamento)return c.data_pagamento.slice(0,7)===mes;return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===mes;}).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0);
+        var recLoc3=contratos.filter(function(c){if(c.status==='cancelado')return false;return rdMesDoContrato(c)===mes;}).reduce(function(s,c){return s+parseFloat(c.valor_total||0);},0);
         var recAvulsas2=receitas.filter(function(r){return receitaDoMes(r,mes)&&!r.ref_fatura;}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0);
         var recPessoal2=itens.filter(function(it){return it.tipo==='receita'&&itemVisivelNoMes(it,mes);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
         var despPessoalMes2=itens.filter(function(it){return it.tipo==='despesa'&&itemVisivelNoMes(it,mes);}).reduce(function(s,it){return s+parseFloat(it.valor||0);},0);
@@ -42726,11 +42765,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
   // Receitas do mês selecionado (resumo)
   // Contratos do mês: pagos → data_pagamento; demais → previsao_pagamento (igual ao prevMes da Dashboard)
-  var recMesContratos = contratos.filter(c => {
-    if (c.status === "cancelado") return false;
-    if (c.status_pagamento === "pago" && c.data_pagamento) return c.data_pagamento.slice(0,7) === filtroMes;
-    return c.previsao_pagamento && c.previsao_pagamento.slice(0,7) === filtroMes;
-  });
+  // [previsto-liquidado] mesma conta do Dashboard, via rdMesDoContrato.
+  var recMesContratos = contratos.filter(c => c.status !== "cancelado" && rdMesDoContrato(c) === filtroMes);
   var recMesPrevista = recMesContratos.reduce((s,c) => s+parseFloat(c.valor_total||0),0);
   var recMesRecebida = recMesContratos.reduce((s,c) => {
     if (c.status_pagamento === "pago") return s + parseFloat(c.valor_total||0);
@@ -43656,7 +43692,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
       /* ── calcMes: retorna todos os indicadores de um mês ── */
       function calcMes(m){
-        var ctsM  = (contratos||[]).filter(function(c){ if(c.status==="cancelado") return false; if(c.status_pagamento==="pago"&&c.data_pagamento) return c.data_pagamento.slice(0,7)===m; return c.previsao_pagamento&&c.previsao_pagamento.slice(0,7)===m; });
+        var ctsM  = (contratos||[]).filter(function(c){ if(c.status==="cancelado") return false; return rdMesDoContrato(c)===m; });
         var recAv = (receitas||[]).filter(function(r){ return !r.ref_fatura&&receitaDoMes(r,m); });
         var despM = (despesas||[]).filter(function(d){ return !d.manutencao_id&&!isRetLucro(d)&&despesaVisivelNoMes(d,m); });
         var manM  = (manutencoes||[]).filter(function(mn){ return manMesRefGlobal(mn)===m; });

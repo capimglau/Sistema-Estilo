@@ -684,16 +684,35 @@ Vale para **os cinco tipos de dinheiro do app**, sem exceção:
 | manutenção | `manDataFluxo(m)` · `manVisivelNoMes` · `manDoMes` · `manMesRefGlobal` | `data_previsao_pagamento` | `data_pagamento` |
 | multa | `multaDataFluxo(m)` · `multaDoMes(m, mes)` · `multaMesRef(m)` | `vencimento` | `data_pagamento` |
 
-**Duas exceções, ambas com motivo — não "consertar" sem ler aqui:**
+**PARCIAL migra igual — "independente de ser parcial ou não".** Recebeu ou
+pagou em parte, o lançamento é do mês em que o dinheiro andou. Vale para
+`rdMesDoContrato` (`parcial` entra junto com `pago`) e para `receitaDoMes`
+(`status === "parcial"` junto com `"recebido"`). **Efeito conhecido e aceito
+pelo usuário:** o valor que migra é o `valor_total` **previsto**, porque é o
+que a regra do contrato parcial manda exibir — então o restante a receber
+acompanha a parcela para o mês da liquidação. Separar parcela recebida de
+saldo a receber, cada uma no seu mês, seria outra mudança (um lançamento
+virando dois) e ainda não foi pedida.
 
-1. **Recorrente não migra a data base.** Em `despesaDoMes`, `manVisivelNoMes` e
-   `manDoMes`, o ramo recorrente continua projetando pela **previsão**. A
-   projeção é feita mês a mês a partir dela; migrar a base faria a recorrente
-   inteira pular de lugar e sumir dos meses seguintes. A baixa de uma parcela
-   recorrente já é resolvida pela linha-filha do mês (ver `[baixa-unica]`).
-2. **PARCIAL não migra.** Em contrato e fatura parcial o valor que entra no
-   painel é o `valor_total` **previsto**, não a parcela — levar isso pro mês da
-   parcela arrastaria junto o que ainda não entrou.
+**"Independente da data de cadastro."** O que manda depois da liquidação é a
+data em que o dinheiro andou — 31/08 é agosto, 02/09 é setembro — não importa
+quando o lançamento foi criado nem para quando estava previsto.
+
+**Uma exceção só, com motivo — não "consertar" sem ler aqui:**
+
+**Recorrente não migra a data base.** Em `despesaDoMes`, `manVisivelNoMes` e
+`manDoMes`, o ramo recorrente continua projetando pela **previsão**. A projeção
+é feita mês a mês a partir dela; migrar a base faria a recorrente inteira pular
+de lugar e sumir dos meses seguintes. A baixa de uma parcela recorrente é
+resolvida pela **linha-filha do mês** (ver `[baixa-unica]`), e essa linha é
+fixada no **mês da parcela** de propósito: `[baixa-unica]` existe porque quitar
+hoje uma parcela atrasada de março, criando a linha em setembro, deixava março
+**em aberto para sempre** e setembro pago duas vezes.
+⚠️ **Ponto em aberto, decidir com o usuário antes de mexer:** essa fixação da
+linha-filha no mês da parcela é a única coisa no app que ainda contraria
+`[previsto-liquidado]` — pela regra do caixa, uma parcela de março quitada em
+setembro deveria pesar em setembro. As duas regras são dele e colidem aqui; não
+resolver por conta própria.
 
 **Isso é LEITURA, não gravação.** Nada disso reescreve `ref_fatura`, número ou
 data de emissão: `[fatura-nao-migra]` continua valendo, e a aba **Faturas**
@@ -751,11 +770,10 @@ nenhuma tela reimplementa a soma.**
   agosto e não em setembro"*. `receitaDoMes` migra o lançamento para o mês da
   `data_pagamento` quando `status === "recebido"`; sem pagamento, vale a
   competência do `ref_fatura` (previsão é previsão). `rdMesDoContrato(c)` faz o
-  mesmo pelo lado do contrato (`pago` → `data_pagamento`) — as duas **têm que
-  andar juntas**, senão o contrato COM fatura cai num mês e o SEM fatura
-  noutro. **PARCIAL não migra** nos dois: o valor que entra é o `valor_total`
-  previsto, e levá-lo pro mês da parcela arrastaria junto o que ainda não
-  entrou.
+  mesmo pelo lado do contrato (`pago`/`parcial` → `data_pagamento`) — as duas
+  **têm que andar juntas**, senão o contrato COM fatura cai num mês e o SEM
+  fatura noutro. **PARCIAL migra igual** ("independente de ser parcial ou
+  não"), levando junto o `valor_total` previsto — ver `[previsto-liquidado]`.
   **Isso é LEITURA, não gravação** — `ref_fatura`, número e data de emissão
   continuam intocados, então `[fatura-nao-migra]` segue valendo e a aba
   **Faturas continua mostrando a competência** (ela monta a lista a partir do

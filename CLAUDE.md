@@ -896,6 +896,51 @@ migração sumiria da tela de uma vez.
 **Nunca reaproveitar `m.vencimento` para prazo de cliente** — são dois prazos
 diferentes, de dois credores diferentes, na mesma multa.
 
+⚠️ **E foi exatamente o que `_RESP_ETAPA_MULTA` continuava fazendo.** Criar o
+campo e o helper não bastou: a **tabela de prazo por etapa** seguia com
+`cobrado_cli: prazo: "vencimento"` — o prazo do ÓRGÃO — e `boleto_solic` igual.
+Como a Agenda posiciona o cartão pelo prazo da etapa, o boleto do cliente
+nascia semanas no passado, **fora da janela da Agenda**, e vencia sem aparecer
+em lugar nenhum (relato: *"coloquei que os dois boletos venceram 7/9 e não
+aparece como vencido na agenda"*). Hoje cada espera tem a sua chave —
+`"cobranca"` → `multaCobrancaVenc`, `"boleto_orgao"` → `prazo_boleto_orgao`,
+as duas com retaguarda em `m.vencimento` para a multa anterior às migrações.
+
+**Ao criar campo de prazo, varra quem MAIS decide prazo.** O helper novo é
+metade do trabalho; a outra metade é achar toda tabela, mapa ou `switch` que
+já respondia àquela pergunta com o dado errado.
+
+### O cartão da Agenda fica no prazo da ETAPA ATUAL
+
+`buildAgendaEventos` datava o cartão de multa por `m.vencimento` fixo. Agora é
+`(_sitAg && _sitAg.prazo) || m.vencimento` — e a **chave carrega essa data**,
+então remarcar o boleto para outro vencimento não deixa o adiamento antigo
+escondendo o cartão novo.
+
+Na etapa `cobrado_cli` o cartão muda de identidade: emoji **📬**, título
+*"Boleto ao cliente"*, valor `valor_cobrado`, e o texto diz *"boleto venceu
+em"* / *"vence em"*. **`fluxo: null` de propósito** — a saída de caixa da multa
+já foi contada no pagamento ao órgão; transformar o reembolso do cliente em
+entrada muda números que o usuário lê todo dia e é decisão dele
+(`[contas-fluxo]`).
+
+### A etiqueta de status alterna emoji e vencimento — `[multa-face-venc]`
+
+Pedido do usuário: *"faça que alterne com o ícone do status o emoji com a data
+de vencimento do boleto"*. No card de Multas, onde fica o emoji da fase,
+alterna a data do boleto do cliente a cada 4s — o prazo fica visível sem abrir
+o card nem esperar o atraso.
+
+Duas travas que vêm de `[bateria]`, e que qualquer alternância nova tem que
+repetir:
+
+- **O timer só existe quando há o que alternar** (`_temFaceVenc`: alguma
+  cobrança pendente COM vencimento na tela). Alternância sem conteúdo é custo
+  puro, e um `setInterval` perpétuo por causa de zero elementos é o erro que
+  aquela seção inteira existe para evitar.
+- **Nada roda em segundo plano** (`if (document.hidden) return;`) e a animação
+  de troca é **de entrada, não infinita**, só em `opacity`/`transform`.
+
 Uma etapa antes, **"Boleto Solicitado"** tinha o mesmo buraco: registrava a
 data do pedido e nada mais, então o pedido podia ficar parado no órgão por
 meses sem a etapa nunca aparecer atrasada. Ganhou

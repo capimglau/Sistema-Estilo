@@ -871,6 +871,32 @@ eq("pedido antigo, sem prazo, não vira atraso chutado",
 ok("o modal de solicitar boleto pede o prazo",
   /campo2Label: "⏰ Prazo para o órgão devolver o boleto"/.test(html));
 
+/* Pedir no modal não basta: o que o modal grava tem que dar para CONFERIR e
+   CORRIGIR depois. Os dois prazos existiam no banco e nos helpers, mas não
+   apareciam no formulário "Editar Multa" — então um prazo digitado errado (ou
+   não digitado) não tinha onde ser arrumado. Mesmo princípio de "todo tipo que
+   tem data_pagamento tem o campo no formulário de edição". */
+const _formMulta = html.slice(html.indexOf('/* ══ ETAPA 4: PAGAMENTO AO ÓRGÃO ══ */'),
+                              html.indexOf('/* ══ ETAPA 6'));
+ok("o bloco das etapas 4 e 5 foi encontrado", _formMulta.length > 1000);
+ok("o prazo do órgão é editável no formulário",
+  /label:"Prazo de Retorno do Órgão"[\s\S]{0,220}F\("prazo_boleto_orgao"/.test(_formMulta));
+ok("o vencimento do boleto do cliente é editável no formulário",
+  /label:"Vencimento do Boleto ao Cliente"[\s\S]{0,240}F\("vencimento_cobranca_cliente"/.test(_formMulta));
+// E o save grava os dois: "" tem que virar null, nunca string vazia.
+ok("os dois prazos são normalizados no save",
+  /"vencimento_cobranca_cliente","data_solicitacao_boleto","prazo_boleto_orgao"/.test(html));
+
+/* [multa-ordem-etapa4] A Etapa 4 mostrava o PAGAMENTO antes da solicitação e
+   do recebimento do boleto — a tela contava o processo ao contrário. A ordem
+   real é: pede → recebe → paga. Estes índices falham se alguém reinverter. */
+const _iSolic = _formMulta.indexOf('label:"Boleto ao Órgão — Solicitado"');
+const _iReceb = _formMulta.indexOf('label:"Boleto ao Órgão — Recebido"');
+const _iStatusPg = _formMulta.indexOf('label:"Status do Pagamento"');
+ok("os três marcos da etapa 4 existem", _iSolic > 0 && _iReceb > 0 && _iStatusPg > 0);
+ok("solicitar o boleto vem antes de receber", _iSolic < _iReceb);
+ok("receber o boleto vem antes de pagar", _iReceb < _iStatusPg);
+
 /* [previsto-liquidado] A fatura recebida PELA TELA DE CONTRATOS deixa a baixa
    no contrato — a receita pode ficar sem data_pagamento no banco. Sem ler o
    contrato junto, a fatura ficava presa na competência e o cliente aparecia no

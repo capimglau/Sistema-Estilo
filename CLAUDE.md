@@ -963,6 +963,34 @@ porque escondia o ícone da ação; o ícone sozinho, por sua vez, não diz até
 quando. Alternar resolve os dois sem escolher entre eles — não volte a fixar
 num dos lados.
 
+### A etiqueta tem um tamanho só — `[etiqueta-1px]`
+
+A **etiqueta** (a bandeira diagonal colorida à esquerda do card) é **uma peça
+compartilhada**: a mesma classe `.ag-panel-flag` serve a Agenda, os painéis do
+Início e as telas de **Contratos, Multas, Despesas, Receitas e Faturas**.
+Mexer no tamanho num lugar só faz as telas divergirem — e **1px de diferença
+ninguém vê revisando código, só no print do usuário**.
+
+Tamanhos atuais, todos travados em `tests/run.js` (grupo *"A etiqueta tem um
+tamanho só"*):
+
+| o quê | onde | px |
+|---|---|---|
+| dia | `.ag-pf-date .d` | 14 |
+| mês | `.ag-pf-date .m` | 8 |
+| emoji | `.ag-pf-emoji` | 19 |
+| texto vertical da multa | `.ag-mul-flag::after` | 11 |
+| ícone de traço | `center/19px 19px` **e** `_flagIcon(size||19)` | 19 |
+
+⚠️ **O ícone de traço tem DUAS implementações** — CSS (`--flag-icon`, no
+cartão da Agenda) e React (`_flagIcon`, nos painéis). Elas desenham o mesmo
+símbolo e **têm que andar no mesmo tamanho**; o teste falha se uma ficar para
+trás.
+
+⚠️ **A etiqueta da tela de Faturas não usa a classe** — é estilo inline, com o
+rótulo que alterna com "Emitir fatura". É a mais fácil de esquecer num ajuste
+global, e por isso tem teste próprio.
+
 ### Data é "7 SET" — `[data-dia-mes]`
 
 Pedido do usuário: *"coloque na aba de multas o mesmo padrão de data da tela

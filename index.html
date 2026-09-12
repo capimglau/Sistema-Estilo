@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="835637e"/>
+<meta name="ag-build" content="a12fd81"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -18544,12 +18544,81 @@ const db = {
     _agVerSetMany(t, rows);
     return Array.isArray(rows) ? rows : [];
   },
-  async upload(path, file) {
-    const r = await _agFetchAuth(SB_URL + "/storage/v1/object/documentos/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: HDR.Authorization, "Content-Type": file.type, "x-upsert": "true", "Content-Disposition": "inline" }, body: file }, 60000);
-    if (!r.ok) throw new Error("Upload falhou. Verifique o bucket 'documentos' no Supabase Storage.");
-    return SB_URL + "/storage/v1/object/public/documentos/" + path;
+  /* [storage-privado] O bucket `documentos` é PRIVADO — CNH, RG, comprovante
+     de residência e afins são dado pessoal de CLIENTE e não podem ficar
+     abertos a quem tiver a URL. Só arquivo de MARCA (logo, ícone da PWA) vai
+     pro bucket `marca`, esse sim público: a tela de login desenha o logo
+     ANTES de existir sessão, e link assinado exige sessão. Ver
+     sql/15-storage-privado.sql. */
+  async upload(path, file, publico) {
+    var bucket = publico ? "marca" : "documentos";
+    const r = await _agFetchAuth(SB_URL + "/storage/v1/object/" + bucket + "/" + path, { method: "POST", headers: { apikey: SB_KEY, Authorization: HDR.Authorization, "Content-Type": file.type, "x-upsert": "true", "Content-Disposition": "inline" }, body: file }, 60000);
+    if (!r.ok) throw new Error("Upload falhou. Verifique o bucket '" + bucket + "' no Supabase Storage.");
+    /* O que fica GRAVADO no banco. Bucket público: a URL direta, como sempre.
+       Bucket privado: o marcador `priv:` + caminho — nunca uma URL
+       `/object/public/documentos/`, que existiria no banco parecendo válida
+       e daria erro ao abrir. Quem transforma isso em link que abre é
+       `db.assinarUrl`, na hora do clique. */
+    return publico
+      ? SB_URL + "/storage/v1/object/public/" + bucket + "/" + path
+      : "priv:" + path;
+  },
+  /* Link temporário para um arquivo do bucket privado. `segundos` é a
+     validade: uma hora basta para abrir na tela; o que é enviado para fora
+     (contrato por WhatsApp) pede prazo longo — ver DOC_PRAZO_ENVIO. */
+  async assinarUrl(valor, segundos) {
+    var p = _docPath(valor);
+    if (!p) return String(valor || "");   // nada do nosso bucket: devolve como está
+    const r = await _agFetchAuth(SB_URL + "/storage/v1/object/sign/documentos/" + p, {
+      method: "POST",
+      headers: Object.assign({}, HDR, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ expiresIn: segundos || 3600 })
+    }, 20000);
+    if (!r.ok) throw new Error("Não foi possível abrir o arquivo. Ele pode ter sido removido do Storage.");
+    const j = await r.json().catch(function(){ return {}; });
+    if (!j.signedURL) throw new Error("O Supabase não devolveu link para este arquivo.");
+    return SB_URL + "/storage/v1" + j.signedURL;
   }
 };
+
+/* Prazo do link que sai do app (contrato/vistoria por WhatsApp ou e-mail,
+   auto de infração na notificação ao condutor). Quem abre é o cliente, que
+   não tem login — então o link precisa durar. 90 dias é o meio-termo: cobre
+   qualquer consulta razoável e ainda assim o link MORRE, diferente da URL
+   pública eterna que existia antes. */
+var DOC_PRAZO_ENVIO = 60 * 60 * 24 * 90;
+
+/* Caminho do arquivo dentro do bucket privado, a partir do que está gravado.
+   Aceita as DUAS formas de propósito: o marcador novo (`priv:cnh/x.jpg`) e a
+   URL pública antiga, que continua no banco dos registros criados antes de
+   sql/15 — assim nada precisa de migração de dado para voltar a abrir.
+   Devolve null para qualquer outra coisa (link externo colado à mão, por
+   exemplo), e aí o chamador abre como está. */
+function _docPath(valor) {
+  var s = String(valor || "");
+  if (!s) return null;
+  if (s.indexOf("priv:") === 0) return s.slice(5);
+  var m = s.match(/\/storage\/v1\/object\/(?:public\/|sign\/)?documentos\/(.+)$/);
+  return m ? m[1].split("?")[0] : null;
+}
+
+/* Abre um documento do bucket privado numa aba nova.
+   A janela é aberta ANTES do await de propósito: depois do await o Safari já
+   não enxerga o gesto do usuário e bloqueia como popup — mesmo padrão que
+   `enviarDocWA` já usava. */
+async function abrirDoc(valor, ev) {
+  if (ev) { try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {} }
+  if (!valor) return;
+  if (!_docPath(valor)) { window.open(valor, "_blank", "noopener"); return; }
+  var w = window.open("about:blank", "_blank");
+  try {
+    var u = await db.assinarUrl(valor, 3600);
+    if (w) w.location.href = u; else window.open(u, "_blank", "noopener");
+  } catch (e) {
+    if (w) { try { w.close(); } catch (_) {} }
+    alert((e && e.message) || "Não foi possível abrir o arquivo.");
+  }
+}
 
 /* ── EFFECT 7 · agBar: global spring progress bar ── */
 window.agBar = (function(){
@@ -24748,21 +24817,25 @@ function Stat({ icon, label, val, color }) {
     , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: 3 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 118}}, label)
   );
 }
-function UploadField({ label, value, onChange, accept, pasta, nome, onSelect }) {
+/* `publico` marca o campo cujo arquivo NÃO é documento de ninguém — logo e
+   ícone da PWA, que precisam abrir sem sessão (tela de login). Todo o resto
+   sobe para o bucket privado e só abre por link assinado. Ver
+   [storage-privado] em CLAUDE.md. */
+function UploadField({ label, value, onChange, accept, pasta, nome, onSelect, publico }) {
   const ref = useRef();
   const [uploading, setUploading] = useState(false);
   async function handle(e) {
     const file = e.target.files[0]; if (!file) return;
     if (onSelect) onSelect(file);
     setUploading(true);
-    try { const ext = file.name.split(".").pop(); const url = await db.upload(pasta + "/" + nome + "_" + Date.now() + "." + ext, file); onChange(url); }
+    try { const ext = file.name.split(".").pop(); const url = await db.upload(pasta + "/" + nome + "_" + Date.now() + "." + ext, file, publico); onChange(url); }
     catch(err) { alert("Erro: " + err.message); }
     setUploading(false);
   }
   return React.createElement('div', {__self: this, __source: {fileName: _jsxFileName, lineNumber: 131}}
     , React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: C.sub, marginBottom: 5 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 132}}, label)
     , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 133}}
-      , value ? React.createElement('a', { href: value, target: "_blank", rel: "noreferrer", style: { color: C.blue, fontSize: 13, fontWeight: 600, flex: 1 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 134}}, "Ver arquivo" ) : React.createElement('span', { style: { fontSize: 13, color: C.gray, flex: 1 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 134}}, "Nenhum arquivo" )
+      , value ? React.createElement('a', { href: value, target: "_blank", rel: "noreferrer", onClick: function(e){ abrirDoc(value, e); }, style: { color: C.blue, fontSize: 13, fontWeight: 600, flex: 1, cursor: "pointer" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 134}}, "Ver arquivo" ) : React.createElement('span', { style: { fontSize: 13, color: C.gray, flex: 1 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 134}}, "Nenhum arquivo" )
       , React.createElement('button', { type: "button", className: bCls(Btn(value ? C.orange : C.blue, true)), style: bStyle(Btn(value ? C.orange : C.blue, true)), onClick: () => ref.current.click(), disabled: uploading, __self: this, __source: {fileName: _jsxFileName, lineNumber: 135}}, uploading ? "Enviando..." : value ? "Trocar" : "Enviar")
       , value && React.createElement('button', { type: "button", className: bCls(Btn(C.red, true)), style: bStyle(Btn(C.red, true)), onClick: () => onChange(""), __self: this, __source: {fileName: _jsxFileName, lineNumber: 136}}, "✕")
     )
@@ -32880,7 +32953,7 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
               , vencendo.map(x => linha(x, C.orange, "⚠"))
             );
           })()
-          , v.crv_url && React.createElement('a', { href: v.crv_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 540}}, "CRV/CRLV")
+          , v.crv_url && React.createElement('a', { href: v.crv_url, target: "_blank", rel: "noreferrer", onClick: function(_e){ abrirDoc(v.crv_url, _e); }, style: { fontSize: 12, color: C.teal }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 540}}, "CRV/CRLV")
           , React.createElement('div', { style: { display: "flex", gap: 6, marginTop: 4 } }
             , React.createElement('button', { className: "lg-pill lg-ghost", style: { flex: 1, color: C.sub }, onClick: function(e){ e.stopPropagation(); setForm(Object.assign({},v)); setEdit(v.id); setModal(true); } }, Ico("editar", 15), " Editar")
             , React.createElement('button', { className: "lg-pill lg-ghost", style: { flex: 1, color: C.sub }, onClick: function(e){ e.stopPropagation(); setVeicSheet(v); } }, "··· Mais")
@@ -33411,9 +33484,9 @@ function Clientes({ clientes, setClientes, contratos, toast }) {
           , React.createElement('div', { style: { fontSize: 12, color: C.sub } }, "Tel: " , c.telefone || "--", c.email && " · " + c.email)
           , c.bloqueado && c.motivo_bloqueio && React.createElement('div', { style: { fontSize: 12, color: C.red, marginTop: 2 } }, "Bloqueio: " , c.motivo_bloqueio)
           , React.createElement('div', { style: { display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" } }
-            , c.cnh_url && React.createElement('a', { href: c.cnh_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, onClick: function(e){e.stopPropagation();} }, "CNH")
-            , c.rg_url && React.createElement('a', { href: c.rg_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, onClick: function(e){e.stopPropagation();} }, "RG")
-            , c.comprovante_url && React.createElement('a', { href: c.comprovante_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, onClick: function(e){e.stopPropagation();} }, "Comprovante")
+            , c.cnh_url && React.createElement('a', { href: c.cnh_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, onClick: function(e){ e.stopPropagation(); abrirDoc(c.cnh_url, e); } }, "CNH")
+            , c.rg_url && React.createElement('a', { href: c.rg_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, onClick: function(e){ e.stopPropagation(); abrirDoc(c.rg_url, e); } }, "RG")
+            , c.comprovante_url && React.createElement('a', { href: c.comprovante_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal }, onClick: function(e){ e.stopPropagation(); abrirDoc(c.comprovante_url, e); } }, "Comprovante")
             , React.createElement('span', { style: { fontSize: 11, color: C.sub, marginLeft: "auto", opacity: 0.5 } }, "··· toque para ações")
           )
         )
@@ -33796,7 +33869,7 @@ function DocsModalBody({ contrato, clientes, veiculos, onSave }) {
         , React.createElement('div', { style: { fontSize:11, color:C.sub, marginBottom:8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 800}}, hint)
         , contrato[campo]
           ? React.createElement('div', { style: { display:"flex", gap:8, alignItems:"center" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 802}}
-              , React.createElement('a', { href: contrato[campo], target: "_blank", rel: "noreferrer", style: { fontSize:13, color:C.teal, fontWeight:600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 803}}, "Ver documento" )
+              , React.createElement('a', { href: contrato[campo], target: "_blank", rel: "noreferrer", onClick: function(_e){ abrirDoc(contrato[campo], _e); }, style: { fontSize:13, color:C.teal, fontWeight:600 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 803}}, "Ver documento" )
               , React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: function(){ onSave(campo, null); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 804}}, "Remover")
             )
           : React.createElement(UploadField, { label: "Anexar arquivo" , value: "", onChange: function(url){ onSave(campo, url); }, pasta: "docs_contratos", nome: "ct_"+contrato.id+"_"+campo, __self: this, __source: {fileName: _jsxFileName, lineNumber: 806}} )
@@ -37150,7 +37223,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
             , React.createElement('div', { style: { flex: 1, minWidth: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1331}}
               , React.createElement('div', { style: { fontWeight: 800, fontSize: 17, lineHeight: 1.2 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1332}}, m.ait && React.createElement('span', { style: Object.assign({}, Badge(_flagCorPastel(C.orange)), { fontWeight: 700 }) }, "AIT " + m.ait))
               , m.ait && m.auto_infracao_url && React.createElement('div', { style: { display:"flex", alignItems:"center", gap:8, marginTop:7 } }
-                , React.createElement('a', { href:m.auto_infracao_url, target:"_blank", rel:"noreferrer",
+                , React.createElement('a', { href:m.auto_infracao_url, target:"_blank", rel:"noreferrer", onClick: function(_e){ abrirDoc(m.auto_infracao_url, _e); },
                     style:{ fontSize:11, fontWeight:700, color:_flagCorPastel(C.orange), background:"rgba(255,149,0,0.15)", border:"1px solid rgba(255,149,0,0.30)", borderRadius:8, padding:"5px 10px", textDecoration:"none", flexShrink:0, whiteSpace:"nowrap" } },
                   "📎 Ver Auto →"
                 )
@@ -37567,21 +37640,36 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
         var nVe = ((veDSV && veDSV.marca) || '') + ' ' + ((veDSV && veDSV.modelo) || '');
         var _s = function(v){ return v || '—'; };
         var _d = function(v){ return v ? fmtDateShort(v) : '—'; };
-        /* ── Função local: enviar notificação da multa (não o DSV) ── */
-        function enviarNotifCliente(via) {
+        /* ── Função local: enviar notificação da multa (não o DSV) ──
+           É `async` por causa do anexo: o auto de infração vive no bucket
+           PRIVADO, então o endereço que vai na mensagem precisa ser assinado
+           antes (quem abre é o condutor, que não tem login). A janela é
+           aberta ANTES do await — depois dele o Safari já não reconhece o
+           gesto e bloqueia como popup. */
+        async function enviarNotifCliente(via) {
+          var janela = window.open("about:blank", "_blank");
           var nomeVe = (veDSV && veDSV.placa ? veDSV.placa : "") + (veDSV && veDSV.modelo ? " " + veDSV.modelo : "");
           var anexoUrl = mDSV.auto_infracao_url || "";
+          if (anexoUrl) {
+            /* Falhar a assinatura não pode impedir o aviso: a multa é o
+               assunto, o anexo é acessório. Sem link, segue sem a linha. */
+            try { anexoUrl = await db.assinarUrl(anexoUrl, DOC_PRAZO_ENVIO); }
+            catch (_) { anexoUrl = ""; }
+          }
           var linhaAnexo = anexoUrl ? "\n\n📎 Notificação em anexo:\n" + anexoUrl : "";
           var msg = "Olá " + (clDSV && clDSV.nome ? clDSV.nome : "") + "!\n\nInformamos que há uma notificação de infração de trânsito em seu nome referente ao veículo " + nomeVe + ".\n\nAIT: " + (mDSV.ait || "—") + "\nData: " + fmtDate(mDSV.data) + "\nInfração: " + (mDSV.tipo || "—") + "\nLocal: " + (mDSV.local || "—") + "\nVencimento: " + fmtDate(mDSV.vencimento) + "\nValor: " + fmtBRL(mDSV.valor) + linhaAnexo + "\n\nQualquer dúvida, entre em contato conosco.\n\n" + (emp.nome || "") + (emp.telefone ? "\nTel: " + emp.telefone : "");
+          var destino = "";
           if (via === "whats") {
             var tel = String((clDSV && clDSV.telefone) || "").replace(/\D/g, "");
             if (tel && tel.length < 12) tel = "55" + tel;
-            window.open("https://wa.me/" + tel + "?text=" + encodeURIComponent(msg), "_blank");
+            destino = "https://wa.me/" + tel + "?text=" + encodeURIComponent(msg);
           } else if (via === "email") {
             var to = (clDSV && clDSV.email) || "";
-            var bodyEmail = msg;
-            window.open("mailto:" + encodeURIComponent(to) + "?subject=" + encodeURIComponent("Notificação de Infração de Trânsito — AIT " + (mDSV.ait || "")) + "&body=" + encodeURIComponent(bodyEmail), "_blank");
+            destino = "mailto:" + encodeURIComponent(to) + "?subject=" + encodeURIComponent("Notificação de Infração de Trânsito — AIT " + (mDSV.ait || "")) + "&body=" + encodeURIComponent(msg);
           }
+          if (destino) {
+            if (janela) janela.location.href = destino; else window.open(destino, "_blank");
+          } else if (janela) { try { janela.close(); } catch (_) {} }
           setModalDSV(false); setMultaDSV(null);
         }
         return React.createElement(Modal, { open: modalDSV, onClose: function(){ setModalDSV(false); setMultaDSV(null); }, title: "📤 Enviar Notificação ao Cliente" }
@@ -37604,7 +37692,7 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
                 ? React.createElement(React.Fragment, null
                     , React.createElement('span', null, "📎")
                     , React.createElement('span', { style: { fontWeight: 600, color: "var(--c-green)" } }, "Notificação anexada — será enviada como link")
-                    , React.createElement('a', { href: mDSV.auto_infracao_url, target: "_blank", rel: "noreferrer", style: { marginLeft: "auto", fontSize: 11, color: "var(--c-blue)" } }, "ver arquivo")
+                    , React.createElement('a', { href: mDSV.auto_infracao_url, target: "_blank", rel: "noreferrer", onClick: function(_e){ abrirDoc(mDSV.auto_infracao_url, _e); }, style: { marginLeft: "auto", fontSize: 11, color: "var(--c-blue)" } }, "ver arquivo")
                   )
                 : React.createElement(React.Fragment, null
                     , React.createElement('span', null, "⚠️")
@@ -38166,8 +38254,8 @@ function Manutencao({ manutencoes, setManutencoes, veiculos, setVeiculos, despes
               , m.oficina && React.createElement('div', { style: { fontSize: 12, color: C.sub }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1532}}, "🏪 " , m.oficina)
               , m.recorrente && React.createElement('div', { style: { fontSize: 11, color: C.orange } }, "🔁 Recorrente", m.prazo_recorrencia ? " · a cada " + m.prazo_recorrencia + " mês(es)" : " (sem prazo)", " — aparece em todos os meses")
               , React.createElement('div', { style: { display: "flex", gap: 10, marginTop: 4, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1534}}
-                , m.orcamento_url && React.createElement('a', { href: m.orcamento_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal, fontWeight: 600 }, onClick: function(e){e.stopPropagation();}, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1535}}, "📄 Orçamento" )
-                , m.nota_servico_url && React.createElement('a', { href: m.nota_servico_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.green, fontWeight: 600 }, onClick: function(e){e.stopPropagation();}, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1536}}, "🧾 Nota" )
+                , m.orcamento_url && React.createElement('a', { href: m.orcamento_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.teal, fontWeight: 600 }, onClick: function(e){ e.stopPropagation(); abrirDoc(m.orcamento_url, e); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1535}}, "📄 Orçamento" )
+                , m.nota_servico_url && React.createElement('a', { href: m.nota_servico_url, target: "_blank", rel: "noreferrer", style: { fontSize: 12, color: C.green, fontWeight: 600 }, onClick: function(e){ e.stopPropagation(); abrirDoc(m.nota_servico_url, e); }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1536}}, "🧾 Nota" )
                 , React.createElement('span', { style: { fontSize: 11, color: C.sub, marginLeft: "auto", opacity: 0.5 } }, "··· toque para ações")
               )
             )
@@ -46558,7 +46646,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
     , React.createElement('div', { className: "lg-card", style: CARD, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2950}}
       , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2951}}, "Logo")
       , form.logo_url && React.createElement('img', { src: form.logo_url, alt: "Logo", style: { maxHeight: 80, maxWidth: 220, objectFit: "contain", marginBottom: 10, borderRadius: 8 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2952}} )
-      , React.createElement(UploadField, { label: "Enviar logo" , value: form.logo_url || "", onChange: v => { F("logo_url", v); preloadLogoEmbed(v); }, accept: "image/*", pasta: "logo", nome: "empresa_logo", __self: this, __source: {fileName: _jsxFileName, lineNumber: 2953}} )
+      , React.createElement(UploadField, { label: "Enviar logo" , value: form.logo_url || "", onChange: v => { F("logo_url", v); preloadLogoEmbed(v); }, accept: "image/*", pasta: "logo", nome: "empresa_logo", publico: true, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2953}} )
     )
     // Versão publicada em uso — permite saber na hora se o aparelho está com
     // uma cópia antiga do app em cache depois de uma atualização.
@@ -46582,13 +46670,13 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
         , React.createElement('div', null
           , React.createElement('div', { style: { fontSize: 11, fontWeight: 600, color: C.sub, marginBottom: 6 } }, "☀️ Ícone — Modo Claro")
           , form.pwa_icon_url && React.createElement('img', { src: form.pwa_icon_url, alt: "Ícone PWA", style: { width: 56, height: 56, objectFit: "contain", borderRadius: 14, marginBottom: 8, border: "1px solid " + C.border, display: "block" } })
-          , React.createElement(UploadField, { label: "Enviar ícone claro", value: form.pwa_icon_url || "", onChange: v => F("pwa_icon_url", v), accept: "image/png,image/jpeg,image/svg+xml,image/webp", pasta: "logo", nome: "pwa_icon" })
+          , React.createElement(UploadField, { label: "Enviar ícone claro", value: form.pwa_icon_url || "", onChange: v => F("pwa_icon_url", v), accept: "image/png,image/jpeg,image/svg+xml,image/webp", pasta: "logo", nome: "pwa_icon", publico: true })
         )
         , React.createElement('div', null
           , React.createElement('div', { style: { fontSize: 11, fontWeight: 600, color: C.sub, marginBottom: 6 } }, "🌙 Ícone — Modo Escuro")
           , React.createElement('div', { style: { fontSize: 10, color: C.sub, marginBottom: 6, lineHeight: 1.4 } }, "Usado ao adicionar à Tela de Início com o APARELHO em modo escuro do sistema")
           , form.pwa_icon_dark_url && React.createElement('img', { src: form.pwa_icon_dark_url, alt: "Ícone PWA Dark", style: { width: 56, height: 56, objectFit: "contain", borderRadius: 14, marginBottom: 8, border: "1px solid " + C.border, display: "block", background: "#111" } })
-          , React.createElement(UploadField, { label: "Enviar ícone escuro", value: form.pwa_icon_dark_url || "", onChange: v => F("pwa_icon_dark_url", v), accept: "image/png,image/jpeg,image/svg+xml,image/webp", pasta: "logo", nome: "pwa_icon_dark" })
+          , React.createElement(UploadField, { label: "Enviar ícone escuro", value: form.pwa_icon_dark_url || "", onChange: v => F("pwa_icon_dark_url", v), accept: "image/png,image/jpeg,image/svg+xml,image/webp", pasta: "logo", nome: "pwa_icon_dark", publico: true })
         )
       )
     )
@@ -55229,7 +55317,7 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
           var mesStr = mesRef ? mesRef.replace(/-/g,"_") : "";
           var filename = prefix+"_"+numCt(sel.id)+(mesStr?"_"+mesStr:"")+".html";
           var uploadFile = new File([blob], filename, {type:"text/html;charset=utf-8"});
-          linkUrl = await db.upload("pdfs/"+filename, uploadFile);
+          linkUrl = await db.assinarUrl(await db.upload("pdfs/"+filename, uploadFile), DOC_PRAZO_ENVIO);
         }
       } catch(e) {}
     }
@@ -55262,7 +55350,7 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
         var blob = new Blob([html], {type:"text/html;charset=utf-8"});
         var filename = prefix + "_" + numCt(sel.id) + (mesStr?"_"+mesStr:"") + ".html";
         var uploadFile = new File([blob], filename, {type:"text/html;charset=utf-8"});
-        linkUrl = await db.upload("pdfs/"+filename, uploadFile);
+        linkUrl = await db.assinarUrl(await db.upload("pdfs/"+filename, uploadFile), DOC_PRAZO_ENVIO);
       } catch(e) {}
     }
     if (linkUrl) {
@@ -55376,7 +55464,7 @@ function EnviarModal({ open, onClose, contratos, clientes, veiculos, multas, emp
         var html = buildLoteHtml(list);
         var blob = new Blob([html], {type:"text/html;charset=utf-8"});
         var filename = getDocPrefix() + "_lote_" + Date.now() + ".html";
-        linkUrl = await db.upload("pdfs/"+filename, new File([blob], filename, {type:"text/html;charset=utf-8"}));
+        linkUrl = await db.assinarUrl(await db.upload("pdfs/"+filename, new File([blob], filename, {type:"text/html;charset=utf-8"})), DOC_PRAZO_ENVIO);
       } catch(e) {}
       var desc = list.map(function(it, i){ return (i+1)+". "+descLinha(it); }).join("\n");
       corpo = desc + (linkUrl ? ("\n\n📎 " + linkUrl) : "");

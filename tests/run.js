@@ -395,6 +395,60 @@ ok("emitir\(\) recusa reemissão em qualquer caminho",
 eq("a emissão em lote não ignora foiEmitida",
   (html.match(/selVisiveis\.filter\(function\(f\)\{ return (?!!f\.foiEmitida)/g) || []).length, 0);
 
+grupo("Documento de cliente não fica aberto na internet");
+/* [storage-privado] CNH, RG, comprovante de residência e afins são dado
+   pessoal de TERCEIRO. O bucket `documentos` era público e qualquer pessoa
+   com a URL abria, sem login e sem prazo. Estes testes travam as três pernas
+   da correção: nada de documento vira URL pública, todo link de documento é
+   assinado no clique, e só arquivo de MARCA vai para o bucket público. */
+ok("o upload de documento NÃO devolve URL pública",
+  /return publico\s*\n?\s*\? SB_URL \+ "\/storage\/v1\/object\/public\/" \+ bucket \+ "\/" \+ path\s*\n?\s*: "priv:" \+ path;/.test(html));
+ok("existe a função que assina o link", /async assinarUrl\(valor, segundos\)/.test(html));
+ok("o link assinado sai do endpoint /object/sign/",
+  /SB_URL \+ "\/storage\/v1\/object\/sign\/documentos\/" \+ p/.test(html));
+// A URL pública antiga continua no banco dos registros criados antes da
+// migração: `_docPath` tem que reconhecer as DUAS formas, senão o que já
+// existe deixa de abrir e viraria uma migração de dado desnecessária.
+ok("o caminho é extraído tanto do marcador novo quanto da URL antiga",
+  /if \(s\.indexOf\("priv:"\) === 0\) return s\.slice\(5\);/.test(html) &&
+  /\\\/storage\\\/v1\\\/object\\\/\(\?:public\\\/\|sign\\\/\)\?documentos\\\//.test(html));
+// Nenhuma âncora pode continuar levando o usuário direto ao href do bucket
+// privado — sem passar por abrirDoc o clique dá 400.
+const _ancorasDoc = (html.match(/href:\s*(?:v\.crv_url|c\.cnh_url|c\.rg_url|c\.comprovante_url|contrato\[campo\]|m\.orcamento_url|m\.nota_servico_url)|href:m\.auto_infracao_url|href:\s*mDSV\.auto_infracao_url/g) || []).length;
+eq("todas as âncoras de documento foram encontradas", _ancorasDoc, 9);
+eq("e todas assinam o link no clique",
+  (html.match(/abrirDoc\(/g) || []).length >= _ancorasDoc + 2, true);
+// Objeto JS: a última chave vence. Um onClick novo inserido ANTES do
+// stopPropagation que já existia seria silenciosamente descartado — foi
+// exatamente o erro cometido ao escrever esta mudança.
+eq("nenhuma âncora tem onClick duplicado",
+  (html.match(/createElement\('a',\s*\{[^}]*abrirDoc[^}]*\}/g) || [])
+    .filter(function (a) { return (a.match(/onClick:/g) || []).length > 1; }).length, 0);
+// Só marca (logo/ícone) pode ir para o bucket público: a tela de login
+// desenha o logo SEM sessão, e link assinado exige sessão.
+eq("três campos de marca vão para o bucket público",
+  (html.match(/publico: true/g) || []).length, 3);
+ok("e todos eles são da pasta logo/",
+  (html.match(/pasta: "logo", nome: "[a-z_]+", publico: true/g) || []).length === 3);
+// O que sai para o cliente (contrato por WhatsApp, auto de infração) precisa
+// de prazo longo — quem abre não tem login.
+ok("o que é enviado ao cliente usa prazo longo", /DOC_PRAZO_ENVIO = 60 \* 60 \* 24 \* 90/.test(html));
+// Quatro saídas: contrato por WhatsApp, contrato por e-mail, o `pdfs/` do
+// compartilhamento e o auto de infração da notificação ao condutor.
+eq("todo envio ao cliente assina o link",
+  (html.match(/, DOC_PRAZO_ENVIO\)/g) || []).length, 4);
+// A janela tem que abrir ANTES do await: depois dele o Safari não reconhece
+// mais o gesto e bloqueia como popup.
+ok("abrirDoc abre a janela antes de assinar",
+  /var w = window\.open\("about:blank", "_blank"\);\s*\n\s*try \{\s*\n\s*var u = await db\.assinarUrl/.test(html));
+// E o SQL da migração precisa existir e fechar o bucket de verdade.
+const _sqlPriv = require("fs").readFileSync(require("path").join(__dirname, "..", "sql", "15-storage-privado.sql"), "utf8");
+ok("o SQL fecha o bucket documentos",
+  /update storage\.buckets set public = false where id = 'documentos';/.test(_sqlPriv));
+ok("e apaga a policy que deixava todo mundo ler",
+  /drop policy if exists "documentos_select_publico" on storage\.objects;/.test(_sqlPriv));
+ok("o bucket da marca continua público", /values \('marca', 'marca', true\)/.test(_sqlPriv));
+
 grupo("Relatório de Faturas é posição, não emissão");
 // O relatório não emite nada — emitir tem lugar em Financeiro › Faturas e na
 // Agenda. Aqui a seleção escolhe QUAIS faturas saem no PDF/CSV.

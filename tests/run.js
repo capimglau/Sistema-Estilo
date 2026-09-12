@@ -876,6 +876,25 @@ ok("a barra esmaece a fatia pendente", /function _rdBarraBg\(cor, total, pendent
 ok("e o valor a receber vai escrito", /\(opts\.rotuloPendente\|\|"a receber"\)\+" "\+_fmtBarVal\(_pend\)/.test(html));
 ok("no painel de despesas o rótulo é 'a pagar'", /rotuloPendente:"a pagar"/.test(html));
 
+/* [barra-pendente] O pendente só vai ESCRITO quando for diferente do total.
+   Nada liquidado = o pendente É o total, e repetir o mesmo número duas vezes
+   na mesma linha não informa nada (pedido explícito do usuário). */
+ok("nada liquidado não repete o valor", F._rdPendEscrito(1000, 1000) === false);
+ok("parte liquidada escreve o que falta", F._rdPendEscrito(1500, 1000) === true);
+ok("tudo liquidado não escreve nada", F._rdPendEscrito(1500, 0) === false);
+ok("centavo de diferença não conta como liquidado", F._rdPendEscrito(1000, 999.999) === false);
+// ...mas a barra continua esmaecendo a fatia, mesmo sem nada liquidado: a cor
+// mostra que aquilo ainda não entrou; o que sumiu foi só o número repetido.
+ok("a fatia esmaecida existe mesmo sem nada liquidado",
+  /^linear-gradient/.test(F._rdBarraBg("#34C759", 1000, 1000)));
+/* "Um pouco menos que o original", não quase invisível — 30% sumia na tela. */
+ok("a fatia pendente não fica apagada demais",
+  F._rdBarraBg("#34C759", 1000, 400).indexOf("#34C759 70%, transparent") !== -1);
+ok("e o balão de FunnelBars usa a mesma força",
+  /var _corFraca = "color-mix\(in srgb, " \+ x\.color \+ " 70%, transparent\)"/.test(html));
+ok("as duas telas perguntam a mesma função antes de escrever",
+  (html.match(/_rdPendEscrito\(x\.val, x\.pend\)/g) || []).length >= 3);
+
 /* A causa PRÁTICA do "recebi em 31/08 e aparece em setembro": a aba Faturas
    era a única baixa de dinheiro do app que gravava `hoje` sem perguntar. Quem
    recebe no fim do mês e registra dias depois não tinha como informar a data

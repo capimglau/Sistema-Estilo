@@ -908,6 +908,38 @@ padrão seria repetir exatamente o erro dos "30 dias" que esta seção corrigiu.
 próprio**, não só da data do evento. Data sozinha registra o que aconteceu;
 prazo é o que torna a espera cobrável.
 
+**Pedir no modal não basta — tem que dar para CONFERIR e CORRIGIR depois.**
+Os dois prazos existiam no banco, nos helpers e nos modais do pipeline, mas
+**não apareciam no formulário "Editar Multa"**. Quem digitasse errado (ou
+pulasse o modal) não tinha onde arrumar, e a etapa ficava sem atraso para
+sempre — relato do usuário: *"na cobrança ao cliente não há a data de
+vencimento do boleto do cliente"*. É o mesmo princípio de *"todo tipo que tem
+`data_pagamento` tem o campo no formulário de edição"* em
+`[previsto-liquidado]`: **campo que o sistema usa para decidir alguma coisa
+precisa estar na tela de edição daquele registro.** Hoje são
+`prazo_boleto_orgao` (Etapa 4) e `vencimento_cobranca_cliente` (Etapa 5), os
+dois travados em `tests/run.js`.
+
+### A Etapa 4 segue a ordem REAL do processo — `[multa-ordem-etapa4]`
+
+O formulário mostrava **Vencimento + Status do Pagamento + Data do Pagamento
+ANTES** de "Boleto Solicitado" e "Boleto Recebido" — a tela contava o processo
+ao contrário (relato: *"está invertido, o pagamento está antes da solicitação
+e do recebimento do boleto"*).
+
+A ordem é a da vida real, e é essa que a tela tem que desenhar:
+
+1. **solicita** o boleto ao órgão (data + `prazo_boleto_orgao`)
+2. **recebe** o boleto (data)
+3. **paga** (vencimento + status + data)
+
+O **"Vencimento da Multa" fica junto do pagamento de propósito**: é o boleto
+que informa esse vencimento, então ele não pode aparecer antes de o boleto
+chegar. E ele é o prazo do **ÓRGÃO** — nunca o do cliente (ver o aviso acima).
+
+Travado em `tests/run.js`: o grupo compara os índices dos três marcos no
+próprio bloco da Etapa 4 e falha se alguém reinverter.
+
 ### A fatura pode ter a baixa no CONTRATO, não nela
 
 Quando o recebimento é registrado pela tela de **Contratos**, quem fica com

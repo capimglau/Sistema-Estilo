@@ -911,20 +911,39 @@ por `var dtPag = hoje;` tem que dar zero.
 
 Nos painéis **"Receitas por Cliente"** e **"Despesas por Categoria"** (nas duas
 telas), a barra mostra o **total do mês**; a fatia que ainda **não entrou/saiu**
-é desenhada na mesma cor, translúcida, a partir da proporção já liquidada — e o
-valor dela vem **escrito** ("a receber R$ X" / "a pagar R$ X"). Antes a barra
-era sólida do começo ao fim e não havia como saber, olhando o painel, quanto
-daquilo já é dinheiro no caixa.
+é desenhada na mesma cor, um pouco mais fraca, a partir da proporção já
+liquidada — e o valor dela vem **escrito** ("a receber R$ X" / "a pagar R$ X")
+**quando for diferente do total**. Antes a barra era sólida do começo ao fim e
+não havia como saber, olhando o painel, quanto daquilo já é dinheiro no caixa.
 
 - `pendente` viaja na linha (`rdLinhasReceitaCliente`/`rdLinhasDespesaCategoria`)
   e é somado por `rdGroupBy` junto com o total — **nunca recalcular na tela**.
 - Sem `data_pagamento`, o lançamento inteiro é pendente; no **parcial**, só o
   que falta (`valor_total − valor_pago`).
 - `_rdBarraBg(cor, total, pendente)` monta o degradê; `FunnelBars` usa a mesma
-  fórmula inline e sobe a linha de 34px para 40px **só quando há pendência** —
-  mês todo liquidado continua compacto.
+  fórmula inline.
 - O rótulo vem do painel (`rotuloPendente`): "a receber" nas receitas, "a
   pagar" nas despesas.
+
+**Número repetido não é informação — `_rdPendEscrito(total, pendente)`.**
+Quando **nada** foi liquidado, o pendente **é** o próprio total, e escrever "R$
+7.000 / a receber R$ 7.000" na mesma linha só ocupa espaço (pedido explícito do
+usuário). A pergunta *"escrevo o pendente?"* vive numa função só —
+`_rdPendEscrito` — e é ela que as **três** telas chamam; nenhuma decide isso na
+mão com `x.pend > 0`. Ela também comanda a altura da linha do `FunnelBars`
+(34px → 40px **só quando alguma linha escreve** o pendente) e o padding do
+balão.
+
+**A cor continua mostrando a pendência mesmo quando o número não aparece** — a
+barra esmaece a fatia inteira, e é assim que se vê que aquilo ainda não entrou.
+Nunca "resolver" esse caso deixando a barra sólida: aí some a informação junto
+com o número repetido.
+
+**A fatia esmaecida é `70%`, não `30%`.** Nas palavras do usuário: *"não deixe
+tão esmaecido o que não foi pago ou recebido, um pouco menos que o original"*.
+A 30% a fatia praticamente desaparecia na tela — o valor tem que dar pra ver.
+O número vale para os dois lugares (`_rdBarraBg` e o `_corFraca` inline do
+`FunnelBars`) e os dois são travados em `tests/run.js`.
 
 **Painel novo de dinheiro não monta essa data na mão.** Filtro inline do tipo
 `(mu.vencimento||mu.data||"").slice(0,7) === mes` é exatamente o que deixava

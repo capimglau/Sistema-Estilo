@@ -16694,6 +16694,13 @@ body.onix .agk2-ev-card .agk2-ev-val{ color:var(--flag-mid); }
   cursor:pointer; z-index:2; -webkit-tap-highlight-color:transparent;
 }
 .ag-mul-flag-btn:focus-visible{ outline:2px solid #fff; outline-offset:-4px; border-radius:0 12px 12px 0; }
+/* [multa-face-venc] Troca entre o emoji do status e o vencimento do boleto.
+   [bateria] Animação de ENTRADA, não infinita, e só em opacity/transform — as
+   duas propriedades que o navegador compõe na GPU. Roda uma vez por troca
+   (a cada 4s, e só quando há boleto pendente com vencimento na tela). */
+@keyframes ag-mul-face-in{ from{ opacity:0; transform:translateY(-3px); } to{ opacity:1; transform:none; } }
+.ag-mul-face{ display:inline-block; animation:ag-mul-face-in .28s ease-out both; }
+@media (prefers-reduced-motion: reduce){ .ag-mul-face{ animation:none; } }
 .ag-mul-flag:has(.ag-mul-flag-btn:active)::before{ filter:brightness(0.88); }
 body.dark .ag-mul-flag::before, body.dim .ag-mul-flag::before, body.indigo .ag-mul-flag::before,
 body.midnight .ag-mul-flag::before, body.onix .ag-mul-flag::before{
@@ -36143,10 +36150,17 @@ var _RESP_ETAPA_MULTA = {
   dsv_assinado: { resp: "voce",    acao: "Notificar o órgão",              prazo: "indicacao" },
   recusou:      { resp: "voce",    acao: "Recusou assinar — solicitar boleto", prazo: "vencimento" },
   orgao_notif:  { resp: "voce",    acao: "Solicitar o boleto",             prazo: "vencimento" },
-  boleto_solic: { resp: "orgao",   acao: "Aguardando o boleto do órgão",   prazo: "vencimento" },
+  /* [multa-cobranca-venc] Cada espera tem o SEU prazo. Estas duas etapas
+     usavam `vencimento` — o prazo de pagar o ÓRGÃO — como se fosse o prazo
+     delas. Na etapa "cobrado_cli" isso é o erro que a regra proíbe em letras
+     maiúsculas: o órgão já foi pago ali, e quem deve agora é o cliente, com
+     boleto e vencimento próprios. Efeito do bug: o boleto do cliente vencia
+     e nada em lugar nenhum dizia isso (relato: "coloquei que os dois boletos
+     venceram 7/9 e não aparece como vencido na agenda"). */
+  boleto_solic: { resp: "orgao",   acao: "Aguardando o boleto do órgão",   prazo: "boleto_orgao" },
   boleto_rec:   { resp: "voce",    acao: "Pagar o órgão",                  prazo: "vencimento" },
   pago_orgao:   { resp: "voce",    acao: "Cobrar do cliente",              prazo: null },
-  cobrado_cli:  { resp: "cliente", acao: "Aguardando o cliente pagar",     prazo: "vencimento" },
+  cobrado_cli:  { resp: "cliente", acao: "Aguardando o cliente pagar",     prazo: "cobranca" },
 };
 /* Sem emoji e sem contagem: o cabeçalho do painel "Multas pendentes" mostra
    só o título (pedido do usuário) — era o único lugar que lia esse campo.
@@ -36224,8 +36238,13 @@ function situacaoMulta(m) {
   var etapa = pipe[idx] || pipe[0];
   var regra = _RESP_ETAPA_MULTA[etapa.id];
   if (!regra) return null; // encerrada
-  var prazo = regra.prazo === "indicacao" ? (m.prazo_notificacao_orgao || m.vencimento || null)
-            : regra.prazo === "vencimento" ? (m.vencimento || null)
+  /* Retaguarda em `m.vencimento` nos dois prazos novos: cobrança registrada
+     antes de sql/13 e sql/14 não tem campo próprio, e sem isso a etapa
+     ficaria SEM prazo nenhum — pior do que o prazo errado que havia antes. */
+  var prazo = regra.prazo === "indicacao"    ? (m.prazo_notificacao_orgao || m.vencimento || null)
+            : regra.prazo === "cobranca"     ? (multaCobrancaVenc(m) || m.vencimento || null)
+            : regra.prazo === "boleto_orgao" ? (m.prazo_boleto_orgao || m.vencimento || null)
+            : regra.prazo === "vencimento"   ? (m.vencimento || null)
             : null;
   return { etapa: etapa.id, etapaLabel: etapa.label, emoji: etapa.emoji,
            resp: regra.resp, acao: regra.acao, prazo: prazo };
@@ -36585,6 +36604,25 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
   const [multaDSV, setMultaDSV] = useState(null);
   const [modalExcluir, setModalExcluir] = useState(null);
   const [expandedMulId, setExpandedMulId] = useState(null);
+  /* [multa-face-venc] A etiqueta de status alterna o EMOJI com o vencimento do
+     boleto do cliente (pedido do usuário) — o prazo passa a ser visível sem
+     abrir o card nem esperar o atraso.
+     [bateria] O timer só existe quando há alguma cobrança pendente COM
+     vencimento na tela: alternância sem nada para alternar é custo puro. E ele
+     não roda em segundo plano — `document.hidden` corta a troca, como todo
+     intervalo do app. */
+  const [faceVencMul, setFaceVencMul] = useState(false);
+  const _temFaceVenc = (multas || []).some(function (m) {
+    return multaCobrancaPendente(m) && multaCobrancaVenc(m);
+  });
+  useEffect(function () {
+    if (!_temFaceVenc) { setFaceVencMul(false); return; }
+    var t = setInterval(function () {
+      if (document.hidden) return;
+      setFaceVencMul(function (v) { return !v; });
+    }, 4000);
+    return function () { clearInterval(t); };
+  }, [_temFaceVenc]);
   const [viewMode, setViewMode] = useState("lista");
   const [notifModal, setNotifModal] = useState(null);
   const [notifData, setNotifData] = useState("");
@@ -37254,8 +37292,24 @@ function Multas({ multas, setMultas, contratos, clientes, veiculos, empresa, toa
              na linha do tempo que abre ao tocar no card. */
           , (function(){
               var fase = faseMulta(_pipeline[stepIdx].id);
+              /* [multa-face-venc] Onde fica o emoji do status, alterna a data
+                 de vencimento do boleto do cliente. Só quando existe boleto
+                 pendente COM vencimento — sem isso a etiqueta fica parada no
+                 emoji, como sempre foi. */
+              var _vcMul = multaCobrancaPendente(m) ? multaCobrancaVenc(m) : "";
+              var _mostraVenc = !!_vcMul && faceVencMul;
               return React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 } }
-                , React.createElement('span', { style: Object.assign({}, Badge(fase.cor), { fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.4, fontSize: 10 }) }, fase.emoji + " " + fase.label)
+                , React.createElement('span', { style: Object.assign({}, Badge(fase.cor), { fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.4, fontSize: 10 }) }
+                    , React.createElement('span', {
+                        /* `key` diferente por face: o React remonta o nó e a
+                           animação de entrada roda a cada troca, em vez de
+                           o texto piscar trocado no lugar. */
+                        key: _mostraVenc ? "venc" : "emoji",
+                        className: "ag-mul-face",
+                        style: _mostraVenc ? { fontWeight: 900, letterSpacing: 0 } : null
+                      }, _mostraVenc ? fmtDateShort(_vcMul) : fase.emoji)
+                    , " " + fase.label
+                  )
                 , _temAtraso
                   ? React.createElement('span', { style: { fontSize: 10, fontWeight: 800, color: C.red } }, "⚠️ EM ATRASO")
                   : _prazoAtualTxt && React.createElement('span', { style: { fontSize: 10, fontWeight: 700, color: C.sub } }, "Prazo: " + _prazoAtualTxt)
@@ -49859,16 +49913,35 @@ function buildAgendaEventos(ctx) {
     if (_sitAg && _sitAg.prazo === null) return;
     var ve = veiculos.find(function(x){return x.id==m.veiculo_id;});
     var cl = clientes.find(function(x){return x.id==m.cliente_id;});
+    /* [multa-cobranca-venc] O cartão fica no prazo da ETAPA ATUAL, não no
+       `m.vencimento` fixo. Enquanto a multa está em "Cobrado ao Cliente",
+       quem manda é o vencimento do boleto DELE: com a data do órgão o
+       cartão nascia semanas no passado — fora da janela da Agenda — e o
+       boleto do cliente vencia sem aparecer em lugar nenhum. */
+    var _dataAg = (_sitAg && _sitAg.prazo) || m.vencimento;
+    var _ehCob = !!(_sitAg && _sitAg.etapa === "cobrado_cli");
+    var _atrasadoAg = _dataAg < hoje;
     eventos.push({
-      data: m.vencimento, tipo: "multa",
-      cor: m.vencimento < hoje ? "#FF3B30" : "#FF9500",
-      emoji: "⚠️",
-      titulo: "Multa " + (m.tipo||"") + " · " + (ve&&ve.placa||"--") + " · " + fmtV(m.valor),
-      sub: (cl&&cl.nome||"--") + (m.descricao ? " · " + m.descricao : "") + (m.ait ? " · AIT " + m.ait : "") + " · #" + numCt(m.id),
-      chave: "multa|" + m.id + "|" + m.vencimento,
+      data: _dataAg, tipo: "multa",
+      cor: _atrasadoAg ? "#FF3B30" : "#FF9500",
+      emoji: _ehCob ? "📬" : "⚠️",
+      titulo: (_ehCob ? "Boleto ao cliente · " : "Multa ")
+            + (m.tipo||"") + " · " + (ve&&ve.placa||"--") + " · "
+            + fmtV(_ehCob ? (m.valor_cobrado || m.valor) : m.valor),
+      sub: (cl&&cl.nome||"--") + (_ehCob ? " · " + (_atrasadoAg ? "boleto venceu em " : "vence em ") + fmtD(_dataAg) : "")
+         + (m.descricao ? " · " + m.descricao : "") + (m.ait ? " · AIT " + m.ait : "") + " · #" + numCt(m.id),
+      /* A chave carrega a data da etapa: passou o boleto para outro
+         vencimento, o adiamento antigo não o esconde mais. */
+      chave: "multa|" + m.id + "|" + _dataAg,
       quem: (ve&&ve.placa||"--") + (m.tipo ? " · " + m.tipo : ""),
-      detalhe: (cl&&cl.nome||"--") + (m.descricao ? " · " + m.descricao : "") + (m.ait ? " · AIT " + m.ait : ""),
-      valor: numV(m.valor), fluxo: "out",
+      detalhe: (cl&&cl.nome||"--") + (_ehCob ? " · " + (_atrasadoAg ? "cliente não pagou o boleto de " : "boleto do cliente vence em ") + fmtD(_dataAg) : "")
+             + (m.descricao ? " · " + m.descricao : "") + (m.ait ? " · AIT " + m.ait : ""),
+      /* `fluxo: null` na cobrança de propósito: a saída de caixa da multa já
+         foi contada no pagamento ao órgão. Contar o reembolso do cliente
+         como entrada é decisão de caixa que muda números que o usuário lê
+         todo dia — não fazer por conta própria ([contas-fluxo]). */
+      valor: numV(_ehCob ? (m.valor_cobrado || m.valor) : m.valor),
+      fluxo: _ehCob ? null : "out",
       tab: "multas"
     });
   });

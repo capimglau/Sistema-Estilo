@@ -871,6 +871,56 @@ eq("pedido antigo, sem prazo, não vira atraso chutado",
 ok("o modal de solicitar boleto pede o prazo",
   /campo2Label: "⏰ Prazo para o órgão devolver o boleto"/.test(html));
 
+/* Cada espera tem o SEU prazo. As etapas "Cobrado ao Cliente" e "Boleto
+   Solicitado" liam `m.vencimento` — o prazo de pagar o ÓRGÃO — como se fosse o
+   prazo delas. Na cobrança isso é o erro que a regra proíbe: o órgão já foi
+   pago ali, e quem deve agora é o cliente, com boleto próprio. Efeito: o
+   boleto do cliente vencia e nada dizia isso (relato: "coloquei que os dois
+   boletos venceram 7/9 e não aparece como vencido na agenda"). */
+const _mCob = {
+  id: 1, status: "pago", data_pagamento: "2026-08-31", vencimento: "2026-07-20",
+  boleto_orgao_solicitado: true, boleto_orgao_recebido: true,
+  cobrado_cliente: "pendente", data_cobranca_cliente: "2026-09-01",
+  vencimento_cobranca_cliente: "2026-09-07",
+};
+const _sitCob = F.situacaoMulta(_mCob);
+eq("a multa cobrada está na etapa do cliente", _sitCob && _sitCob.etapa, "cobrado_cli");
+eq("e o prazo dela é o do BOLETO DO CLIENTE", _sitCob && _sitCob.prazo, "2026-09-07");
+// O ponto do bug: antes vinha 2026-07-20, o prazo do órgão.
+ok("nunca o vencimento do órgão", (_sitCob && _sitCob.prazo) !== _mCob.vencimento);
+// Retaguarda: cobrança antiga, sem o campo, não pode ficar SEM prazo nenhum.
+const _sitCobVelha = F.situacaoMulta(Object.assign({}, _mCob, { vencimento_cobranca_cliente: null }));
+eq("sem o campo, cai no vencimento antigo em vez de ficar sem prazo",
+  _sitCobVelha && _sitCobVelha.prazo, "2026-07-20");
+// Mesma ideia na espera pelo órgão.
+const _sitBol = F.situacaoMulta({
+  id: 2, status: "pendente", vencimento: "2026-07-20",
+  boleto_orgao_solicitado: true, data_solicitacao_boleto: "2026-07-22",
+  prazo_boleto_orgao: "2026-08-06",
+});
+eq("a espera pelo órgão está na etapa do boleto", _sitBol && _sitBol.etapa, "boleto_solic");
+eq("e usa o prazo combinado com o órgão", _sitBol && _sitBol.prazo, "2026-08-06");
+
+// A Agenda põe o cartão no prazo da ETAPA ATUAL. Com a data do órgão ele
+// nascia semanas no passado — fora da janela — e o boleto vencia invisível.
+ok("o cartão da Agenda usa o prazo da etapa, não o vencimento fixo",
+  /var _dataAg = \(_sitAg && _sitAg\.prazo\) \|\| m\.vencimento;/.test(html));
+ok("e a chave acompanha essa data", /chave: "multa\|" \+ m\.id \+ "\|" \+ _dataAg/.test(html));
+// O reembolso do cliente não entra em soma de caixa: a saída já foi contada
+// no pagamento ao órgão ([contas-fluxo] — não mexer em número de caixa sozinho).
+ok("a cobrança ao cliente não vira fluxo de caixa", /fluxo: _ehCob \? null : "out"/.test(html));
+
+/* [multa-face-venc] A etiqueta de status alterna o emoji com o vencimento do
+   boleto — e o timer só existe quando há o que alternar ([bateria]). */
+ok("a etiqueta alterna emoji e vencimento",
+  /_mostraVenc \? fmtDateShort\(_vcMul\) : fase\.emoji/.test(html));
+ok("só alterna quando há boleto pendente com vencimento",
+  /var _mostraVenc = !!_vcMul && faceVencMul;/.test(html));
+ok("o timer não existe sem nada para alternar",
+  /if \(!_temFaceVenc\) \{ setFaceVencMul\(false\); return; \}/.test(html));
+ok("e não roda em segundo plano",
+  /setInterval\(function \(\) \{\s*\n\s*if \(document\.hidden\) return;\s*\n\s*setFaceVencMul/.test(html));
+
 /* Pedir no modal não basta: o que o modal grava tem que dar para CONFERIR e
    CORRIGIR depois. Os dois prazos existiam no banco e nos helpers, mas não
    apareciam no formulário "Editar Multa" — então um prazo digitado errado (ou

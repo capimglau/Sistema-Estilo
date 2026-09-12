@@ -904,7 +904,16 @@ eq("e usa o prazo combinado com o órgão", _sitBol && _sitBol.prazo, "2026-08-0
 // A Agenda põe o cartão no prazo da ETAPA ATUAL. Com a data do órgão ele
 // nascia semanas no passado — fora da janela — e o boleto vencia invisível.
 ok("o cartão da Agenda usa o prazo da etapa, não o vencimento fixo",
-  /var _dataAg = \(_sitAg && _sitAg\.prazo\) \|\| m\.vencimento;/.test(html));
+  /var _dataAg = _sitAg\.prazo;/.test(html));
+/* E o PORTEIRO também é a etapa. Exigir `m.vencimento` antes de olhar a etapa
+   descartava a multa inteira: das duas cobranças vencidas no mesmo dia, só
+   entrava na Agenda a que por acaso tinha o vencimento DO ÓRGÃO preenchido
+   (relato: "na agenda apareceu uma das duas"). */
+ok("e a entrada na Agenda não exige mais o vencimento do órgão",
+  /if \(multaEncerrada\(m\)\) return;/.test(html) &&
+  /if \(!_sitAg \|\| !_sitAg\.prazo\) return;/.test(html));
+eq("nenhuma multa é descartada por não ter vencimento do órgão",
+  (html.match(/if \(!m\.vencimento \|\| multaEncerrada\(m\)\) return;/g) || []).length, 0);
 ok("e a chave acompanha essa data", /chave: "multa\|" \+ m\.id \+ "\|" \+ _dataAg/.test(html));
 // O reembolso do cliente não entra em soma de caixa: a saída já foi contada
 // no pagamento ao órgão ([contas-fluxo] — não mexer em número de caixa sozinho).
@@ -918,6 +927,13 @@ ok("só alterna quando há boleto pendente com vencimento",
   /var _mostraVenc = !!_vcMul && faceVencMul;/.test(html));
 ok("o timer não existe sem nada para alternar",
   /if \(!_temFaceVenc\) \{ setFaceVencMul\(false\); return; \}/.test(html));
+// A MESMA alternância no painel "Multas pendentes" do Início — foi ali que o
+// usuário sentiu falta ("nas multas pendentes o emoji não alterna com o
+// vencimento"). Mesma regra de bateria: timer só quando há prazo para mostrar.
+ok("a bandeira do painel do Início alterna ícone e prazo",
+  /_dateBadgeFlag\(\(faceMulPrazo && l\.prazo\) \? l\.prazo : null,/.test(html));
+ok("e lá o timer também depende de haver prazo",
+  /if \(!_temMulPrazo\) \{ setFaceMulPrazo\(false\); return; \}/.test(html));
 ok("e não roda em segundo plano",
   /setInterval\(function \(\) \{\s*\n\s*if \(document\.hidden\) return;\s*\n\s*setFaceVencMul/.test(html));
 

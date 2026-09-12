@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="d14267b"/>
+<meta name="ag-build" content="3920341"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -26773,6 +26773,24 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
     var t = setInterval(function(){ if (document.hidden) return; setFaceAtraso(function(v){ return !v; }); }, 4000);
     return function(){ clearInterval(t); };
   }, [_temAtraso]);
+
+  /* [multa-face-venc] A bandeira do painel "Multas pendentes" alterna o ÍCONE
+     da ação com o PRAZO da etapa — que, na multa em cobrança, é o vencimento
+     do boleto do cliente (pedido do usuário).
+     A data já morou nessa bandeira e foi tirada de lá porque escondia o ícone
+     da ação; o ícone sozinho, por sua vez, não diz até quando. Alternando, a
+     bandeira volta a dizer as duas coisas sem escolher entre elas.
+     [bateria] O timer só existe quando alguma multa pendente TEM prazo. */
+  const [faceMulPrazo, setFaceMulPrazo] = useState(false);
+  const _temMulPrazo = (multas || []).some(function (m) {
+    var s = situacaoMulta(m);
+    return !!(s && s.prazo);
+  });
+  useEffect(function() {
+    if (!_temMulPrazo) { setFaceMulPrazo(false); return; }
+    var t = setInterval(function(){ if (document.hidden) return; setFaceMulPrazo(function(v){ return !v; }); }, 4000);
+    return function(){ clearInterval(t); };
+  }, [_temMulPrazo]);
   const pagosMes = ctsMes.filter(c => c.status_pagamento === "pago").length;
   /* Total despesas banner = mesma lógica das barras:
      resolverDespesasDoMes de TODAS despesas (exceto manutencao_id vinculada)
@@ -30899,8 +30917,12 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
              atraso", "vence hoje", "até 12/09"), e a cor da bandeira
              (corPrazo) segue vermelha quando estoura.
              O ícone é o da AÇÃO (_MUL_ACAO_ICON), não o da etapa: é a ação
-             que este painel escreve na linha do cartão. */
-          , _dateBadgeFlag(null, _flagCorPastel(corPrazo), urgente, _MUL_ACAO_ICON[l.etapa] || _MUL_ETAPA_ICON[l.etapa])
+             que este painel escreve na linha do cartão.
+             [multa-face-venc] …e volta a ALTERNAR com a data: a cada 4s a
+             bandeira troca o ícone pelo prazo da etapa (o vencimento do
+             boleto do cliente, quando em cobrança) e volta. Sem escolher
+             entre "qual é a ação" e "até quando" — as duas, uma de cada vez. */
+          , _dateBadgeFlag((faceMulPrazo && l.prazo) ? l.prazo : null, _flagCorPastel(corPrazo), urgente, _MUL_ACAO_ICON[l.etapa] || _MUL_ETAPA_ICON[l.etapa])
           , React.createElement('div', { style:{ flex:1, minWidth:0, padding:'13px 8px' } }
             , React.createElement('div', { style:{ fontSize:13, fontWeight:600, color:'var(--c-text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', lineHeight:1.25 } }, l.cliente)
             , React.createElement('div', { style:{ display:'flex', alignItems:'center', gap:5, marginTop:5, minWidth:0 } }
@@ -49901,16 +49923,23 @@ function buildAgendaEventos(ctx) {
 
   // MULTAS — vencimento
   multas.forEach(function(m) {
-    if (!m.vencimento || multaEncerrada(m)) return;
-    // Etapa "pago ao órgão": o vencimento já foi cumprido (a multa foi paga) —
-    // o que resta agora é cobrar o cliente, sem prazo fixo (ver
-    // _RESP_ETAPA_MULTA/situacaoMulta, prazo:null nessa etapa). Sem essa
-    // checagem a Agenda continuava mostrando o vencimento antigo (já vencido)
-    // como se ainda estivesse pendente, mesmo com a multa já quitada junto
-    // ao órgão — mesma fonte de verdade do painel "Multas pendentes"
-    // (situacaoMulta), pra Agenda e painel nunca divergirem.
+    if (multaEncerrada(m)) return;
+    /* Quem decide se há cartão — e em que data — é a ETAPA ATUAL, uma fonte
+       de verdade só, a mesma do painel "Multas pendentes" (situacaoMulta):
+       sem isso a Agenda e o painel divergem sobre a mesma multa.
+
+       `prazo: null` (etapa "pago ao órgão") = não há o que cobrar ainda: o
+       órgão já foi pago e a cobrança ao cliente nem saiu.
+
+       ⚠️ Exigir `m.vencimento` aqui — como esta linha fazia — descartava a
+       multa ANTES de olhar a etapa. O boleto cobrado do cliente, com
+       vencimento próprio preenchido, sumia da Agenda só porque o vencimento
+       DO ÓRGÃO estava vazio naquele registro: das duas cobranças vencidas no
+       mesmo dia, só aparecia a que por acaso tinha o campo do órgão. A
+       retaguarda em `m.vencimento` continua existindo, mas dentro da
+       situacaoMulta, onde ela é o último recurso e não o porteiro. */
     var _sitAg = situacaoMulta(m);
-    if (_sitAg && _sitAg.prazo === null) return;
+    if (!_sitAg || !_sitAg.prazo) return;
     var ve = veiculos.find(function(x){return x.id==m.veiculo_id;});
     var cl = clientes.find(function(x){return x.id==m.cliente_id;});
     /* [multa-cobranca-venc] O cartão fica no prazo da ETAPA ATUAL, não no
@@ -49918,8 +49947,8 @@ function buildAgendaEventos(ctx) {
        quem manda é o vencimento do boleto DELE: com a data do órgão o
        cartão nascia semanas no passado — fora da janela da Agenda — e o
        boleto do cliente vencia sem aparecer em lugar nenhum. */
-    var _dataAg = (_sitAg && _sitAg.prazo) || m.vencimento;
-    var _ehCob = !!(_sitAg && _sitAg.etapa === "cobrado_cli");
+    var _dataAg = _sitAg.prazo;
+    var _ehCob = _sitAg.etapa === "cobrado_cli";
     var _atrasadoAg = _dataAg < hoje;
     eventos.push({
       data: _dataAg, tipo: "multa",

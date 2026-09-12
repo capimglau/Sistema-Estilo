@@ -224,6 +224,26 @@ eq("nenhum header x-api-key no cliente",
 eq("chave da IA não é lida do banco nem do localStorage",
   (semComentarios.match(/getItem\(\s*["']claude_api_key["']\s*\)|empresa\.claude_api_key/g) || []).length, 0);
 
+grupo("A etiqueta tem um tamanho só");
+/* [etiqueta-1px] Os ícones/textos das ETIQUETAS (a bandeira diagonal) subiram
+   1px a pedido do usuário. Como a mesma classe serve Agenda, painéis do
+   Início e as telas de Multas/Despesas/Receitas/Faturas, um ajuste solto num
+   lugar faz as telas voltarem a divergir — e divergência de 1px ninguém vê
+   revisando, só no print. Por isso os tamanhos ficam travados aqui. */
+ok("dia da etiqueta", /\.ag-panel-flag \.ag-pf-date \.d\{ font-size:14px;/.test(html));
+ok("mês da etiqueta", /\.ag-panel-flag \.ag-pf-date \.m\{ font-size:8px;/.test(html));
+ok("emoji da etiqueta", /\.ag-panel-flag \.ag-pf-emoji\{ font-size:19px;/.test(html));
+ok("texto vertical da bandeira de multa", /color:#fff; font-size:11px; font-weight:800; text-transform:uppercase;/.test(html));
+// O ícone de traço tem DUAS implementações — CSS (cartão da Agenda) e React
+// (_flagIcon, painéis). As duas têm que andar no mesmo tamanho.
+eq("ícone desenhado por CSS", (html.match(/center\/19px 19px/g) || []).length, 2);
+ok("ícone desenhado em React", /var a = \{ width:size\|\|19, height:size\|\|19,/.test(html));
+ok("e nenhum dos dois ficou para trás",
+  !/center\/18px 18px/.test(html) && !/width:size\|\|18, height:size\|\|18/.test(html));
+// A etiqueta da tela de Faturas é inline, não usa a classe — fácil de esquecer.
+ok("etiqueta de Faturas acompanhou",
+  /writingMode: "vertical-rl", transform: "rotate\(180deg\)", fontWeight: 800, fontSize: 14,/.test(html));
+
 grupo("Nada anima propriedade cara para sempre");
 
 // Com o app PARADO na tela inicial, ele queimava 16% de um núcleo. Quase tudo

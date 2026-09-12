@@ -61,6 +61,7 @@ function extrair(marcadores) {
       KM_REVISAO_ALERTA, statusRevisaoKm,
       _periodosSobrepoem, veiculoDaReserva, conflitosDaReserva, clienteDaReserva,
       rdSum, rdGroupBy, RD_COR_CATEGORIA, RD_PALETTE_CLIENTE,
+      _rdPendEscrito, _rdBarraBg,
       TIPOS_ANOTACAO, tipoAnotacao, lerAnotacaoContrato, definirTipoAnotacao,
       definirValorAnotacao, definirAnotacaoContrato,
       encerrarAnotacaoCobrada,
@@ -114,9 +115,12 @@ const MARCADORES = [
     // escolhe a cor de cada fatia. Começa na paleta (AG_PASTEL) porque as
     // cores das fatias saem dela — recortar só a partir de RD_COR_CATEGORIA
     // deixaria o trecho sem as constantes que ele usa.
+    // Vai até `_luminance` (e não até `_fmtBarVal`) de propósito: o trecho
+    // precisa carregar junto `_rdPendEscrito` e `_rdBarraBg`, que decidem a
+    // fatia esmaecida e o valor pendente escrito ([barra-pendente]).
     nome: "agregação do gráfico circular",
     de: "var AG_PASTEL = {",
-    ate: "function _fmtBarVal(",
+    ate: "function _luminance(",
   },
   {
     // Reconstrução do grupo de parcelas de cartão. É o que decide qual

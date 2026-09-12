@@ -963,6 +963,26 @@ porque escondia o ícone da ação; o ícone sozinho, por sua vez, não diz até
 quando. Alternar resolve os dois sem escolher entre eles — não volte a fixar
 num dos lados.
 
+### Data é "7 SET" — `[data-dia-mes]`
+
+Pedido do usuário: *"coloque na aba de multas o mesmo padrão de data da tela
+inicial — 7 SET"*. A aba de Multas escrevia `dd/mm/aa` e era a única a
+destoar; as etiquetas do Início (`_dateBadgeFlag`, cards de despesa) sempre
+usaram **dia + mês de três letras**.
+
+**`fmtDiaMes3(iso)`** é o formatador único — ao lado de `fmtDateShort`, e é
+ele que toda tela nova deve chamar para data curta. Sem zero à esquerda no
+dia, de propósito: é assim que a etiqueta do Início escreve.
+
+⚠️ **Ele lê a string ISO direto, sem `new Date`.** `new Date("2026-09-07")` é
+interpretado como **UTC** e, no fuso de São Paulo, volta **6 SET** — um dia a
+menos, silenciosamente, no app inteiro. Há teste para isso; não "simplifique"
+a função usando `Date`.
+
+Na aba de Multas ficaram **zero** datas montadas na mão (`slice(8,10)+"/"+…`)
+— o teste conta, recortando do `GraficoMultas` ao fim do componente `Multas`.
+Outras telas ainda usam `dd/mm` de propósito, e a trava não fala por elas.
+
 ### Texto da bandeira ≠ ação da bandeira
 
 *"Tire o concluir do texto, não a conclusão, somente o texto."*

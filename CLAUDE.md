@@ -913,9 +913,22 @@ já respondia àquela pergunta com o dado errado.
 ### O cartão da Agenda fica no prazo da ETAPA ATUAL
 
 `buildAgendaEventos` datava o cartão de multa por `m.vencimento` fixo. Agora é
-`(_sitAg && _sitAg.prazo) || m.vencimento` — e a **chave carrega essa data**,
-então remarcar o boleto para outro vencimento não deixa o adiamento antigo
-escondendo o cartão novo.
+`_sitAg.prazo` — e a **chave carrega essa data**, então remarcar o boleto para
+outro vencimento não deixa o adiamento antigo escondendo o cartão novo.
+
+⚠️ **O PORTEIRO também é a etapa — não `m.vencimento`.** A primeira linha do
+laço era `if (!m.vencimento || multaEncerrada(m)) return;`: ela descartava a
+multa **antes de olhar a etapa**. Resultado com duas cobranças vencidas no
+mesmo dia: **só uma aparecia na Agenda** — a que por acaso tinha o vencimento
+DO ÓRGÃO preenchido; a outra sumia inteira, apesar de ter o vencimento do
+boleto do cliente. Hoje o laço pergunta `multaEncerrada` e depois
+`!_sitAg || !_sitAg.prazo`; a retaguarda em `m.vencimento` continua existindo,
+mas **dentro de `situacaoMulta`**, onde é último recurso e não porteiro.
+
+**Regra geral que isso ensina: campo antigo não pode ficar guardando a porta
+de um fluxo que passou a ter dado próprio.** Ao dar campo novo a uma etapa,
+procure também os `if (!campoAntigo) return;` — eles não dão erro, só fazem
+o registro desaparecer em silêncio.
 
 Na etapa `cobrado_cli` o cartão muda de identidade: emoji **📬**, título
 *"Boleto ao cliente"*, valor `valor_cobrado`, e o texto diz *"boleto venceu
@@ -927,9 +940,22 @@ entrada muda números que o usuário lê todo dia e é decisão dele
 ### A etiqueta de status alterna emoji e vencimento — `[multa-face-venc]`
 
 Pedido do usuário: *"faça que alterne com o ícone do status o emoji com a data
-de vencimento do boleto"*. No card de Multas, onde fica o emoji da fase,
-alterna a data do boleto do cliente a cada 4s — o prazo fica visível sem abrir
-o card nem esperar o atraso.
+de vencimento do boleto"*. A cada 4s, onde fica o ícone do status aparece o
+prazo, e volta — o vencimento fica visível sem abrir o card nem esperar o
+atraso.
+
+**Vale nos DOIS lugares**, e esquecer um foi retrabalho ("nas multas pendentes
+o emoji não alterna com o vencimento"):
+
+| tela | o que alterna |
+|---|---|
+| **Multas** (card da lista) | a etiqueta da fase: `fase.emoji` ↔ `fmtDateShort(vencimento_cobranca_cliente)` |
+| **Início** → painel *Multas pendentes* | a bandeira: `_MUL_ACAO_ICON` ↔ `l.prazo` (via o 1º argumento de `_dateBadgeFlag`) |
+
+No painel do Início a data **já morou** nessa bandeira e foi tirada de lá
+porque escondia o ícone da ação; o ícone sozinho, por sua vez, não diz até
+quando. Alternar resolve os dois sem escolher entre eles — não volte a fixar
+num dos lados.
 
 Duas travas que vêm de `[bateria]`, e que qualquer alternância nova tem que
 repetir:

@@ -61,6 +61,7 @@ function extrair(marcadores) {
       KM_REVISAO_ALERTA, statusRevisaoKm,
       _periodosSobrepoem, veiculoDaReserva, conflitosDaReserva, clienteDaReserva,
       rdSum, rdGroupBy, RD_COR_CATEGORIA, RD_PALETTE_CLIENTE,
+      fmtDiaMes3,
       _rdPendEscrito, _rdBarraBg,
       TIPOS_ANOTACAO, tipoAnotacao, lerAnotacaoContrato, definirTipoAnotacao,
       definirValorAnotacao, definirAnotacaoContrato,
@@ -97,6 +98,20 @@ const MARCADORES = [
     nome: "helpers de regra de negócio",
     de: "var KM_REVISAO_ALERTA =",
     ate: "// ─────────────────────────────────────────────────────────────────────────",
+  },
+  {
+    // "7 SET" — o padrão de data do Início, que a aba de Multas passou a
+    // usar. São dois recortes porque a função e a tabela de meses moram
+    // longe uma da outra no arquivo; os testes precisam rodar a REAL para
+    // o fuso não voltar a errar um dia.
+    nome: "tabela de meses de três letras",
+    de: "var _AG_MESES3 = [",
+    ate: "function _dateBadgeFlag(",
+  },
+  {
+    nome: "data no padrão dia + mês de três letras",
+    de: "function fmtDiaMes3(d) {",
+    ate: "/* Maiúscula no início do texto",
   },
   {
     nome: "manutenção pendente",

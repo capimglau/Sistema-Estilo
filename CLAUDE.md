@@ -949,13 +949,35 @@ o emoji não alterna com o vencimento"):
 
 | tela | o que alterna |
 |---|---|
-| **Multas** (card da lista) | a etiqueta da fase: `fase.emoji` ↔ `fmtDateShort(vencimento_cobranca_cliente)` |
+| **Multas** — etiqueta da fase | `fase.emoji` ↔ prazo da etapa |
+| **Multas** — bandeira vertical | nome da etapa (`short`) ↔ prazo da etapa |
 | **Início** → painel *Multas pendentes* | a bandeira: `_MUL_ACAO_ICON` ↔ `l.prazo` (via o 1º argumento de `_dateBadgeFlag`) |
+
+**É o prazo da ETAPA ATUAL, não só o da cobrança** — pedido do usuário:
+*"alterne sempre o prazo de cada etapa"*. Quem responde é sempre
+`situacaoMulta(m).prazo`, a mesma fonte dos três lugares; nenhuma tela escolhe
+o campo na mão.
 
 No painel do Início a data **já morou** nessa bandeira e foi tirada de lá
 porque escondia o ícone da ação; o ícone sozinho, por sua vez, não diz até
 quando. Alternar resolve os dois sem escolher entre eles — não volte a fixar
 num dos lados.
+
+### Texto da bandeira ≠ ação da bandeira
+
+*"Tire o concluir do texto, não a conclusão, somente o texto."*
+
+A bandeira vertical do card de Multas escrevia `ETAPA` + `✓ concluir` (dois
+`data-*` lidos pelo CSS em `content: attr()`). O `✓ concluir` **saiu do
+texto** — era rótulo explicando um toque que a própria bandeira já convida a
+dar, e comia metade da faixa, que agora é do nome da etapa alternando com o
+prazo.
+
+**A conclusão continua.** Quem executa é o **`.ag-mul-flag-btn`** — um botão
+transparente, do tamanho exato da faixa, por cima dela (pseudo-elemento não
+recebe clique). São duas coisas separadas: **apagar o texto nunca pode apagar
+o botão**, e há teste exigindo os dois — `data-etapa-acao` zerado **e**
+`ag-mul-flag-btn` presente no JS e no CSS.
 
 Duas travas que vêm de `[bateria]`, e que qualquer alternância nova tem que
 repetir:

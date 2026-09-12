@@ -921,10 +921,20 @@ ok("a cobrança ao cliente não vira fluxo de caixa", /fluxo: _ehCob \? null : "
 
 /* [multa-face-venc] A etiqueta de status alterna o emoji com o vencimento do
    boleto — e o timer só existe quando há o que alternar ([bateria]). */
-ok("a etiqueta alterna emoji e vencimento",
-  /_mostraVenc \? fmtDateShort\(_vcMul\) : fase\.emoji/.test(html));
-ok("só alterna quando há boleto pendente com vencimento",
-  /var _mostraVenc = !!_vcMul && faceVencMul;/.test(html));
+ok("a etiqueta alterna emoji e prazo da etapa",
+  /_mostraVenc \? _prazoAtualTxt : fase\.emoji/.test(html));
+ok("só alterna quando a etapa TEM prazo",
+  /var _mostraVenc = !!_prazoAtualTxt && faceVencMul;/.test(html));
+// A bandeira vertical alterna o nome da etapa com o prazo dela.
+ok("a bandeira do card alterna etapa e prazo",
+  /var _etapaLabelMul = \(faceVencMul && _prazoAtualTxt\) \? _prazoAtualTxt : _etapaNomeMul;/.test(html));
+/* "Tire o concluir do texto, não a conclusão": o texto sai, o botão fica.
+   São duas coisas distintas e trocá-las quebraria a ação principal do card. */
+eq("o texto 'concluir' saiu da bandeira",
+  (html.match(/_etapaAcaoTxt|data-etapa-acao/g) || []).length, 0);
+ok("mas a bandeira continua concluindo a etapa",
+  /className: "ag-mul-flag-btn", type: "button"/.test(html) &&
+  /\.ag-mul-flag-btn\{/.test(html));
 ok("o timer não existe sem nada para alternar",
   /if \(!_temFaceVenc\) \{ setFaceVencMul\(false\); return; \}/.test(html));
 // A MESMA alternância no painel "Multas pendentes" do Início — foi ali que o

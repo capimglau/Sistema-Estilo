@@ -921,6 +921,29 @@ ok("a cobrança ao cliente não vira fluxo de caixa", /fluxo: _ehCob \? null : "
 
 /* [multa-face-venc] A etiqueta de status alterna o emoji com o vencimento do
    boleto — e o timer só existe quando há o que alternar ([bateria]). */
+/* [data-dia-mes] A aba de Multas usava dd/mm/aa e destoava do resto do app.
+   Passou para o mesmo padrão das etiquetas do Início: "7 SET". */
+eq("dia sem zero à esquerda, mês de três letras", F.fmtDiaMes3("2026-09-07"), "7 SET");
+eq("dia de dois dígitos", F.fmtDiaMes3("2026-03-10"), "10 MAR");
+eq("virada do ano", F.fmtDiaMes3("2026-12-31"), "31 DEZ");
+eq("primeiro dia", F.fmtDiaMes3("2026-01-01"), "1 JAN");
+eq("sem data", F.fmtDiaMes3(""), "--");
+eq("null não quebra", F.fmtDiaMes3(null), "--");
+/* Lê a string ISO direto: `new Date("2026-09-07")` é interpretado como UTC e,
+   no fuso de São Paulo, voltaria "6 SET". O teste existe por isso. */
+eq("não volta um dia por causa do fuso", F.fmtDiaMes3("2026-09-01"), "1 SET");
+eq("o que não é data ISO sai como veio", F.fmtDiaMes3("qualquer coisa"), "qualquer coisa");
+/* E a aba inteira — o gráfico/cronograma e a lista — não pode voltar a montar
+   dd/mm na mão. O recorte vai de `GraficoMultas` (onde começa o cronograma)
+   até o fim do componente `Multas`; outras telas ainda usam dd/mm de
+   propósito, e o teste não deve falar por elas. */
+const _abaMultas = html.slice(html.indexOf("function GraficoMultas({"),
+                              html.indexOf("function Manutencao({"));
+ok("o recorte da aba de Multas foi encontrado", _abaMultas.length > 5000);
+eq("a aba de Multas não monta mais data na mão",
+  (_abaMultas.match(/slice\(8,\s*10\)\s*\+\s*"\/"/g) || []).length, 0);
+ok("e usa o formatador único", (_abaMultas.match(/fmtDiaMes3\(/g) || []).length >= 5);
+
 ok("a etiqueta alterna emoji e prazo da etapa",
   /_mostraVenc \? _prazoAtualTxt : fase\.emoji/.test(html));
 ok("só alterna quando a etapa TEM prazo",

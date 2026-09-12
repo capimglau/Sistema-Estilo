@@ -248,6 +248,68 @@ por mutação** — e o app se re-renderiza sozinho a cada poucos segundos
   documento inteiro para nada. Corrigir o seletor não era opção — passaria a
   embrulhar centenas de divs de uma hora pra outra.
 
+## Documento de cliente não fica aberto na internet — `[storage-privado]` — PERMANENTE
+
+O bucket `documentos` nasceu **público** (`sql/09`). Com isso, **CNH, RG,
+comprovante de residência, CRV, auto de infração e CNH de condutor infrator
+abriam para qualquer pessoa que tivesse a URL** — sem login, sem prazo, sem
+rastro. São dados pessoais de **terceiros** (os clientes da locadora): é
+problema de LGPD antes de ser qualquer outra coisa.
+
+Ele nasceu público por uma razão real, e é ela que define o desenho da
+correção: **a tela de login desenha o logo da empresa ANTES de existir
+sessão**, e link assinado exige sessão.
+
+**A separação não é "interno × cliente". É MARCA × DOCUMENTO:**
+
+| bucket | o quê | visibilidade |
+|---|---|---|
+| `marca` | logo e ícones da PWA | **público** — precisa abrir sem sessão |
+| `documentos` | todo o resto | **privado** — só por link assinado |
+
+Migração em `sql/15-storage-privado.sql`: cria o `marca`, **move** o que já
+existe de `logo/` para lá, reescreve `config.logo_url`/`pwa_icon_*`, e só
+**então** fecha o `documentos` e apaga a policy de `select` aberta. Nessa
+ordem — fechar antes de mover deixaria a tela de login sem logo.
+
+### Regras permanentes
+
+- **`db.upload(path, file, publico)` nunca grava URL pública de documento.**
+  O bucket público devolve a URL direta; o privado devolve o marcador
+  **`priv:<caminho>`**. Gravar `/object/public/documentos/...` no banco cria
+  um endereço que *parece* válido e dá 400 ao abrir.
+- **Arquivo novo é documento por padrão.** `publico: true` no `UploadField` é
+  exceção, e hoje são **três** campos, todos da pasta `logo/`. Campo novo que
+  guarde qualquer coisa de pessoa **não leva esse prop**.
+- **Nada abre o `href` direto.** Toda âncora de documento chama
+  **`abrirDoc(valor, ev)`**, que assina no clique. `_docPath` reconhece **as
+  duas formas de propósito** — o marcador novo e a URL pública antiga, que
+  continua no banco dos registros anteriores à migração. É o que dispensa
+  migração de dado: o que já existe volta a abrir sozinho.
+- **A janela abre ANTES do `await`.** Depois do await o Safari não reconhece
+  mais o gesto e bloqueia como popup — mesmo padrão que `enviarDocWA` já
+  usava. Vale para `abrirDoc` e para `enviarNotifCliente`.
+- **O que sai para o cliente usa `DOC_PRAZO_ENVIO` (90 dias).** Contrato e
+  vistoria por WhatsApp/e-mail e o auto de infração na notificação ao
+  condutor: quem abre não tem login, então o link precisa durar — mas agora
+  ele **morre**, diferente da URL pública eterna de antes. São quatro saídas;
+  o teste conta as quatro.
+
+⚠️ **Objeto JS: a última chave vence.** Cinco dessas âncoras já tinham
+`onClick: function(e){e.stopPropagation();}` (para o clique não abrir o card
+inteiro). Inserir um `onClick` novo **antes** dele no mesmo objeto faz o novo
+ser descartado **em silêncio** — o link continuaria indo para o href direto.
+Foi exatamente o erro cometido ao escrever esta mudança, e há um teste que
+falha se voltar. Ao acrescentar handler a um elemento que já tem um,
+**funda os dois**, não empilhe.
+
+Assinatura de contrato **não** passa por aqui: `assinatura_cliente`,
+`assinatura_locadora` e `assinatura_motorista` são *data URI* guardados na
+própria linha do contrato, não arquivos do Storage.
+
+Travado em `tests/run.js`, grupo *"Documento de cliente não fica aberto na
+internet"*, que confere também o SQL da migração.
+
 ## SQL de migração — sempre mostrar para copiar
 
 Sempre que uma tarefa criar ou alterar um arquivo em `sql/` (nova tabela, coluna,

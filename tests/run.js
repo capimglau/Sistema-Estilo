@@ -1798,6 +1798,114 @@ grupo("O tick dá a baixa; o cartão abre o detalhe");
   ok("tipo sem parcial avisa na tela",
     /não guarda valor parcial/.test(html));
 
+  // ── [agenda-grupo] Seis meses atrasados do mesmo cliente ────────────────
+  // O caso reportado: "em atrasados aparece a Kablan, há seis lançamentos da
+  // Kablan". São seis cartões independentes, e a coluna só mostra três.
+  {
+    const evs = ["2026-04-05", "2026-05-05", "2026-03-05", "2026-06-05", "2026-07-05", "2026-08-05"]
+      .map((d, i) => ({ tipo: "pagamento", id: 100 + i, acao: "baixar", data: d, valor: 7000,
+                        grupo: "cli_9", grupoNome: "Kablan", quem: "Kablan" }));
+    const outro = { tipo: "pagamento", id: 200, acao: "baixar", data: "2026-05-01", valor: 900, grupo: "cli_3", quem: "Outro" };
+    const todos = evs.concat([outro]);
+
+    const irmaos = F._agk2IrmaosDo(evs[0], todos);
+    eq("acha os seis lançamentos do mesmo cliente", irmaos.length, 6);
+    eq("e não mistura o de outro cliente", irmaos.filter((x) => x.grupo !== "cli_9").length, 0);
+    eq("em ordem cronológica — o mais antigo primeiro (é a ordem de cobrança)",
+      irmaos[0].data, "2026-03-05");
+    eq("e o mais recente por último", irmaos[5].data, "2026-08-05");
+
+    // Sem grupo (despesa, receita avulsa) não há irmão a listar.
+    eq("lançamento sem grupo devolve só ele",
+      F._agk2IrmaosDo({ tipo: "despesa", id: 5, valor: 10 }, todos).length, 1);
+    eq("sem lista de eventos também",
+      F._agk2IrmaosDo(evs[0], []).length, 1);
+
+    const info = F._agk2DetalheDo(evs[0], { eventos: todos });
+    eq("o detalhe abre no modo grupo", info.grupo, true);
+    eq("com uma linha por lançamento", info.itens.length, 6);
+    eq("somando os seis", info.total, 42000);
+    eq("nomeado pelo cliente", info.titulo, "Kablan");
+    // Receber 2 dos 6 é baixa CHEIA de cada um — qualquer subconjunto grava.
+    eq("qualquer subconjunto é gravável", info.parcialOk, true);
+    ok("cada linha carrega o evento que ela representa", !!info.itens[0].ev);
+    ok("e diz de que mês é", /mar\/26/.test(info.itens[0].rotulo));
+
+    // O rótulo já diz o mês; repetir "comp. mar/26" no detalhe logo abaixo é
+    // ruído. A placa e o "↻ Recorrente" ficam — é o que diferencia as linhas.
+    {
+      const comDet = [{ tipo: "pagamento", id: 400, acao: "baixar", data: "2026-03-05", valor: 10,
+                        grupo: "cli_5", detalhe: "ABC1D23 · comp. mar/26 · ↻ Recorrente" },
+                      { tipo: "pagamento", id: 401, acao: "baixar", data: "2026-04-05", valor: 10, grupo: "cli_5" }];
+      const li = F._agk2DetalheDo(comDet[0], { eventos: comDet }).itens[0];
+      eq("o mês não aparece duas vezes na mesma linha", li.detalhe, "ABC1D23 · ↻ Recorrente");
+      eq("e a linha guarda a data pra janela calcular o atraso", li.data, "2026-03-05");
+    }
+
+    // _agk2DetalheDo é leitura pura: quem sabe que dia é hoje é a janela (que
+    // já calcula o atraso do cabeçalho). Função de dados que olha o relógio
+    // não dá pra testar nem pra prever.
+    ok("o resolvedor do detalhe não consulta o relógio",
+      !/_brNow\(\)|_agk2Atraso\(/.test(F._agk2DetalheDo.toString()));
+
+    // Contrato PARCIAL entra pelo que FALTA receber, não pelo valor cheio —
+    // senão o total do grupo cobraria de novo o que já entrou.
+    const comParcial = [{ tipo: "pagamento", id: 300, acao: "baixar", data: "2026-03-05",
+                          valor: 7000, pendente: 2000, grupo: "cli_7", grupoNome: "X" },
+                        { tipo: "pagamento", id: 301, acao: "baixar", data: "2026-04-05",
+                          valor: 7000, pendente: 7000, grupo: "cli_7" }];
+    eq("parcial entra pelo saldo a receber",
+      F._agk2DetalheDo(comParcial[0], { eventos: comParcial }).total, 9000);
+  }
+
+  // Um lançamento só não tem o que agrupar: volta a abrir a composição.
+  {
+    const ct = { id: 7, valor_total: "1000.00", data_inicio: "2026-09-01", data_fim: "2026-09-30" };
+    const solo = { tipo: "pagamento", id: 7, acao: "baixar", valor: 1000, grupo: "cli_1" };
+    const info = F._agk2DetalheDo(solo, { contratos: [ct], eventos: [solo] });
+    ok("sozinho, abre a composição da fatura", !info.grupo);
+    eq("com as linhas do contrato", info.itens[0].chave, "locacao");
+  }
+
+  // [data-dia-mes] Mesma armadilha de sempre: new Date("2026-09-07") é lido
+  // como UTC e volta um dia atrás no fuso de São Paulo.
+  eq("mês/ano lidos da string, sem Date", F._agk2CompDe("2026-09-07"), "set/26");
+  eq("janeiro não vira dezembro", F._agk2CompDe("2026-01-31"), "jan/26");
+  eq("data vazia não quebra", F._agk2CompDe(""), "");
+  ok("a função não usa Date", !/new Date/.test(F._agk2CompDe.toString()));
+
+  // No grupo começa marcado SÓ o cartão tocado. Abrir com os seis marcados
+  // seria repetir o bug do pedido ("ele já abre para baixar todos"), agora
+  // com seis meses de uma vez.
+  ok("o grupo abre marcando só o lançamento tocado",
+    /m\[it\.chave\] = info\.grupo \? !!\(it\.ev && String\(it\.ev\.id\) === String\(ev\.id\) && it\.ev\.tipo === ev\.tipo\) : true;/.test(html));
+  ok("e o filtro de categoria não pode esconder um irmão",
+    /eventos: eventosJanela \}\);/.test(html));
+
+  // [baixa-unica] O lote NÃO é um segundo laço copiando a regra: uma função
+  // só (_baixarCtCore) grava, e as duas entradas chamam ela.
+  ok("existe um núcleo único de baixa de contrato",
+    /async function _baixarCtCore\(c, dtBaixa\) \{/.test(html));
+  ok("a baixa de um contrato passa por ele",
+    /var desfazer = await _baixarCtCore\(c, dtBaixa\);/.test(html));
+  ok("e a do lote também",
+    /desfazeres\.push\(await _baixarCtCore\(alvos\[i\], dtBaixa\)\);/.test(html));
+  eq("só existe um lugar gravando a baixa cheia de contrato",
+    (html.match(/status_pagamento: "pago", data_pagamento: dtBaixa/g) || []).length, 1);
+  ok("o lote vai por deep-link, sem a Agenda gravar",
+    /setCtDeepLink\(\{ acao: "baixar-lote", itemId: ev\.id, itens: _evs\.map/.test(html));
+  ok("e Contratos atende o lote",
+    /baixarCtLote\(ctDeepLink\.itens \|\| \[\], ctDeepLink\.data\);/.test(html));
+  // Um "Desfazer" só, que desfaz todos — seis avisos empilhados seriam
+  // ilegíveis, e desfazer um sem os outros deixa o cliente meio quitado.
+  ok("o lote registra um Desfazer que desfaz todos",
+    /for \(var k = 0; k < desfazeres\.length; k\+\+\) \{ try \{ await desfazeres\[k\]\(\); \}/.test(html));
+  // Falha silenciosa aqui é dinheiro que o usuário acha que baixou.
+  ok("contrato que falhar no lote é avisado na tela",
+    /toast\(desfazeres\.length \+ " baixado\(s\), " \+ falhas \+ " com erro", "error"\);/.test(html));
+  ok("nenhum marcado avisa na tela",
+    /_agAvisar\("Marque pelo menos um lançamento\."\)/.test(html));
+
   // Os dois botões do modal de Contratos chamam a função direto como handler,
   // então o 1º argumento é o EVENTO do React — um objeto truthy sem `id`.
   // Sem esta guarda o app mandava db.patch("contratos", undefined, …).

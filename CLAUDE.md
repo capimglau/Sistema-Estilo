@@ -188,16 +188,16 @@ estilo é string vazia ali — então **todo botão posicionado por CSS era
 carimbado com `position:relative` inline**, e inline ganha da folha. O botão
 voltava para o fluxo e ia parar em outro lugar.
 
-Sintoma real, que custou uma rodada inteira de investigação: o **tick de baixa
-da Agenda** (`.agk2-ev-check`, `absolute` à direita do cartão) caía como
-**terceira linha** do cartão, era **decepado pelo `overflow:hidden`** dos 64px
-— sumia da tela — e, ainda visível por baixo, **comia o toque destinado ao
-cartão**. Relato: *"não aparece nem o tick, nem abre o detalhamento"*. Uma
-causa só, dois sintomas, e nenhum deles apontava para o ripple.
+Sintoma real, que custou uma rodada inteira de investigação: um botão
+`absolute` posto no canto de um cartão caía como uma **linha a mais** dele,
+era **decepado pelo `overflow:hidden`** do cartão — sumia da tela — e, ainda
+ali por baixo, **comia o toque destinado ao cartão**. Uma causa só, dois
+sintomas, e nenhum deles apontava para o ripple.
 
-Não era só o tick: `.ag-mul-flag-btn` (o botão que conclui a etapa da multa) e
-os botões da sidebar recolhida são `absolute` por CSS e estavam sendo
-reposicionados do mesmo jeito, em silêncio.
+E não era um caso isolado: **`.ag-mul-flag-btn`** (o botão transparente que
+conclui a etapa da multa, do tamanho exato da faixa) e os botões da **sidebar
+recolhida** são `absolute` por CSS e estavam sendo reposicionados do mesmo
+jeito, em silêncio, desde sempre.
 
 Correção: ler o valor **computado**, e só promover quem é `static`.
 
@@ -221,10 +221,16 @@ antes), então não é a leitura de layout por mutação que `[bateria]` proíbe
   antes de qualquer outra hipótese.** Neste caso o CSS estava certo, o React
   estava certo, o deploy estava certo — e mesmo assim `position` computava
   `relative`. Medir o elemento no navegador achou em um minuto o que o
-  raciocínio não achou em duas rodadas.
+  raciocínio não achou em duas rodadas: **abrir o app num navegador e ler o
+  `getComputedStyle` do elemento** é mais barato que a terceira hipótese.
 
-Travado em `tests/run.js`, grupo *"O tick dá a baixa; o cartão abre o
-detalhe"*: o carimbo cego tem que dar **zero** ocorrências.
+Travado em `tests/run.js`, grupo *"Decorador não reposiciona o que o CSS
+posicionou"*: o carimbo cego tem que dar **zero** ocorrências. O mesmo grupo
+guarda a outra correção que veio junto — `onClick:fn` entrega o **evento do
+React** como 1º argumento, e `confirmarBaixarCt` aceitava esse objeto como se
+fosse o contrato, mandando `db.patch("contratos", undefined, …)`. Ao
+parametrizar uma função que também é handler de clique, **só vale como
+registro o que tiver `id`**.
 
 ## Nada anima propriedade cara para sempre — `[bateria]` — PERMANENTE
 
@@ -823,141 +829,6 @@ sem isso a marca só aparece no próximo reload.
 
 Travado em `tests/run.js`, grupo *"Emissão de fatura dispensada sai de TODOS os
 avisos"*, que roda os helpers reais extraídos do `index.html`.
-
-## Quem dá baixa é o TICK; o cartão abre o DETALHE — `[agenda-tick]` — PERMANENTE
-
-Na Agenda, **tocar em qualquer lugar do cartão** abria a janela de ação, e o
-botão verde dela quitava o lançamento **inteiro** — junto com tudo o que a
-baixa arrasta (contrato ↔ fatura, despesa ↔ manutenção). Não havia como
-receber só uma parte, e um toque torto no card já era meio caminho pra quitar
-tudo. Palavras do usuário: *"ao clicar, ele baixa automaticamente todos os
-lançamentos… coloque um tick para que isso seja feito através desse tick"*.
-
-Hoje são **duas coisas separadas, com alvos diferentes**:
-
-| gesto | o que faz |
-|---|---|
-| **tick** (`.agk2-ev-check`, à direita do cartão) | baixa **CHEIA**, pela janela de ação de sempre |
-| **corpo do cartão** | abre o **detalhe** do lançamento — as linhas que compõem o valor |
-
-- O tick só existe em cartão que representa **dinheiro a quitar**
-  (`acao === "baixar"` com `id`). Renovar, emitir fatura, licenciamento, CNH,
-  reserva: nada disso ganha tick, e o toque neles continua abrindo a janela
-  de ação exatamente como antes.
-- **Baralho (`+N`) não ganha tick**: o cartão do topo gira entre vários
-  eventos, então um tick ali não diria qual está sendo quitado. Tocar nele
-  continua sendo "abrir o resto".
-- **`stopPropagation` no tick é obrigatório.** Sem ele o clique sobe pro
-  cartão e as duas janelas abrem uma por cima da outra.
-- **O tick é o GESTO, não a gravação.** Ele abre a janela que **pergunta a
-  data** — *"Toda baixa PERGUNTA a data"* continua valendo, sem exceção.
-
-## Um lançamento se abre nas linhas que o compõem — `[agenda-detalhe]` — PERMANENTE
-
-*"Ao clicar no lançamento principal, abra todos os outros lançamentos
-detalhados e que possa dar baixa parciais nele."*
-
-O contrato aparece como UM lançamento ("Pgto Contrato · R$ 7.000"), mas por
-dentro é a soma de **Locação + KM excedente + cada extra + desconto** — as
-mesmas linhas que a fatura imprime. O detalhe mostra essas linhas com tique
-próprio: marca o que entrou, e baixa **só isso**.
-
-**A composição mora numa função só: `ctItensFatura(ct)`.** `_buildFaturaBody`
-(o PDF) e o detalhe da Agenda leem dela. Duas cópias dessa conta = o papel e a
-tela discordando sobre o mesmo dinheiro — o teste conta a fórmula da locação
-base e falha se ela reaparecer em outro lugar.
-
-- **O desconto é linha FIXA** (`fixo:true`, valor negativo): entra sempre na
-  conta e não se desmarca. Ele é abatimento, não dinheiro a receber —
-  "desmarcar o desconto pra receber mais" não existe.
-- **A janela abre com tudo marcado.** O caso comum continua sendo receber
-  cheio; o trabalho do usuário é **desmarcar** o que não entrou.
-- **Marcar tudo cai na baixa CHEIA de sempre**, nunca numa "parcial de 100%"
-  — que deixaria o contrato preso em `parcial` para sempre.
-- **O valor enviado é o ACUMULADO** (`jaPago + marcados`): `valor_pago` é o
-  total recebido do contrato, não a última parcela. Mandar só a soma de agora
-  **apagaria** o que já tinha entrado. Por isso a parcela anterior aparece
-  como linha travada "Já recebido antes" — o banco guarda o valor, não quais
-  linhas foram.
-
-**`parcialOk` é a pergunta honesta "este tipo aceita receber pela metade?".**
-Hoje **só o contrato** aceita: é o único com `valor_pago`/`status_pagamento =
-"parcial"` no banco. Despesa e receita **não têm onde guardar a parcela**, e a
-janela **diz isso na tela** em vez de aceitar metade e perder o dado. Se um
-dia despesa/receita ganharem parcial, é campo novo + varredura de TODO painel
-(regra de consistência) — não um `parcialOk: true` solto aqui.
-
-**A Agenda continua sem gravar nada** (`[baixa-unica]`): a parcial vai pra
-`confirmarParcialCt`, na tela de Contratos, por `ctDeepLink.acao === "parcial"`
-com valor e data. A regra de gravação segue morando num lugar só.
-
-⚠️ **`onClick:fn` entrega o EVENTO do React como 1º argumento.** Os botões
-"Confirmar Baixa" e "Registrar Parcial" chamam as funções direto como handler,
-então `var c = cParam || baixarCtModal` aceitava o evento como se fosse o
-contrato e mandava `db.patch("contratos", undefined, …)`. Ao parametrizar uma
-função que também é handler de clique, **só vale como registro o que tiver
-`id`** (`cParam && cParam.id != null`). Travado em `tests/run.js`, grupo
-*"O tick dá a baixa; o cartão abre o detalhe"*.
-
-### Seis meses do mesmo cliente são UMA cobrança — `[agenda-grupo]`
-
-Relato do usuário: *"em atrasados aparece a Kablan. Há seis lançamentos da
-Kablan. Eu clicando não está abrindo."*
-
-Contrato recorrente atrasado vira **um cartão POR MÊS**. Seis meses da mesma
-empresa são seis cartões independentes na coluna "Atrasados" — e a Agenda só
-desenha **três** (`_maxVisiveis`), com o resto girando no baralho. Não havia
-como ver a dívida inteira do cliente, nem quitar parte dela.
-
-- **`grupo`** (`"cli_<cliente_id>"`) é o laço entre eles, e **só o cartão de
-  contrato carrega** — despesa e receita avulsa não têm dono comum que faça
-  sentido agrupar.
-- **`_agk2IrmaosDo(ev, eventos)`** devolve os irmãos em ordem **cronológica**
-  (o mais antigo primeiro — a ordem em que se cobra), sempre incluindo o
-  próprio cartão.
-- Com **2 ou mais** irmãos o detalhe abre no **modo grupo** (a lista deles);
-  com **um só** abre a composição da fatura (`[agenda-detalhe]`). São duas
-  perguntas diferentes e a janela escolhe sozinha qual responder.
-- **"Parcial" no grupo é "recebi 2 dos 6"** — cada marcado é baixa **cheia**
-  do próprio lançamento, e nenhum `valor_pago` é tocado. Por isso o rótulo do
-  botão diz **"Receber 2 de 6"**, nunca "Receber parcial": "parcial" ali
-  sugeriria meia fatura.
-- **Contrato parcial entra pelo `pendente`** (o que falta), não pelo valor
-  cheio — senão o total do grupo cobraria de novo o que já entrou.
-- **Começa marcado SÓ o cartão tocado.** Abrir com os seis marcados seria
-  repetir exatamente o bug que o pedido descreve ("ele já abre para baixar
-  todos"), agora com seis meses de uma vez. É o **oposto** do lançamento
-  único, que abre tudo marcado — lá o trabalho é desmarcar o que não entrou.
-- A lista sai de **`eventosJanela`, nunca de `eventosFiltrados`**: um filtro
-  de categoria ligado não pode sumir com um irmão, porque a dívida continua
-  lá e o detalhe existe pra mostrar TODA ela.
-
-**O lote não é um segundo laço copiando a regra.** `_baixarCtCore(c, dt)` faz
-as gravações e devolve o desfazer; `confirmarBaixarCt` (um) e `baixarCtLote`
-(vários) chamam **ela**. O teste conta: `status_pagamento: "pago",
-data_pagamento: dtBaixa` aparece **uma vez** no arquivo. A Agenda continua sem
-gravar — o lote vai por `ctDeepLink.acao === "baixar-lote"` com `itens`.
-⚠️ `itemId` **vai junto** no deep-link: o handler de Contratos só entra no
-bloco quando ele existe, e sem isso o lote era descartado em silêncio.
-
-**Um "Desfazer" só, que desfaz todos.** Seis avisos empilhados são ilegíveis,
-e desfazer um sem os outros deixa o cliente meio quitado sem ninguém entender
-por quê. Contrato que falhar no meio **não derruba os outros**, e o aviso diz
-quantos entraram e quantos não — falha silenciosa aqui é dinheiro que o
-usuário acha que baixou (`[baixa-unica]`, item 3).
-
-**`_agk2DetalheDo` é leitura pura — não consulta o relógio.** O atraso de cada
-linha é acrescentado pela **janela**, que já calcula o do cabeçalho. Função de
-dados que olha `_brNow()` não dá pra testar nem pra prever; há teste exigindo
-que ela continue sem isso.
-
-⚠️ **"Não aparece pra mim" num PWA é cache até prova em contrário.** Este
-pedido voltou uma vez inteiro — tick invisível e o toque abrindo a janela
-antiga — com o código já em `main` e o deploy verde. O sintoma denuncia
-sozinho: **o toque no corpo do cartão abrir a baixa é comportamento que não
-existe mais no código**, em nenhum caminho. Antes de reabrir a investigação,
-confirmar a versão em **Config → Versão do app** (ver a seção do Service
-Worker mais acima).
 
 ## Previsto até liquidar, liquidado no mês em que o dinheiro andou — `[previsto-liquidado]` — PERMANENTE
 

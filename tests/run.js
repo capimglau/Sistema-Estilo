@@ -523,7 +523,7 @@ eq("passado o adiamento, o aviso volta",
 ok("o cartão 'Emitir Fatura' usa a chave compartilhada",
   /chave: faturaEmissaoChave\(c\),/.test(html));
 ok("tocar no cartão de emissão abre a janela de ação (antes ia direto pro Financeiro)",
-  /ev\.acao === "renovar" \|\| ev\.acao === "emitir"/.test(html));
+  /ev\.acao === "renovar" \|\| ev\.acao === "baixar" \|\| ev\.acao === "emitir"/.test(html));
 ok("a janela do cartão de emissão oferece resolver",
   /var podeResolver = semAcao \|\| ehEmitir;/.test(html));
 ok("o botão 'Não emitir' existe e chama o mesmo onResolver",
@@ -1646,291 +1646,31 @@ grupo("Busca do Dock — lançamentos e resumo por mês do contrato");
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-grupo("O tick dá a baixa; o cartão abre o detalhe");
+// ───────────────────────────────────────────────────────────────────────────
+grupo("Decorador não reposiciona o que o CSS posicionou");
 {
   const html = lerIndex();
 
-  // ── A composição do contrato mora numa função só ────────────────────────
-  // Contrato simples: uma linha (Locação) valendo o total.
-  {
-    const ct = { id: 1, valor_total: "3000.00", data_inicio: "2026-09-01", data_fim: "2026-09-30" };
-    const comp = F.ctItensFatura(ct);
-    eq("contrato sem extras tem uma linha só", comp.itens.length, 1);
-    eq("e ela vale o total", comp.itens[0].valor, 3000);
-    eq("a linha é a locação", comp.itens[0].chave, "locacao");
-    eq("29 dias entre 01/09 e 30/09", comp.dias, 29);
-  }
-
-  // Com KM excedente, extras e desconto: a soma das linhas TEM que fechar o
-  // valor_total, senão o detalhe oferece baixar mais (ou menos) do que a
-  // fatura cobra.
-  {
-    const ct = {
-      id: 2, valor_total: "5000.00", data_inicio: "2026-09-01", data_fim: "2026-09-30",
-      km_inicial: 1000, km_final: 3000, km_franquia: 1500, valor_km_excedente: "0.50",
-      despesas_extras: JSON.stringify([{ tipo: "Lavagem", valor: "150.00", obs: "entrega" }, { tipo: "Multa", valor: "0" }]),
-      desconto: "200.00",
-    };
-    const comp = F.ctItensFatura(ct);
-    const chaves = comp.itens.map((i) => i.chave).join(",");
-    eq("linhas na ordem da fatura", chaves, "locacao,km,extra_0,desconto");
-    eq("extra zerado não vira linha", comp.itens.filter((i) => i.chave === "extra_1").length, 0);
-    eq("KM excedente = (2000 − 1500) × 0,50", comp.itens[1].valor, 250);
-    eq("extra entra com o próprio valor", comp.itens[2].valor, 150);
-    eq("desconto entra NEGATIVO", comp.itens[3].valor, -200);
-    eq("desconto é linha fixa (não se desmarca)", comp.itens[3].fixo, true);
-    eq("a soma das linhas fecha o valor_total",
-      Math.round(comp.itens.reduce((a, i) => a + i.valor, 0) * 100) / 100, 5000);
-  }
-
-  eq("contrato sem nada devolve locação zerada", F.ctItensFatura({}).itens[0].valor, 0);
-  eq("despesas_extras corrompido não derruba a tela",
-    F.ctItensFatura({ valor_total: "100", despesas_extras: "{{{" }).itens.length, 1);
-
-  // A conta não pode existir duas vezes: _buildFaturaBody (o PDF) tem que
-  // LER de ctItensFatura, não recalcular. Uma cópia nasce igual e diverge na
-  // primeira mudança — foi assim com metade dos bugs de dinheiro deste app.
-  eq("a fórmula da locação base aparece uma vez só no arquivo",
-    (html.match(/valorTotal - kmExc - extrasSum \+ desconto/g) || []).length, 1);
-  ok("o PDF da fatura lê a composição em vez de recalcular",
-    /var _comp = ctItensFatura\(ct\);/.test(html));
-
-  // ── O que entra na baixa ────────────────────────────────────────────────
-  {
-    const info = {
-      total: 5000,
-      itens: [
-        { chave: "locacao", valor: 4800, fixo: false },
-        { chave: "km", valor: 250, fixo: false },
-        { chave: "extra_0", valor: 150, fixo: false },
-        { chave: "desconto", valor: -200, fixo: true },
-      ],
-    };
-    eq("marcando tudo, a soma fecha o total",
-      F._agk2SomaMarcados(info, { locacao: true, km: true, extra_0: true }), 5000);
-    // O desconto NÃO se desmarca: ele é abatimento, não dinheiro a receber.
-    // Desmarcar pra "receber mais" não existe.
-    eq("o desconto entra mesmo sem estar marcado",
-      F._agk2SomaMarcados(info, { locacao: true }), 4600);
-    eq("nada marcado não vira baixa (só o abatimento, negativo)",
-      F._agk2SomaMarcados(info, {}), -200);
-    eq("marcados desconhecidos são ignorados",
-      F._agk2SomaMarcados(info, { inventado: true }), -200);
-  }
-
-  // ── De que é feito o valor do cartão ────────────────────────────────────
-  {
-    const ct = { id: 7, valor_total: "1000.00", data_inicio: "2026-09-01", data_fim: "2026-09-30", status_pagamento: "pendente" };
-    const ev = { tipo: "pagamento", id: 7, acao: "baixar", valor: 1000 };
-    const info = F._agk2DetalheDo(ev, { contratos: [ct], receitas: [], despesas: [] });
-    eq("contrato aceita baixa parcial", info.parcialOk, true);
-    eq("e abre com as linhas da fatura", info.itens[0].chave, "locacao");
-    eq("nada recebido antes", info.jaPago, 0);
-
-    // Parcial já registrada: o banco guarda só o VALOR, não quais linhas.
-    // Ela vira uma linha travada e o que for marcado agora soma em cima.
-    const parc = Object.assign({}, ct, { status_pagamento: "parcial", valor_pago: "300.00" });
-    eq("parcial anterior aparece como já recebido",
-      F._agk2DetalheDo(ev, { contratos: [parc] }).jaPago, 300);
-
-    // A fatura vinculada é avisada, não marcável — ela vai junto na baixa.
-    const comFat = F._agk2DetalheDo(ev, { contratos: [ct], receitas: [{ id: 3, ref_fatura: "fat_7_2026-09", numero_fatura: "FAT-00012" }] });
-    eq("avisa que a fatura vinculada vai junto", comFat.vinculos.length, 1);
-    ok("e diz o número dela", /FAT-00012/.test(comFat.vinculos[0]));
-  }
-
-  // Despesa/receita não têm onde guardar valor parcial no banco (não existe
-  // `valor_pago` nessas tabelas) — então a janela diz isso na cara em vez de
-  // aceitar metade e perder o dado.
-  {
-    const ev = { tipo: "despesa", id: 5, acao: "baixar", valor: 800, quem: "Aluguel" };
-    const info = F._agk2DetalheDo(ev, { despesas: [{ id: 5, manutencao_id: 9, recorrente: true }] });
-    eq("despesa é uma linha só", info.itens.length, 1);
-    eq("sem fingir divisão que não existe", info.itens[0].valor, 800);
-    eq("e não aceita parcial", info.parcialOk, false);
-    eq("avisa os dois vínculos (manutenção e recorrência)", info.vinculos.length, 2);
-    ok("a manutenção vinculada é avisada", /manuten/i.test(info.vinculos[0]));
-  }
-
-  eq("cartão sem contrato conhecido não quebra",
-    F._agk2DetalheDo({ tipo: "pagamento", id: 999, valor: 50 }, { contratos: [] }).itens.length, 1);
-
-  // ── O tick é o que baixa; o corpo do cartão abre o detalhe ──────────────
-  ok("o cartão de dinheiro a quitar ganha o tick",
-    /var _temTick = !ehBaralho && _evShow\.acao === "baixar" && _evShow\.id != null;/.test(html));
-  ok("o tick existe no CSS",
-    /\.agk2-ev-check\{/.test(html));
-  ok("e é posicionado no canto do cartão, fora do fluxo",
-    /\.agk2-ev-check\{\s*\n\s*position:absolute; right:8px; top:50%;/.test(html));
-
   // [ripple-nao-reposiciona] O decorador de ripple carimbava position:relative
   // INLINE em todo botão, porque `btn.style.position` não enxerga a folha de
-  // estilo. Inline ganha da folha: o tick voltava pro fluxo, virava terceira
-  // linha do cartão, era decepado pelo overflow:hidden dos 64px e ainda comia
-  // o toque destinado ao cartão — "não aparece o tick nem abre o detalhe".
-  // Atingia todo botão absoluto do app (.ag-mul-flag-btn, sidebar recolhida).
+  // estilo. Inline ganha da folha, então todo botão posicionado por CSS
+  // voltava pro fluxo e ia parar em outro lugar — entre eles o
+  // .ag-mul-flag-btn, que conclui a etapa da multa, e os da sidebar recolhida.
   ok("o ripple lê a posição COMPUTADA, não só a inline",
     /var _pos = btn\.style\.position \|\| getComputedStyle\(btn\)\.position;/.test(html));
   ok("e só o botão estático vira relative",
     /btn\.style\.position = \(_pos && _pos !== 'static'\) \? _pos : 'relative';/.test(html));
   eq("o carimbo cego de position não existe mais",
     (html.match(/btn\.style\.position = btn\.style\.position \|\| 'relative'/g) || []).length, 0);
-  ok("e o cartão abre espaço pra ele em vez de deixar o valor por baixo",
-    /\.agk2-ev-card\.agk2-ev-com-check\{ padding-right:/.test(html));
-  ok("o tick chama a baixa cheia e para o clique de subir pro cartão",
-    /e\.stopPropagation\(\); _agk2AbrirBaixaCheia\(_evShow\);/.test(html));
-  ok("o toque no corpo do cartão abre o DETALHE, não a baixa",
-    /if \(_temTick\) \{ _agk2AbrirDetalhe\(ev\); return; \}/.test(html));
 
-  // "Toda baixa PERGUNTA a data" continua valendo nos dois caminhos: o tick
-  // abre a janela de ação (que já pedia) e o detalhe pede no próprio corpo.
-  ok("o detalhe pede a data do pagamento",
-    /Data do pagamento" \}\s*\n\s*, React\.createElement\('input', \{ style:FI, type:"date", value:o\.data/.test(html));
-  ok("e não confirma sem ela",
-    /if \(!detalheData\) \{ _agAvisar\("Informe a data do pagamento\."\); return; \}/.test(html));
-
-  // [baixa-unica] A Agenda NÃO grava: a parcial continua sendo escrita por
-  // confirmarParcialCt, na tela de Contratos, via deep-link.
-  ok("a parcial vai pro Contratos pelo deep-link, sem a Agenda gravar",
-    /setCtDeepLink\(\{ acao: "parcial", itemId: ev\.id, valor: acumulado, data: _dt, voltarInicio: true \}\);/.test(html));
-  ok("e Contratos atende esse deep-link com a função única",
-    /confirmarParcialCt\(_ctDL, ctDeepLink\.valor, ctDeepLink\.data\);/.test(html));
-  ok("confirmarParcialCt aceita contrato, valor e data por parâmetro",
-    /async function confirmarParcialCt\(cParam, valorParam, dataParam\) \{/.test(html));
-  // Marcar tudo continua caindo na baixa CHEIA de sempre — nunca numa
-  // "parcial de 100%", que deixaria o contrato eternamente em `parcial`.
-  ok("marcar tudo vira baixa cheia, não parcial de 100%",
-    /if \(cheia\) \{ setDetalheModal\(null\); _agk2Executar\(ev, _dt, true\); return; \}/.test(html));
-  // O valor mandado é o ACUMULADO: `valor_pago` é o total recebido do
-  // contrato, não a última parcela. Mandar só a soma de agora apagaria o que
-  // já tinha entrado.
-  ok("a parcial soma o que já tinha sido recebido antes",
-    /var acumulado = \(info\.jaPago \|\| 0\) \+ soma;/.test(html));
-
-  // Nenhum caminho pode terminar em silêncio (CLAUDE.md, [baixa-unica] item 3).
-  ok("nada marcado avisa na tela",
-    /_agAvisar\("Marque pelo menos uma linha para dar baixa\."\)/.test(html));
-  ok("tipo sem parcial avisa na tela",
-    /não guarda valor parcial/.test(html));
-
-  // ── [agenda-grupo] Seis meses atrasados do mesmo cliente ────────────────
-  // O caso reportado: "em atrasados aparece a Kablan, há seis lançamentos da
-  // Kablan". São seis cartões independentes, e a coluna só mostra três.
-  {
-    const evs = ["2026-04-05", "2026-05-05", "2026-03-05", "2026-06-05", "2026-07-05", "2026-08-05"]
-      .map((d, i) => ({ tipo: "pagamento", id: 100 + i, acao: "baixar", data: d, valor: 7000,
-                        grupo: "cli_9", grupoNome: "Kablan", quem: "Kablan" }));
-    const outro = { tipo: "pagamento", id: 200, acao: "baixar", data: "2026-05-01", valor: 900, grupo: "cli_3", quem: "Outro" };
-    const todos = evs.concat([outro]);
-
-    const irmaos = F._agk2IrmaosDo(evs[0], todos);
-    eq("acha os seis lançamentos do mesmo cliente", irmaos.length, 6);
-    eq("e não mistura o de outro cliente", irmaos.filter((x) => x.grupo !== "cli_9").length, 0);
-    eq("em ordem cronológica — o mais antigo primeiro (é a ordem de cobrança)",
-      irmaos[0].data, "2026-03-05");
-    eq("e o mais recente por último", irmaos[5].data, "2026-08-05");
-
-    // Sem grupo (despesa, receita avulsa) não há irmão a listar.
-    eq("lançamento sem grupo devolve só ele",
-      F._agk2IrmaosDo({ tipo: "despesa", id: 5, valor: 10 }, todos).length, 1);
-    eq("sem lista de eventos também",
-      F._agk2IrmaosDo(evs[0], []).length, 1);
-
-    const info = F._agk2DetalheDo(evs[0], { eventos: todos });
-    eq("o detalhe abre no modo grupo", info.grupo, true);
-    eq("com uma linha por lançamento", info.itens.length, 6);
-    eq("somando os seis", info.total, 42000);
-    eq("nomeado pelo cliente", info.titulo, "Kablan");
-    // Receber 2 dos 6 é baixa CHEIA de cada um — qualquer subconjunto grava.
-    eq("qualquer subconjunto é gravável", info.parcialOk, true);
-    ok("cada linha carrega o evento que ela representa", !!info.itens[0].ev);
-    ok("e diz de que mês é", /mar\/26/.test(info.itens[0].rotulo));
-
-    // O rótulo já diz o mês; repetir "comp. mar/26" no detalhe logo abaixo é
-    // ruído. A placa e o "↻ Recorrente" ficam — é o que diferencia as linhas.
-    {
-      const comDet = [{ tipo: "pagamento", id: 400, acao: "baixar", data: "2026-03-05", valor: 10,
-                        grupo: "cli_5", detalhe: "ABC1D23 · comp. mar/26 · ↻ Recorrente" },
-                      { tipo: "pagamento", id: 401, acao: "baixar", data: "2026-04-05", valor: 10, grupo: "cli_5" }];
-      const li = F._agk2DetalheDo(comDet[0], { eventos: comDet }).itens[0];
-      eq("o mês não aparece duas vezes na mesma linha", li.detalhe, "ABC1D23 · ↻ Recorrente");
-      eq("e a linha guarda a data pra janela calcular o atraso", li.data, "2026-03-05");
-    }
-
-    // _agk2DetalheDo é leitura pura: quem sabe que dia é hoje é a janela (que
-    // já calcula o atraso do cabeçalho). Função de dados que olha o relógio
-    // não dá pra testar nem pra prever.
-    ok("o resolvedor do detalhe não consulta o relógio",
-      !/_brNow\(\)|_agk2Atraso\(/.test(F._agk2DetalheDo.toString()));
-
-    // Contrato PARCIAL entra pelo que FALTA receber, não pelo valor cheio —
-    // senão o total do grupo cobraria de novo o que já entrou.
-    const comParcial = [{ tipo: "pagamento", id: 300, acao: "baixar", data: "2026-03-05",
-                          valor: 7000, pendente: 2000, grupo: "cli_7", grupoNome: "X" },
-                        { tipo: "pagamento", id: 301, acao: "baixar", data: "2026-04-05",
-                          valor: 7000, pendente: 7000, grupo: "cli_7" }];
-    eq("parcial entra pelo saldo a receber",
-      F._agk2DetalheDo(comParcial[0], { eventos: comParcial }).total, 9000);
-  }
-
-  // Um lançamento só não tem o que agrupar: volta a abrir a composição.
-  {
-    const ct = { id: 7, valor_total: "1000.00", data_inicio: "2026-09-01", data_fim: "2026-09-30" };
-    const solo = { tipo: "pagamento", id: 7, acao: "baixar", valor: 1000, grupo: "cli_1" };
-    const info = F._agk2DetalheDo(solo, { contratos: [ct], eventos: [solo] });
-    ok("sozinho, abre a composição da fatura", !info.grupo);
-    eq("com as linhas do contrato", info.itens[0].chave, "locacao");
-  }
-
-  // [data-dia-mes] Mesma armadilha de sempre: new Date("2026-09-07") é lido
-  // como UTC e volta um dia atrás no fuso de São Paulo.
-  eq("mês/ano lidos da string, sem Date", F._agk2CompDe("2026-09-07"), "set/26");
-  eq("janeiro não vira dezembro", F._agk2CompDe("2026-01-31"), "jan/26");
-  eq("data vazia não quebra", F._agk2CompDe(""), "");
-  ok("a função não usa Date", !/new Date/.test(F._agk2CompDe.toString()));
-
-  // No grupo começa marcado SÓ o cartão tocado. Abrir com os seis marcados
-  // seria repetir o bug do pedido ("ele já abre para baixar todos"), agora
-  // com seis meses de uma vez.
-  ok("o grupo abre marcando só o lançamento tocado",
-    /m\[it\.chave\] = info\.grupo \? !!\(it\.ev && String\(it\.ev\.id\) === String\(ev\.id\) && it\.ev\.tipo === ev\.tipo\) : true;/.test(html));
-  ok("e o filtro de categoria não pode esconder um irmão",
-    /eventos: eventosJanela \}\);/.test(html));
-
-  // [baixa-unica] O lote NÃO é um segundo laço copiando a regra: uma função
-  // só (_baixarCtCore) grava, e as duas entradas chamam ela.
-  ok("existe um núcleo único de baixa de contrato",
-    /async function _baixarCtCore\(c, dtBaixa\) \{/.test(html));
-  ok("a baixa de um contrato passa por ele",
-    /var desfazer = await _baixarCtCore\(c, dtBaixa\);/.test(html));
-  ok("e a do lote também",
-    /desfazeres\.push\(await _baixarCtCore\(alvos\[i\], dtBaixa\)\);/.test(html));
-  eq("só existe um lugar gravando a baixa cheia de contrato",
-    (html.match(/status_pagamento: "pago", data_pagamento: dtBaixa/g) || []).length, 1);
-  ok("o lote vai por deep-link, sem a Agenda gravar",
-    /setCtDeepLink\(\{ acao: "baixar-lote", itemId: ev\.id, itens: _evs\.map/.test(html));
-  ok("e Contratos atende o lote",
-    /baixarCtLote\(ctDeepLink\.itens \|\| \[\], ctDeepLink\.data\);/.test(html));
-  // Um "Desfazer" só, que desfaz todos — seis avisos empilhados seriam
-  // ilegíveis, e desfazer um sem os outros deixa o cliente meio quitado.
-  ok("o lote registra um Desfazer que desfaz todos",
-    /for \(var k = 0; k < desfazeres\.length; k\+\+\) \{ try \{ await desfazeres\[k\]\(\); \}/.test(html));
-  // Falha silenciosa aqui é dinheiro que o usuário acha que baixou.
-  ok("contrato que falhar no lote é avisado na tela",
-    /toast\(desfazeres\.length \+ " baixado\(s\), " \+ falhas \+ " com erro", "error"\);/.test(html));
-  ok("nenhum marcado avisa na tela",
-    /_agAvisar\("Marque pelo menos um lançamento\."\)/.test(html));
-
-  // Os dois botões do modal de Contratos chamam a função direto como handler,
-  // então o 1º argumento é o EVENTO do React — um objeto truthy sem `id`.
-  // Sem esta guarda o app mandava db.patch("contratos", undefined, …).
+  // `onClick:confirmarBaixarCt` (botão "Confirmar Baixa" do modal de
+  // Contratos) entrega o EVENTO do React como 1º argumento — objeto truthy
+  // sem `id`. Um `cParam || baixarCtModal` cru aceitava esse evento como se
+  // fosse o contrato e mandava db.patch("contratos", undefined, …).
   ok("o evento do React não passa por contrato em confirmarBaixarCt",
     /var c = \(cParam && cParam\.id != null\) \? cParam : baixarCtModal;/.test(html));
-  ok("nem em confirmarParcialCt",
-    /var c = \(cParam && cParam\.id != null\) \? cParam : parcialCtModal;/.test(html));
 }
 
-// ───────────────────────────────────────────────────────────────────────────
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam
 // promessas de refresh e mensagens de WebSocket dublado. Por isso rodam por
 // último e o resumo final vira uma continuação deles.

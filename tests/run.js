@@ -1760,6 +1760,21 @@ grupo("O tick dá a baixa; o cartão abre o detalhe");
     /var _temTick = !ehBaralho && _evShow\.acao === "baixar" && _evShow\.id != null;/.test(html));
   ok("o tick existe no CSS",
     /\.agk2-ev-check\{/.test(html));
+  ok("e é posicionado no canto do cartão, fora do fluxo",
+    /\.agk2-ev-check\{\s*\n\s*position:absolute; right:8px; top:50%;/.test(html));
+
+  // [ripple-nao-reposiciona] O decorador de ripple carimbava position:relative
+  // INLINE em todo botão, porque `btn.style.position` não enxerga a folha de
+  // estilo. Inline ganha da folha: o tick voltava pro fluxo, virava terceira
+  // linha do cartão, era decepado pelo overflow:hidden dos 64px e ainda comia
+  // o toque destinado ao cartão — "não aparece o tick nem abre o detalhe".
+  // Atingia todo botão absoluto do app (.ag-mul-flag-btn, sidebar recolhida).
+  ok("o ripple lê a posição COMPUTADA, não só a inline",
+    /var _pos = btn\.style\.position \|\| getComputedStyle\(btn\)\.position;/.test(html));
+  ok("e só o botão estático vira relative",
+    /btn\.style\.position = \(_pos && _pos !== 'static'\) \? _pos : 'relative';/.test(html));
+  eq("o carimbo cego de position não existe mais",
+    (html.match(/btn\.style\.position = btn\.style\.position \|\| 'relative'/g) || []).length, 0);
   ok("e o cartão abre espaço pra ele em vez de deixar o valor por baixo",
     /\.agk2-ev-card\.agk2-ev-com-check\{ padding-right:/.test(html));
   ok("o tick chama a baixa cheia e para o clique de subir pro cartão",

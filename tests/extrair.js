@@ -48,6 +48,7 @@ function extrair(marcadores) {
     var fmtDate = function (d) { if (!d) return "--"; var p = String(d).split("-"); return p.length !== 3 ? d : p[2] + "/" + p[1] + "/" + p[0]; };
     var fmtDateShort = function (d) { if (!d) return "--"; var p = String(d).split("-"); return p.length !== 3 ? d : p[2] + "/" + p[1] + "/" + p[0].slice(2); };
     var fmtBRL = function (v) { return "R$ " + (Math.abs(parseFloat(v || 0))).toFixed(2); };
+    var M4_CAT_LABEL = { pagamento: "Contrato", despesa: "Despesa", receita: "Receita" };
   `;
 
   const escopo = {};
@@ -80,7 +81,7 @@ function extrair(marcadores) {
       multaCobrancaPendente, multaCobrancaVenc, multaCobrancaAtrasada,
       multaBoletoOrgaoPendente, multaBoletoOrgaoAtrasado,
       mesDoLancamentoCt, lancamentosDoContrato, somaContratoBusca, resumoPorMesContratos,
-      ctItensFatura, _agk2DetalheDo, _agk2SomaMarcados
+      ctItensFatura, _agk2DetalheDo, _agk2SomaMarcados, _agk2IrmaosDo, _agk2CompDe
     };
   `);
   return Object.assign(escopo, fn());
@@ -191,7 +192,7 @@ const MARCADORES = [
     // arrasta junto. `parcialOk` é a pergunta honesta "este tipo aceita
     // receber pela metade?" — só o contrato tem onde guardar isso.
     nome: "detalhe do lançamento do cartão da Agenda",
-    de: "function _agk2DetalheDo(ev, ctx) {",
+    de: "function _agk2IrmaosDo(ev, eventos) {",
     ate: "function _agk2ModalDetalhe(",
   },
   {

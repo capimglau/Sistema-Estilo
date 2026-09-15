@@ -844,6 +844,66 @@ função que também é handler de clique, **só vale como registro o que tiver
 `id`** (`cParam && cParam.id != null`). Travado em `tests/run.js`, grupo
 *"O tick dá a baixa; o cartão abre o detalhe"*.
 
+### Seis meses do mesmo cliente são UMA cobrança — `[agenda-grupo]`
+
+Relato do usuário: *"em atrasados aparece a Kablan. Há seis lançamentos da
+Kablan. Eu clicando não está abrindo."*
+
+Contrato recorrente atrasado vira **um cartão POR MÊS**. Seis meses da mesma
+empresa são seis cartões independentes na coluna "Atrasados" — e a Agenda só
+desenha **três** (`_maxVisiveis`), com o resto girando no baralho. Não havia
+como ver a dívida inteira do cliente, nem quitar parte dela.
+
+- **`grupo`** (`"cli_<cliente_id>"`) é o laço entre eles, e **só o cartão de
+  contrato carrega** — despesa e receita avulsa não têm dono comum que faça
+  sentido agrupar.
+- **`_agk2IrmaosDo(ev, eventos)`** devolve os irmãos em ordem **cronológica**
+  (o mais antigo primeiro — a ordem em que se cobra), sempre incluindo o
+  próprio cartão.
+- Com **2 ou mais** irmãos o detalhe abre no **modo grupo** (a lista deles);
+  com **um só** abre a composição da fatura (`[agenda-detalhe]`). São duas
+  perguntas diferentes e a janela escolhe sozinha qual responder.
+- **"Parcial" no grupo é "recebi 2 dos 6"** — cada marcado é baixa **cheia**
+  do próprio lançamento, e nenhum `valor_pago` é tocado. Por isso o rótulo do
+  botão diz **"Receber 2 de 6"**, nunca "Receber parcial": "parcial" ali
+  sugeriria meia fatura.
+- **Contrato parcial entra pelo `pendente`** (o que falta), não pelo valor
+  cheio — senão o total do grupo cobraria de novo o que já entrou.
+- **Começa marcado SÓ o cartão tocado.** Abrir com os seis marcados seria
+  repetir exatamente o bug que o pedido descreve ("ele já abre para baixar
+  todos"), agora com seis meses de uma vez. É o **oposto** do lançamento
+  único, que abre tudo marcado — lá o trabalho é desmarcar o que não entrou.
+- A lista sai de **`eventosJanela`, nunca de `eventosFiltrados`**: um filtro
+  de categoria ligado não pode sumir com um irmão, porque a dívida continua
+  lá e o detalhe existe pra mostrar TODA ela.
+
+**O lote não é um segundo laço copiando a regra.** `_baixarCtCore(c, dt)` faz
+as gravações e devolve o desfazer; `confirmarBaixarCt` (um) e `baixarCtLote`
+(vários) chamam **ela**. O teste conta: `status_pagamento: "pago",
+data_pagamento: dtBaixa` aparece **uma vez** no arquivo. A Agenda continua sem
+gravar — o lote vai por `ctDeepLink.acao === "baixar-lote"` com `itens`.
+⚠️ `itemId` **vai junto** no deep-link: o handler de Contratos só entra no
+bloco quando ele existe, e sem isso o lote era descartado em silêncio.
+
+**Um "Desfazer" só, que desfaz todos.** Seis avisos empilhados são ilegíveis,
+e desfazer um sem os outros deixa o cliente meio quitado sem ninguém entender
+por quê. Contrato que falhar no meio **não derruba os outros**, e o aviso diz
+quantos entraram e quantos não — falha silenciosa aqui é dinheiro que o
+usuário acha que baixou (`[baixa-unica]`, item 3).
+
+**`_agk2DetalheDo` é leitura pura — não consulta o relógio.** O atraso de cada
+linha é acrescentado pela **janela**, que já calcula o do cabeçalho. Função de
+dados que olha `_brNow()` não dá pra testar nem pra prever; há teste exigindo
+que ela continue sem isso.
+
+⚠️ **"Não aparece pra mim" num PWA é cache até prova em contrário.** Este
+pedido voltou uma vez inteiro — tick invisível e o toque abrindo a janela
+antiga — com o código já em `main` e o deploy verde. O sintoma denuncia
+sozinho: **o toque no corpo do cartão abrir a baixa é comportamento que não
+existe mais no código**, em nenhum caminho. Antes de reabrir a investigação,
+confirmar a versão em **Config → Versão do app** (ver a seção do Service
+Worker mais acima).
+
 ## Previsto até liquidar, liquidado no mês em que o dinheiro andou — `[previsto-liquidado]` — PERMANENTE
 
 **Regra do usuário, nas palavras dele: "toda receita ou despesa deve aparecer

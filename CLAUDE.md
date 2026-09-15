@@ -171,6 +171,61 @@ polyfill, "melhoria visual" em JS puro): só acrescente. Se a ideia exige mover
 um elemento renderizado pelo React, ela está errada — resolva no React ou por
 CSS (`order`, `display`), nunca movendo o nó.
 
+## Decorador não reposiciona o que o CSS posicionou — `[ripple-nao-reposiciona]` — PERMANENTE
+
+Irmã da regra `[cm-sem-mover]`: lá o decorador não pode **mover o nó**; aqui
+não pode **mover o layout**.
+
+O decorador de **ripple** (fim do `index.html`) percorre o documento e, em todo
+`<button>`, fazia:
+
+```js
+btn.style.position = btn.style.position || 'relative';
+```
+
+**`btn.style.position` só enxerga o estilo INLINE.** O que vem da folha de
+estilo é string vazia ali — então **todo botão posicionado por CSS era
+carimbado com `position:relative` inline**, e inline ganha da folha. O botão
+voltava para o fluxo e ia parar em outro lugar.
+
+Sintoma real, que custou uma rodada inteira de investigação: o **tick de baixa
+da Agenda** (`.agk2-ev-check`, `absolute` à direita do cartão) caía como
+**terceira linha** do cartão, era **decepado pelo `overflow:hidden`** dos 64px
+— sumia da tela — e, ainda visível por baixo, **comia o toque destinado ao
+cartão**. Relato: *"não aparece nem o tick, nem abre o detalhamento"*. Uma
+causa só, dois sintomas, e nenhum deles apontava para o ripple.
+
+Não era só o tick: `.ag-mul-flag-btn` (o botão que conclui a etapa da multa) e
+os botões da sidebar recolhida são `absolute` por CSS e estavam sendo
+reposicionados do mesmo jeito, em silêncio.
+
+Correção: ler o valor **computado**, e só promover quem é `static`.
+
+```js
+var _pos = btn.style.position || getComputedStyle(btn).position;
+btn.style.position = (_pos && _pos !== 'static') ? _pos : 'relative';
+```
+
+`getComputedStyle` roda **uma vez por botão na vida** (o `dataset.agR` corta
+antes), então não é a leitura de layout por mutação que `[bateria]` proíbe.
+
+**Regras permanentes:**
+
+- **`el.style.<prop>` não é "o valor atual" — é "o valor inline".** Para saber
+  o que está valendo, `getComputedStyle`. Todo `el.style.x = el.style.x || …`
+  é um bug esperando um elemento estilizado por CSS.
+- **Decorador nunca impõe layout por cima do CSS.** Ele pode acrescentar o que
+  precisa para funcionar (o ripple precisa de contexto de posição), mas só
+  onde o CSS não disse nada.
+- **Sintoma de "elemento novo não aparece" tem que passar pelo computed style
+  antes de qualquer outra hipótese.** Neste caso o CSS estava certo, o React
+  estava certo, o deploy estava certo — e mesmo assim `position` computava
+  `relative`. Medir o elemento no navegador achou em um minuto o que o
+  raciocínio não achou em duas rodadas.
+
+Travado em `tests/run.js`, grupo *"O tick dá a baixa; o cartão abre o
+detalhe"*: o carimbo cego tem que dar **zero** ocorrências.
+
 ## Nada anima propriedade cara para sempre — `[bateria]` — PERMANENTE
 
 Com o app **parado** na tela inicial, ele queimava **16% de um núcleo**,

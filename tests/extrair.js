@@ -79,7 +79,8 @@ function extrair(marcadores) {
       orcMesDaParcela, orcMesEfetivo, orcTemFilhaNoMes, orcVisivelNoMes,
       multaCobrancaPendente, multaCobrancaVenc, multaCobrancaAtrasada,
       multaBoletoOrgaoPendente, multaBoletoOrgaoAtrasado,
-      mesDoLancamentoCt, lancamentosDoContrato, somaContratoBusca, resumoPorMesContratos
+      mesDoLancamentoCt, lancamentosDoContrato, somaContratoBusca, resumoPorMesContratos,
+      ctItensFatura, _agk2DetalheDo, _agk2SomaMarcados
     };
   `);
   return Object.assign(escopo, fn());
@@ -175,6 +176,23 @@ const MARCADORES = [
     nome: "emissão de fatura dispensada",
     de: "// Dia em que a fatura do contrato deveria ser emitida",
     ate: "// Próximo número sequencial de fatura",
+  },
+  {
+    // [agenda-detalhe] A composição do contrato (Locação, KM excedente,
+    // extras, desconto). O PDF da fatura e a janela de detalhe do cartão da
+    // Agenda leem daqui — se divergirem, o papel e a tela passam a dizer
+    // coisas diferentes sobre o mesmo dinheiro.
+    nome: "composição da fatura do contrato",
+    de: "function ctItensFatura(ct) {",
+    ate: "function _buildFaturaBody(",
+  },
+  {
+    // [agenda-detalhe] De que é feito o valor do cartão, e o que a baixa
+    // arrasta junto. `parcialOk` é a pergunta honesta "este tipo aceita
+    // receber pela metade?" — só o contrato tem onde guardar isso.
+    nome: "detalhe do lançamento do cartão da Agenda",
+    de: "function _agk2DetalheDo(ev, ctx) {",
+    ate: "function _agk2ModalDetalhe(",
   },
   {
     // O mapa de adiados/resolvidos da Agenda (agenda_adiamentos), que é quem

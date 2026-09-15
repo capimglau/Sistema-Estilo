@@ -319,7 +319,7 @@ Nunca assumir que o usuário vai abrir o arquivo sozinho para rodar no Supabase.
 
 ## Branch de desenvolvimento
 
-Branch ativo: `claude/resolved-option-no-invoice-pv3rx3`
+Branch ativo: `claude/agenda-checkbox-partial-downloads-gu6ga3`
 
 ## A DATA DA BAIXA VALE PARA O SISTEMA INTEIRO — PREMISSA MÁXIMA
 
@@ -768,6 +768,81 @@ sem isso a marca só aparece no próximo reload.
 
 Travado em `tests/run.js`, grupo *"Emissão de fatura dispensada sai de TODOS os
 avisos"*, que roda os helpers reais extraídos do `index.html`.
+
+## Quem dá baixa é o TICK; o cartão abre o DETALHE — `[agenda-tick]` — PERMANENTE
+
+Na Agenda, **tocar em qualquer lugar do cartão** abria a janela de ação, e o
+botão verde dela quitava o lançamento **inteiro** — junto com tudo o que a
+baixa arrasta (contrato ↔ fatura, despesa ↔ manutenção). Não havia como
+receber só uma parte, e um toque torto no card já era meio caminho pra quitar
+tudo. Palavras do usuário: *"ao clicar, ele baixa automaticamente todos os
+lançamentos… coloque um tick para que isso seja feito através desse tick"*.
+
+Hoje são **duas coisas separadas, com alvos diferentes**:
+
+| gesto | o que faz |
+|---|---|
+| **tick** (`.agk2-ev-check`, à direita do cartão) | baixa **CHEIA**, pela janela de ação de sempre |
+| **corpo do cartão** | abre o **detalhe** do lançamento — as linhas que compõem o valor |
+
+- O tick só existe em cartão que representa **dinheiro a quitar**
+  (`acao === "baixar"` com `id`). Renovar, emitir fatura, licenciamento, CNH,
+  reserva: nada disso ganha tick, e o toque neles continua abrindo a janela
+  de ação exatamente como antes.
+- **Baralho (`+N`) não ganha tick**: o cartão do topo gira entre vários
+  eventos, então um tick ali não diria qual está sendo quitado. Tocar nele
+  continua sendo "abrir o resto".
+- **`stopPropagation` no tick é obrigatório.** Sem ele o clique sobe pro
+  cartão e as duas janelas abrem uma por cima da outra.
+- **O tick é o GESTO, não a gravação.** Ele abre a janela que **pergunta a
+  data** — *"Toda baixa PERGUNTA a data"* continua valendo, sem exceção.
+
+## Um lançamento se abre nas linhas que o compõem — `[agenda-detalhe]` — PERMANENTE
+
+*"Ao clicar no lançamento principal, abra todos os outros lançamentos
+detalhados e que possa dar baixa parciais nele."*
+
+O contrato aparece como UM lançamento ("Pgto Contrato · R$ 7.000"), mas por
+dentro é a soma de **Locação + KM excedente + cada extra + desconto** — as
+mesmas linhas que a fatura imprime. O detalhe mostra essas linhas com tique
+próprio: marca o que entrou, e baixa **só isso**.
+
+**A composição mora numa função só: `ctItensFatura(ct)`.** `_buildFaturaBody`
+(o PDF) e o detalhe da Agenda leem dela. Duas cópias dessa conta = o papel e a
+tela discordando sobre o mesmo dinheiro — o teste conta a fórmula da locação
+base e falha se ela reaparecer em outro lugar.
+
+- **O desconto é linha FIXA** (`fixo:true`, valor negativo): entra sempre na
+  conta e não se desmarca. Ele é abatimento, não dinheiro a receber —
+  "desmarcar o desconto pra receber mais" não existe.
+- **A janela abre com tudo marcado.** O caso comum continua sendo receber
+  cheio; o trabalho do usuário é **desmarcar** o que não entrou.
+- **Marcar tudo cai na baixa CHEIA de sempre**, nunca numa "parcial de 100%"
+  — que deixaria o contrato preso em `parcial` para sempre.
+- **O valor enviado é o ACUMULADO** (`jaPago + marcados`): `valor_pago` é o
+  total recebido do contrato, não a última parcela. Mandar só a soma de agora
+  **apagaria** o que já tinha entrado. Por isso a parcela anterior aparece
+  como linha travada "Já recebido antes" — o banco guarda o valor, não quais
+  linhas foram.
+
+**`parcialOk` é a pergunta honesta "este tipo aceita receber pela metade?".**
+Hoje **só o contrato** aceita: é o único com `valor_pago`/`status_pagamento =
+"parcial"` no banco. Despesa e receita **não têm onde guardar a parcela**, e a
+janela **diz isso na tela** em vez de aceitar metade e perder o dado. Se um
+dia despesa/receita ganharem parcial, é campo novo + varredura de TODO painel
+(regra de consistência) — não um `parcialOk: true` solto aqui.
+
+**A Agenda continua sem gravar nada** (`[baixa-unica]`): a parcial vai pra
+`confirmarParcialCt`, na tela de Contratos, por `ctDeepLink.acao === "parcial"`
+com valor e data. A regra de gravação segue morando num lugar só.
+
+⚠️ **`onClick:fn` entrega o EVENTO do React como 1º argumento.** Os botões
+"Confirmar Baixa" e "Registrar Parcial" chamam as funções direto como handler,
+então `var c = cParam || baixarCtModal` aceitava o evento como se fosse o
+contrato e mandava `db.patch("contratos", undefined, …)`. Ao parametrizar uma
+função que também é handler de clique, **só vale como registro o que tiver
+`id`** (`cParam && cParam.id != null`). Travado em `tests/run.js`, grupo
+*"O tick dá a baixa; o cartão abre o detalhe"*.
 
 ## Previsto até liquidar, liquidado no mês em que o dinheiro andou — `[previsto-liquidado]` — PERMANENTE
 

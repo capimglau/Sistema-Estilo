@@ -16910,6 +16910,64 @@ body.midnight .agk2-ev-atraso, body.onix .agk2-ev-atraso{
   background:rgba(255,120,110,0.22); color:#FFD9D5;
 }
 
+/* ═══ [agenda-tick] Quem dá baixa é o TICK, não o toque no cartão ═════════
+
+   Antes, tocar em qualquer lugar do cartão abria a janela de baixa e o botão
+   verde quitava o lançamento INTEIRO — inclusive o que ele arrasta junto
+   (contrato ↔ fatura, despesa ↔ manutenção). Não havia como receber só uma
+   parte, e o toque acidental no card já era meio caminho pra quitar tudo.
+
+   Agora são duas coisas separadas, e cada uma tem o seu alvo:
+     • o TICK (este elemento) → baixa CHEIA, pela janela de sempre (que
+       continua PERGUNTANDO a data — ver "Toda baixa PERGUNTA a data");
+     • o CORPO do cartão → abre o detalhe do lançamento (as linhas que
+       compõem o valor) pra marcar o que entrou e baixar só isso.
+
+   36px de alvo de toque dentro de um cartão de 64px. Não chega nos 48px da
+   linha de swipe (não caberia), mas é botão dedicado com stopPropagation —
+   errar o tique abre o detalhe, que não grava nada. */
+.agk2-ev-card.agk2-ev-com-check{ padding-right:52px; }
+.agk2-ev-check{
+  position:absolute; right:8px; top:50%; transform:translateY(-50%);
+  width:36px; height:36px; border-radius:11px; padding:0; margin:0;
+  display:flex; align-items:center; justify-content:center; flex-shrink:0;
+  border:1.6px solid var(--c-border); background:var(--c-card); color:var(--c-sub);
+  cursor:pointer; -webkit-tap-highlight-color:transparent;
+  transition:background .15s ease, color .15s ease, border-color .15s ease, transform .1s ease;
+}
+.agk2-ev-check:hover{ border-color:#34C759; color:#34C759; background:rgba(52,199,89,.10); }
+.agk2-ev-check:active{ transform:translateY(-50%) scale(0.88); }
+body.dark .agk2-ev-check, body.dim .agk2-ev-check, body.indigo .agk2-ev-check,
+body.midnight .agk2-ev-check, body.onix .agk2-ev-check{
+  background:rgba(255,255,255,.07); border-color:rgba(255,255,255,.22); color:rgba(255,255,255,.72);
+}
+
+/* ═══ [agenda-detalhe] Linhas da janela de detalhe do lançamento ══════════
+   Uma linha por item que compõe o valor (Locação, KM excedente, extras,
+   desconto). Marcada = entra na baixa. */
+.agd-item{
+  display:flex; align-items:center; gap:10px; width:100%; text-align:left;
+  padding:10px 12px; border-radius:12px; box-sizing:border-box;
+  border:1.5px solid var(--c-border); background:var(--c-card);
+  cursor:pointer; font:inherit; color:var(--c-text);
+  transition:border-color .15s ease, background .15s ease;
+}
+.agd-item.is-on{ border-color:#34C759; background:rgba(52,199,89,.09); }
+/* Linha fixa (desconto): entra sempre no total, não se desmarca — por isso
+   não tem cursor de clique nem estado ligado/desligado. */
+.agd-item.is-fixo{ cursor:default; opacity:.85; border-style:dashed; }
+.agd-box{
+  width:22px; height:22px; border-radius:7px; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  border:1.6px solid var(--c-border); background:var(--c-bg); color:transparent;
+}
+.agd-item.is-on .agd-box{ background:#34C759; border-color:#34C759; color:#fff; }
+.agd-item.is-fixo .agd-box{ background:var(--c-border); border-color:var(--c-border); color:var(--c-sub); }
+.agd-txt{ flex:1 1 auto; min-width:0; display:block; }
+.agd-rot{ display:block; font-size:13.5px; font-weight:700; line-height:1.25; }
+.agd-det{ display:block; font-size:11.5px; color:var(--c-sub); line-height:1.3; margin-top:2px; overflow-wrap:break-word; }
+.agd-val{ font-size:13.5px; font-weight:800; flex-shrink:0; font-variant-numeric:tabular-nums; white-space:nowrap; }
+
 /* ===== Linha do tempo (mobile) — dias empilhados, um abaixo do outro, com
    uma trilha vertical contínua e uma bolinha marcando cada dia, em vez da
    rolagem lateral do board do desktop. ===== */
@@ -26152,18 +26210,67 @@ async function printContrato(ct, cl, ve, emp) {
   openPdfPage(h, _wct);
 }
 
-function _buildFaturaBody(ct, cl, ve, emp) {
-  cl = cl || {}; ve = ve || {}; emp = emp || {};
-  var hoje = _brNow().toISOString().split("T")[0];
+/* ═══ [agenda-detalhe] A composição de um contrato mora numa função só ═════
+
+   Um contrato aparece no app como UM lançamento ("Pgto Contrato · Kablan ·
+   R$ 7.000"), mas por dentro ele é a SOMA de várias linhas: a locação do
+   período, o KM excedente, cada extra lançado (`despesas_extras`) e o
+   desconto. O PDF da fatura (_buildFaturaBody) já desenhava exatamente essas
+   linhas — e a janela de detalhe do cartão da Agenda precisa das MESMAS, pro
+   usuário marcar o que entrou e baixar só isso (baixa parcial).
+
+   Duas cópias dessa conta = o papel e a tela discordando sobre o mesmo
+   dinheiro. Então a conta vive aqui, e os dois chamam.
+
+   Devolve `itens` na ordem em que a fatura os imprime, cada um
+   `{ chave, rotulo, detalhe, valor, fixo }`. O DESCONTO entra como valor
+   NEGATIVO e com `fixo:true`: ele não é dinheiro que entra, é abatimento —
+   não faz sentido "desmarcar o desconto" pra receber mais. Com isso a soma
+   de `itens` bate exatamente com o `valor_total` do contrato. */
+function ctItensFatura(ct) {
+  ct = ct || {};
   var dias = 0;
   if (ct.data_inicio && ct.data_fim) dias = Math.max(1, Math.ceil((new Date(ct.data_fim) - new Date(ct.data_inicio)) / 86400000));
   var kmExc = 0;
-  if (ct.km_franquia && ct.km_final && ct.km_inicial) { var kmRod = ct.km_final - ct.km_inicial; if (kmRod > ct.km_franquia) kmExc = (kmRod - ct.km_franquia) * parseFloat(ct.valor_km_excedente || 0); }
+  if (ct.km_franquia && ct.km_final && ct.km_inicial) {
+    var kmRod = ct.km_final - ct.km_inicial;
+    if (kmRod > ct.km_franquia) kmExc = (kmRod - ct.km_franquia) * parseFloat(ct.valor_km_excedente || 0);
+  }
   var extras = []; try { extras = ct.despesas_extras ? JSON.parse(ct.despesas_extras) : []; } catch(e) {}
-  var extrasSum = extras.reduce(function(s,x){ return s+parseFloat(x.valor||0); }, 0);
-  var valorTotal = parseFloat(ct.valor_total || 0);
-  var locBase = Math.max(0, valorTotal - kmExc - extrasSum + parseFloat(ct.desconto||0));
+  if (!Array.isArray(extras)) extras = [];
+  var extrasSum = extras.reduce(function(s,x){ return s + (parseFloat(x.valor||0)||0); }, 0);
+  var desconto = parseFloat(ct.desconto || 0) || 0;
+  var valorTotal = parseFloat(ct.valor_total || 0) || 0;
+  var locBase = Math.max(0, valorTotal - kmExc - extrasSum + desconto);
   var vd = dias > 0 ? locBase / dias : 0;
+  var itens = [];
+  itens.push({
+    chave: "locacao", rotulo: "Locação",
+    detalhe: (ct.data_inicio && ct.data_fim ? fmtDate(ct.data_inicio) + " a " + fmtDate(ct.data_fim) : "")
+             + (dias ? (ct.data_inicio && ct.data_fim ? " · " : "") + dias + " dia(s)" : ""),
+    valor: locBase, fixo: false
+  });
+  if (kmExc > 0) itens.push({ chave:"km", rotulo:"KM excedente", detalhe:"", valor:kmExc, fixo:false });
+  extras.forEach(function(ex, i){
+    var v = parseFloat(ex.valor || 0) || 0;
+    if (v <= 0) return;
+    itens.push({ chave:"extra_"+i, rotulo: ex.tipo || "Extra", detalhe: ex.obs || "", valor: v, fixo:false });
+  });
+  if (desconto > 0) itens.push({ chave:"desconto", rotulo:"Desconto", detalhe:"abatido do total", valor:-desconto, fixo:true });
+  return { dias:dias, valorDia:vd, kmExc:kmExc, extras:extras, extrasSum:extrasSum,
+           desconto:desconto, locBase:locBase, total:valorTotal, itens:itens };
+}
+
+function _buildFaturaBody(ct, cl, ve, emp) {
+  cl = cl || {}; ve = ve || {}; emp = emp || {};
+  var hoje = _brNow().toISOString().split("T")[0];
+  /* [agenda-detalhe] A conta das linhas da fatura é a de ctItensFatura — a
+     MESMA que a janela de detalhe do cartão da Agenda usa pra oferecer a
+     baixa parcial. Recalcular aqui faria papel e tela divergirem. */
+  var _comp = ctItensFatura(ct);
+  var dias = _comp.dias, kmExc = _comp.kmExc, extras = _comp.extras,
+      extrasSum = _comp.extrasSum, valorTotal = _comp.total,
+      locBase = _comp.locBase, vd = _comp.valorDia;
   var isVencida = ct.previsao_pagamento && ct.previsao_pagamento < hoje && ct.status_pagamento !== "recebido";
   var isPago = ct.status_pagamento === "recebido";
   var statusLabel = isPago ? "PAGO" : isVencida ? "VENCIDO" : "PENDENTE";
@@ -34011,6 +34118,15 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           if (ctDeepLink.data) confirmarBaixarCt(_ctDL, ctDeepLink.data);
           else { setBaixarCtData(_brNow().toISOString().split("T")[0]); setBaixarCtModal(_ctDL); }
         }
+        /* [agenda-detalhe] Baixa PARCIAL escolhida no detalhe do cartão da
+           Agenda: o valor já vem somado (parcela anterior + o que foi marcado
+           agora) e a data já foi confirmada lá, então grava direto pela função
+           única desta tela. Sem valor, só abre o formulário de parcial — mesmo
+           comportamento do "baixar" sem data. */
+        else if (ctDeepLink.acao === "parcial") {
+          if (ctDeepLink.valor != null) confirmarParcialCt(_ctDL, ctDeepLink.valor, ctDeepLink.data);
+          else { setParcialCtValor(""); setParcialCtData(_brNow().toISOString().split("T")[0]); setParcialCtModal(_ctDL); }
+        }
         /* "Editar" vindo do cartão da Agenda (botão ✏️ Editar): abre o
            contrato direto no formulário de edição, mesmo caminho do
            swipe "Editar" da lista. */
@@ -34722,8 +34838,13 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
      formulário daqui nem chega a abrir. Sem parâmetro, segue lendo o estado
      do próprio modal desta tela, como sempre. Um caminho de gravação só. */
   async function confirmarBaixarCt(cParam, dtParam) {
-    var c = cParam || baixarCtModal;
-    var dtBaixa = dtParam || baixarCtData;
+    /* `onClick:confirmarBaixarCt` (botão "Confirmar Baixa" do modal) entrega o
+       EVENTO do React como 1º argumento — um objeto truthy sem `id`. Um
+       `cParam || baixarCtModal` cru aceitava esse evento como se fosse o
+       contrato e mandava `db.patch("contratos", undefined, ...)`. Só vale como
+       contrato o que tiver id. */
+    var c = (cParam && cParam.id != null) ? cParam : baixarCtModal;
+    var dtBaixa = (typeof dtParam === "string" && dtParam) ? dtParam : baixarCtData;
     if (!c || !dtBaixa) return toast("Informe a data de pagamento", "error");
     var statusOriginal = c.status_pagamento;
     var dataPagOriginal = c.data_pagamento;
@@ -34754,28 +34875,39 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       });
     } catch(e) { toast("Erro: " + (e.message||String(e)), "error"); }
   }
-  async function confirmarParcialCt() {
-    var c = parcialCtModal;
-    var vp = parseFloat(String(parcialCtValor).replace(",","."));
-    if (!c || !parcialCtData || isNaN(vp) || vp <= 0) return toast("Informe o valor e a data", "error");
+  /* [agenda-detalhe] Parametrizada para atender também a baixa PARCIAL pedida
+     no detalhe do cartão da Agenda (ctDeepLink.acao === "parcial"): a regra de
+     gravação continua morando aqui, uma só, e a Agenda apenas manda o valor
+     acumulado e a data ([baixa-unica] — a Agenda não escreve no banco).
+     Mesma proteção do evento do React de confirmarBaixarCt: o botão
+     "Registrar Parcial" chama isto direto como handler de clique. */
+  async function confirmarParcialCt(cParam, valorParam, dataParam) {
+    var c = (cParam && cParam.id != null) ? cParam : parcialCtModal;
+    var _vRaw = (valorParam != null && valorParam !== "") ? valorParam : parcialCtValor;
+    var _dt = (typeof dataParam === "string" && dataParam) ? dataParam : parcialCtData;
+    var vp = parseFloat(String(_vRaw).replace(",","."));
+    if (!c || !_dt || isNaN(vp) || vp <= 0) return toast("Informe o valor e a data", "error");
     var statusOriginal = c.status_pagamento;
     var valorPagoOriginal = c.valor_pago;
     var dataPagOriginal = c.data_pagamento;
     var recLinkAntes = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
     var recOriginal = recLinkAntes ? Object.assign({}, recLinkAntes) : null;
     try {
-      var patchData = { status_pagamento: "parcial", valor_pago: vp, data_pagamento: parcialCtData };
+      var patchData = { status_pagamento: "parcial", valor_pago: vp, data_pagamento: _dt };
       await db.patch("contratos", c.id, patchData);
       setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,patchData) : x; }); });
       // Sincroniza a fatura/receita vinculada: mantém o valor total, marca como parcial.
       var recLink = (receitas||[]).find(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); });
       if (recLink) {
         try {
-          var updL = await db.patch("receitas", recLink.id, { status: "parcial", valor: parseFloat(c.valor_total||recLink.valor||0).toFixed(2), data_pagamento: parcialCtData });
+          var updL = await db.patch("receitas", recLink.id, { status: "parcial", valor: parseFloat(c.valor_total||recLink.valor||0).toFixed(2), data_pagamento: _dt });
           setReceitas(function(p){ return p.map(function(x){ return x.id===recLink.id ? Object.assign({},x,updL) : x; }); });
         } catch(e){ console.warn(e); }
       }
       setParcialCtModal(null);
+      /* Veio do cartão da Agenda (voltarInicio) → devolve o usuário pra lá,
+         mesmo tratamento que confirmarBaixarCt já dava. */
+      _talvezVoltarInicio();
       window._agUndo("Baixa parcial registrada!", async function(){
         try {
           await db.patch("contratos", c.id, { status_pagamento: statusOriginal, valor_pago: valorPagoOriginal, data_pagamento: dataPagOriginal });
@@ -35870,7 +36002,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     )
 
     /* -- MODAL BAIXA PARCIAL -- */
-    , parcialCtModal && React.createElement(Modal, { open: true, onClose: function(){ setParcialCtModal(null); }, full: true, title: '\u2b21 Baixa Parcial' }
+    , parcialCtModal && React.createElement(Modal, { open: true, onClose: function(){ setParcialCtModal(null); _talvezVoltarInicio(); }, full: true, title: '\u2b21 Baixa Parcial' }
       , React.createElement('div', { style: { fontSize:13,color:'var(--c-sub)',marginBottom:20 } }
           , (clientes.find(function(x){ return x.id==parcialCtModal.cliente_id; })||{}).nome||'\u2014'
           , ' \u00b7 Valor total: '
@@ -35883,7 +36015,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       , React.createElement('input', { type:'date', value:parcialCtData, onChange:function(e){ setParcialCtData(e.target.value); },
           style: { display:'block',width:'100%',marginTop:7,marginBottom:22,padding:'13px 16px',borderRadius:14,border:'1.5px solid var(--c-border)',background:'var(--c-card)',fontSize:16,color:'var(--c-text)',boxSizing:'border-box',outline:'none' } })
       , React.createElement('div', { style: { display:'grid',gridTemplateColumns:'1fr 1fr',gap:12 } }
-          , React.createElement('button', { onClick:function(){ setParcialCtModal(null); }, style: { border:'1.5px solid var(--c-border)',background:'transparent',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer',color:'var(--c-text)' } }, 'Cancelar')
+          , React.createElement('button', { onClick:function(){ setParcialCtModal(null); _talvezVoltarInicio(); }, style: { border:'1.5px solid var(--c-border)',background:'transparent',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer',color:'var(--c-text)' } }, 'Cancelar')
           , React.createElement('button', { onClick:confirmarParcialCt, style: { border:'none',background:'linear-gradient(135deg,#0e6db5,#007AFF)',color:'#fff',borderRadius:16,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer' } }, '\u2b21 Registrar Parcial')
         )
     )
@@ -50498,6 +50630,13 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
      janela de ação aberta, e a data escolhida nela. */
   var _acArr = React.useState(null); var acaoModal = _acArr[0], setAcaoModal = _acArr[1];
   var _adArr = React.useState(""); var acaoData = _adArr[0], setAcaoData = _adArr[1];
+  /* [agenda-detalhe] Janela de DETALHE do lançamento (toque no corpo do
+     cartão): as linhas que compõem o valor, quais estão marcadas e a data.
+     Separada da janela de ação de propósito — o TICK do cartão continua
+     abrindo aquela, que é a baixa cheia de sempre. */
+  var _dtArr = React.useState(null); var detalheModal = _dtArr[0], setDetalheModal = _dtArr[1];
+  var _dmArr = React.useState({}); var detalheMarcados = _dmArr[0], setDetalheMarcados = _dmArr[1];
+  var _ddArr = React.useState(""); var detalheData = _ddArr[0], setDetalheData = _ddArr[1];
   /* [AGK2-V2 · adiar-resolver] Sobe da tabela/localStorage o que já foi adiado
      ou dado por resolvido, e reconta sempre que muda — `adiaVersao` só existe
      pra forçar o recálculo dos eventos, já que o mapa vive fora do React. */
@@ -51154,9 +51293,20 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
                              que um deles tinha cor diferente em vez de só estar no meio do
                              próprio pulso. Ancorando no Date.now(), todos ficam em fase. */
                           var _pulseDelay = diaVencidoOuHoje ? (-(Date.now()%3200)/1000)+"s" : null;
+                          /* [agenda-tick] Cartão que representa dinheiro a quitar
+                             (despesa, receita, contrato, item do orçamento pessoal)
+                             ganha o TICK: é ele, e só ele, que dá a baixa cheia. O
+                             toque no CORPO do cartão passa a abrir o detalhe do
+                             lançamento (as linhas que compõem o valor), onde dá pra
+                             marcar só o que entrou. Baralho fica de fora: o cartão do
+                             topo gira entre vários eventos, então um tick ali não
+                             diria qual deles está sendo quitado — tocar nele continua
+                             sendo "abrir o resto". */
+                          var _temTick = !ehBaralho && _evShow.acao === "baixar" && _evShow.id != null;
+                          var _tickEntrada = _evShow.tipo === "pagamento" || _evShow.fluxo === "in";
                           var _cardEl = React.createElement('div', {
                               key: ehBaralho?undefined:ei,
-                              className:"agk2-ev-card"+(diaVencidoOuHoje?" agk2-ev-pulsa":"")+(ehBaralho?" agk2-ev-baralho":"")+(ehBaralho&&_baralhoFlipping?" is-flipping":""),
+                              className:"agk2-ev-card"+(diaVencidoOuHoje?" agk2-ev-pulsa":"")+(ehBaralho?" agk2-ev-baralho":"")+(ehBaralho&&_baralhoFlipping?" is-flipping":"")+(_temTick?" agk2-ev-com-check":""),
                               style:{ '--ev-l':_toneShow.l, '--ev-d':_toneShow.d, '--flag-mid':_flagShow.mid, '--flag-ink':_flagShow.ink, '--flag-icon':_flagShow.icon, animationDelay:_pulseDelay||undefined },
                               onClick: ehBaralho
                                 ? (_ocultosDeOutrosDias > 0
@@ -51192,7 +51342,11 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
                                        que é a saída pra empresa que não recebe fatura
                                        (ver [emissao-dispensada]). Antes o toque ia direto
                                        pro Financeiro e o aviso não tinha como sair de cena. */
-                                    if ((ev.acao === "renovar" || ev.acao === "baixar" || ev.acao === "emitir") && ev.id != null) {
+                                    /* [agenda-detalhe] Dinheiro a quitar: o toque no
+                                       corpo NÃO baixa mais nada — abre o detalhe do
+                                       lançamento. Quem baixa é o tick à direita. */
+                                    if (_temTick) { _agk2AbrirDetalhe(ev); return; }
+                                    if ((ev.acao === "renovar" || ev.acao === "emitir") && ev.id != null) {
                                       setAcaoData(isoHoje); setAdiarAberto(false); setAdiarQuando("");
                                       setAcaoModal(ev);
                                       return;
@@ -51256,6 +51410,19 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
                                   )
                                 , _agk2Atraso(_evShow.data, isoHoje) && React.createElement('span', { className:"agk2-ev-atraso" }, _agk2Atraso(_evShow.data, isoHoje))
                                 , ehBaralho && React.createElement('span', { className:"agk2-ev-baralho-badge" }, "+"+evsOcultos)
+                              )
+                            /* [agenda-tick] stopPropagation obrigatório: sem ele o
+                               clique sobe pro cartão e abre o detalhe POR CIMA da
+                               janela de baixa. */
+                            , _temTick && React.createElement('button', {
+                                type:"button", className:"agk2-ev-check",
+                                title: _tickEntrada ? "Receber tudo" : "Baixar tudo",
+                                "aria-label": _tickEntrada ? "Receber tudo" : "Baixar tudo",
+                                onClick: function(e){ e.stopPropagation(); _agk2AbrirBaixaCheia(_evShow); }
+                              }
+                              , React.createElement('svg', { width:18, height:18, viewBox:"0 0 24 24", fill:"none", stroke:"currentColor", strokeWidth:3, strokeLinecap:"round", strokeLinejoin:"round" }
+                                  , React.createElement('path', { d:"M20 6 9 17l-5-5" })
+                                )
                               )
                           );
                           if (!ehBaralho) return _cardEl;
@@ -51330,7 +51497,89 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
           onAdiar:     function(){ var _e = acaoModal; setAcaoModal(null); setAdiarAberto(false); _agk2Marcar(_e, { ate: adiarQuando }); },
           onResolver:  function(){ var _e = acaoModal; setAcaoModal(null); _agk2Marcar(_e, { resolvido: true }); }
         })
+      /* [agenda-detalhe] Janela de DETALHE — o que o toque no corpo do cartão
+         abre agora. Lista as linhas que compõem o valor, deixa marcar o que
+         entrou e baixa só isso. As duas janelas nunca ficam abertas juntas:
+         quem abre o detalhe é o cartão, quem abre a de ação é o tick. */
+      , detalheModal && _agk2ModalDetalhe((function(){
+          var _info = _agk2DetalheInfo(detalheModal);
+          var _marcaveis = (_info.itens||[]).filter(function(it){ return !it.fixo; });
+          return {
+            ev: detalheModal, info: _info, marcados: detalheMarcados,
+            data: detalheData, setData: setDetalheData,
+            todosMarcados: _marcaveis.length > 0 && _marcaveis.every(function(it){ return !!detalheMarcados[it.chave]; }),
+            onToggle: function(ch){ setDetalheMarcados(function(m){ var n = Object.assign({}, m); n[ch] = !n[ch]; return n; }); },
+            onAlternarTodos: function(){
+              var ligar = !(_marcaveis.length > 0 && _marcaveis.every(function(it){ return !!detalheMarcados[it.chave]; }));
+              setDetalheMarcados(function(){ var n = {}; _marcaveis.forEach(function(it){ n[it.chave] = ligar; }); return n; });
+            },
+            onFechar: function(){ setDetalheModal(null); },
+            onConfirmar: _agk2DetalheConfirmar,
+            /* Adiar e Editar continuam existindo pro mesmo lançamento — sair do
+               detalhe pra ter que reabrir a outra janela seria um passo a mais
+               pra fazer o que já dava num toque. */
+            abrirAdiar: function(){ var _e = detalheModal; setDetalheModal(null); setAcaoData(isoHoje); setAdiarQuando(_agk2AdiarPadrao()); setAdiarAberto(true); setAcaoModal(_e); },
+            onIrPara: function(){ var _e = detalheModal; setDetalheModal(null); _agk2Executar(_e, null, false); }
+          };
+        })())
   );
+
+  /* [agenda-detalhe] Composição do lançamento do cartão, com os dados que este
+     componente já tem em mãos. Um lugar só monta o `ctx` — o render e a
+     confirmação precisam da MESMA leitura, e recalcular com fontes diferentes
+     é como o total da tela passa a discordar do que foi gravado. */
+  function _agk2DetalheInfo(ev) {
+    return _agk2DetalheDo(ev, { contratos: contratos, receitas: receitas, despesas: despesas });
+  }
+
+  /* Toque no CORPO do cartão. Marca tudo de saída: o caso comum continua sendo
+     receber o valor cheio, então a janela abre pronta pra isso e o trabalho do
+     usuário é DESMARCAR o que ainda não entrou. */
+  function _agk2AbrirDetalhe(ev) {
+    var info = _agk2DetalheInfo(ev);
+    var m = {};
+    (info.itens || []).forEach(function(it){ if (!it.fixo) m[it.chave] = true; });
+    setDetalheMarcados(m);
+    setDetalheData(isoHoje);
+    setAdiarAberto(false); setAdiarQuando("");
+    setDetalheModal(ev);
+  }
+
+  /* Toque no TICK: baixa cheia, pela janela de ação de sempre — que continua
+     PERGUNTANDO a data antes de gravar (premissa "Toda baixa PERGUNTA a data").
+     O tick é o gesto, não a gravação. */
+  function _agk2AbrirBaixaCheia(ev) {
+    setAcaoData(isoHoje); setAdiarAberto(false); setAdiarQuando("");
+    setDetalheModal(null);
+    setAcaoModal(ev);
+  }
+
+  /* Confirmação do detalhe. Marcou tudo (ou o que falta fecha o total) → é a
+     baixa cheia de sempre, pela MESMA função de sempre (_agk2Executar). Marcou
+     parte → baixa PARCIAL, e quem grava continua sendo `confirmarParcialCt` na
+     tela de Contratos, via deep-link: a Agenda não escreve no banco
+     ([baixa-unica]).
+
+     `acumulado` já soma a parcela recebida antes, porque `valor_pago` é o total
+     recebido do contrato, não a última parcela — mandar só a soma de agora
+     apagaria o que já tinha entrado. */
+  function _agk2DetalheConfirmar() {
+    var ev = detalheModal;
+    if (!ev) return;
+    var info = _agk2DetalheInfo(ev);
+    var soma = _agk2SomaMarcados(info, detalheMarcados);
+    if (!(soma > 0.005)) { _agAvisar("Marque pelo menos uma linha para dar baixa."); return; }
+    if (!detalheData) { _agAvisar("Informe a data do pagamento."); return; }
+    var acumulado = (info.jaPago || 0) + soma;
+    var cheia = acumulado >= (info.total || 0) - 0.005;
+    var _dt = detalheData;
+    if (cheia) { setDetalheModal(null); _agk2Executar(ev, _dt, true); return; }
+    if (!info.parcialOk) { _agAvisar("Este lançamento não guarda valor parcial — marque todas as linhas para baixar."); return; }
+    if (!setCtDeepLink) { _agAvisar("Não consegui abrir Contratos para registrar a baixa parcial."); return; }
+    setDetalheModal(null);
+    setCtDeepLink({ acao: "parcial", itemId: ev.id, valor: acumulado, data: _dt, voltarInicio: true });
+    if (setTab) setTab("contratos");
+  }
 
   /* [AGK2-V2 · adiar-resolver] Grava a marca (adiado até / resolvido) e some
      com o cartão. Sempre com "Desfazer": um "resolvido" tira o alerta de
@@ -51620,6 +51869,182 @@ function _agk2ModalAcao(o) {
               onClick:o.onResolver
             }, "🚫 Não emitir — marcar como resolvido")
         )
+    )
+  );
+}
+
+/* ═══ [agenda-detalhe] O detalhe do lançamento do cartão ══════════════════
+
+   `_agk2DetalheDo(ev, ctx)` diz DE QUE o valor do cartão é feito. Contrato é
+   o caso que tem composição de verdade (locação, KM excedente, extras,
+   desconto — ver ctItensFatura); os demais tipos são uma linha só, e é
+   assim que a janela os mostra: sem fingir uma divisão que não existe.
+
+   `parcialOk` é a pergunta honesta "este tipo aceita receber pela metade?".
+   Hoje SÓ o contrato aceita: é o único que tem `valor_pago`/`status_pagamento
+   = "parcial"` no banco. Despesa e receita não têm campo onde guardar a
+   parcela, então marcar metade ali não teria onde ser gravado — a janela diz
+   isso na cara em vez de aceitar e perder o dado.
+
+   `vinculos` é o que a baixa ARRASTA JUNTO ([baixa-unica]: despesa ↔
+   manutenção, fatura ↔ contrato). Não são linhas marcáveis — são avisos de
+   que outro registro vai junto, que era justamente o que o usuário não via
+   antes de confirmar. */
+function _agk2DetalheDo(ev, ctx) {
+  ctx = ctx || {};
+  if (ev && ev.tipo === "pagamento" && ev.id != null) {
+    var ct = (ctx.contratos || []).find(function(x){ return String(x.id) === String(ev.id); });
+    if (ct) {
+      var comp = ctItensFatura(ct);
+      var vinc = [];
+      var recLink = (ctx.receitas || []).find(function(r){
+        return r.ref_fatura && String(r.ref_fatura).indexOf("fat_" + ct.id + "_") === 0;
+      });
+      if (recLink) vinc.push("A fatura vinculada (" + (recLink.numero_fatura || "prevista") + ") é baixada junto.");
+      return {
+        itens: comp.itens, total: comp.total,
+        /* Parcial já registrada: o banco guarda só o VALOR recebido, não
+           quais linhas foram. Então ela vira uma linha travada no topo e o
+           que for marcado agora SOMA em cima dela. */
+        jaPago: ct.status_pagamento === "parcial" ? (parseFloat(ct.valor_pago || 0) || 0) : 0,
+        parcialOk: true, vinculos: vinc
+      };
+    }
+  }
+  var vinc2 = [];
+  if (ev && ev.tipo === "despesa" && ev.id != null) {
+    var dsp = (ctx.despesas || []).find(function(x){ return String(x.id) === String(ev.id); });
+    if (dsp && dsp.manutencao_id) vinc2.push("A manutenção vinculada é marcada como paga junto.");
+    if (dsp && dsp.recorrente) vinc2.push("Recorrente: a baixa cria a parcela deste mês, sem mexer no cadastro-base.");
+  }
+  return {
+    itens: [{ chave:"unico", rotulo: (ev && (ev.quem || ev.titulo)) || "Lançamento",
+              detalhe: (ev && (ev.detalhe || ev.sub)) || "", valor: (ev && ev.valor) || 0, fixo:false }],
+    total: (ev && ev.valor) || 0, jaPago: 0, parcialOk: false, vinculos: vinc2
+  };
+}
+
+/* Soma do que está marcado. Linha `fixo` (o desconto) entra sempre: ela não é
+   dinheiro a receber, é abatimento — desmarcar pra "receber mais" não existe. */
+function _agk2SomaMarcados(info, marcados) {
+  marcados = marcados || {};
+  return ((info && info.itens) || []).reduce(function(s, it){
+    return (it.fixo || marcados[it.chave]) ? s + (parseFloat(it.valor) || 0) : s;
+  }, 0);
+}
+
+/* [agenda-detalhe] Corpo da janela de detalhe. Fora do componente porque é só
+   apresentação — recebe tudo por parâmetro e não guarda estado nenhum, igual
+   a _agk2ModalAcao. */
+function _agk2ModalDetalhe(o) {
+  var ev = o.ev, info = o.info, marcados = o.marcados || {};
+  var ehEntrada = ev.tipo === "pagamento" || ev.fluxo === "in";
+  var tone = _agk2Tone(ev.tipo);
+  var atraso = _agk2Atraso(ev.data, _brNow().toISOString().split("T")[0]);
+  function fmtD(d){ if(!d) return "--"; var p=String(d).split("-"); return p[2]+"/"+p[1]+"/"+p[0].slice(2); }
+  var soma = _agk2SomaMarcados(info, marcados);
+  var acumulado = (info.jaPago || 0) + soma;
+  var cheia = acumulado >= (info.total || 0) - 0.005;
+  var temAlgo = soma > 0.005;
+  var travadoParcial = temAlgo && !cheia && !info.parcialOk;
+  var podeConfirmar = temAlgo && !!o.data && !travadoParcial;
+  var rotulo = (cheia ? (ehEntrada ? "Receber tudo" : "Baixar tudo")
+                      : (ehEntrada ? "Receber parcial" : "Baixar parcial"));
+  var marcaveis = (info.itens || []).filter(function(it){ return !it.fixo; });
+
+  function linha(it) {
+    var on = !!marcados[it.chave];
+    return React.createElement('button', {
+        key: it.chave, type:"button",
+        className: "agd-item" + (it.fixo ? " is-fixo" : (on ? " is-on" : "")),
+        onClick: it.fixo ? null : function(){ o.onToggle(it.chave); }
+      }
+      , React.createElement('span', { className:"agd-box" }
+          , (it.fixo || on) ? React.createElement('svg', { width:13, height:13, viewBox:"0 0 24 24", fill:"none", stroke:"currentColor", strokeWidth:3.4, strokeLinecap:"round", strokeLinejoin:"round" }
+              , React.createElement('path', { d:"M20 6 9 17l-5-5" })
+            ) : null
+        )
+      , React.createElement('span', { className:"agd-txt" }
+          , React.createElement('span', { className:"agd-rot" }, it.rotulo)
+          , it.detalhe ? React.createElement('span', { className:"agd-det" }, it.detalhe) : null
+        )
+      , React.createElement('span', { className:"agd-val", style:{ color: (parseFloat(it.valor)||0) < 0 ? "#34C759" : "var(--c-text)" } }
+          , (parseFloat(it.valor)||0) < 0 ? "− " : ""
+          , _agk2MoedaEl(Math.abs(parseFloat(it.valor)||0))
+        )
+    );
+  }
+
+  return React.createElement(Modal, { open:true, onClose:o.onFechar, title:"Detalhe do lançamento" }
+    , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:14 } }
+      /* Cabeçalho: o mesmo resumo da janela de ação — de quem é, quanto é,
+         pra quando estava previsto. */
+      , React.createElement('div', { style:{ background:"var(--c-bg)", border:"1px solid var(--c-border)", borderRadius:12, padding:"12px 14px", display:"flex", flexDirection:"column", gap:6 } }
+        , React.createElement('div', { style:{ display:"flex", alignItems:"baseline", justifyContent:"space-between", gap:12 } }
+          , React.createElement('span', { style:{ fontSize:15, fontWeight:700 } }, ev.quem || ev.titulo)
+          , React.createElement('span', { style:{ fontSize:15, fontWeight:800, whiteSpace:"nowrap", fontVariantNumeric:"tabular-nums" } }, _agk2MoedaEl(info.total))
+        )
+        , React.createElement('div', { style:{ fontSize:12, color:"var(--c-sub)" } }
+          , React.createElement('span', { style:{ fontWeight:800, color:tone.tag } }, M4_CAT_LABEL[ev.tipo]||ev.tipo)
+          , (ev.detalhe || ev.sub) ? (" · " + (ev.detalhe || ev.sub)) : ""
+        )
+        , React.createElement('div', { style:{ fontSize:12, color:"var(--c-sub)" } }
+          , "Previsto para " + fmtD(ev.data)
+          , atraso ? React.createElement('span', { style:{ marginLeft:8, fontWeight:800, color:"#C0392F" } }, "· " + atraso) : null
+        )
+      )
+      /* Parcela já recebida antes: linha travada, pra ficar claro que o que
+         for marcado agora SOMA em cima dela e não substitui. */
+      , info.jaPago > 0 && React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", gap:10, fontSize:12.5, fontWeight:700, color:"#1A7A3E", background:"rgba(52,199,89,.10)", border:"1px solid rgba(52,199,89,.35)", borderRadius:12, padding:"9px 12px" } }
+        , React.createElement('span', null, "✅ Já recebido antes")
+        , React.createElement('span', { style:{ fontVariantNumeric:"tabular-nums" } }, _agk2MoedaEl(info.jaPago))
+      )
+      , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:8 } }
+        , React.createElement('div', { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 } }
+          , React.createElement('span', { style:{ fontSize:11, fontWeight:800, letterSpacing:.6, textTransform:"uppercase", color:"var(--c-sub)" } }
+            , marcaveis.length > 1 ? "Marque o que entrou" : "Lançamento"
+          )
+          /* Só com mais de uma linha marcável o atalho faz sentido — com uma
+             só ele seria um segundo botão fazendo o que o próprio toque na
+             linha já faz. */
+          , marcaveis.length > 1 && React.createElement('button', {
+              type:"button", onClick:o.onAlternarTodos,
+              style:{ border:"none", background:"transparent", padding:0, cursor:"pointer", fontSize:12, fontWeight:700, color:"var(--c-sub)", textDecoration:"underline" }
+            }, o.todosMarcados ? "Desmarcar todos" : "Marcar todos")
+        )
+        , (info.itens || []).map(linha)
+      )
+      , info.vinculos && info.vinculos.length ? React.createElement('div', { style:{ fontSize:12, color:"var(--c-sub)", lineHeight:1.45, background:"var(--c-bg)", border:"1px dashed var(--c-border)", borderRadius:12, padding:"10px 12px" } }
+        , info.vinculos.map(function(t, i){ return React.createElement('div', { key:i }, "🔗 " + t); })
+      ) : null
+      /* "Toda baixa PERGUNTA a data" — a data manda no mês do lançamento
+         (premissa máxima do CLAUDE.md), então ela é pedida aqui também, com
+         hoje só como sugestão. */
+      , React.createElement(Lbl, { label: ehEntrada ? "📅 Data do recebimento" : "📅 Data do pagamento" }
+        , React.createElement('input', { style:FI, type:"date", value:o.data, onChange:function(e){ o.setData(e.target.value); } })
+      )
+      , React.createElement('div', { style:{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:12, padding:"10px 12px", borderRadius:12, background:"var(--c-bg)", border:"1px solid var(--c-border)" } }
+        , React.createElement('span', { style:{ fontSize:12.5, fontWeight:700, color:"var(--c-sub)" } }, cheia ? "Total" : "Selecionado")
+        , React.createElement('span', { style:{ fontSize:17, fontWeight:800, fontVariantNumeric:"tabular-nums" } }, _agk2MoedaEl(soma))
+      )
+      , (!cheia && temAlgo && info.parcialOk) && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
+        , "Fica como baixa PARCIAL: o contrato passa a somar "
+        , React.createElement('b', null, fmtBRL(acumulado))
+        , " de " + fmtBRL(info.total) + ", e o restante (" + fmtBRL(Math.max(0, (info.total||0) - acumulado)) + ") continua a receber."
+      )
+      , travadoParcial && React.createElement('div', { style:{ fontSize:12.5, color:"#C0392F", fontWeight:600, lineHeight:1.45 } }
+        , "Este tipo de lançamento não guarda valor parcial no cadastro — marque todas as linhas para baixar, ou edite o lançamento para dividi-lo."
+      )
+      , React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:8, marginTop:2 } }
+        , React.createElement('button', {
+            className:bCls(Btn(C.green)), onClick:o.onConfirmar, disabled: !podeConfirmar,
+            style: Object.assign({}, bStyle(Btn(C.green)), { width:"100%", textAlign:"center", opacity: podeConfirmar ? 1 : 0.5 })
+          }, rotulo + " · " + fmtBRL(soma))
+        , React.createElement('div', { style:{ display:"flex", gap:8 } }
+          , React.createElement('button', { className:bCls(Ghost(C.sub)), style:Object.assign({}, bStyle(Ghost(C.sub)), { flex:1, textAlign:"center" }), onClick:o.abrirAdiar }, "Adiar")
+          , React.createElement('button', { className:bCls(Ghost(C.blue)), style:Object.assign({}, bStyle(Ghost(C.blue)), { flex:1, textAlign:"center" }), onClick:o.onIrPara }, "✏️ Editar")
+        )
+      )
     )
   );
 }

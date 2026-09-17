@@ -621,6 +621,80 @@ Onde vale (todos já corrigidos, não reintroduzir):
 contador — pergunta `foiEmitida`, nunca `status === "emitida"`. Travado em
 `tests/run.js`, grupo *"Fatura já emitida não some nem se reemite"*.
 
+## Toda alteração pode voltar — `[desfazer-6s]` — PERMANENTE
+
+**Palavras do usuário: "faça que qualquer alteração ou seja confirmação de algo
+no sistema abra um popup com a opção desfazer por 6 segundos".**
+
+Antes existiam **~25 chamadas de `window._agUndo` escritas à mão**, uma por
+tela — e as outras centenas de gravações passavam batido: quem tocasse errado
+só descobria depois, sem volta. Escrever o desfazer tela a tela é o mesmo erro
+que `[baixa-unica]` descreve: a cópia nasce completa e vai ficando para trás
+conforme a outra evolui.
+
+Por isso **o diário mora numa camada só: o próprio `db`.** Toda gravação
+(`post` · `patch` · `del` · `restaurar`) registra a operação **inversa**; o
+lote fecha sozinho depois de `_AG_UNDO_JANELA` (700 ms) sem gravação nova e
+vira o popup de **`AG_UNDO_MS` = 6000 ms**.
+
+### Regras permanentes
+
+- **Uma AÇÃO, um popup.** Salvar um contrato grava o contrato **e** a fatura
+  dele; a emissão em lote grava vinte receitas. É uma ação só do usuário —
+  então é **um** popup, que desfaz tudo junto, **na ordem inversa** (desfazer
+  na mesma ordem tentaria apagar o contrato com a fatura ainda pendurada).
+- **O inverso de um PATCH precisa do valor ANTERIOR, e ele se lê ANTES de
+  gravar.** `_agSnap` guarda a cópia de tudo que o app leu ou gravou, pendurada
+  no mesmo gancho de `_agVerSet` — então o caminho comum não paga nenhuma
+  requisição a mais. Só quando uma coluna não está na cópia é que se busca no
+  banco, e **apenas essa coluna**.
+- **Coluna cujo valor anterior não se conhece NUNCA é revertida.** A gravação
+  inteira fica sem desfazer, em vez de carimbar `null` por cima de assinatura
+  ou checklist. **Desfazer pela metade é pior que não desfazer** — e é por isso
+  que o lote que estoura `_AG_UNDO_MAX_OPS` também não promete volta (o toast
+  normal da tela continua avisando que gravou).
+- **Gravação de SISTEMA não vira popup.** O seed de perfis do primeiro login e
+  o próprio desfazer rodam dentro de **`_agUndoMudoRodar`** — sem isso o app
+  ofereceria "desfazer o desfazer", e um toque errado na criação da conta
+  deixaria o sistema sem perfil e sem usuário.
+- **Desfazer não devolve só o banco.** Reaplica as linhas no estado do React
+  pelo **mesmo caminho da sincronia** (`window.__agAplicarLinhas`, exposto pelo
+  efeito de tempo real), avisa o mapa da Agenda — que vive **fora** do React
+  (`agAdiaAplicarLinhas` + `_agAdiaBump`, ver `[emissao-dispensada]`) — e as
+  **quatro cópias** do orçamento pessoal (`_orcBroadcast`, ver `[orc-sync]`).
+- **A tela que já tem desfazer próprio manda.** Ela sabe restaurar o estado
+  local com precisão, então `window._agUndo` **descarta o lote genérico**
+  (`_agUndoDescartarLote`) em vez de empilhar um segundo popup sobre a mesma
+  ação.
+- **Confirmação e desfazer são UM popup só.** Quando a tela mostrou um toast de
+  sucesso nos últimos 2,5 s, o popup **adota** aquele texto ("Contrato nº 12
+  criado!") e apaga o toast — o usuário vê o que aconteceu **e** o botão de
+  voltar no mesmo lugar. **Toast de erro nunca é adotado**: não há o que
+  desfazer nele, e ele não pode sumir.
+- **Nenhum caminho de desfazer termina em silêncio** (`[baixa-unica]`, item 3):
+  se alguma volta falhou, `_agUndoAvisar` diz na tela antes de o usuário achar
+  que o lançamento sumiu.
+
+### Ao escrever código novo
+
+- **Gravou pelo `db`? Já tem desfazer.** Não escreva um `_agUndo` na mão só
+  para repetir o que o diário já faz — só quando a tela precisar restaurar
+  estado local que a sincronia não alcança.
+- **Caminho de gravação novo no `db`** (um `upsert`, um `bulk`) tem que
+  registrar o inverso, senão volta a existir alteração sem volta. O teste conta
+  os cinco registros existentes.
+- **Gravação que não é alteração do usuário** (seed, migração, encanamento)
+  entra em `_agUndoMudoRodar` ou em `_AG_UNDO_TABELAS_MUDAS` — um popup ali é
+  ruído na melhor hipótese e estrago na pior.
+
+A barrinha de prazo (`.ag-undo-tick`) anima **só `transform`** e **uma única
+vez** (`forwards`) — `[bateria]` vale para ela como para qualquer animação
+nova. A chave `tick-<seq>` existe porque, sem ela, o React reaproveitaria o nó
+e o segundo popup herdaria o pedaço de tempo que sobrou do primeiro.
+
+Travado em `tests/run.js`, grupo *"Desfazer vale para QUALQUER alteração"*, que
+roda o diário real extraído do `index.html` com dublês de `db`.
+
 ## Sincronização de baixas — PREMISSA PERMANENTE
 
 **Toda baixa (pagamento/recebimento) de despesa, receita ou contrato DEVE sincronizar automaticamente com TUDO que estiver relacionado.** Uma baixa nunca pode atualizar só o registro tocado — precisa refletir em:

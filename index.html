@@ -259,6 +259,20 @@ input[type=file]{display:none}
 @media (prefers-reduced-motion: reduce){
   .ag-hoje-glow{animation:none;opacity:1;}
 }
+/* [desfazer-6s] Prazo do popup de Desfazer escorrendo. Anima SÓ transform e
+   roda UMA vez (forwards) — animação infinita em propriedade de layout é o
+   que a regra [bateria] proíbe, e esta nem infinita é. A duração vem do
+   style inline (o prazo real do popup), não daqui. */
+.ag-undo-tick{
+  position:absolute;left:0;right:0;bottom:0;height:3px;
+  background:linear-gradient(90deg,#0A84FF,#5AC8FA);
+  transform-origin:left center;will-change:transform;
+  animation:ag-undo-tick linear forwards;
+}
+@keyframes ag-undo-tick{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+@media (prefers-reduced-motion: reduce){
+  .ag-undo-tick{animation:none;transform:scaleX(1);opacity:.5;}
+}
 @keyframes ag-m4-pulse{0%,100%{box-shadow:0 0 0 0 var(--m4-pulse-color,transparent)}50%{box-shadow:0 0 0 4px var(--m4-pulse-color,transparent)}}
 /* dia com pendência que já passou (atrasado) — esmaece em vez de piscar em anel,
    pra diferenciar visualmente de "vence hoje" (que continua com o anel pulsante). */
@@ -18180,6 +18194,10 @@ var _agVer = Object.create(null);
 function _agVerKey(t, id) { return t + ":" + id; }
 function _agVerSet(t, rec) {
   if (rec && rec.id != null && rec.updated_at) _agVer[_agVerKey(t, rec.id)] = rec.updated_at;
+  /* Mesmo gancho alimenta a cópia da linha usada pelo desfazer universal
+     ([desfazer-6s]): assim toda leitura e toda gravação já deixam o valor
+     ANTERIOR pronto, sem uma requisição a mais no caminho comum. */
+  _agSnapSet(t, rec);
 }
 function _agVerSetMany(t, rows) {
   if (Array.isArray(rows)) for (var i = 0; i < rows.length; i++) _agVerSet(t, rows[i]);
@@ -18281,6 +18299,238 @@ async function _agRestaurarRegistro(t, removido) {
     catch(e) { console.warn("restaurar por id falhou, reinserindo", e); }
   }
   return db.post(t, removido);
+}
+
+/* ── Desfazer universal — [desfazer-6s] — PERMANENTE ────────────────────────
+   Pedido do usuário: "faça que qualquer alteração ou confirmação de algo no
+   sistema abra um popup com a opção desfazer por 6 segundos".
+
+   Antes existiam ~25 chamadas manuais de window._agUndo(), uma escrita à mão
+   por tela — e as outras centenas de gravações passavam batido: quem tocasse
+   errado só descobria depois, sem volta. Escrever o desfazer tela a tela é o
+   mesmo erro que [baixa-unica] descreve: a cópia nasce completa e vai ficando
+   pra trás conforme a outra evolui.
+
+   Por isso o diário mora numa camada só — o próprio `db`. Toda gravação
+   (post/patch/del/restaurar) registra a operação INVERSA num lote; o lote
+   fecha sozinho depois de _AG_UNDO_JANELA ms sem gravação nova e vira o popup
+   de AG_UNDO_MS. Uma ação do usuário costuma gravar em várias tabelas
+   (salvar contrato grava contrato E fatura), e o popup tem que ser UM só,
+   desfazendo tudo junto, na ordem inversa.
+
+   Regras permanentes:
+   - **O inverso de um PATCH precisa do valor ANTERIOR.** `_agSnap` guarda a
+     cópia de tudo que o app leu ou gravou (mesmo gancho de `_agVerSet`); só
+     quando uma coluna não está na cópia é que se busca no banco, e apenas
+     essa coluna. **Coluna cujo valor anterior não se conhece nunca é
+     revertida** — a gravação inteira fica sem desfazer, em vez de carimbar
+     null por cima de assinatura/checklist.
+   - **Gravação de SISTEMA não vira popup**: o seed de perfis do primeiro
+     login e o próprio desfazer rodam dentro de `_agUndoMudoRodar`.
+   - **Desfazer não devolve só o banco.** Reaplica as linhas no estado do
+     React pelo mesmo caminho da sincronia (`window.__agAplicarLinhas`), avisa
+     o mapa da Agenda (`agAdiaAplicarLinhas`, que vive fora do React) e as
+     quatro cópias do orçamento pessoal (`_orcBroadcast`, ver [orc-sync]).
+   - **Tela que já chama `window._agUndo` na mão continua mandando**: ela sabe
+     restaurar o estado local com precisão, então descarta o lote genérico em
+     vez de empilhar dois popups sobre a mesma ação.                          */
+
+var AG_UNDO_MS       = 6000;  // prazo do popup — os 6 segundos pedidos
+var _AG_UNDO_JANELA  = 700;   // quiescência que fecha o lote de UMA ação
+var _AG_UNDO_TETO_MS = 20000; // lote que nunca para de crescer fecha assim mesmo
+var _AG_UNDO_MAX_OPS = 200;   // acima disso não se promete desfazer (ver abaixo)
+var _AG_SNAP_MAX     = 4000;  // linhas guardadas para montar o inverso de PATCH
+
+/* Tabelas que nunca geram popup: log e inscrição de push não são "alteração
+   do sistema" aos olhos de quem usa — são encanamento. */
+var _AG_UNDO_TABELAS_MUDAS = { audit_log: 1, push_subscriptions: 1 };
+
+/* ── Cópia da última versão conhecida de cada linha ────────────────────────
+   Pendurada no mesmo gancho de `_agVerSet`, então cobre tudo que o app lê
+   (db.get/getAll/getMudancas) e tudo que grava (post/patch/del/restaurar) sem
+   nenhuma chamada nova. Colunas pesadas de contrato ficam de fora de
+   propósito: guardá-las aqui seguraria megabytes na memória da aba, e um
+   PATCH que mexa nelas cai no caminho de buscar a coluna no banco. */
+var _agSnap = Object.create(null);
+var _agSnapFila = [];
+function _agSnapSet(t, rec) {
+  if (!rec || rec.id == null) return;
+  var k = _agVerKey(t, rec.id);
+  var copia = Object.assign({}, rec);
+  if (t === "contratos") _AG_CT_PESADAS.forEach(function(c){ delete copia[c]; });
+  if (_agSnap[k] === undefined) {
+    _agSnapFila.push(k);
+    while (_agSnapFila.length > _AG_SNAP_MAX) delete _agSnap[_agSnapFila.shift()];
+  }
+  _agSnap[k] = copia;
+}
+
+/* Valor anterior SÓ das colunas que este PATCH vai mudar. Devolve null quando
+   não dá para reverter com segurança — e aí a gravação simplesmente não
+   oferece desfazer. Reverter "pela metade" seria pior que não reverter. */
+async function _agUndoAntes(t, id, d) {
+  if (!d || typeof d !== "object" || id == null) return null;
+  var chaves = Object.keys(d).filter(function(k){ return k !== "id"; });
+  if (!chaves.length) return null;
+  var snap = _agSnap[_agVerKey(t, id)] || null;
+  var faltando = chaves.filter(function(k){ return !snap || !(k in snap); });
+  if (faltando.length) {
+    try {
+      var r = await _agFetchAuth(
+        SB_URL + "/rest/v1/" + t + "?id=eq." + id + "&limit=1&select=" + encodeURIComponent(faltando.join(",")),
+        { headers: HDR }, 15000);
+      if (r.ok) {
+        var j = await r.json().catch(function(){ return []; });
+        if (Array.isArray(j) && j.length) snap = Object.assign({}, snap || {}, j[0]);
+      }
+    } catch(e) { /* sem o anterior: esta gravação fica sem desfazer, e só */ }
+  }
+  var antes = {}, completo = true;
+  chaves.forEach(function(k){
+    if (snap && (k in snap)) antes[k] = snap[k];
+    else completo = false;
+  });
+  return completo ? antes : null;
+}
+
+/* ── O lote em montagem ────────────────────────────────────────────────────*/
+var _agUndoLote = null;
+var _agUndoMudo = 0;   // >0: gravação de sistema/desfazer — não registra nada
+
+function _agUndoRegistrar(op) {
+  if (_agUndoMudo > 0 || !op || !op.tabela) return;
+  if (_AG_UNDO_TABELAS_MUDAS[op.tabela]) return;
+  if (!_agUndoLote) _agUndoLote = { ops: [], aberto: Date.now(), estourou: false, timer: null };
+  clearTimeout(_agUndoLote.timer);
+  if (_agUndoLote.ops.length >= _AG_UNDO_MAX_OPS) _agUndoLote.estourou = true;
+  else _agUndoLote.ops.push(op);
+  /* Lote que nunca para de crescer (importação, emissão em série) fecha no
+     teto: deixar o popup para "quando parar" é deixá-lo para nunca. */
+  if (Date.now() - _agUndoLote.aberto >= _AG_UNDO_TETO_MS) { _agUndoFecharLote(); return; }
+  _agUndoLote.timer = setTimeout(_agUndoFecharLote, _AG_UNDO_JANELA);
+}
+
+function _agUndoDescartarLote() {
+  if (!_agUndoLote) return;
+  clearTimeout(_agUndoLote.timer);
+  _agUndoLote = null;
+}
+
+function _agUndoFecharLote() {
+  var lote = _agUndoLote;
+  _agUndoLote = null;
+  if (!lote) return;
+  clearTimeout(lote.timer);
+  if (!lote.ops.length) return;
+  /* Estourou o teto de operações: o desfazer seria PARCIAL, e desfazer pela
+     metade é pior que não desfazer. O toast normal da tela continua avisando
+     que gravou — só não se promete a volta. */
+  if (lote.estourou) return;
+  if (typeof window._agUndo !== "function") return;  // App ainda não montou
+  window._agUndo(_agUndoRotulo(lote.ops), function(){ return _agUndoAplicar(lote.ops); });
+}
+
+/* ── Rótulo do popup ───────────────────────────────────────────────────────
+   [nome, plural, gênero] — o gênero monta "criado/criada", "excluídos/
+   excluídas" sem uma tabela de frases prontas por tipo. */
+var _AG_UNDO_NOMES = {
+  veiculos:          ["Veículo", "veículos", "o"],
+  clientes:          ["Cliente", "clientes", "o"],
+  contratos:         ["Contrato", "contratos", "o"],
+  reservas:          ["Reserva", "reservas", "a"],
+  multas:            ["Multa", "multas", "a"],
+  manutencao:        ["Manutenção", "manutenções", "a"],
+  despesas:          ["Despesa", "despesas", "a"],
+  receitas:          ["Receita", "receitas", "a"],
+  contas:            ["Conta", "contas", "a"],
+  usos:              ["Uso", "usos", "o"],
+  lembretes:         ["Lembrete", "lembretes", "o"],
+  orcamento_pessoal: ["Lançamento", "lançamentos", "o"],
+  orcamentos:        ["Orçamento", "orçamentos", "o"],
+  fornecedores:      ["Fornecedor", "fornecedores", "o"],
+  sinistros:         ["Sinistro", "sinistros", "o"],
+  usuarios:          ["Usuário", "usuários", "o"],
+  perfis:            ["Perfil", "perfis", "o"],
+  config:            ["Configuração", "configurações", "a"],
+  agenda_adiamentos: ["Marca da Agenda", "marcas da Agenda", "a"]
+};
+var _AG_UNDO_VERBOS = { insert: "criad", update: "alterad", delete: "excluíd", restore: "restaurad" };
+
+function _agUndoRotulo(ops) {
+  var t0 = ops[0].tabela, tipo0 = ops[0].tipo;
+  var igual = ops.every(function(o){ return o.tabela === t0 && o.tipo === tipo0; });
+  if (!igual) return ops.length + " alterações no sistema";
+  var n = _AG_UNDO_NOMES[t0] || [t0, t0, "o"];
+  var v = _AG_UNDO_VERBOS[tipo0] || "alterad";
+  if (ops.length === 1) return n[0] + " " + v + n[2];
+  return ops.length + " " + n[1] + " " + v + n[2] + "s";
+}
+
+/* ── Executar o desfazer ───────────────────────────────────────────────────
+   Ordem inversa: salvar um contrato cria o contrato e depois a fatura dele —
+   desfazer na mesma ordem tentaria apagar o contrato com a fatura ainda
+   pendurada. */
+async function _agUndoAplicar(ops) {
+  var tocadas = Object.create(null), falha = null;
+  _agUndoMudo++;
+  try {
+    for (var i = ops.length - 1; i >= 0; i--) {
+      var op = ops[i], linha = null;
+      try {
+        if (op.tipo === "insert")       linha = await db.del(op.tabela, op.id);
+        else if (op.tipo === "update")  linha = await db.patch(op.tabela, op.id, op.antes);
+        else if (op.tipo === "delete")  linha = await _agRestaurarRegistro(op.tabela, op.registro);
+        else if (op.tipo === "restore") linha = await db.del(op.tabela, op.id);
+      } catch(e) { falha = falha || e; continue; }
+      if (linha && linha.id != null) (tocadas[op.tabela] = tocadas[op.tabela] || []).push(linha);
+    }
+  } finally { _agUndoMudo = Math.max(0, _agUndoMudo - 1); }
+  _agUndoRessincronizar(tocadas);
+  /* Caminho de baixa/desfazer nunca termina em silêncio ([baixa-unica], item
+     3): se alguma volta falhou, o usuário precisa saber ANTES de achar que o
+     lançamento sumiu. */
+  if (falha) _agUndoAvisar("Não deu para desfazer tudo: " + (falha.message || falha));
+}
+
+/* Devolve as linhas revertidas para TODAS as cópias vivas do dado. */
+function _agUndoRessincronizar(tocadas) {
+  Object.keys(tocadas).forEach(function(t) {
+    var linhas = tocadas[t];
+    try { if (window.__agAplicarLinhas) window.__agAplicarLinhas(t, linhas); } catch(e) {}
+    /* O mapa da Agenda vive FORA do React ([emissao-dispensada]): sem este
+       aviso a marca só voltaria no próximo reload. Chamar depois de
+       __agAplicarLinhas é de graça — agAdiaAplicarLinhas devolve false quando
+       nada mudou, então não há bump duplicado. */
+    try { if (t === AG_ADIA_TABELA && agAdiaAplicarLinhas(linhas)) _agAdiaBump(); } catch(e) {}
+    /* orcamento_pessoal tem quatro cópias vivas ([orc-sync]) — o setter do
+       App sozinho deixaria as outras três com o dado velho. */
+    try {
+      if (t === "orcamento_pessoal" && typeof _orcBroadcast === "function") {
+        linhas.forEach(function(r){ _orcBroadcast(r.deleted_at ? { removido: r.id } : { novo: r }); });
+      }
+    } catch(e) {}
+  });
+  try { if (window.__agSyncAgora) window.__agSyncAgora(); } catch(e) {}
+}
+
+function _agUndoAvisar(msg) {
+  try { if (window.__agToast) { window.__agToast(msg, "error"); return; } } catch(e) {}
+  console.warn(msg);
+}
+
+/* Roda `fn` sem gerar popup — gravação de sistema (seed de perfis do primeiro
+   login) ou o próprio desfazer, que é uma gravação e voltaria como popup do
+   popup. Aceita função síncrona ou async; o destravamento por tempo existe
+   para nenhuma promessa perdida deixar o app mudo para sempre. */
+function _agUndoMudoRodar(fn) {
+  _agUndoMudo++;
+  var solto = false;
+  function soltar(){ if (solto) return; solto = true; _agUndoMudo = Math.max(0, _agUndoMudo - 1); }
+  var r;
+  try { r = fn(); } catch(e) { soltar(); throw e; }
+  if (r && typeof r.then === "function") { r.then(soltar, soltar); setTimeout(soltar, 30000); return r; }
+  soltar();
+  return r;
 }
 
 /* ── Notificações push (Web Push) ───────────────────────────────────────────
@@ -18441,10 +18691,14 @@ const db = {
     }
     this._audit(t, "insert", rec.id, d);
     _agVerSet(t, rec);
+    _agUndoRegistrar({ tabela: t, tipo: "insert", id: rec.id });
     return rec;
   },
   async patch(t, id, d) {
     if (!_agPodeEscrever(t, "editar")) throw new Error(_agMsgPermissao("editar registros"));
+    /* [desfazer-6s] O valor anterior precisa ser lido ANTES da gravação —
+       depois dela a linha (e a cópia em _agSnap) já são a versão nova. */
+    var _undoAntes = (_agUndoMudo > 0 || _AG_UNDO_TABELAS_MUDAS[t]) ? null : await _agUndoAntes(t, id, d);
     // Trava otimista: só altera se a linha continuar na versão que lemos.
     var verConhecida = _agVer[_agVerKey(t, id)];
     var usarTrava = _agCap.updatedAt && !!verConhecida;
@@ -18482,6 +18736,7 @@ const db = {
     const rec = Array.isArray(j) ? (j[0] || d) : (j || d);
     this._audit(t, "update", id, d);
     _agVerSet(t, rec);
+    if (_undoAntes) _agUndoRegistrar({ tabela: t, tipo: "update", id: id, antes: _undoAntes });
     return rec;
   },
   /* Exclusão reversível: marca deleted_at em vez de apagar a linha. O DELETE
@@ -18500,6 +18755,7 @@ const db = {
         this._audit(t, "delete", id, null);
         var rec = Array.isArray(j) ? j[0] : j;
         _agVerSet(t, rec);
+        _agUndoRegistrar({ tabela: t, tipo: "delete", registro: rec });
         return rec;
       }
       var txt = await r.text().catch(function(){ return ""; });
@@ -18513,7 +18769,9 @@ const db = {
       throw new Error("Nada foi excluído (RLS bloqueou). Verifique as permissões do seu perfil.");
     }
     this._audit(t, "delete", id, null);
-    return Array.isArray(jd) ? jd[0] : jd; // registro excluído — usado para restaurar via "Desfazer"
+    var recFis = Array.isArray(jd) ? jd[0] : jd;
+    _agUndoRegistrar({ tabela: t, tipo: "delete", registro: recFis });
+    return recFis; // registro excluído — usado para restaurar via "Desfazer"
   },
   /* Desfaz uma exclusão reversível limpando deleted_at. Volta o registro com
      o mesmo id, mantendo os vínculos (contrato, fatura, multa) intactos —
@@ -18527,6 +18785,7 @@ const db = {
     var rec = Array.isArray(j) ? j[0] : j;
     this._audit(t, "restore", id, null);
     _agVerSet(t, rec);
+    _agUndoRegistrar({ tabela: t, tipo: "restore", id: id });
     return rec;
   },
   /* Linhas alteradas desde `desde` (ISO). Propositalmente SEM o filtro de
@@ -24729,13 +24988,21 @@ function Toast({ msg, type }) {
   return el;
 }
 
-/* Popup temporário de "Desfazer" — usado após baixar/excluir e afins.
-   data: { msg, onUndo } | null. Some sozinho após alguns segundos (ver
-   agUndo() em App) ou ao tocar em "Desfazer"/fechar. */
+/* Popup temporário de "Desfazer" — [desfazer-6s]. TODA alteração do sistema
+   passa por aqui: as telas que têm desfazer próprio chamam window._agUndo na
+   mão, e o resto chega pelo diário do `db` (ver [desfazer-6s] perto de
+   _agRestaurarRegistro). data: { msg, onUndo, ms, seq } | null.
+
+   A barrinha embaixo mostra o prazo escorrendo — sem ela o popup some do nada
+   e não dá pra saber quanto tempo ainda havia. Ela anima SÓ `transform`, uma
+   vez (`forwards`), nunca em laço: é o que a regra [bateria] exige de
+   qualquer animação nova. `key: data.seq` reinicia a barra a cada popup — sem
+   a chave o React reaproveitaria o nó e a segunda alteração herdaria o
+   pedaço de tempo que sobrou da primeira. */
 function UndoToast({ data, onDismiss }) {
   if (!data) return null;
   var el = React.createElement('div', {
-      style: { position: "fixed", bottom: 100, left: "50%", transform: "translateX(-50%)", background: "rgba(28,28,30,0.94)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", color: "#fff", padding: "10px 10px 10px 18px", borderRadius: 16, fontWeight: 600, fontSize: 14, zIndex: 99999, boxShadow: "0 8px 32px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,0.12)", maxWidth: "90vw", textAlign: "left", border: "1px solid rgba(255,255,255,0.14)", display: "flex", alignItems: "center", gap: 12 }
+      style: { position: "fixed", bottom: 100, left: "50%", transform: "translateX(-50%)", background: "rgba(28,28,30,0.94)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", color: "#fff", padding: "10px 10px 10px 18px", borderRadius: 16, fontWeight: 600, fontSize: 14, zIndex: 99999, boxShadow: "0 8px 32px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,0.12)", maxWidth: "90vw", textAlign: "left", border: "1px solid rgba(255,255,255,0.14)", display: "flex", alignItems: "center", gap: 12, overflow: "hidden" }
     },
     React.createElement('span', { style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, data.msg),
     React.createElement('button', {
@@ -24745,7 +25012,12 @@ function UndoToast({ data, onDismiss }) {
     React.createElement('button', {
       onClick: function(){ onDismiss(); },
       style: { background: "transparent", border: "none", color: "rgba(255,255,255,0.55)", fontSize: 15, cursor: "pointer", flexShrink: 0, padding: "4px 2px", lineHeight: 1 }
-    }, "✕")
+    }, "✕"),
+    React.createElement('div', {
+      key: "tick-" + (data.seq || 0),
+      className: "ag-undo-tick",
+      style: { animationDuration: (data.ms || 6000) + "ms" }
+    })
   );
   if (window.ReactDOMFull && window.ReactDOMFull.createPortal) {
     return window.ReactDOMFull.createPortal(el, document.body);
@@ -52085,15 +52357,21 @@ function LoginScreen({ onLogin }) {
       // Seed perfis padrão se não existirem
       var pfsExist = await db.get("perfis");
       var pfsLista = pfsExist || [];
-      if (!pfsLista.length) {
-        for (var i = 0; i < PERFIS_PADRAO.length; i++) {
-          var pfCriado = await db.post("perfis", PERFIS_PADRAO[i]);
-          if (pfCriado) pfsLista.push(pfCriado);
+      var adminPerfil = null, novoUsuario = null;
+      /* [desfazer-6s] Montagem da conta é gravação de SISTEMA, não alteração
+         do usuário: um popup "Desfazer" aqui deixaria o app sem perfil e sem
+         usuário logo no primeiro login. */
+      await _agUndoMudoRodar(async function(){
+        if (!pfsLista.length) {
+          for (var i = 0; i < PERFIS_PADRAO.length; i++) {
+            var pfCriado = await db.post("perfis", PERFIS_PADRAO[i]);
+            if (pfCriado) pfsLista.push(pfCriado);
+          }
         }
-      }
-      var adminPerfil = pfsLista.find(function(pf){ return pf.nome === "Administrador"; }) || pfsLista[0];
-      var authUserId = (tok.user && tok.user.id) || null;
-      var novoUsuario = await db.post("usuarios", { nome: n, email: email, auth_user_id: authUserId, perfil_id: adminPerfil ? adminPerfil.id : null, ativo: true });
+        adminPerfil = pfsLista.find(function(pf){ return pf.nome === "Administrador"; }) || pfsLista[0];
+        var authUserId = (tok.user && tok.user.id) || null;
+        novoUsuario = await db.post("usuarios", { nome: n, email: email, auth_user_id: authUserId, perfil_id: adminPerfil ? adminPerfil.id : null, ativo: true });
+      });
       if (novoUsuario) { onLogin(Object.assign({}, novoUsuario, { perfil: adminPerfil }), tok); }
       else { setErro("Erro ao criar usuário."); }
     } catch(e) {
@@ -54603,9 +54881,13 @@ function Usuarios({ usuarioAtual, toast }) {
 
   async function seedPerfis() {
     try {
-      for (var i = 0; i < PERFIS_PADRAO.length; i++) {
-        await db.post("perfis", PERFIS_PADRAO[i]);
-      }
+      // [desfazer-6s] Repor os perfis padrão é infraestrutura, não alteração
+      // que se ofereça para desfazer.
+      await _agUndoMudoRodar(async function(){
+        for (var i = 0; i < PERFIS_PADRAO.length; i++) {
+          await db.post("perfis", PERFIS_PADRAO[i]);
+        }
+      });
       var pData2 = await db.get("perfis");
       setPfs(pData2 || []);
       toast("Perfis padrão criados com sucesso!");
@@ -56385,18 +56667,43 @@ function App() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [toastState, setToastState] = useState({ msg: "", type: "ok" });
+  // Espelho do toast em curso, lido pelo popup de Desfazer ([desfazer-6s]).
+  const toastRef = React.useRef(null);
   const [novaReservaAlerta, setNovaReservaAlerta] = useState(null);
   // Popup temporário de "Desfazer" — exibido após baixar/excluir e afins.
   const [undoToastData, setUndoToastData] = useState(null);
   const undoTimerRef = React.useRef(null);
+  const undoSeqRef = React.useRef(0);
   function dismissUndoToast() { clearTimeout(undoTimerRef.current); setUndoToastData(null); }
   React.useEffect(function(){
     // agUndo(mensagem, desfazerFn, ms): mostra o popup; se ninguém tocar em
     // "Desfazer" dentro do prazo, a ação (já efetivada) permanece valendo.
     window._agUndo = function(msg, desfazerFn, ms) {
       clearTimeout(undoTimerRef.current);
-      setUndoToastData({ msg: msg, onUndo: desfazerFn });
-      undoTimerRef.current = setTimeout(function(){ setUndoToastData(null); }, ms || 6000);
+      /* [desfazer-6s] Quem chega aqui com desfazer próprio (a tela sabe
+         restaurar o estado local com precisão) manda: o lote genérico do
+         diário do `db` é descartado em vez de virar um SEGUNDO popup sobre a
+         mesma ação. */
+      _agUndoDescartarLote();
+      /* Adota a confirmação que a tela acabou de mostrar ("Contrato nº 12
+         criado!") — é mais específica que o rótulo derivado da tabela, e o
+         usuário vê UM popup com o que aconteceu E o botão de voltar. Erro
+         nunca é adotado: ele não tem o que desfazer e não pode sumir. */
+      var tt = toastRef.current;
+      if (tt && tt.msg && tt.type !== "error" && (Date.now() - tt.em) < 2500) {
+        msg = tt.msg;
+        toastRef.current = null;
+        setToastState({ msg: "", type: "ok" });
+      }
+      var prazo = ms || AG_UNDO_MS;
+      undoSeqRef.current++;
+      setUndoToastData({
+        msg: msg, ms: prazo, seq: undoSeqRef.current,
+        // O desfazer é ele próprio uma gravação: sem silenciar, voltaria como
+        // popup do popup, oferecendo "desfazer o desfazer".
+        onUndo: function(){ return _agUndoMudoRodar(desfazerFn); }
+      });
+      undoTimerRef.current = setTimeout(function(){ setUndoToastData(null); }, prazo);
     };
     return function(){ delete window._agUndo; clearTimeout(undoTimerRef.current); };
   }, []);
@@ -56512,7 +56819,16 @@ function App() {
   // #caccd1 que o steel tinha.
   function toggleDark() { setDarkMode(function(d){ var order=["pearl","dim","onix"]; var i=order.indexOf(d); var n=order[(i+1)%order.length]; localStorage.setItem("dm_manual",TEMA_KEYS[n]||"12"); return n; }); }
 
-  function toast(msg, type) { setToastState({ msg: msg, type: type || "ok" }); setTimeout(() => setToastState({ msg: "", type: "ok" }), 3000); }
+  function toast(msg, type) {
+    /* [desfazer-6s] O popup de Desfazer ADOTA esta mensagem quando abre logo
+       em seguida — a confirmação da tela e o "Desfazer" têm que ser UM popup
+       só, não dois empilhados no mesmo canto. */
+    toastRef.current = { msg: msg, type: type || "ok", em: Date.now() };
+    setToastState({ msg: msg, type: type || "ok" });
+    setTimeout(() => { toastRef.current = null; setToastState({ msg: "", type: "ok" }); }, 3000);
+  }
+  // Erro de desfazer avisa na tela, mesmo disparado de fora do React.
+  React.useEffect(function(){ window.__agToast = toast; return function(){ if (window.__agToast === toast) delete window.__agToast; }; });
 
   useEffect(() => {
     // Mesma proteção contra cold start que carregarFrotaEContratos já tinha só para
@@ -56828,6 +57144,15 @@ function App() {
        inclusive a trava de 1,5s, então tocar Início várias vezes seguidas não
        vira várias varreduras. */
     window.__agSyncAgora = cicloAgora;
+    /* [desfazer-6s] O desfazer universal reverte o BANCO; devolver as linhas
+       à tela é este mesmo caminho — o da sincronia — em vez de cada tela
+       reimplementar o seu. Avança a marca d'água junto, senão o próximo ciclo
+       rebusca as mesmas linhas para sempre. */
+    window.__agAplicarLinhas = function(tabela, linhas) {
+      if (!linhas || !linhas.length) return;
+      aplicarMudancas(tabela, linhas);
+      avancarMarca(linhas);
+    };
 
     // ── 1. Tempo real ──
     _agRtIniciar({
@@ -56880,6 +57205,7 @@ function App() {
       clearTimeout(timer);
       _agRtParar();
       if (window.__agSyncAgora === cicloAgora) window.__agSyncAgora = null;
+      delete window.__agAplicarLinhas;
       document.removeEventListener("visibilitychange", aoVoltar);
       window.removeEventListener("focus", aoVoltar);
       window.removeEventListener("online", aoVoltar);

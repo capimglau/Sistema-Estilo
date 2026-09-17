@@ -1671,10 +1671,225 @@ grupo("Decorador não reposiciona o que o CSS posicionou");
     /var c = \(cParam && cParam\.id != null\) \? cParam : baixarCtModal;/.test(html));
 }
 
+
+// ───────────────────────────────────────────────────────────────────────────
+grupo("Desfazer vale para QUALQUER alteração — [desfazer-6s]");
+
+// Pedido do usuário: "qualquer alteração ou confirmação de algo no sistema
+// abre um popup com a opção desfazer por 6 segundos". Antes, só ~25 telas
+// tinham desfazer escrito à mão; as outras centenas de gravações não tinham
+// volta nenhuma. O diário passou a morar numa camada só — o próprio `db` —
+// e é ELE que este grupo roda, com dublês, em vez de recopiar a regra.
+function _desfazerFabrica() {
+  const _ini = html.indexOf("var AG_UNDO_MS       = 6000;");
+  const _fim = html.indexOf("/* ── Notificações push (Web Push)", _ini);
+  if (_ini < 0 || _fim < _ini) throw new Error("bloco [desfazer-6s] não encontrado no index.html");
+  const fonte = html.slice(_ini, _fim);
+  return new Function(
+    "_agVerKey", "_AG_CT_PESADAS", "_agFetchAuth", "SB_URL", "HDR", "db",
+    "_agRestaurarRegistro", "AG_ADIA_TABELA", "agAdiaAplicarLinhas", "_agAdiaBump",
+    "_orcBroadcast", "window", "console",
+    fonte + `
+    return { AG_UNDO_MS, _agSnapSet, _agSnap, _agUndoAntes, _agUndoRegistrar,
+             _agUndoDescartarLote, _agUndoFecharLote, _agUndoRotulo,
+             _agUndoAplicar, _agUndoMudoRodar,
+             mudo: function(){ return _agUndoMudo; } };`);
+}
+
+// Monta um ambiente novo a cada cenário: o diário é estado de módulo, e um
+// teste que herdasse o lote do anterior mentiria sobre o agrupamento.
+function _desfazerAmbiente(opts) {
+  opts = opts || {};
+  const chamadas = { del: [], patch: [], post: [], restaurar: [], fetch: [] };
+  const popups = [];
+  const db = {
+    del: (t, id) => { chamadas.del.push({ t, id }); return Promise.resolve({ id, deleted_at: "2026-09-17T00:00:00Z" }); },
+    patch: (t, id, p) => { chamadas.patch.push({ t, id, p }); return Promise.resolve(Object.assign({ id }, p)); },
+    post: (t, p) => { chamadas.post.push({ t, p }); return Promise.resolve(Object.assign({ id: 900 }, p)); },
+  };
+  const win = { _agUndo: (msg, fn) => popups.push({ msg, fn }) };
+  const _agFetchAuth = (url) => {
+    chamadas.fetch.push(url);
+    const corpo = opts.respostaFetch;
+    return Promise.resolve(corpo
+      ? { ok: true, json: () => Promise.resolve(corpo) }
+      : { ok: false, text: () => Promise.resolve("42703 column does not exist") });
+  };
+  const api = _desfazerFabrica()(
+    (t, id) => t + ":" + id, ["assinatura_cliente"], _agFetchAuth, "https://x", {},
+    db, (t, reg) => { chamadas.restaurar.push({ t, reg }); return Promise.resolve(Object.assign({}, reg, { deleted_at: null })); },
+    "agenda_adiamentos", () => false, () => {}, null, win, { warn(){}, error(){} });
+  return { api, chamadas, popups, win };
+}
+
+const _esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+
+{
+  const { api } = _desfazerAmbiente();
+  eq("o prazo do popup é de 6 segundos", api.AG_UNDO_MS, 6000);
+}
+
+// ── Rótulo: o popup diz O QUE mudou, não "pronto" ──
+{
+  const { api } = _desfazerAmbiente();
+  eq("uma alteração de contrato", api._agUndoRotulo([{ tabela: "contratos", tipo: "update" }]), "Contrato alterado");
+  eq("uma despesa excluída concorda em gênero", api._agUndoRotulo([{ tabela: "despesas", tipo: "delete" }]), "Despesa excluída");
+  eq("várias do mesmo tipo viram plural",
+    api._agUndoRotulo([{ tabela: "receitas", tipo: "update" }, { tabela: "receitas", tipo: "update" }]),
+    "2 receitas alteradas");
+  eq("tipos misturados não inventam frase",
+    api._agUndoRotulo([{ tabela: "contratos", tipo: "insert" }, { tabela: "receitas", tipo: "update" }]),
+    "2 alterações no sistema");
+}
+
+// ── O "antes" de um PATCH ──
+// Reverter pela metade é pior que não reverter: coluna cujo valor anterior o
+// app não conhece (e que o banco não devolveu) cancela o desfazer inteiro, em
+// vez de carimbar null por cima de assinatura/checklist.
+async function _testeAntes() {
+  {
+    const { api, chamadas } = _desfazerAmbiente();
+    api._agSnapSet("despesas", { id: 3, valor: 100, status: "pendente", descricao: "Aluguel" });
+    const antes = await api._agUndoAntes("despesas", 3, { valor: 250, status: "pago" });
+    eq("devolve só as colunas que o PATCH muda", Object.keys(antes).sort().join(","), "status,valor");
+    eq("com o valor de antes", antes.valor, 100);
+    eq("sem ir ao banco quando a cópia local basta", chamadas.fetch.length, 0);
+  }
+  {
+    const { api, chamadas } = _desfazerAmbiente({ respostaFetch: [{ observacao: "texto velho" }] });
+    api._agSnapSet("contratos", { id: 9, valor_total: 1000 });
+    const antes = await api._agUndoAntes("contratos", 9, { observacao: "novo" });
+    eq("coluna fora da cópia é buscada no banco", chamadas.fetch.length, 1);
+    eq("e só ela entra no select", chamadas.fetch[0].includes("select=observacao"), true);
+    eq("o valor anterior vem do banco", antes.observacao, "texto velho");
+  }
+  {
+    const { api } = _desfazerAmbiente();  // fetch devolve erro de coluna
+    api._agSnapSet("contratos", { id: 9, valor_total: 1000 });
+    const antes = await api._agUndoAntes("contratos", 9, { assinatura_cliente: "data:image/png;base64,AAA" });
+    eq("sem o valor anterior, a gravação fica SEM desfazer (nunca meio desfeita)", antes, null);
+  }
+  {
+    const { api } = _desfazerAmbiente();
+    api._agSnapSet("contratos", { id: 9, assinatura_cliente: "data:image/png;base64,GIGANTE", valor_total: 5 });
+    eq("a cópia não guarda coluna pesada de contrato",
+      "assinatura_cliente" in api._agSnap["contratos:9"], false);
+  }
+}
+
+// ── Um lote, um popup ──
+// Salvar um contrato grava o contrato E a fatura dele. São duas gravações e
+// UMA ação: dois popups sobre a mesma coisa seria ruído, e desfazer só metade
+// seria pior ainda.
+async function _testeLote() {
+  {
+    const { api, popups } = _desfazerAmbiente();
+    api._agUndoRegistrar({ tabela: "contratos", tipo: "insert", id: 1 });
+    api._agUndoRegistrar({ tabela: "receitas", tipo: "insert", id: 2 });
+    eq("nada de popup enquanto as gravações ainda chegam", popups.length, 0);
+    await _esperar(900);
+    eq("as duas gravações viram UM popup", popups.length, 1);
+    eq("com o rótulo do conjunto", popups[0].msg, "2 alterações no sistema");
+  }
+  {
+    const { api, popups } = _desfazerAmbiente();
+    api._agUndoRegistrar({ tabela: "audit_log", tipo: "insert", id: 1 });
+    await _esperar(900);
+    eq("log e encanamento não geram popup", popups.length, 0);
+  }
+  {
+    const { api, popups } = _desfazerAmbiente();
+    await api._agUndoMudoRodar(async function () {
+      api._agUndoRegistrar({ tabela: "perfis", tipo: "insert", id: 1 });
+    });
+    await _esperar(900);
+    eq("gravação de SISTEMA (seed do primeiro login) não oferece desfazer", popups.length, 0);
+  }
+  {
+    const { api, popups } = _desfazerAmbiente();
+    api._agUndoRegistrar({ tabela: "despesas", tipo: "insert", id: 1 });
+    api._agUndoDescartarLote();
+    await _esperar(900);
+    eq("tela com desfazer próprio descarta o lote genérico", popups.length, 0);
+  }
+}
+
+// ── Desfazer de verdade ──
+async function _testeAplicar() {
+  {
+    const { api, chamadas } = _desfazerAmbiente();
+    // Salvar um contrato cria o contrato e DEPOIS a fatura dele. Desfazer na
+    // mesma ordem tentaria apagar o contrato com a fatura ainda pendurada.
+    await api._agUndoAplicar([
+      { tabela: "contratos", tipo: "insert", id: 7 },
+      { tabela: "receitas", tipo: "insert", id: 8 },
+    ]);
+    eq("desfaz na ordem INVERSA", chamadas.del.map((c) => c.t + ":" + c.id).join(" · "), "receitas:8 · contratos:7");
+  }
+  {
+    const { api, chamadas } = _desfazerAmbiente();
+    await api._agUndoAplicar([{ tabela: "despesas", tipo: "update", id: 3, antes: { valor: 100, status: "pendente" } }]);
+    eq("o inverso de um PATCH é o valor anterior", chamadas.patch.length, 1);
+    eq("com as colunas de antes", JSON.stringify(chamadas.patch[0].p), JSON.stringify({ valor: 100, status: "pendente" }));
+  }
+  {
+    const { api, chamadas } = _desfazerAmbiente();
+    await api._agUndoAplicar([{ tabela: "clientes", tipo: "delete", registro: { id: 4, nome: "Ana" } }]);
+    eq("o inverso de uma exclusão é restaurar o MESMO registro", chamadas.restaurar.length, 1);
+    eq("com o id preservado (senão o vínculo fica órfão)", chamadas.restaurar[0].reg.id, 4);
+  }
+  {
+    const { api, popups, chamadas } = _desfazerAmbiente();
+    await api._agUndoAplicar([{ tabela: "despesas", tipo: "insert", id: 5 }]);
+    await _esperar(900);
+    eq("desfazer é gravação, mas não vira popup do popup", popups.length, 0);
+    eq("e a reversão foi feita", chamadas.del.length, 1);
+    eq("o silêncio é solto no fim (senão o app fica mudo pra sempre)", api.mudo(), 0);
+  }
+}
+
+async function testesDesfazer() {
+  await _testeAntes();
+  await _testeLote();
+  await _testeAplicar();
+
+  // ── Travas no próprio index.html ──
+  // Um caminho de gravação que esqueça de registrar o inverso é justamente o
+  // buraco que este trabalho fechou: volta a existir alteração sem volta.
+  eq("post, patch, del (soft e físico) e restaurar registram o inverso",
+    (html.match(/_agUndoRegistrar\(\{ tabela: t/g) || []).length, 5);
+  ok("o PATCH lê o valor anterior ANTES de gravar",
+    /var _undoAntes = \(_agUndoMudo > 0 \|\| _AG_UNDO_TABELAS_MUDAS\[t\]\) \? null : await _agUndoAntes\(t, id, d\);/.test(html));
+  ok("a cópia da linha é alimentada pelo mesmo gancho de _agVerSet",
+    /_agVerSet\(t, rec\) \{[\s\S]{0,400}_agSnapSet\(t, rec\);/.test(html));
+  ok("tela com desfazer próprio descarta o lote genérico em vez de empilhar dois popups",
+    /_agUndoDescartarLote\(\);/.test(html) && /window\._agUndo = function\(msg, desfazerFn, ms\) \{[\s\S]{0,600}_agUndoDescartarLote\(\);/.test(html));
+  ok("o desfazer roda silenciado", /onUndo: function\(\)\{ return _agUndoMudoRodar\(desfazerFn\); \}/.test(html));
+  ok("o popup adota a confirmação da tela, para não empilhar dois no mesmo canto",
+    /tt\.type !== "error" && \(Date\.now\(\) - tt\.em\) < 2500/.test(html));
+  ok("desfazer devolve as linhas ao React pelo caminho da sincronia",
+    /window\.__agAplicarLinhas = function\(tabela, linhas\)/.test(html));
+  ok("e avisa o mapa da Agenda, que vive fora do React",
+    /t === AG_ADIA_TABELA && agAdiaAplicarLinhas\(linhas\)/.test(html));
+  ok("e as quatro cópias do orçamento pessoal ([orc-sync])",
+    /t === "orcamento_pessoal" && typeof _orcBroadcast === "function"/.test(html));
+  eq("o seed de perfis do primeiro login é gravação de sistema",
+    (html.match(/await _agUndoMudoRodar\(async function\(\)\{/g) || []).length, 2);
+  // [bateria]: a barrinha de prazo é animação NOVA — só transform, e uma vez.
+  ok("a barra de prazo anima só transform, uma única vez",
+    /animation:ag-undo-tick linear forwards;/.test(html) &&
+    /@keyframes ag-undo-tick\{from\{transform:scaleX\(1\)\}to\{transform:scaleX\(0\)\}\}/.test(html));
+  eq("e não é infinita", (html.match(/ag-undo-tick[^;}]*infinite/g) || []).length, 0);
+  ok("a barra reinicia a cada popup (sem a chave, o 2º herdaria o resto do 1º)",
+    /key: "tick-" \+ \(data\.seq \|\| 0\)/.test(html));
+}
+
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam
 // promessas de refresh e mensagens de WebSocket dublado. Por isso rodam por
-// último e o resumo final vira uma continuação deles.
-require("./sessao").rodar({ grupo, eq, ok }).then(resumo, (e) => {
+// último e o resumo final vira uma continuação deles. O grupo do desfazer
+// também é assíncrono (o diário fecha o lote por tempo), então entra na mesma
+// cadeia, antes deles, para a saída sair na ordem em que foi escrita.
+testesDesfazer().then(() => require("./sessao").rodar({ grupo, eq, ok })).then(resumo, (e) => {
   console.error("\n\x1b[31mErro ao rodar os testes de sessão/tempo real:\x1b[0m");
   console.error(e);
   process.exit(1);

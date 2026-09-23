@@ -1884,6 +1884,18 @@ async function testesDesfazer() {
     /key: "tick-" \+ \(data\.seq \|\| 0\)/.test(html));
 }
 
+grupo("Névoa Suave tem o próprio fundo, como Horizonte Azul");
+{
+  // A regra de fallback "sem tema" exclui cada tema pelo nome e pinta o fundo com
+  // !important e especificidade alta: tema que falta na lista perde o degradê.
+  const fallback = html.match(/body(?::not\(\.[a-z]+\))+(?:::before)?\{[^}]*background:[^}]*\}/g) || [];
+  const excluemPearl = fallback.filter((r) => r.includes(":not(.pearl)"));
+  ok("existe a regra de fallback que exclui pearl", excluemPearl.length > 0);
+  eq("toda regra que exclui pearl também exclui nevoa", excluemPearl.filter((r) => !r.includes(":not(.nevoa)")).length, 0);
+  ok("nevoa está nos três ciclos rápidos do botão de tema",
+    (html.match(/\["pearl","nevoa","dim","onix"\]/g) || []).length >= 3);
+}
+
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam
 // promessas de refresh e mensagens de WebSocket dublado. Por isso rodam por
 // último e o resumo final vira uma continuação deles. O grupo do desfazer

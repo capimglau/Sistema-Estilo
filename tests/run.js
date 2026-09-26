@@ -1892,8 +1892,8 @@ grupo("Névoa Suave tem o próprio fundo, como Horizonte Azul");
   const excluemPearl = fallback.filter((r) => r.includes(":not(.pearl)"));
   ok("existe a regra de fallback que exclui pearl", excluemPearl.length > 0);
   eq("toda regra que exclui pearl também exclui nevoa", excluemPearl.filter((r) => !r.includes(":not(.nevoa)")).length, 0);
-  ok("nevoa está nos três ciclos rápidos do botão de tema",
-    (html.match(/\["pearl","nevoa","dim","onix"\]/g) || []).length >= 3);
+  ok("nevoa e neve estão nos três ciclos rápidos do botão de tema",
+    (html.match(/\["pearl","nevoa","neve","dim","onix"\]/g) || []).length >= 3);
 }
 
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam

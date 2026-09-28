@@ -30756,6 +30756,169 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       );
     })()
 
+    /* ══ CENTRAL DE ATENÇÃO — logo abaixo de Boletos, mesmo estilo ledger
+       (ícone num badge redondo + título/subtítulo + valor/contagem à
+       direita, SEM tarja vertical de cor antes do ícone — pedido do
+       usuário). Um bullet por TIPO de pendência (não um item por linha,
+       como os painéis de baixo já fazem); tocar expande os itens de
+       verdade, com nome/placa e valor, cada um levando pra tela de origem.
+       Nenhum cálculo novo: cada categoria chama a MESMA função única que já
+       alimenta o painel correspondente mais abaixo (painelMultasPendentes,
+       painelManutencoesPendentes, resolverDespesasDoMes, docsVencidos/
+       docsVencendo já calculados no topo do componente) — como são as
+       funções compartilhadas do projeto, qualquer baixa/resolução que mude
+       o resultado delas atualiza esta central e os painéis de baixo ao
+       mesmo tempo, pela mesma sincronia de estado que já existe. */
+    , (() => {
+      var _cp = !desktop;
+      var _str30pend = new Date(_brNowMs()+30*864e5).toISOString().split('T')[0];
+      var _diasAteVencPend = function(dataStr){
+        if (!dataStr) return null;
+        return Math.round((new Date(dataStr+'T00:00:00') - new Date(hoje+'T00:00:00')) / 864e5);
+      };
+
+      // 1. Recebimentos atrasados — previsão vencida, sem baixa (qualquer mês)
+      var _atrasados = (contratos||[]).filter(function(c){
+        return c.status!=='cancelado' && c.status_pagamento!=='pago' && c.status_pagamento!=='isento'
+          && c.previsao_pagamento && c.previsao_pagamento<hoje;
+      }).sort(function(a,b){ return (a.previsao_pagamento||'').localeCompare(b.previsao_pagamento||''); });
+
+      // 2. Renovações próximas — mesma janela de 30 dias do painel de Renovações
+      var _renovando = (contratos||[]).filter(function(c){
+        return c.status==='ativo' && c.data_fim && c.data_fim<=_str30pend && !renovadosIds.has(c.id);
+      }).sort(function(a,b){ return (a.data_fim||'').localeCompare(b.data_fim||''); });
+
+      // 3. Despesas pendentes do mês — mesma regra do painel de Despesas Pendentes
+      var _despPend = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), dashMes)
+        .filter(function(d){ return d.status!=='pago' && !d.data_pagamento; })
+        .concat(dashMes===mesAtual ? (despesas||[]).filter(function(d){
+          return !isRetLucro(d) && !d.recorrente && d.status!=='pago' && !d.data_pagamento && d.data && d.data<hoje && d.data.slice(0,7)!==dashMes;
+        }) : [])
+        .sort(function(a,b){ return (a.data||'').localeCompare(b.data||''); });
+
+      // 4. Documentação de veículos — IPVA/seguro/licenciamento/revisão (helpers já calculados no topo do componente)
+      var _docCampo = function(v){
+        return [
+          {campo:v.venc_ipva,nome:'IPVA'},{campo:v.venc_seguro,nome:'Seguro'},
+          {campo:v.venc_licenciamento,nome:'Licenciamento'},{campo:v.venc_revisao,nome:'Revisão'}
+        ].filter(function(d){ return d.campo; }).sort(function(a,b){ return a.campo.localeCompare(b.campo); })[0];
+      };
+      var _docVeiculos = docsVencidos.concat(docsVencendo);
+
+      // 5. Multas aguardando terceiro — a bola está com o órgão ou o cliente, não com a locadora
+      var _mulTerceiro = [];
+      painelMultasPendentes(multas, contratos, veiculos, clientes).forEach(function(g){
+        if (g.resp!=='voce') _mulTerceiro = _mulTerceiro.concat(g.itens);
+      });
+
+      // 6. Manutenções pendentes — mesmo helper do painel de Manutenções e avarias
+      var _manPend = painelManutencoesPendentes(manutencoes, contratos, veiculos, clientes);
+
+      var _pendCats = [
+        { key:'recatr', titulo:'Recebimentos atrasados', cor:C.red, n:_atrasados.length, ic:_flagIcon('money',18),
+          sub: _atrasados.length ? 'vencido, sem baixa' : 'nenhum atrasado',
+          itens: _atrasados.map(function(c){
+            var cl=(clientes||[]).find(function(x){ return x.id==c.cliente_id; });
+            var ve=(veiculos||[]).find(function(x){ return x.id==c.veiculo_id; });
+            var d=_diasAteVencPend(c.previsao_pagamento);
+            return { nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), sub:(ve&&ve.placa||'--')+' · '+(-d)+'d atraso', valor:parseFloat(c.valor_total||0),
+              onClick:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); } };
+          }) },
+        { key:'renov', titulo:'Renovações próximas', cor:C.orange, n:_renovando.length,
+          ic:React.createElement('svg', { width:18, height:18, viewBox:'0 0 24 24', fill:'none', stroke:'currentColor', strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round' }
+              , React.createElement('path',{d:'M3 12a9 9 0 0 1 15-6.7L21 8'}), React.createElement('path',{d:'M21 3v5h-5'})
+              , React.createElement('path',{d:'M21 12a9 9 0 0 1-15 6.7L3 16'}), React.createElement('path',{d:'M3 21v-5h5'})),
+          sub: _renovando.length ? 'até 30 dias' : 'nenhuma nos próximos 30 dias',
+          itens: _renovando.map(function(c){
+            var cl=(clientes||[]).find(function(x){ return x.id==c.cliente_id; });
+            var ve=(veiculos||[]).find(function(x){ return x.id==c.veiculo_id; });
+            var d=_diasAteVencPend(c.data_fim);
+            return { nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), sub:(ve&&ve.placa||'--')+' · '+(d<=0?'vence hoje':'em '+d+' dias'), valor:parseFloat(c.valor_total||0),
+              onClick:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); } };
+          }) },
+        { key:'desp', titulo:'Despesas pendentes', cor:C.red, n:_despPend.length, ic:_flagIcon('card',18),
+          sub: _despPend.length ? 'a pagar em '+nomeMes : 'nenhuma em '+nomeMes,
+          itens: _despPend.map(function(d){
+            return { nome:d.descricao||d.categoria||'Despesa', sub:d.categoria||'', valor:parseFloat(d.valor||0),
+              onClick:function(){ setFinDeepLink({subTab:'despesas',itemId:d.id,mes:(d.data||dashMes).slice(0,7)}); setTab('financeiro'); } };
+          }) },
+        { key:'doc', titulo:'Documentação de veículos', cor: docsVencidos.length ? C.red : C.orange, n:_docVeiculos.length, ic:_flagIcon('clipboard',18),
+          sub: _docVeiculos.length ? 'IPVA, seguro, licenciamento ou revisão' : 'toda a frota em dia',
+          itens: _docVeiculos.map(function(v){
+            var dc=_docCampo(v); var d=dc?_diasAteVencPend(dc.campo):null;
+            return { nome:(v.placa||'--')+(v.modelo?' · '+v.modelo:''), sub: dc?(dc.nome+' '+(d<0?('vencido há '+(-d)+'d'):(d===0?'vence hoje':'vence em '+d+'d'))):'', valor:null,
+              onClick:function(){ onItemNav({type:'veiculo',id:v.id},'frota'); } };
+          }) },
+        { key:'mul', titulo:'Multas aguardando terceiro', cor:C.orange, n:_mulTerceiro.length, ic:_flagIcon('warning',18),
+          sub: _mulTerceiro.length ? 'boleto com órgão ou cliente' : 'nenhuma aguardando',
+          itens: _mulTerceiro.map(function(l){
+            return { nome:l.cliente, sub:(l.ait?'AIT '+l.ait:'—')+(l.prazo?' · '+fmtDiaMes3(l.prazo):''), valor:l.valor,
+              onClick:function(){ onItemNav({type:'multa',id:l.id},'multas'); } };
+          }) },
+        { key:'man', titulo:'Manutenções pendentes', cor:C.purple, n:_manPend.length, ic:_flagIcon('wrench',18),
+          sub: _manPend.length ? 'sem orçamento ou pagamento em aberto' : 'nenhuma pendente',
+          itens: _manPend.map(function(l){
+            var alvo = l.origem==='manutencao' ? {type:'manutencao',id:l.id} : {type:'contrato',id:l.id};
+            var tab  = l.origem==='manutencao' ? 'manutencao' : 'contratos';
+            return { nome:l.cliente, sub:(l.placa||'--')+(l.descricao?' · '+l.descricao:''), valor:l.valor,
+              onClick:function(){ onItemNav(alvo, tab); } };
+          }) }
+      ];
+      var _pendTotal = _pendCats.reduce(function(s,c){ return s+c.n; }, 0);
+      if (!desktop && _pendTotal===0) return null;
+
+      var _pendExpState = React.useState(null); var _pendExp = _pendExpState[0]; var _setPendExp = _pendExpState[1];
+
+      var _pendRow = function(cat){
+        var ativo = cat.n>0;
+        return React.createElement(React.Fragment, { key:cat.key }
+          , React.createElement('button', {
+              onClick: ativo ? function(){ _setPendExp(_pendExp===cat.key?null:cat.key); } : null,
+              'aria-expanded': _pendExp===cat.key,
+              style:{ display:'flex', alignItems:'center', gap:12, padding:(_cp?'8px 0':'10px 0'), width:'100%',
+                      border:'none', background:'none', font:'inherit', color:'inherit', textAlign:'left',
+                      cursor: ativo ? 'pointer' : 'default' }
+            }
+            , React.createElement('div', { style:{
+                width:_cp?30:34, height:_cp?30:34, borderRadius:11, flexShrink:0,
+                display:'flex', alignItems:'center', justifyContent:'center',
+                background: ativo ? cat.cor+'1E' : 'rgba(120,120,128,0.12)', color: ativo ? cat.cor : C.sub
+              } }, cat.ic)
+            , React.createElement('div', { style:{ flex:1, minWidth:0 } }
+              , React.createElement('div', { style:{ fontSize:_cp?13:12, fontWeight:700, color: ativo ? 'var(--c-text)' : C.sub } }, cat.titulo)
+              , React.createElement('div', { style:{ fontSize:_cp?10.5:9.5, color:C.sub, marginTop:2 } }, cat.sub)
+              )
+            , React.createElement('div', { style:{ fontSize:_cp?17:15, fontWeight:800, color: ativo ? cat.cor : C.sub, flexShrink:0 } }, cat.n)
+            , ativo ? React.createElement('span', { style:{ color:C.sub, fontSize:12, flexShrink:0, transform: _pendExp===cat.key?'rotate(90deg)':'none', transition:'transform .15s ease' } }, '›') : React.createElement('span',{style:{width:12,flexShrink:0}})
+          )
+          , _pendExp===cat.key && cat.itens.length>0 && React.createElement('div', { style:{ marginTop:2, marginBottom:4, marginLeft:_cp?42:46, display:'flex', flexDirection:'column', gap:2 } }
+            , cat.itens.slice(0,8).map(function(it,i){
+                return React.createElement('div', {
+                  key:i, onClick:it.onClick,
+                  style:{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, padding:'6px 0', borderTop:i>0?'1px dotted '+C.borderSoft:'none', cursor:'pointer' }
+                }
+                  , React.createElement('div', { style:{ minWidth:0 } }
+                    , React.createElement('div', { style:{ fontSize:12.5, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }, it.nome)
+                    , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:1 } }, it.sub)
+                    )
+                  , (it.valor!=null) ? React.createElement(BRLValue,{v:it.valor,size:12.5,weight:700,color:cat.cor,style:{flexShrink:0}}) : null
+                );
+              })
+          )
+        );
+      };
+
+      var _panBasePend = { background:C.card, borderRadius:18, border:'1px solid '+C.border, overflow:'hidden', boxShadow:'0 1px 12px rgba(0,0,0,0.05)' };
+      return React.createElement('div', { style:Object.assign({}, _panBasePend, { padding: _cp ? '4px 14px 6px' : '4px 16px 8px' }) }
+        , _pendCats.map(function(cat,i){
+            return React.createElement(React.Fragment, { key:cat.key }
+              , i>0 ? React.createElement('div', { style:{ height:1, background:C.borderSoft } }) : null
+              , _pendRow(cat)
+            );
+          })
+      );
+    })()
+
     /* ══ Bloco com respiro 50% maior (pedido do usuário): grid de Multas
        pendentes/Despesas pendentes/Renovações/Recebimentos/Manutenções em
        diante até o fim dos painéis financeiros do Início — inclui também

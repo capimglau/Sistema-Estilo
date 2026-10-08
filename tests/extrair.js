@@ -74,7 +74,7 @@ function extrair(marcadores) {
       agAdiaMapa, agAdiaOculto, agAdiaAgora,
       faturaEmissaoDataISO, faturaEmissaoChave, faturaEmissaoDispensada,
       rdClienteDaReceita, rdLinhasReceitaCliente, rdLinhasDespesaCategoria, rdMesDoContrato, rdReceitaComContrato,
-      receitaVisivelNoMes, receitaDoMes, manVisivelNoMes, resolverDespesasDoMes, isRetLucro,
+      receitaVisivelNoMes, receitaDoMes, manVisivelNoMes, resolverDespesasDoMes, despesasPendentesAteHoje, isRetLucro,
       despesaDoMes, manDoMes, manDataFluxo, manMesRefGlobal, multaDataFluxo, multaDoMes,
       orcMesDaParcela, orcMesEfetivo, orcTemFilhaNoMes, orcVisivelNoMes,
       multaCobrancaPendente, multaCobrancaVenc, multaCobrancaAtrasada,

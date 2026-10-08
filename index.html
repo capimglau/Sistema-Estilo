@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="face889"/>
+<meta name="ag-build" content="acc5871"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -47566,6 +47566,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
   const [exportando, setExportando] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
   const [notifOn, setNotifOn] = useState(function(){ return _agNotifLigadas(); });
+  const [badgeMsg, setBadgeMsg] = useState("");
   /* Exporta todas as tabelas num único JSON. Complementa o backup agendado:
      serve para quem quer uma cópia na mão antes de mexer em algo grande, sem
      depender de acesso ao GitHub. Inclui os registros excluídos (deleted_at),
@@ -47816,6 +47817,22 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
                 }, React.createElement('span', { style: { width: 26, height: 26, borderRadius: "50%", background: "#fff", boxShadow: "0 1px 4px rgba(0,0,0,0.3)", display: "block" } }))
             )
             , bloqueado && React.createElement('div', { style: { fontSize: 11, color: C.orange, marginTop: 8, lineHeight: 1.5 } }, "O iPhone está com as notificações deste app bloqueadas. Libere em Ajustes → Notificações para poder ligar aqui.")
+            , React.createElement('button', {
+                type: "button",
+                onClick: async function(){
+                  if (!window.__agBadgeAgora) { setBadgeMsg("O app ainda está carregando — tente de novo."); return; }
+                  setBadgeMsg("Testando...");
+                  var i = await window.__agBadgeAgora();
+                  var instalado = !!(window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+                  if (!i.suportado) setBadgeMsg("Este navegador não oferece selo no ícone" + (instalado ? "." : " — abra o app pelo ícone da Tela de Início, não pelo Safari."));
+                  else if (!i.ligadas) setBadgeMsg("Desligado aqui no app — ligue o interruptor acima.");
+                  else if (i.erro) setBadgeMsg("O iPhone recusou o selo: " + i.erro);
+                  else if (i.n === 0) setBadgeMsg("Nenhuma despesa em aberto vence hoje ou está atrasada — por isso o ícone fica sem número.");
+                  else setBadgeMsg("Enviado ao ícone: " + i.n + " despesa(s). Se o número não aparecer, ative Ajustes → Notificações → este app → Emblemas.");
+                },
+                style: { marginTop: 10, background: "rgba(0,122,255,0.12)", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: 700, color: "#007AFF", cursor: "pointer" }
+              }, "🔎 Testar selo agora")
+            , badgeMsg && React.createElement('div', { style: { fontSize: 12, color: "var(--c-text)", marginTop: 8, lineHeight: 1.5 } }, badgeMsg)
             , !bloqueado && React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 8, lineHeight: 1.5 } }, "Desligar para o aviso diário e o número no ícone. A permissão em Ajustes do iPhone continua como \u201CPermitido\u201D — quem liga e desliga é este botão.")
           );
         })()
@@ -58111,15 +58128,22 @@ function App() {
      também entra por aí. Sem suporte à API, não faz nada. */
   const despesasBadgeRef = React.useRef(despesas);
   despesasBadgeRef.current = despesas;
-  const atualizarBadgeDespesas = React.useCallback(function() {
+  /* Devolve um diagnóstico ({suportado, ligadas, n, erro}) — a tela de
+     Configurações usa para mostrar POR QUE o selo não aparece, em vez de o
+     usuário ficar adivinhando (API ausente, desligado no app ou rejeitado
+     pelo iOS, que exige "Emblemas" ligado nos Ajustes do aparelho). */
+  const atualizarBadgeDespesas = React.useCallback(async function() {
+    var info = { suportado: !!navigator.setAppBadge, ligadas: _agNotifLigadas(), n: 0, erro: null };
     try {
-      if (!navigator.setAppBadge) return;
-      if (!_agNotifLigadas()) { if (navigator.clearAppBadge) navigator.clearAppBadge(); return; }
-      var n = despesasPendentesAteHoje(despesasBadgeRef.current, _brNow().toISOString().slice(0, 10));
-      if (n > 0) navigator.setAppBadge(n);
-      else if (navigator.clearAppBadge) navigator.clearAppBadge();
-    } catch (e) {}
+      if (!info.suportado) return info;
+      if (!info.ligadas) { if (navigator.clearAppBadge) await navigator.clearAppBadge(); return info; }
+      info.n = despesasPendentesAteHoje(despesasBadgeRef.current, _brNow().toISOString().slice(0, 10));
+      if (info.n > 0) await navigator.setAppBadge(info.n);
+      else if (navigator.clearAppBadge) await navigator.clearAppBadge();
+    } catch (e) { info.erro = (e && e.message) || String(e); }
+    return info;
   }, []);
+  window.__agBadgeAgora = atualizarBadgeDespesas;
   React.useEffect(function() { atualizarBadgeDespesas(); }, [despesas, atualizarBadgeDespesas]);
   React.useEffect(function() {
     function aoVoltar() { if (!document.hidden) atualizarBadgeDespesas(); }

@@ -531,6 +531,21 @@ o usuário lê todo dia — não fazer por conta própria.
 - Se a receita tiver `contrato_id` preenchido (campo "Contrato (opcional)" do formulário), a fatura puxa cliente/veículo de lá; senão usa `veiculo_id`/`cliente_id` diretos da receita, se houver. Sem nenhum dos dois, a fatura sai só com a descrição/valor — ainda assim válida.
 - **Qualquer novo tipo de "a receber"** que apareça no sistema (nova categoria de receita, nova tela) precisa seguir essa mesma regra — nunca deixar um lançamento pendente sem opção de emitir fatura.
 
+## Receita avulsa a receber já É fatura prevista — `[receita-avulsa-fatura]` — PERMANENTE
+
+Receita lançada fora de contrato (sem `ref_fatura`) só entrava nas telas de
+Faturas **depois** de emitida (`numero_fatura`). Em aberto, ela não aparecia
+em Financeiro › Faturas nem em Relatórios › Faturas: não dava para emitir por
+lá e os totais "Prevista/Vencida" ignoravam dinheiro a receber.
+
+**Regra:** toda receita sem `ref_fatura` que tenha fatura **ou** esteja em
+aberto (não recebida/cancelada, e não template de recorrente) é uma fatura nas
+**duas** telas, com o mesmo critério. Mês = vencimento (`data_vencimento||data`);
+emitida fica na competência de emissão (`[fatura-nao-migra]`). Emitir uma
+avulsa **patcha a receita existente** (`recId`) — nunca lê `fat.c`, que ela não
+tem. Item de fatura avulsa carrega `clienteId`/`rotulo` para filtros, PDF e CSV
+não dependerem do contrato.
+
 ## Fatura emitida não muda de mês nem de valor — `[fatura-nao-migra]` — PERMANENTE
 
 `criarFaturaPrevista` (tela de Contratos) cria a receita "prevista" de um

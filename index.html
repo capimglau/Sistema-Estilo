@@ -45897,13 +45897,27 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       // swipe "Fatura" na tela de Receitas) — precisam aparecer aqui também, não só
       // as ligadas a contrato (regra de cobertura de dados do CLAUDE.md).
       var competenciasAvulsas = (receitas || []).filter(function(r) {
-        return !r.ref_fatura && !r.contrato_id && r.numero_fatura;
+        /* [receita-avulsa-fatura] Receita avulsa "a receber" É fatura prevista:
+           antes só entrava aqui depois de emitida (numero_fatura), então a
+           receita lançada no Financeiro nunca aparecia para ser emitida, nem
+           nos totais "Prevista/Vencida" — a tela mentia sobre o que há a
+           receber. Entra: tudo que não é de contrato (sem ref_fatura) e que
+           ou já tem fatura, ou ainda está em aberto. Já recebida sem fatura é
+           só dinheiro que entrou, não cobrança. Template de recorrente
+           (recorrente sem fatura) não é lançamento: é a régua que projeta. */
+        if (r.ref_fatura) return false;
+        if (r.numero_fatura) return true;
+        if (r.recorrente) return false;
+        return r.status !== "recebido" && r.status !== "pago" && r.status !== "cancelado" && r.status !== "cancelada";
       }).filter(function(r) {
-        var dtRef = r.data_emissao || r.data || "";
+        /* Emitida fica na competência em que saiu ([fatura-nao-migra]);
+           em aberto vale o vencimento, como a fatura de contrato. */
+        var dtRef = r.numero_fatura ? (r.data_emissao || r.data || "") : (r.data_vencimento || r.data || "");
         return dtRef.slice(0, 7) === mesFat;
       }).map(function(r) {
-        var clAv = r.cliente_id ? _clById[r.cliente_id] : null;
-        var veAv = r.veiculo_id ? _veById[r.veiculo_id] : null;
+        var _ctAv = r.contrato_id ? (contratos || []).find(function(c){ return String(c.id) === String(r.contrato_id); }) : null;
+        var clAv = (r.cliente_id || (_ctAv && _ctAv.cliente_id)) ? _clById[r.cliente_id || _ctAv.cliente_id] : null;
+        var veAv = (r.veiculo_id || (_ctAv && _ctAv.veiculo_id)) ? _veById[r.veiculo_id || _ctAv.veiculo_id] : null;
         var dtVencAv = r.data_vencimento || r.data || dtVencPadrao;
         var statusAv;
         if (r.status === "recebido" || r.status === "pago") statusAv = "paga";
@@ -45956,7 +45970,9 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         if (fat.foiEmitida) { toast("Essa fatura já foi emitida" + (fat.numero ? " (" + fat.numero + ")" : "") + "."); return; }
         var dtEmissao = hoje;
         var num = await proximoNumFatura();
-        var payload = {
+        /* Receita avulsa já existe (recId) — só recebe número e data. O payload
+           de criação lê o contrato (fat.c), que a avulsa não tem. */
+        var payload = fat.c ? {
           descricao: "Fatura " + fat.cliente + " — " + fat.placa + " (" + mesFat + ")",
           valor: fat.valor, categoria: "Locacao",
           data: dtEmissao, data_emissao: dtEmissao,
@@ -45965,7 +45981,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           forma_pagamento: "Pix",
           cliente_id: fat.c.cliente_id, veiculo_id: fat.c.veiculo_id,
           contrato_id: fat.c.id
-        };
+        } : null;
         try {
           if (fat.recId) {
             await db.patch("receitas", fat.recId, { status: "emitida", data_emissao: dtEmissao, numero_fatura: num });
@@ -46087,7 +46103,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                otimista, RLS, rede) enquanto o toast dizia sucesso — e o alerta do
                calendário continuava aparecendo sem o usuário entender por quê. */
             maxN--;
-            falhas.push((fat.cliente||"Contrato #"+fat.c.id) + ": " + (e.message||String(e)));
+            falhas.push((fat.cliente||"Contrato #"+(fat.c && fat.c.id)) + ": " + (e.message||String(e)));
           }
         }
         setReceitas(function(p) {
@@ -46471,8 +46487,41 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     var refKey = "fat_" + c.id + "_" + (dtRef ? dtRef.slice(0,7) : "");
     return { c:c, cl:cl, ve:ve, sit:sit, dtFiltro:dtFiltro, dtPag:dtPag, dtRef:dtRef,
              valor: parseFloat(c.valor_total||0), numeroFatura: recPrinc ? recPrinc.numero_fatura : null,
-             foiEmitida: foiEmitida, recId: recPrinc ? recPrinc.id : null, refKey: refKey };
+             foiEmitida: foiEmitida, recId: recPrinc ? recPrinc.id : null, refKey: refKey,
+             clienteId: c.cliente_id, rotulo: numCt(c.id), ini: c.data_inicio || "", fim: c.data_fim || "" };
   });
+  /* [receita-avulsa-fatura] Receita avulsa a receber também é fatura: este
+     relatório montava a lista só a partir dos contratos, então toda receita
+     lançada fora de contrato ficava de fora da posição de faturas, do PDF e
+     do CSV. Mesmo critério da aba Financeiro › Faturas. */
+  var _fatAvulsas = (receitas || []).filter(function(r) {
+    if (!r || r.ref_fatura) return false;
+    if (r.status === "cancelado" || r.status === "cancelada") return false;
+    if (r.numero_fatura) return true;
+    if (r.recorrente) return false;
+    return r.status !== "recebido" && r.status !== "pago";
+  }).map(function(r) {
+    var _ctA = r.contrato_id ? (contratos || []).find(function(x){ return String(x.id) === String(r.contrato_id); }) : null;
+    var _cliId = r.cliente_id || (_ctA && _ctA.cliente_id) || null;
+    var _veiId = r.veiculo_id || (_ctA && _ctA.veiculo_id) || null;
+    var clA = (_cliId != null && _clPorId[String(_cliId)]) || { nome: r.descricao || "" };
+    var veA = (_veiId != null && _vePorId[String(_veiId)]) || {};
+    var dtRefA = r.data_vencimento || r.data || "";
+    var pagoA = r.status === "recebido" || r.status === "pago";
+    var sitA;
+    if (pagoA) sitA = "paga";
+    else if (r.status === "emitida" && dtRefA && dtRefA < _hojeRelat) sitA = "vencida";
+    else if (r.status === "emitida") sitA = "emitida";
+    else if (dtRefA && dtRefA < _hojeRelat) sitA = "vencida";
+    else sitA = "prevista";
+    var dtPagA = r.data_pagamento || null;
+    return { c: null, avulsa: true, recObj: r, cl: clA, ve: veA, sit: sitA,
+             dtFiltro: (sitA === "paga" && dtPagA) ? dtPagA : dtRefA, dtPag: dtPagA, dtRef: dtRefA,
+             valor: parseFloat(r.valor || 0), numeroFatura: r.numero_fatura || null,
+             foiEmitida: !!(r.data_emissao || r.numero_fatura), recId: r.id, refKey: "avulsa_" + r.id,
+             clienteId: _cliId, rotulo: r.numero_fatura || "Avulsa", ini: "", fim: "" };
+  });
+  _fatList = _fatList.concat(_fatAvulsas);
   var faturasFil = _fatList.filter(function(f) {
     /* Sem data não está dentro de janela nenhuma. O `f.dtFiltro &&` de antes
        fazia toda fatura sem previsão/vencimento passar por QUALQUER período
@@ -46480,7 +46529,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     if ((de || ate) && !f.dtFiltro) return false;
     if (de && f.dtFiltro < de) return false;
     if (ate && f.dtFiltro > ate) return false;
-    if (fatClientes.length && fatClientes.indexOf(String(f.c.cliente_id)) < 0) return false;
+    if (fatClientes.length && fatClientes.indexOf(String(f.clienteId)) < 0) return false;
     if (fatSit === "emitida") { if (!f.foiEmitida) return false; }
     else if (fatSit && f.sit !== fatSit) return false;
     return true;
@@ -46533,7 +46582,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
   }
   function csvFaturas() {
     var linhas = faturasSaida.map(function(f) {
-      return { numero: numCt(f.c.id), cliente: f.cl.nome||"", veiculo: (f.ve.placa||"") + " " + (f.ve.modelo||""), retirada: f.c.data_inicio||"", devolucao: f.c.data_fim||"", vencimento: f.dtRef||"", data_pagamento: f.dtPag||"", situacao: f.sit, valor: f.valor };
+      return { numero: f.rotulo, cliente: f.cl.nome||"", veiculo: (f.ve.placa||"") + " " + (f.ve.modelo||""), retirada: f.ini, devolucao: f.fim, vencimento: f.dtRef||"", data_pagamento: f.dtPag||"", situacao: f.sit, valor: f.valor };
     });
     exportarCSV("faturas", linhas);
   }
@@ -46555,7 +46604,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
     }
     h += '</div>';
     h += '<table><tr><th>No</th><th>Cliente</th><th>Veículo</th><th>Vencimento</th><th>Dt.Pagamento</th><th>Situação</th><th>Valor</th></tr>';
-    faturasSaida.forEach(function(f) { h += '<tr><td>' + numCt(f.c.id) + '</td><td>' + (f.cl.nome||"--") + '</td><td>' + (f.ve.placa||"--") + ' ' + (f.ve.modelo||"") + '</td><td>' + fmtDate(f.dtRef) + '</td><td>' + (f.dtPag ? fmtDate(f.dtPag) : "--") + '</td><td class="' + f.sit + '">' + (_SIT_LABEL[f.sit]||f.sit) + '</td><td>' + fmtBRL(f.valor) + '</td></tr>'; });
+    faturasSaida.forEach(function(f) { h += '<tr><td>' + f.rotulo + '</td><td>' + (f.cl.nome||"--") + '</td><td>' + (f.ve.placa||"--") + ' ' + (f.ve.modelo||"") + '</td><td>' + fmtDate(f.dtRef) + '</td><td>' + (f.dtPag ? fmtDate(f.dtPag) : "--") + '</td><td class="' + f.sit + '">' + (_SIT_LABEL[f.sit]||f.sit) + '</td><td>' + fmtBRL(f.valor) + '</td></tr>'; });
     h += '<tr><td colspan="6" class="tot">TOTAL (' + faturasSaida.length + ')</td><td class="tot">' + fmtBRL(totalSaida) + '</td></tr></table>';
     h += '<p style="text-align:center;font-size:10px;color:#aaa;margin-top:20px">AutoGest Pro - ' + new Date().toLocaleString("pt-BR") + '</p>';
     h += '<scr' + 'ipt>window.print();</scr' + 'ipt></body></html>';
@@ -46683,7 +46732,7 @@ function Relatorios({ contratos, veiculos, clientes, multas, manutencoes, despes
                antes só a "emitível" era clicável, porque a seleção servia pra
                emitir. Numa posição, escolher só as previstas não faz sentido. */
             var isSel = !!fatSel[f.refKey];
-            return React.createElement('div', { key: f.c.id, onClick: fatSelMode ? function(){ toggleFatSel(f.refKey); } : undefined, style: Object.assign({ display: "flex", alignItems: "stretch", cursor: fatSelMode ? "pointer" : "default" }, _flagCardBg()) }
+            return React.createElement('div', { key: f.refKey, onClick: fatSelMode ? function(){ toggleFatSel(f.refKey); } : undefined, style: Object.assign({ display: "flex", alignItems: "stretch", cursor: fatSelMode ? "pointer" : "default" }, _flagCardBg()) }
               , _dateBadgeFlag(f.dtRef || f.dtPag, sitPastel, false, null)
               , fatSelMode && React.createElement('div', { style: { flexShrink: 0, width: 20, height: 20, borderRadius: 6, border: "2px solid " + (isSel ? C.blue : C.sub), background: isSel ? C.blue : "transparent", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, alignSelf: "center", margin: "0 4px 0 8px" } }, isSel ? "✓" : "")
               , React.createElement('div', { style: { minWidth: 0, flex: 1, padding: "13px 8px" } }

@@ -1937,7 +1937,7 @@ grupo("Notificações têm liga/desliga no app");
   ok("ativar push respeita o desligado", /if \(!_agNotifLigadas\(\)\) return \{ ok: false, motivo: "Notificações desligadas/.test(html));
   ok("desligar apaga a inscrição no servidor", /push_subscriptions\?endpoint=eq\./.test(html) && /method: "DELETE"/.test(html));
   ok("o aviso diário local respeita o desligado", /if \(!_agNotifLigadas\(\)\) return;\s+var hoje = _brNow/.test(html));
-  ok("o selo some quando desligado", /_agNotifLigadas\(\)\) \{ if \(navigator\.clearAppBadge\)/.test(html));
+  ok("o selo some quando desligado", /!info\.ligadas\) \{ if \(navigator\.clearAppBadge\)/.test(html));
   ok("Configurações tem o interruptor", /role: "switch"/.test(html));
 }
 

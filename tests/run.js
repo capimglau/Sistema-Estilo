@@ -1941,6 +1941,12 @@ grupo("Notificações têm liga/desliga no app");
   ok("Configurações tem o interruptor", /role: "switch"/.test(html));
 }
 
+grupo("Configurações tem Salvar alterações sempre à mão");
+{
+  ok("barra fixa de salvar aparece quando há edição pendente",
+    /dirtyRef\.current && React\.createElement\('div', \{\s+style: \{ position: "sticky"/.test(html) && /💾 Salvar alterações/.test(html));
+}
+
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam
 // promessas de refresh e mensagens de WebSocket dublado. Por isso rodam por
 // último e o resumo final vira uma continuação deles. O grupo do desfazer

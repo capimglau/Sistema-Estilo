@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="ed809cc"/>
+<meta name="ag-build" content="ff1f4d1"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -18674,8 +18674,43 @@ function _agUrlB64ToUint8Array(base64) {
    de novo a qualquer momento (ex.: botão em Configurações) — o upsert por
    endpoint evita duplicar linha. Sempre silenciosa em erro: notificação é
    um extra, nunca pode travar o app. */
+/* [notif-liga-desliga] Chave do liga/desliga DENTRO do app. A permissão do
+   sistema (Ajustes do iOS) é concedida uma vez e fica "Permitido" para sempre —
+   o app não consegue revogá-la. Então "desligar" é do app: sem inscrição push,
+   sem aviso local e sem selo no ícone. Padrão = ligado. */
+var AG_NOTIF_CHAVE = "ag_notif_ligadas_v1";
+function _agNotifLigadas() {
+  try { return localStorage.getItem(AG_NOTIF_CHAVE) !== "0"; } catch(e) { return true; }
+}
+function _agNotifDefinir(on) {
+  try { localStorage.setItem(AG_NOTIF_CHAVE, on ? "1" : "0"); } catch(e) {}
+  try { window.dispatchEvent(new CustomEvent("ag:notif-mudou")); } catch(e) {}
+}
+/* Cancela a inscrição push deste aparelho: apaga a linha no servidor (senão a
+   Edge Function continuaria enviando) e desinscreve no navegador. */
+async function _agDesativarPush() {
+  try {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return { ok: true };
+    var reg = await navigator.serviceWorker.ready;
+    var sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      var r = await _agFetchAuth(SB_URL + "/rest/v1/push_subscriptions?endpoint=eq." + encodeURIComponent(sub.endpoint), {
+        method: "DELETE",
+        headers: Object.assign({}, HDR, { Prefer: "return=minimal" }),
+      }, 15000);
+      if (!r.ok) { var txt = await r.text().catch(function(){return "";}); return { ok: false, motivo: "Erro ao cancelar inscrição: " + txt }; }
+      await sub.unsubscribe();
+    }
+    try { localStorage.removeItem("ag_push_ativo_v1"); } catch(e) {}
+    return { ok: true };
+  } catch(e) {
+    console.warn("[push] falha ao desativar:", e);
+    return { ok: false, motivo: e && e.message || String(e) };
+  }
+}
 async function _agAtivarPush() {
   try {
+    if (!_agNotifLigadas()) return { ok: false, motivo: "Notificações desligadas no app." };
     if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
       return { ok: false, motivo: "Este navegador não suporta notificações push." };
     }
@@ -47530,6 +47565,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
   function loadPrefs() { try { return Object.assign({}, prefsDefault, JSON.parse(localStorage.getItem(LS_KEY) || "{}")); } catch(e) { return Object.assign({}, prefsDefault); } }
   const [exportando, setExportando] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
+  const [notifOn, setNotifOn] = useState(function(){ return _agNotifLigadas(); });
   /* Exporta todas as tabelas num único JSON. Complementa o backup agendado:
      serve para quem quer uma cópia na mão antes de mexer em algo grande, sem
      depender de acesso ao GitHub. Inclui os registros excluídos (deleted_at),
@@ -47745,17 +47781,44 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
 
     , React.createElement('div', { className: "lg-card", style: CARD }
       , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", marginBottom: 10 } }, "Notificações")
-      , React.createElement('div', { style: { fontSize: 12, color: C.sub, lineHeight: 1.6, marginBottom: 12 } }, "Receba um aviso de contratos e despesas atrasados uma vez por dia — funciona mesmo com o app fechado, desde que ele esteja instalado na Tela de Início (iOS: Compartilhar → Adicionar à Tela de Início).")
-      , React.createElement('button', {
-          onClick: async function(){
+      , React.createElement('div', { style: { fontSize: 12, color: C.sub, lineHeight: 1.6, marginBottom: 12 } }, "Receba um aviso de contratos e despesas atrasados uma vez por dia e veja no ícone do app quantas despesas vencem hoje ou estão atrasadas — funciona mesmo com o app fechado, desde que ele esteja instalado na Tela de Início (iOS: Compartilhar → Adicionar à Tela de Início).")
+      , (function(){
+          /* Liga/desliga do app. A permissão do sistema (Ajustes do iPhone)
+             continua "Permitido" — ela não se revoga por aqui. */
+          var permSis = ("Notification" in window) ? Notification.permission : "unsupported";
+          var bloqueado = permSis === "denied";
+          async function alternar() {
+            if (pushLoading) return;
             setPushLoading(true);
-            var r = await _agAtivarPush();
+            if (notifOn) {
+              _agNotifDefinir(false);
+              var rd = await _agDesativarPush();
+              setNotifOn(false);
+              toast(rd.ok ? "🔕 Notificações e selo desligados." : (rd.motivo || "Desligado, mas não consegui cancelar a inscrição."), rd.ok ? undefined : "error");
+            } else {
+              _agNotifDefinir(true);
+              var ra = await _agAtivarPush();
+              if (ra.ok) { setNotifOn(true); toast("🔔 Notificações e selo ligados!"); }
+              else { _agNotifDefinir(false); setNotifOn(false); toast(ra.motivo || "Não foi possível ativar as notificações.", "error"); }
+            }
             setPushLoading(false);
-            toast(r.ok ? "🔔 Notificações ativadas!" : (r.motivo || "Não foi possível ativar as notificações."), r.ok ? undefined : "error");
-          },
-          disabled: pushLoading,
-          style: { background: "rgba(0,122,255,0.12)", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, color: "#007AFF", cursor: pushLoading ? "default" : "pointer", opacity: pushLoading ? 0.6 : 1 }
-        }, pushLoading ? "Ativando..." : "🔔 Ativar notificações")
+          }
+          return React.createElement('div', null
+            , React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 } }
+              , React.createElement('div', { style: { minWidth: 0 } }
+                , React.createElement('div', { style: { fontSize: 14, fontWeight: 700, color: "var(--c-text)" } }, "Notificações e selo no ícone")
+                , React.createElement('div', { style: { fontSize: 12, color: notifOn ? C.green : C.sub, fontWeight: 600, marginTop: 2 } }, pushLoading ? "Aguarde..." : (notifOn ? "Ligadas" : "Desligadas"))
+              )
+              , React.createElement('button', {
+                  type: "button", role: "switch", "aria-checked": notifOn, "aria-label": "Notificações e selo no ícone",
+                  onClick: alternar, disabled: pushLoading || (bloqueado && !notifOn),
+                  style: { flexShrink: 0, width: 52, height: 32, borderRadius: 16, border: "none", padding: 3, cursor: pushLoading ? "default" : "pointer", background: notifOn ? C.green : "rgba(120,120,128,0.32)", opacity: (pushLoading || (bloqueado && !notifOn)) ? 0.6 : 1, transition: "background .2s ease", display: "flex", alignItems: "center", justifyContent: notifOn ? "flex-end" : "flex-start" }
+                }, React.createElement('span', { style: { width: 26, height: 26, borderRadius: "50%", background: "#fff", boxShadow: "0 1px 4px rgba(0,0,0,0.3)", display: "block" } }))
+            )
+            , bloqueado && React.createElement('div', { style: { fontSize: 11, color: C.orange, marginTop: 8, lineHeight: 1.5 } }, "O iPhone está com as notificações deste app bloqueadas. Libere em Ajustes → Notificações para poder ligar aqui.")
+            , !bloqueado && React.createElement('div', { style: { fontSize: 11, color: C.sub, marginTop: 8, lineHeight: 1.5 } }, "Desligar para o aviso diário e o número no ícone. A permissão em Ajustes do iPhone continua como \u201CPermitido\u201D — quem liga e desliga é este botão.")
+          );
+        })()
     )
 
     , React.createElement('div', { className: "lg-card", style: CARD }
@@ -57997,6 +58060,7 @@ function App() {
   // Push notifications: once per day, alert about overdue items
   React.useEffect(function() {
     if (!("Notification" in window)) return;
+    if (!_agNotifLigadas()) return;
     var hoje = _brNow().toISOString().slice(0,10);
     if (localStorage.getItem("ag_notif_dia") === hoje) return;
     if (!contratos.length && !despesas.length) return;
@@ -58036,6 +58100,7 @@ function App() {
   const atualizarBadgeDespesas = React.useCallback(function() {
     try {
       if (!navigator.setAppBadge) return;
+      if (!_agNotifLigadas()) { if (navigator.clearAppBadge) navigator.clearAppBadge(); return; }
       var n = despesasPendentesAteHoje(despesasBadgeRef.current, _brNow().toISOString().slice(0, 10));
       if (n > 0) navigator.setAppBadge(n);
       else if (navigator.clearAppBadge) navigator.clearAppBadge();
@@ -58045,7 +58110,11 @@ function App() {
   React.useEffect(function() {
     function aoVoltar() { if (!document.hidden) atualizarBadgeDespesas(); }
     document.addEventListener("visibilitychange", aoVoltar);
-    return function() { document.removeEventListener("visibilitychange", aoVoltar); };
+    window.addEventListener("ag:notif-mudou", atualizarBadgeDespesas);
+    return function() {
+      document.removeEventListener("visibilitychange", aoVoltar);
+      window.removeEventListener("ag:notif-mudou", atualizarBadgeDespesas);
+    };
   }, [atualizarBadgeDespesas]);
 
   var props = { veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, reservas, setReservas, multas, setMultas, manutencoes, setManutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, usos, setUsos, lembretes, setLembretes, empresa, toast, setTab: navTab, finDeepLink, setFinDeepLink, ctDeepLink, setCtDeepLink, mtDeepLink, setMtDeepLink, usuarioAtual, setOperacionalSubTab };

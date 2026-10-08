@@ -1892,8 +1892,14 @@ grupo("Névoa Suave tem o próprio fundo, como Horizonte Azul");
   const excluemPearl = fallback.filter((r) => r.includes(":not(.pearl)"));
   ok("existe a regra de fallback que exclui pearl", excluemPearl.length > 0);
   eq("toda regra que exclui pearl também exclui nevoa", excluemPearl.filter((r) => !r.includes(":not(.nevoa)")).length, 0);
-  ok("nevoa e neve estão nos três ciclos rápidos do botão de tema",
-    (html.match(/\["pearl","nevoa","neve","dim","onix"\]/g) || []).length >= 3);
+  // Pedido do usuário: o botão de tema da tela inicial só oferece o Neve e os
+  // escuros (Azul e Ônix). Cinza AGI e Névoa saem do seletor e dos ciclos; quem
+  // os tinha salvos cai no Neve (__agTemaEscolhido).
+  ok("os três ciclos rápidos do botão de tema são só neve + escuros",
+    (html.match(/\["neve","dim","onix"\]/g) || []).length >= 3);
+  ok("nenhum ciclo rápido ainda oferece pearl/nevoa",
+    !/\["pearl","nevoa","neve","dim","onix"\]/.test(html));
+  ok("tema salvo pearl/nevoa migra para o Neve", /k === "12" \|\| k === "24"\) k = "28"/.test(html));
 }
 
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam

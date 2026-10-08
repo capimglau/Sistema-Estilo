@@ -1902,6 +1902,14 @@ grupo("Névoa Suave tem o próprio fundo, como Horizonte Azul");
   ok("tema salvo pearl/nevoa migra para o Neve", /k === "12" \|\| k === "24"\) k = "28"/.test(html));
 }
 
+grupo("Janela em tela cheia não fica atrás da barra do topo");
+{
+  // A barra recebe zIndex inline (99998); regra de folha sem !important perde
+  // e a barra cobre o título e o ✕ de toda janela no celular.
+  ok("a regra que rebaixa a barra com janela aberta usa !important",
+    /body:has\(\.lg-modal-mobile-full\) \.ag-mobile-topbar\{z-index:1!important;\}/.test(html));
+}
+
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam
 // promessas de refresh e mensagens de WebSocket dublado. Por isso rodam por
 // último e o resumo final vira uma continuação deles. O grupo do desfazer

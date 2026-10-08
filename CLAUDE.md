@@ -531,6 +531,20 @@ o usuário lê todo dia — não fazer por conta própria.
 - Se a receita tiver `contrato_id` preenchido (campo "Contrato (opcional)" do formulário), a fatura puxa cliente/veículo de lá; senão usa `veiculo_id`/`cliente_id` diretos da receita, se houver. Sem nenhum dos dois, a fatura sai só com a descrição/valor — ainda assim válida.
 - **Qualquer novo tipo de "a receber"** que apareça no sistema (nova categoria de receita, nova tela) precisa seguir essa mesma regra — nunca deixar um lançamento pendente sem opção de emitir fatura.
 
+## Botão flutuante "+" — `[fab-adicionar]` — PERMANENTE
+
+O botão `+` no canto inferior direito é **o jeito de adicionar lançamento** em
+qualquer tela: os botões inline `.ag-add-btn` ficam escondidos (CSS) e o FAB
+estava com `display:none !important` em todas as resoluções — **não havia botão
+de adicionar nenhum**.
+
+O FAB **lê os `.ag-add-btn` que a tela atual renderiza** e toca neles
+(`getActions` → `dispatchAction`). Nada de mapa tela→evento para o caminho
+normal. **Tela nova com "+ X" precisa da classe `ag-add-btn` no botão** — é o
+que a faz ganhar o FAB. Sem botão na tela o FAB some; some também com janela
+(`.lg-modal`) aberta, para não cobrir o "Salvar". Só o Orçamento Pessoal usa o
+mapa de retaguarda (`TAB_ACTIONS.orcamento`).
+
 ## Receita avulsa a receber já É fatura prevista — `[receita-avulsa-fatura]` — PERMANENTE
 
 Receita lançada fora de contrato (sem `ref_fatura`) só entrava nas telas de

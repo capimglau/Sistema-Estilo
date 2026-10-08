@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="d3e44cc"/>
+<meta name="ag-build" content="ed809cc"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -24748,6 +24748,31 @@ function multaCobrancaAtrasada(m, hoje) {
   return !!(m.data_cobranca_cliente && String(m.data_cobranca_cliente).slice(0, 10) < _30d);
 }
 function multaMesRef(m) { return multaDataFluxo(m).slice(0, 7); }
+/* [badge-despesas] Quantas despesas estão em aberto e vencem HOJE ou já
+   venceram — o número do selo no ícone do app. Uma função só, no escopo global:
+   o selo não refaz essa conta na mão.
+   - mês corrente: pela mesma resolução das telas (`resolverDespesasDoMes`), que
+     projeta a recorrente do mês e esconde o template quando a parcela já tem
+     linha própria;
+   - meses anteriores: só lançamento real em aberto (não o template recorrente,
+     que projetado em todo mês passado inflaria o número com dívida que não
+     existe);
+   - Retirada de Lucro / Ajuste de Saldo não são despesa. */
+function despesasPendentesAteHoje(despesas, hoje) {
+  hoje = String(hoje || "").slice(0, 10);
+  if (!hoje) return 0;
+  var mes = hoje.slice(0, 7);
+  var lista = (despesas || []).filter(function(d){ return d && !isRetLucro(d); });
+  var emAberto = function(d){ return d.status !== "pago" && !d.data_pagamento; };
+  var doMes = resolverDespesasDoMes(lista, mes).filter(function(d){
+    return emAberto(d) && (d.data || "") && (d.data || "") <= hoje;
+  }).length;
+  var atrasadasAntes = lista.filter(function(d){
+    return !d.recorrente && emAberto(d) && (d.data || "") && (d.data || "").slice(0, 7) < mes;
+  }).length;
+  return doMes + atrasadasAntes;
+}
+
 var STATUS = {
   PAGO: "pago", RECEBIDO: "recebido", PREVISTO: "previsto", PENDENTE: "pendente",
   PARCIAL: "parcial", ISENTO: "isento",
@@ -58000,6 +58025,28 @@ function App() {
       Notification.requestPermission().then(function(p) { if (p === "granted") { checkAndNotify(); _agAtivarPush(); } });
     }
   }, [contratos.length, despesas.length]);
+
+  /* [badge-despesas] Selo no ícone do app (PWA instalado) com o número de
+     despesas em aberto que vencem hoje ou já venceram. O iOS só atualiza o
+     selo enquanto o app roda (ou por push), então recalcula a cada mudança nas
+     despesas e sempre que o app volta a ficar visível — a virada do dia
+     também entra por aí. Sem suporte à API, não faz nada. */
+  const despesasBadgeRef = React.useRef(despesas);
+  despesasBadgeRef.current = despesas;
+  const atualizarBadgeDespesas = React.useCallback(function() {
+    try {
+      if (!navigator.setAppBadge) return;
+      var n = despesasPendentesAteHoje(despesasBadgeRef.current, _brNow().toISOString().slice(0, 10));
+      if (n > 0) navigator.setAppBadge(n);
+      else if (navigator.clearAppBadge) navigator.clearAppBadge();
+    } catch (e) {}
+  }, []);
+  React.useEffect(function() { atualizarBadgeDespesas(); }, [despesas, atualizarBadgeDespesas]);
+  React.useEffect(function() {
+    function aoVoltar() { if (!document.hidden) atualizarBadgeDespesas(); }
+    document.addEventListener("visibilitychange", aoVoltar);
+    return function() { document.removeEventListener("visibilitychange", aoVoltar); };
+  }, [atualizarBadgeDespesas]);
 
   var props = { veiculos, setVeiculos, clientes, setClientes, contratos, setContratos, reservas, setReservas, multas, setMultas, manutencoes, setManutencoes, despesas, setDespesas, receitas, setReceitas, contas, setContas, usos, setUsos, lembretes, setLembretes, empresa, toast, setTab: navTab, finDeepLink, setFinDeepLink, ctDeepLink, setCtDeepLink, mtDeepLink, setMtDeepLink, usuarioAtual, setOperacionalSubTab };
 

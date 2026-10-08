@@ -1931,6 +1931,16 @@ grupo("Selo do ícone: despesas em aberto de hoje e atrasadas");
     n([{ id: 4, data: "2026-10-02", status: "previsto", categoria: "Retirada de Lucro", valor: 10 }]), 0);
 }
 
+grupo("Notificações têm liga/desliga no app");
+{
+  ok("existe a chave e o helper do liga/desliga", /AG_NOTIF_CHAVE/.test(html) && /function _agNotifLigadas\(/.test(html));
+  ok("ativar push respeita o desligado", /if \(!_agNotifLigadas\(\)\) return \{ ok: false, motivo: "Notificações desligadas/.test(html));
+  ok("desligar apaga a inscrição no servidor", /push_subscriptions\?endpoint=eq\./.test(html) && /method: "DELETE"/.test(html));
+  ok("o aviso diário local respeita o desligado", /if \(!_agNotifLigadas\(\)\) return;\s+var hoje = _brNow/.test(html));
+  ok("o selo some quando desligado", /_agNotifLigadas\(\)\) \{ if \(navigator\.clearAppBadge\)/.test(html));
+  ok("Configurações tem o interruptor", /role: "switch"/.test(html));
+}
+
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam
 // promessas de refresh e mensagens de WebSocket dublado. Por isso rodam por
 // último e o resumo final vira uma continuação deles. O grupo do desfazer

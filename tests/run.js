@@ -1910,6 +1910,27 @@ grupo("Janela em tela cheia não fica atrás da barra do topo");
     /body:has\(\.lg-modal-mobile-full\) \.ag-mobile-topbar\{z-index:1!important;\}/.test(html));
 }
 
+grupo("Selo do ícone: despesas em aberto de hoje e atrasadas");
+{
+  const hoje = "2026-10-08";
+  const n = (l) => F.despesasPendentesAteHoje(l, hoje);
+  eq("sem despesa, zero", n([]), 0);
+  eq("vence hoje, em aberto, conta", n([{ id: 1, data: "2026-10-08", status: "previsto", valor: 10 }]), 1);
+  eq("vence amanhã não conta", n([{ id: 1, data: "2026-10-09", status: "previsto", valor: 10 }]), 0);
+  eq("atrasada deste mês conta", n([{ id: 1, data: "2026-10-02", status: "previsto", valor: 10 }]), 1);
+  eq("paga não conta", n([{ id: 1, data: "2026-10-02", status: "pago", data_pagamento: "2026-10-02", valor: 10 }]), 0);
+  eq("atrasada de mês anterior conta", n([{ id: 1, data: "2026-08-15", status: "previsto", valor: 10 }]), 1);
+  eq("recorrente cadastrada em março conta UMA vez (a parcela de outubro), não uma por mês passado",
+    n([{ id: 2, data: "2026-03-05", recorrente: true, status: "previsto", valor: 10 }]), 1);
+  eq("recorrente cuja parcela do mês já foi paga não conta",
+    n([{ id: 2, data: "2026-03-05", recorrente: true, status: "previsto", valor: 10 },
+       { id: 9, recorrencia_origem_id: 2, data: "2026-10-05", status: "pago", data_pagamento: "2026-10-06", valor: 10 }]), 0);
+  eq("recorrente do dia 5 projetada em outubro, em aberto, conta",
+    n([{ id: 3, data: "2026-09-05", recorrente: true, status: "previsto", valor: 10 }]), 1);
+  eq("retirada de lucro não é despesa",
+    n([{ id: 4, data: "2026-10-02", status: "previsto", categoria: "Retirada de Lucro", valor: 10 }]), 0);
+}
+
 // Sessão (JWT) e tempo real são o único bloco assíncrono da suíte — esperam
 // promessas de refresh e mensagens de WebSocket dublado. Por isso rodam por
 // último e o resumo final vira uma continuação deles. O grupo do desfazer

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="acc5871"/>
+<meta name="ag-build" content="8a970d8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -39590,6 +39590,55 @@ function orcVisivelNoMes(it, itens, mes) {
   if (base === mes) return true;
   return !!(base && base < mes);
 }
+/* [badge-despesas] Despesas do ORÇAMENTO PESSOAL em aberto que vencem hoje ou
+   já venceram — a outra metade do número do selo no ícone (a primeira,
+   `despesasPendentesAteHoje`, é da locadora). Mesma conta da tela: a recorrente
+   é projetada mês a mês pela `orcVisivelNoMes` (que já pula o mês cuja parcela
+   tem linha-filha), e o que está pago, ou não venceu, não entra.
+   Limite de 24 meses para trás, como a aba "Atrasados". */
+function orcDespesasPendentesAteHoje(orcItens, hoje) {
+  hoje = String(hoje || "").slice(0, 10);
+  if (!hoje) return 0;
+  var mes = hoje.slice(0, 7);
+  var itens = (orcItens || []).filter(function(it){ return it; });
+  var aberto = function(it){ return it.status !== "pago" && it.status !== "recebido" && !it.data_pagamento; };
+  var projDia = function(it, m){
+    var dia = parseInt(String(it.data || "").slice(8, 10), 10);
+    if (!dia) return m + "-01";
+    var ult = new Date(parseInt(m.slice(0, 4), 10), parseInt(m.slice(5, 7), 10), 0).getDate();
+    var d = Math.min(dia, ult);
+    return m + "-" + (d < 10 ? "0" : "") + d;
+  };
+  var mesAnterior = function(m){
+    var d = new Date(parseInt(m.slice(0, 4), 10), parseInt(m.slice(5, 7), 10) - 2, 1);
+    return d.getFullYear() + "-" + (d.getMonth() + 1 < 10 ? "0" : "") + (d.getMonth() + 1);
+  };
+  var n = 0;
+  itens.forEach(function(it){
+    if (it.tipo !== "despesa") return;
+    var base = orcMesDaParcela(it);
+    if (!base) return;
+    if (!it.recorrente) {
+      // lançamento concreto (avulso ou parcela): em aberto e já vencido
+      if (!aberto(it)) return;
+      var dt = it.data || (base + "-01");
+      if (dt <= hoje) n++;
+      return;
+    }
+    // template recorrente: uma ocorrência por mês, da base até o mês atual
+    var m = mes, guard = 0;
+    while (m >= base && guard < 24) {
+      if (orcVisivelNoMes(it, itens, m)) {
+        var proprio = m === base;
+        var dtM = proprio ? (it.data || (m + "-01")) : projDia(it, m);
+        if ((proprio ? aberto(it) : true) && dtM <= hoje) n++;
+      }
+      m = mesAnterior(m); guard++;
+    }
+  });
+  return n;
+}
+
 function calcSaldoOrcPessoalMes(orcItens, despesas, mes) {
   var _puraRetIds = new Set((despesas||[]).filter(isRetLucroPura).map(function(d){return String(d.id);}));
   var _itSrc = (orcItens||[]).filter(function(it){ var _rid=_retLocDespId(it); return !_rid || _puraRetIds.has(_rid); });
@@ -58128,6 +58177,8 @@ function App() {
      também entra por aí. Sem suporte à API, não faz nada. */
   const despesasBadgeRef = React.useRef(despesas);
   despesasBadgeRef.current = despesas;
+  const orcBadgeRef = React.useRef(orcItens);
+  orcBadgeRef.current = orcItens;
   /* Devolve um diagnóstico ({suportado, ligadas, n, erro}) — a tela de
      Configurações usa para mostrar POR QUE o selo não aparece, em vez de o
      usuário ficar adivinhando (API ausente, desligado no app ou rejeitado
@@ -58137,14 +58188,17 @@ function App() {
     try {
       if (!info.suportado) return info;
       if (!info.ligadas) { if (navigator.clearAppBadge) await navigator.clearAppBadge(); return info; }
-      info.n = despesasPendentesAteHoje(despesasBadgeRef.current, _brNow().toISOString().slice(0, 10));
+      var _hojeB = _brNow().toISOString().slice(0, 10);
+      /* Locadora + Orçamento Pessoal: o selo é "o que vence hoje ou já venceu",
+         de qualquer um dos dois lados. */
+      info.n = despesasPendentesAteHoje(despesasBadgeRef.current, _hojeB) + orcDespesasPendentesAteHoje(orcBadgeRef.current, _hojeB);
       if (info.n > 0) await navigator.setAppBadge(info.n);
       else if (navigator.clearAppBadge) await navigator.clearAppBadge();
     } catch (e) { info.erro = (e && e.message) || String(e); }
     return info;
   }, []);
   window.__agBadgeAgora = atualizarBadgeDespesas;
-  React.useEffect(function() { atualizarBadgeDespesas(); }, [despesas, atualizarBadgeDespesas]);
+  React.useEffect(function() { atualizarBadgeDespesas(); }, [despesas, orcItens, atualizarBadgeDespesas]);
   React.useEffect(function() {
     function aoVoltar() { if (!document.hidden) atualizarBadgeDespesas(); }
     document.addEventListener("visibilitychange", aoVoltar);

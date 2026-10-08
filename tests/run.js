@@ -1931,6 +1931,25 @@ grupo("Selo do ícone: despesas em aberto de hoje e atrasadas");
     n([{ id: 4, data: "2026-10-02", status: "previsto", categoria: "Retirada de Lucro", valor: 10 }]), 0);
 }
 
+grupo("Selo do ícone: despesas do Orçamento Pessoal também contam");
+{
+  const hoje = "2026-10-08";
+  const o = (l) => F.orcDespesasPendentesAteHoje(l, hoje);
+  eq("sem itens, zero", o([]), 0);
+  eq("despesa pessoal vencendo hoje conta", o([{ id: 1, tipo: "despesa", data: "2026-10-08", status: "previsto" }]), 1);
+  eq("receita não conta", o([{ id: 1, tipo: "receita", data: "2026-10-08", status: "previsto" }]), 0);
+  eq("despesa pessoal paga não conta", o([{ id: 1, tipo: "despesa", data: "2026-10-02", status: "pago", data_pagamento: "2026-10-02" }]), 0);
+  eq("despesa que vence amanhã não conta", o([{ id: 1, tipo: "despesa", data: "2026-10-09", status: "previsto" }]), 0);
+  eq("atrasada de mês anterior conta", o([{ id: 1, tipo: "despesa", data: "2026-09-10", status: "previsto" }]), 1);
+  eq("recorrente do dia 5 (desde setembro) conta setembro e outubro",
+    o([{ id: 2, tipo: "despesa", recorrente: true, data: "2026-09-05", status: "previsto" }]), 2);
+  eq("recorrente com a parcela de setembro paga conta só outubro",
+    o([{ id: 2, tipo: "despesa", recorrente: true, data: "2026-09-05", status: "previsto" },
+       { id: 3, tipo: "despesa", recorrencia_origem_id: 2, data: "2026-09-05", status: "pago", data_pagamento: "2026-09-06" }]), 1);
+  eq("recorrente do dia 20 ainda não venceu em outubro",
+    o([{ id: 4, tipo: "despesa", recorrente: true, data: "2026-10-20", status: "previsto" }]), 0);
+}
+
 grupo("Notificações têm liga/desliga no app");
 {
   ok("existe a chave e o helper do liga/desliga", /AG_NOTIF_CHAVE/.test(html) && /function _agNotifLigadas\(/.test(html));

@@ -76,7 +76,7 @@ function extrair(marcadores) {
       rdClienteDaReceita, rdLinhasReceitaCliente, rdLinhasDespesaCategoria, rdMesDoContrato, rdReceitaComContrato,
       receitaVisivelNoMes, receitaDoMes, manVisivelNoMes, resolverDespesasDoMes, despesasPendentesAteHoje, isRetLucro,
       despesaDoMes, manDoMes, manDataFluxo, manMesRefGlobal, multaDataFluxo, multaDoMes,
-      orcMesDaParcela, orcMesEfetivo, orcTemFilhaNoMes, orcVisivelNoMes,
+      orcMesDaParcela, orcMesEfetivo, orcTemFilhaNoMes, orcVisivelNoMes, orcDespesasPendentesAteHoje,
       multaCobrancaPendente, multaCobrancaVenc, multaCobrancaAtrasada,
       multaBoletoOrgaoPendente, multaBoletoOrgaoAtrasado,
       mesDoLancamentoCt, lancamentosDoContrato, somaContratoBusca, resumoPorMesContratos

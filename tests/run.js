@@ -1950,6 +1950,23 @@ grupo("Selo do ícone: despesas do Orçamento Pessoal também contam");
     o([{ id: 4, tipo: "despesa", recorrente: true, data: "2026-10-20", status: "previsto" }]), 0);
 }
 
+grupo("Valor digitado no padrão brasileiro (_mv)");
+{
+  const ini = html.indexOf("window._mv = function(v){");
+  const fim = html.indexOf("};", ini) + 2;
+  const win = {};
+  new Function("window", html.slice(ini, fim))(win);
+  const mv = win._mv;
+  eq("3300 continua 3300", mv("3300"), "3300");
+  eq("3.300 é três mil e trezentos, não 3,30", mv("3.300"), "3300");
+  eq("1.234.567 vira 1234567", mv("1.234.567"), "1234567");
+  eq("3,300 (vírgula) segue decimal", mv("3,300"), "3.300");
+  eq("3.300,50 mistura: milhar e centavos", mv("3.300,50"), "3300.50");
+  eq("decimal com ponto (2.5) não é milhar", mv("2.5"), "2.5");
+  eq("10.75 não é milhar", mv("10.75"), "10.75");
+  eq("R$ 2.800,00 limpa o símbolo", mv("R$ 2.800,00"), "2800.00");
+}
+
 grupo("Notificações têm liga/desliga no app");
 {
   ok("existe a chave e o helper do liga/desliga", /AG_NOTIF_CHAVE/.test(html) && /function _agNotifLigadas\(/.test(html));

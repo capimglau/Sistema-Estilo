@@ -30282,6 +30282,37 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         };
       }
 
+      /* ── Piso de segurança (face "Projetado") ──
+         Saldo mínimo que o usuário aceita ter no caixa até o fim do mês.
+         Guardado só neste aparelho (localStorage 'ag_piso_saldo_v1'); sem
+         piso definido a face continua EXATAMENTE como era (nenhuma linha
+         extra no gráfico). Hook sempre chamado, nunca condicional. */
+      var _pisoSt = React.useState(function(){
+        try { var _pv = localStorage.getItem('ag_piso_saldo_v1'); return (_pv===null||_pv==='') ? null : parseFloat(_pv); } catch(e){ return null; }
+      });
+      var _piso = (_pisoSt[0]!==null && !isNaN(_pisoSt[0])) ? _pisoSt[0] : null;
+      var _setPiso = _pisoSt[1];
+      function _editarPiso(e){
+        e.stopPropagation();
+        if (!window.__agPrompt) return;
+        (async function(){
+          var _r = await window.__agPrompt({ title:'Piso de segurança', icon:'🛡️', label1:'Saldo mínimo (R$)', type1:'text',
+            message:'Avisa quando o saldo previsto ficar abaixo deste valor. Digite \"remover\" para desativar.',
+            default1: _piso!==null ? String(_piso).replace('.',',') : '' });
+          if (!_r || !_r.ok) return;
+          var _t = (_r.v1||'').trim();
+          if (/^(remover|desativar|off|-)$/i.test(_t)) {
+            try { localStorage.removeItem('ag_piso_saldo_v1'); } catch(e){}
+            _setPiso(null); return;
+          }
+          var _num = _t.indexOf(',')>=0 ? parseFloat(_t.replace(/\./g,'').replace(',','.'))
+                   : (/^\d{1,3}(\.\d{3})+$/.test(_t) ? parseFloat(_t.replace(/\./g,'')) : parseFloat(_t));
+          if (isNaN(_num)) { toast('Valor inválido!'); return; }
+          try { localStorage.setItem('ag_piso_saldo_v1', String(_num)); } catch(e){}
+          _setPiso(_num);
+        })();
+      }
+
       /* ---- Face "Hoje": tendência recente (até 7 dias, ou desde o dia 1
          se o mês for mais novo que isso) ---- */
       var _janelaRecente = Math.min(7, _diaHojeNum);
@@ -30397,8 +30428,24 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var _lastPtHoje = _ptsHoje[_ptsHoje.length-1];
       var _glowColorHoje = _saldoAtual < 0 ? C.red : C.green;
 
+      /* Piso no gráfico: entra na escala vertical só se estiver perto da
+         curva (até 3x a amplitude) — um piso muito distante achataria a
+         linha. Fora disso o status e os números continuam no rodapé. A
+         MESMA lista de valores alimenta escala e faixa do gradiente
+         (_zeroBandInfo), então o degradê verde/vermelho segue correto. */
+      var _valsProjBase = _projDias.map(function(p){return p.saldo;}).concat([_saldoProjetado]);
+      var _minProjV = Math.min.apply(null,_valsProjBase), _maxProjV = Math.max.apply(null,_valsProjBase);
+      var _spanProjV = Math.max(_maxProjV-_minProjV, Math.abs(_maxProjV)*0.15, 1);
+      var _pisoNoGraf = _piso!==null && _piso >= _minProjV-3*_spanProjV && _piso <= _maxProjV+3*_spanProjV;
+      var _valsProjEsc = _pisoNoGraf ? _valsProjBase.concat([_piso]) : _valsProjBase;
+      var _minPtProj = { saldo:_saldoProjetado, dia:_ultimoDiaMesHoje };
+      _projDias.forEach(function(p){ if (p.saldo < _minPtProj.saldo) _minPtProj = { saldo:p.saldo, dia:p.dia }; });
+      var _folgaPiso = _piso!==null ? (_minPtProj.saldo - _piso) : null;
+      var _pisoOk = _folgaPiso!==null && _folgaPiso>=0;
+      var _kBRL = function(v){ var _a=Math.abs(v); return _a>=1000 ? 'R$ '+(_a/1000).toFixed(1).replace('.',',')+'k' : 'R$ '+Math.round(_a); };
       var _scaleXProj = _scaleXFrom(_diaHojeNum, _ultimoDiaMesHoje);
-      var _scaleYProj = _mkScaleY(_projDias.map(function(p){return p.saldo;}).concat([_saldoProjetado]));
+      var _scaleYProj = _mkScaleY(_valsProjEsc);
+      var _pisoY = _pisoNoGraf ? _scaleYProj(_piso) : 0;
       var _pathProj = _projDias.map(function(p,i){ return (i===0?'M':'L') + _scaleXProj(p.dia) + ',' + _scaleYProj(p.saldo); }).join(' ');
       var _pathProjFinal = 'M'+_scaleXProj(_ultimoEventoDia)+','+_scaleYProj(_projDias[_projDias.length-1].saldo)+' L '+_scaleXProj(_ultimoDiaMesHoje)+','+_scaleYProj(_saldoProjetado);
       /* Face "Projetado": mesmo tratamento; o trecho tracejado final
@@ -30410,7 +30457,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var _pathProjSmooth = _catmullToBezier(_ptsProj);
       var _areaProjBase = _pathProjSmooth + ' L'+_scaleXProj(_ultimoDiaMesHoje)+','+_scaleYProj(_saldoProjetado);
       var _areaProj = _areaProjBase + ' L'+_scaleXProj(_ultimoDiaMesHoje)+','+_chartH+' L'+_scaleXProj(_diaHojeNum)+','+_chartH+' Z';
-      var _bandProj = _zeroBandInfo(_projDias.map(function(p){return p.saldo;}).concat([_saldoProjetado]));
+      var _bandProj = _zeroBandInfo(_valsProjEsc);
       var _lastPtProj = { x:_scaleXProj(_ultimoDiaMesHoje), y:_scaleYProj(_saldoProjetado) };
       var _glowColorProj = _saldoProjetado < 0 ? C.red : C.green;
 
@@ -30592,11 +30639,13 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                               , React.createElement('stop', { offset:1, stopColor:_glowColorProj, stopOpacity:0 })
                             )
                         )
+                      , _pisoNoGraf ? React.createElement('rect', { key:'pisoBand', x:0, y:_pisoY, width:_chartW, height:Math.max(0,_chartH-_pisoY), fill:C.red, fillOpacity:0.06 }) : null
+                      , _pisoNoGraf ? React.createElement('line', { key:'pisoLn', x1:0, y1:_pisoY, x2:_chartW, y2:_pisoY, stroke:C.red, strokeOpacity:0.7, strokeWidth:1, strokeDasharray:'3,3' }) : null
                       , React.createElement('path', { d:_areaProj, fill:'url(#gradSaldoProjFill)', stroke:'none' })
                       , React.createElement('path', { d:_pathProjSmooth, fill:'none', stroke:'url(#gradSaldoProjStroke)', strokeWidth:1.8, strokeLinecap:'round', strokeLinejoin:'round' })
                       , React.createElement('path', { d:_pathProjFinal, fill:'none', stroke:'url(#gradSaldoProjStroke)', strokeWidth:1.6, strokeDasharray:'4,4', strokeLinecap:'round' })
                       , React.createElement('circle', { cx:_lastPtProj.x, cy:_lastPtProj.y, r:13, fill:'url(#glowSaldoProj)' })
-                      , _projDias.map(function(p,i){ return React.createElement('circle', { key:i, cx:_scaleXProj(p.dia), cy:_scaleYProj(p.saldo), r:_saldoPontoSel&&_saldoPontoSel.face===1&&_saldoPontoSel.dia===p.dia?4.5:2, fill:p.saldo<0?C.red:C.green, style:{cursor:'pointer'}, onClick:_toggleSaldoPonto(1,p.dia) }); })
+                      , _projDias.map(function(p,i){ return React.createElement('circle', { key:i, cx:_scaleXProj(p.dia), cy:_scaleYProj(p.saldo), r:_saldoPontoSel&&_saldoPontoSel.face===1&&_saldoPontoSel.dia===p.dia?4.5:((_piso!==null&&p.dia===_minPtProj.dia)?3:2), fill:(_piso!==null&&p.dia===_minPtProj.dia)?'#E39D58':(p.saldo<0?C.red:C.green), style:{cursor:'pointer'}, onClick:_toggleSaldoPonto(1,p.dia) }); })
                       , React.createElement('circle', { cx:_lastPtProj.x, cy:_lastPtProj.y, r:3.5, fill:'#fff', stroke:_glowColorProj, strokeWidth:2.4 })
                     )
                 )
@@ -30627,6 +30676,21 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                       , React.createElement('circle', { cx:_lastPtP.x, cy:_lastPtP.y, r:3.5, fill:'#fff', stroke:_glowColorP, strokeWidth:2.4 })
                     )
                 )
+          /* Linha do piso (face Projetado). Nas outras faces entra um espaçador
+             da MESMA altura (4+16px) — o card continua travado no maior
+             estado, sem salto de altura ao alternar. Toque na linha edita o
+             piso (stopPropagation: não troca de face). */
+          , saldoHojeFace===1
+              ? React.createElement('div', { key:'piso-row', onClick:_editarPiso, style:{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, marginTop:4, minHeight:16, fontSize:10, fontWeight:700, cursor:'pointer' } }
+                  , _piso===null
+                    ? [ React.createElement('span', { key:'a', style:{ color:C.sub } }, 'Piso de segurança')
+                      , React.createElement('span', { key:'b', style:{ color:'#007AFF' } }, 'Definir ›') ]
+                    : [ React.createElement('span', { key:'a', style:{ color:_pisoOk?C.green:C.red, flexShrink:0 } }
+                          , _pisoOk ? ('✓ folga '+_kBRL(_folgaPiso)) : ('⚠ falta '+_kBRL(_folgaPiso)+' ao piso'))
+                      , React.createElement('span', { key:'b', style:{ color:C.sub, fontWeight:600, minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }
+                          , 'menor saldo '+_kBRL(_minPtProj.saldo)+(_minPtProj.dia===_diaHojeNum?' (hoje)':' (dia '+_minPtProj.dia+')')+' · piso '+_kBRL(_piso)) ]
+                )
+              : React.createElement('div', { key:'piso-spacer', style:{ minHeight:20 } })
           /* Detalhe do ponto tocado: as despesas/receitas que fizeram o saldo
              oscilar naquele dia — "Hoje" usa os movimentos JÁ realizados
              (movimentosCaixaDoDia, mesmos campos/critérios de saldoCaixaAte);

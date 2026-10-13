@@ -26963,19 +26963,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
      3 faces: 0 = Resultado Previsto, 1 = Despesas do mês (previsto x a
      pagar), 2 = Manutenções do mês (prevista x paga). */
   const [resPrevFace, setResPrevFace] = React.useState(0);
-  // Cards "Saldo nas contas"/"Despesas de hoje" (abaixo da Agenda): cada um
-  // com seu próprio "tick" e intervalo — Saldo alterna a cada 15s (pedido
-  // do usuário, só para esse card), Despesas continua no intervalo original
-  // de 6s. Cada card também soma 1 no próprio tick ao ser tocado.
-  const [saldoHojeTick, setSaldoHojeTick] = React.useState(0);
-  // 3 faces: 0 "Hoje" (Estilo), 1 "Projetado" (Estilo), 2 "Pessoal" (Orçamento
-  // Pessoal — pedido do usuário: alternar pro saldo/despesas pessoais do dia
-  // no mesmo card, com fundo diferenciado).
-  const saldoHojeFace = saldoHojeTick % 3;
-  React.useEffect(function(){
-    var t = setInterval(function(){ if (document.hidden) return; setSaldoHojeTick(function(v){ return v+1; }); }, 15000);
-    return function(){ clearInterval(t); };
-  }, []);
+  // Card "Saldo nas contas"/"Despesas" (abaixo da Agenda): painel único, sem faces —
+  // saldo atual + projetado no mesmo gráfico (cheio/pontilhado). Não há mais timer de
+  // alternância (era um re-render do Início inteiro a cada 15s).
   /* despesasHojeTick (achado investigando lentidão/consumo de bateria
      reportado): dava setInterval de 6 EM 6 SEGUNDOS pra sempre, forçando um
      re-render do Início inteiro (incluindo o recálculo pesado do card
@@ -30260,7 +30250,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                                 têm um dia fixo de vencimento neste
                                 recorte, sem inventar uma data falsa pra
                                 elas.
-         saldoHojeFace é o único estado (despesasHojeFace ficou sem uso,
+         [ATUALIZADO] Não há mais faces: o card virou painel único (saldo hoje +
+         projetado no mesmo gráfico, cheio/pontilhado; despesas + faturas ao lado)
+         e o saldo pessoal vive só no PessoalDash. O texto acima descreve a
+         origem de cada série. (despesasHojeFace ficou sem uso,
          igual antes). */
       var _diaHojeNum = parseInt(hoje.slice(8,10),10);
 
@@ -30415,293 +30408,87 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         return { stopA: Math.max(0,frac-band), stopB: Math.min(1,frac+band) };
       };
 
-      var _scaleXHoje = _scaleXFrom(_diaInicioRecente, _diaHojeNum);
-      var _scaleYHoje = _mkScaleY(_histRecente.map(function(p){return p.saldo;}));
-      var _pathHoje = _histRecente.map(function(p,i){ return (i===0?'M':'L') + _scaleXHoje(p.dia) + ',' + _scaleYHoje(p.saldo); }).join(' ');
-      /* Face "Hoje": mesmo tratamento (gradiente duplo + glow + curva suave)
-         da face Pessoal, pedido do usuário pra não deixar nenhuma das 3
-         faces do card sem o efeito. */
-      var _ptsHoje = _histRecente.map(function(p){ return { x:_scaleXHoje(p.dia), y:_scaleYHoje(p.saldo) }; });
-      var _pathHojeSmooth = _catmullToBezier(_ptsHoje);
-      var _areaHoje = _pathHojeSmooth + ' L'+_scaleXHoje(_histRecente[_histRecente.length-1].dia)+','+_chartH+' L'+_scaleXHoje(_histRecente[0].dia)+','+_chartH+' Z';
-      var _bandHoje = _zeroBandInfo(_histRecente.map(function(p){return p.saldo;}));
-      var _lastPtHoje = _ptsHoje[_ptsHoje.length-1];
-      var _glowColorHoje = _saldoAtual < 0 ? C.red : C.green;
-
-      /* Piso no gráfico: entra na escala vertical só se estiver perto da
-         curva (até 3x a amplitude) — um piso muito distante achataria a
-         linha. Fora disso o status e os números continuam no rodapé. A
-         MESMA lista de valores alimenta escala e faixa do gradiente
-         (_zeroBandInfo), então o degradê verde/vermelho segue correto. */
-      var _valsProjBase = _projDias.map(function(p){return p.saldo;}).concat([_saldoProjetado]);
-      var _minProjV = Math.min.apply(null,_valsProjBase), _maxProjV = Math.max.apply(null,_valsProjBase);
-      var _spanProjV = Math.max(_maxProjV-_minProjV, Math.abs(_maxProjV)*0.15, 1);
-      var _pisoNoGraf = _piso!==null && _piso >= _minProjV-3*_spanProjV && _piso <= _maxProjV+3*_spanProjV;
-      var _valsProjEsc = _pisoNoGraf ? _valsProjBase.concat([_piso]) : _valsProjBase;
+      /* ── Painel único (pedido do usuário): o saldo ATUAL e o PROJETADO ficam
+         juntos, no mesmo gráfico (linha cheia = realizado até hoje, linha
+         pontilhada = projetado até o fim do mês), e as Despesas e as Faturas
+         em atraso ficam juntas na coluna ao lado. Acabou a alternância de
+         faces — e a face "Pessoal" saiu daqui: o saldo pessoal vive só no
+         Orçamento Pessoal (PessoalDash), nunca misturado com o da Estilo. ── */
+      var _projSerie = _projDias.map(function(p){ return { dia:p.dia, saldo:p.saldo }; });
+      if (_ultimoDiaMesHoje > _diaHojeNum) {
+        var _lastProjS = _projSerie[_projSerie.length-1];
+        /* fecha no valor OFICIAL (_saldoProjetado), que já cobre recorrentes/
+           avulsas sem data fixa — a linha e o número do card não se contradizem. */
+        if (_lastProjS.dia === _ultimoDiaMesHoje) _lastProjS.saldo = _saldoProjetado;
+        else _projSerie.push({ dia:_ultimoDiaMesHoje, saldo:_saldoProjetado });
+      }
       var _minPtProj = { saldo:_saldoProjetado, dia:_ultimoDiaMesHoje };
       _projDias.forEach(function(p){ if (p.saldo < _minPtProj.saldo) _minPtProj = { saldo:p.saldo, dia:p.dia }; });
       var _folgaPiso = _piso!==null ? (_minPtProj.saldo - _piso) : null;
       var _pisoOk = _folgaPiso!==null && _folgaPiso>=0;
       var _kBRL = function(v){ var _a=Math.abs(v); return _a>=1000 ? 'R$ '+(_a/1000).toFixed(1).replace('.',',')+'k' : 'R$ '+Math.round(_a); };
-      var _scaleXProj = _scaleXFrom(_diaHojeNum, _ultimoDiaMesHoje);
-      var _scaleYProj = _mkScaleY(_valsProjEsc);
-      var _pisoY = _pisoNoGraf ? _scaleYProj(_piso) : 0;
-      var _pathProj = _projDias.map(function(p,i){ return (i===0?'M':'L') + _scaleXProj(p.dia) + ',' + _scaleYProj(p.saldo); }).join(' ');
-      var _pathProjFinal = 'M'+_scaleXProj(_ultimoEventoDia)+','+_scaleYProj(_projDias[_projDias.length-1].saldo)+' L '+_scaleXProj(_ultimoDiaMesHoje)+','+_scaleYProj(_saldoProjetado);
-      /* Face "Projetado": mesmo tratamento; o trecho tracejado final
-         continua reto (só liga o último evento discreto ao valor oficial —
-         são só 2 pontos, sem série pra suavizar), mas usa o MESMO gradiente
-         userSpaceOnUse da linha cheia, então a cor bate certinho mesmo
-         cruzando o zero exatamente dentro do trecho tracejado. */
-      var _ptsProj = _projDias.map(function(p){ return { x:_scaleXProj(p.dia), y:_scaleYProj(p.saldo) }; });
-      var _pathProjSmooth = _catmullToBezier(_ptsProj);
-      var _areaProjBase = _pathProjSmooth + ' L'+_scaleXProj(_ultimoDiaMesHoje)+','+_scaleYProj(_saldoProjetado);
-      var _areaProj = _areaProjBase + ' L'+_scaleXProj(_ultimoDiaMesHoje)+','+_chartH+' L'+_scaleXProj(_diaHojeNum)+','+_chartH+' Z';
-      var _bandProj = _zeroBandInfo(_valsProjEsc);
-      var _lastPtProj = { x:_scaleXProj(_ultimoDiaMesHoje), y:_scaleYProj(_saldoProjetado) };
-      var _glowColorProj = _saldoProjetado < 0 ? C.red : C.green;
 
-      /* Face 2 "Pessoal" (pedido do usuário): mesmo card, mesmas duas colunas,
-         mas com os números do Orçamento Pessoal — nunca somados aos da Estilo
-         (CLAUDE.md: são saldos completamente distintos). Fundo padrão igual
-         às outras faces (o gradiente cinza testado antes não ficou bom —
-         removido a pedido do usuário). */
-      /* useMemo (achado investigando consumo de bateria): esse card inteiro
-         reroda a cada poucos segundos só por causa dos OUTROS timers de
-         auto-troca do Início (faceAtraso 4s, resPrevFace 5s, este mesmo
-         card 15s) — sem memoizar, calcSaldoOrcPessoalMes rodava de novo (1x
-         pro mês atual + 6x pro gráfico de tendência, cada uma varrendo
-         orcItens/despesas inteiros) em TODO re-render, não só quando os
-         dados realmente mudavam. */
-      var _orcCalcHoje = React.useMemo(function(){ return calcSaldoOrcPessoalMes(orcItens, despesas, _mesHoje); }, [orcItens, despesas, _mesHoje]);
-      var _despHojeListP = _orcCalcHoje.despesasDoMes.filter(function(d){ return (d.data||'') === hoje; });
-      var _despHojeTotalP = _despHojeListP.reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
-      var _despHojePagoP = _despHojeListP.filter(function(d){ return d.status==='pago'; }).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
-      var _despHojeAPagarP = Math.max(0, _despHojeTotalP - _despHojePagoP);
-      /* Gráfico da face Pessoal: saldo previsto dos últimos 6 meses (mesma
-         janela "6 meses" já usada nos gráficos do Orçamento Pessoal, ver
-         CLAUDE.md) — desenhado com o mesmo estilo de linha/pontos das outras
-         2 faces, pra manter a identidade visual do card. */
-      var _saldoTrendP = React.useMemo(function(){
-        var arr = [];
-        for (var _tpI = 5; _tpI >= 0; _tpI--) {
-          var _dTp = new Date(_mesHoje + '-15T12:00:00'); _dTp.setMonth(_dTp.getMonth() - _tpI);
-          var _mTp = _dTp.toISOString().slice(0,7);
-          arr.push({ mes:_mTp, saldo: calcSaldoOrcPessoalMes(orcItens, despesas, _mTp).saldo });
-        }
-        return arr;
-      }, [orcItens, despesas, _mesHoje]);
-      var _scaleXTrendP = _scaleXFrom(0, _saldoTrendP.length-1);
-      /* _mkScaleY puro (min/max linear) fazia um único mês fora da curva
-         "esmagar" visualmente todos os outros pontos pro fundo do gráfico —
-         a linha real tinha variação, mas ficava parecendo reta ali (bug
-         reportado pelo usuário: efeito de curva mais fraco/mais forte não
-         mudava nada, porque o problema nunca foi a suavização da linha, e
-         sim a escala). _mkScaleYComprimida aplica raiz quadrada em cima do
-         desvio da mediana antes de escalar: um pico bem mais alto que o
-         resto continua sendo o maior ponto, mas seu desvio "pesa" menos no
-         range total, sobrando mais espaço vertical pra variação real dos
-         meses mais próximos uns dos outros — só usado nesta face. */
-      var _mkScaleYComprimida = function(vals){
-        var _sorted = vals.slice().sort(function(a,b){ return a-b; });
-        var _med = _sorted[Math.floor((_sorted.length-1)/2)];
-        var _comprime = function(v){ var _dif = v-_med; return _med + (_dif<0?-1:1)*Math.sqrt(Math.abs(_dif)); };
-        var _tv = vals.map(_comprime);
-        var mn=Math.min.apply(null,_tv), mx=Math.max.apply(null,_tv), sp=(mx-mn)||1;
-        return function(v){ return _padT + (1-(_comprime(v)-mn)/sp) * (_chartH-_padT-_padB); };
-      };
-      var _scaleYTrendP = _mkScaleYComprimida(_saldoTrendP.map(function(p){return p.saldo;}));
-      var _pathTrendP = _saldoTrendP.map(function(p,i){ return (i===0?'M':'L') + _scaleXTrendP(i) + ',' + _scaleYTrendP(p.saldo); }).join(' ');
-      /* Gradiente duplo + glow (pedido do usuário): a linha/área trocam de
-         verde pra vermelho exatamente no ponto em que o saldo cruza o zero
-         — não é um degradê decorativo, é a cor real do dado em cada altura
-         do gráfico. Curva suave via Catmull-Rom→Bézier só nesta face (as
-         outras 2 continuam com linha reta, sem pedido de mudança). */
-      var _ptsTrendP = _saldoTrendP.map(function(p,i){ return { x:_scaleXTrendP(i), y:_scaleYTrendP(p.saldo) }; });
-      /* Modo adaptativo (pedido do usuário): divisor 16 (mais fraco) nos
-         trechos de subida/descida contínua, e 6 (mais forte, arredonda bem)
-         exatamente nos picos/vales — evita tanto o bulge lateral exagerado
-         quanto a ponta de baixo parecendo reta/"V". */
-      var _pathTrendPSmooth = _catmullToBezier(_ptsTrendP, 8, 8, 16, 6);
-      var _areaTrendP = _pathTrendPSmooth + ' L'+_scaleXTrendP(_saldoTrendP.length-1)+','+_chartH+' L'+_scaleXTrendP(0)+','+_chartH+' Z';
-      var _valsTrendP = _saldoTrendP.map(function(p){ return p.saldo; });
-      var _bandTrendP = _zeroBandInfo(_valsTrendP);
-      var _lastPtP = _ptsTrendP[_ptsTrendP.length-1];
-      var _glowColorP = _valsTrendP[_valsTrendP.length-1] < 0 ? C.red : C.green;
 
       /* marginTop negativo (pedido do usuário: subir este card 15% mais
          perto da Agenda logo acima) — quebra de propósito, só aqui, a
          regra de "mesmo gap entre todos os painéis": -15% de RX.dashGap
          (21px mobile / 31px desktop), arredondado. */
-      return React.createElement('div', { className:"ag-kpi-card", style:Object.assign({},_cardBase,{cursor:'pointer',padding:0,overflow:'hidden',position:'relative',marginTop:-Math.round(RX.dashGap*0.15)}), onClick:function(){ setSaldoHojeTick(function(v){ return v+1; }); _setSaldoPontoSel(null); } }
+      return React.createElement('div', { className:"ag-kpi-card", style:Object.assign({},_cardBase,{padding:0,overflow:'hidden',position:'relative',marginTop:-Math.round(RX.dashGap*0.15)}), onClick:function(){ _setSaldoPontoSel(null); } }
         , React.createElement('div', { style:{ display:'flex' } }
+          /* Coluna 1: saldo nas contas (hoje) + saldo projetado */
           , React.createElement('div', { style:Object.assign({},_cardBase,{flex:1,borderRight:'1px solid var(--c-border)',position:'relative'}) }
-            , saldoHojeFace===0
-              ? React.createElement('div', { key:'hoje', className:'ag-kpi-flip' }
-                  , React.createElement('div', { style:_lbl }, 'Saldo nas contas Estilo')
-                  , _big(_saldoAtual)
-                  , React.createElement('div', { style:{ fontSize: _supFs, color: _saldoLivre>=0?C.green:C.red, fontWeight:700, marginTop:3 } }
-                    , _despHojeAPagar>0
-                        ? ['~', React.createElement(BRLValue,{key:'v',v:_saldoLivre,size:_supFs,weight:700,color:_saldoLivre>=0?C.green:C.red}), ' após pagar hoje']
-                        : 'Nenhuma despesa hoje')
-                )
-              : saldoHojeFace===1
-              ? React.createElement('div', { key:'proj', className:'ag-kpi-flip' }
-                  , React.createElement('div', { style:_lbl }, 'Saldo projetado')
-                  , _big(_saldoProjetado)
-                  , React.createElement('div', { style:{ fontSize: _supFs, color:C.green, fontWeight:700, marginTop:3 } }
-                    , 'para '+_ultimoDiaMesHoje+' de '+new Date(_mesHoje+"-15").toLocaleString("pt-BR",{month:"long"}))
-                )
-              : React.createElement('div', { key:'pessoal-saldo', className:'ag-kpi-flip' }
-                  , React.createElement('div', { style:Object.assign({},_lbl,{color:_azulFatCor()}) }, 'Saldo de contas Pessoal')
-                  , _big(_orcCalcHoje.saldo, _orcCalcHoje.saldo>=0?C.green:C.red)
-                  , React.createElement('div', { style:{ fontSize: _supFs, color:C.sub, fontWeight:700, marginTop:3 } }
-                    , 'previsto para '+new Date(_mesHoje+"-15").toLocaleString("pt-BR",{month:"long"}))
-                )
+            , React.createElement('div', { style:_lbl }, 'Saldo nas contas Estilo')
+            , _big(_saldoAtual)
+            , React.createElement('div', { style:{ fontSize: _supFs, color: _saldoLivre>=0?C.green:C.red, fontWeight:700, marginTop:3 } }
+              , _despHojeAPagar>0
+                  ? ['~', React.createElement(BRLValue,{key:'v',v:_saldoLivre,size:_supFs,weight:700,color:_saldoLivre>=0?C.green:C.red}), ' após pagar hoje']
+                  : 'Nenhuma despesa hoje')
+            , React.createElement('div', { style:Object.assign({},_lbl,{marginTop:9}) }, 'Saldo projetado')
+            , _big(_saldoProjetado, _saldoProjetado>=0?undefined:C.red)
+            , React.createElement('div', { style:{ fontSize: _supFs, color:_saldoProjetado>=0?C.green:C.red, fontWeight:700, marginTop:3 } }
+              , 'para '+_ultimoDiaMesHoje+' de '+new Date(_mesHoje+"-15").toLocaleString("pt-BR",{month:"long"}))
           )
+          /* Coluna 2: despesas (hoje) + faturas em atraso */
           , React.createElement('div', { style:Object.assign({},_cardBase,{flex:1}) }
-            , saldoHojeFace===0
-              ? React.createElement('div', { key:'desp', className:'ag-kpi-flip' }
-                  , React.createElement('div', { style:_lbl }, 'Despesas Estilo')
-                  , _big(_despHojePrevisto, C.red)
-                  , React.createElement('div', { style:{ fontSize: _supFs, color:_despHojeAPagar>0?C.red:C.green, fontWeight:700, marginTop:3 } }
-                    , _despHojeAPagar>0
-                        ? [React.createElement(BRLValue,{key:'a',v:_despHojeAPagar,size:_supFs,weight:700,color:C.red}), ' a pagar']
-                        : 'tudo pago')
-                )
-              : saldoHojeFace===1
-              ? React.createElement('div', { key:'atraso', className:'ag-kpi-flip' }
-                  , React.createElement('div', { style:_lbl }, 'Faturas em atraso')
-                  , _big(_faturasAtraso, C.red)
-                  , React.createElement('div', { style:{ fontSize: _supFs, color:C.sub, fontWeight:700, marginTop:3 } }
-                    , 'vencidas e não pagas')
-                )
-              : React.createElement('div', { key:'pessoal-desp', className:'ag-kpi-flip' }
-                  , React.createElement('div', { style:Object.assign({},_lbl,{color:_azulFatCor()}) }, 'Despesas pessoais do dia')
-                  , _big(_despHojeTotalP, C.red)
-                  , React.createElement('div', { style:{ fontSize: _supFs, color:_despHojeAPagarP>0?C.red:C.green, fontWeight:700, marginTop:3 } }
-                    , _despHojeTotalP>0
-                        ? (_despHojeAPagarP>0
-                            ? [React.createElement(BRLValue,{key:'a',v:_despHojeAPagarP,size:_supFs,weight:700,color:C.red}), ' a pagar']
-                            : 'tudo pago')
-                        : 'Nenhuma despesa hoje')
-                )
+            , React.createElement('div', { style:_lbl }, 'Despesas Estilo')
+            , _big(_despHojePrevisto, C.red)
+            , React.createElement('div', { style:{ fontSize: _supFs, color:_despHojeAPagar>0?C.red:C.green, fontWeight:700, marginTop:3 } }
+              , _despHojeAPagar>0
+                  ? [React.createElement(BRLValue,{key:'a',v:_despHojeAPagar,size:_supFs,weight:700,color:C.red}), ' a pagar']
+                  : 'tudo pago')
+            , React.createElement('div', { style:Object.assign({},_lbl,{marginTop:9}) }, 'Faturas em atraso')
+            , _big(_faturasAtraso, C.red)
+            , React.createElement('div', { style:{ fontSize: _supFs, color:C.sub, fontWeight:700, marginTop:3 } }
+              , 'vencidas e não pagas')
           )
         )
-        /* Rodapé SEMPRE presente (nunca null) — trava o card no tamanho do
-           maior estado, sem salto de altura ao alternar. */
         , React.createElement('div', { style:{ padding:'4px 14px 6px' } }
-          , saldoHojeFace===0
-              ? React.createElement(React.Fragment, { key:'g-hoje' }
-                  , React.createElement('svg', { viewBox:'0 0 '+_chartW+' '+_chartH, width:'100%', height:44, preserveAspectRatio:'none' }
-                      , React.createElement('defs', null
-                          , React.createElement('linearGradient', { id:'gradSaldoHojeStroke', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
-                              , React.createElement('stop', { offset:0, stopColor:C.green })
-                              , React.createElement('stop', { offset:_bandHoje.stopA, stopColor:C.green })
-                              , React.createElement('stop', { offset:_bandHoje.stopB, stopColor:C.red })
-                              , React.createElement('stop', { offset:1, stopColor:C.red })
-                            )
-                          , React.createElement('linearGradient', { id:'gradSaldoHojeFill', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
-                              , React.createElement('stop', { offset:0, stopColor:C.green, stopOpacity:0.22 })
-                              , React.createElement('stop', { offset:_bandHoje.stopA, stopColor:C.green, stopOpacity:0.04 })
-                              , React.createElement('stop', { offset:_bandHoje.stopB, stopColor:C.red, stopOpacity:0.02 })
-                              , React.createElement('stop', { offset:1, stopColor:C.red, stopOpacity:0.13 })
-                            )
-                          , React.createElement('radialGradient', { id:'glowSaldoHoje', cx:'50%', cy:'50%', r:'50%' }
-                              , React.createElement('stop', { offset:0, stopColor:_glowColorHoje, stopOpacity:0.35 })
-                              , React.createElement('stop', { offset:1, stopColor:_glowColorHoje, stopOpacity:0 })
-                            )
-                        )
-                      , React.createElement('path', { d:_areaHoje, fill:'url(#gradSaldoHojeFill)', stroke:'none' })
-                      , React.createElement('path', { d:_pathHojeSmooth, fill:'none', stroke:'url(#gradSaldoHojeStroke)', strokeWidth:1.8, strokeLinecap:'round', strokeLinejoin:'round' })
-                      , React.createElement('circle', { cx:_lastPtHoje.x, cy:_lastPtHoje.y, r:13, fill:'url(#glowSaldoHoje)' })
-                      , _histRecente.map(function(p,i){ return React.createElement('circle', { key:i, cx:_scaleXHoje(p.dia), cy:_scaleYHoje(p.saldo), r:_saldoPontoSel&&_saldoPontoSel.face===0&&_saldoPontoSel.dia===p.dia?4.5:(i===_histRecente.length-1?3.5:1.8), fill:i===_histRecente.length-1?'#fff':(p.saldo<0?C.red:C.green), stroke:i===_histRecente.length-1?_glowColorHoje:'none', strokeWidth:i===_histRecente.length-1?2.4:0, style:{cursor:'pointer'}, onClick:_toggleSaldoPonto(0,p.dia) }); })
-                    )
-                )
-              : saldoHojeFace===1
-              ? React.createElement(React.Fragment, { key:'g-proj' }
-                  , React.createElement('svg', { viewBox:'0 0 '+_chartW+' '+_chartH, width:'100%', height:44, preserveAspectRatio:'none' }
-                      , React.createElement('defs', null
-                          , React.createElement('linearGradient', { id:'gradSaldoProjStroke', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
-                              , React.createElement('stop', { offset:0, stopColor:C.green })
-                              , React.createElement('stop', { offset:_bandProj.stopA, stopColor:C.green })
-                              , React.createElement('stop', { offset:_bandProj.stopB, stopColor:C.red })
-                              , React.createElement('stop', { offset:1, stopColor:C.red })
-                            )
-                          , React.createElement('linearGradient', { id:'gradSaldoProjFill', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
-                              , React.createElement('stop', { offset:0, stopColor:C.green, stopOpacity:0.22 })
-                              , React.createElement('stop', { offset:_bandProj.stopA, stopColor:C.green, stopOpacity:0.04 })
-                              , React.createElement('stop', { offset:_bandProj.stopB, stopColor:C.red, stopOpacity:0.02 })
-                              , React.createElement('stop', { offset:1, stopColor:C.red, stopOpacity:0.13 })
-                            )
-                          , React.createElement('radialGradient', { id:'glowSaldoProj', cx:'50%', cy:'50%', r:'50%' }
-                              , React.createElement('stop', { offset:0, stopColor:_glowColorProj, stopOpacity:0.35 })
-                              , React.createElement('stop', { offset:1, stopColor:_glowColorProj, stopOpacity:0 })
-                            )
-                        )
-                      , _pisoNoGraf ? React.createElement('rect', { key:'pisoBand', x:0, y:_pisoY, width:_chartW, height:Math.max(0,_chartH-_pisoY), fill:C.red, fillOpacity:0.06 }) : null
-                      , _pisoNoGraf ? React.createElement('line', { key:'pisoLn', x1:0, y1:_pisoY, x2:_chartW, y2:_pisoY, stroke:C.red, strokeOpacity:0.7, strokeWidth:1, strokeDasharray:'3,3' }) : null
-                      , React.createElement('path', { d:_areaProj, fill:'url(#gradSaldoProjFill)', stroke:'none' })
-                      , React.createElement('path', { d:_pathProjSmooth, fill:'none', stroke:'url(#gradSaldoProjStroke)', strokeWidth:1.8, strokeLinecap:'round', strokeLinejoin:'round' })
-                      , React.createElement('path', { d:_pathProjFinal, fill:'none', stroke:'url(#gradSaldoProjStroke)', strokeWidth:1.6, strokeDasharray:'4,4', strokeLinecap:'round' })
-                      , React.createElement('circle', { cx:_lastPtProj.x, cy:_lastPtProj.y, r:13, fill:'url(#glowSaldoProj)' })
-                      , _projDias.map(function(p,i){ return React.createElement('circle', { key:i, cx:_scaleXProj(p.dia), cy:_scaleYProj(p.saldo), r:_saldoPontoSel&&_saldoPontoSel.face===1&&_saldoPontoSel.dia===p.dia?4.5:((_piso!==null&&p.dia===_minPtProj.dia)?3:2), fill:(_piso!==null&&p.dia===_minPtProj.dia)?'#E39D58':(p.saldo<0?C.red:C.green), style:{cursor:'pointer'}, onClick:_toggleSaldoPonto(1,p.dia) }); })
-                      , React.createElement('circle', { cx:_lastPtProj.x, cy:_lastPtProj.y, r:3.5, fill:'#fff', stroke:_glowColorProj, strokeWidth:2.4 })
-                    )
-                )
-              : React.createElement(React.Fragment, { key:'g-pessoal' }
-                  , React.createElement('svg', { viewBox:'0 0 '+_chartW+' '+_chartH, width:'100%', height:44, preserveAspectRatio:'none' }
-                      , React.createElement('defs', null
-                          , React.createElement('linearGradient', { id:'gradSaldoPessoalStroke', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
-                              , React.createElement('stop', { offset:0, stopColor:C.green })
-                              , React.createElement('stop', { offset:_bandTrendP.stopA, stopColor:C.green })
-                              , React.createElement('stop', { offset:_bandTrendP.stopB, stopColor:C.red })
-                              , React.createElement('stop', { offset:1, stopColor:C.red })
-                            )
-                          , React.createElement('linearGradient', { id:'gradSaldoPessoalFill', gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:_chartH }
-                              , React.createElement('stop', { offset:0, stopColor:C.green, stopOpacity:0.22 })
-                              , React.createElement('stop', { offset:_bandTrendP.stopA, stopColor:C.green, stopOpacity:0.04 })
-                              , React.createElement('stop', { offset:_bandTrendP.stopB, stopColor:C.red, stopOpacity:0.02 })
-                              , React.createElement('stop', { offset:1, stopColor:C.red, stopOpacity:0.13 })
-                            )
-                          , React.createElement('radialGradient', { id:'glowSaldoPessoal', cx:'50%', cy:'50%', r:'50%' }
-                              , React.createElement('stop', { offset:0, stopColor:_glowColorP, stopOpacity:0.35 })
-                              , React.createElement('stop', { offset:1, stopColor:_glowColorP, stopOpacity:0 })
-                            )
-                        )
-                      , React.createElement('path', { d:_areaTrendP, fill:'url(#gradSaldoPessoalFill)', stroke:'none' })
-                      , React.createElement('path', { d:_pathTrendPSmooth, fill:'none', stroke:'url(#gradSaldoPessoalStroke)', strokeWidth:1.8, strokeLinecap:'round', strokeLinejoin:'round' })
-                      , React.createElement('circle', { cx:_lastPtP.x, cy:_lastPtP.y, r:13, fill:'url(#glowSaldoPessoal)' })
-                      , _ptsTrendP.slice(0,-1).map(function(pt,i){ return React.createElement('circle', { key:i, cx:pt.x, cy:pt.y, r:1.8, fill:_valsTrendP[i]<0?C.red:C.green }); })
-                      , React.createElement('circle', { cx:_lastPtP.x, cy:_lastPtP.y, r:3.5, fill:'#fff', stroke:_glowColorP, strokeWidth:2.4 })
-                    )
-                )
-          /* Linha do piso (face Projetado). Nas outras faces entra um espaçador
-             da MESMA altura (4+16px) — o card continua travado no maior
-             estado, sem salto de altura ao alternar. Toque na linha edita o
-             piso (stopPropagation: não troca de face). */
-          , saldoHojeFace===1
-              ? React.createElement('div', { key:'piso-row', onClick:_editarPiso, style:{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, marginTop:4, minHeight:16, fontSize:10, fontWeight:700, cursor:'pointer' } }
-                  , _piso===null
-                    ? [ React.createElement('span', { key:'a', style:{ color:C.sub } }, 'Piso de segurança')
-                      , React.createElement('span', { key:'b', style:{ color:'#007AFF' } }, 'Definir ›') ]
-                    : [ React.createElement('span', { key:'a', style:{ color:_pisoOk?C.green:C.red, flexShrink:0 } }
-                          , _pisoOk ? ('✓ folga '+_kBRL(_folgaPiso)) : ('⚠ falta '+_kBRL(_folgaPiso)+' ao piso'))
-                      , React.createElement('span', { key:'b', style:{ color:C.sub, fontWeight:600, minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }
-                          , 'menor saldo '+_kBRL(_minPtProj.saldo)+(_minPtProj.dia===_diaHojeNum?' (hoje)':' (dia '+_minPtProj.dia+')')+' · piso '+_kBRL(_piso)) ]
-                )
-              : React.createElement('div', { key:'piso-spacer', style:{ minHeight:20 } })
+          , agSaldoLinhaChart({ uid:'estilo', solid:_histRecente, proj:_projSerie, diaIni:_diaInicioRecente, diaFim:_ultimoDiaMesHoje,
+              piso:_piso, minDia:(_piso!==null ? _minPtProj.dia : null),
+              selFase:(_saldoPontoSel ? _saldoPontoSel.face : null), selDia:(_saldoPontoSel ? _saldoPontoSel.dia : null),
+              onPoint:_toggleSaldoPonto })
+          /* Linha do piso (aparece sempre agora que não há mais faces).
+             Toque na linha edita o piso (stopPropagation no handler). */
+          , React.createElement('div', { key:'piso-row', onClick:_editarPiso, style:{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, marginTop:4, minHeight:16, fontSize:10, fontWeight:700, cursor:'pointer' }
+              }
+              , _piso===null
+                ? [ React.createElement('span', { key:'a', style:{ color:C.sub } }, 'Piso de segurança')
+                  , React.createElement('span', { key:'b', style:{ color:'#007AFF' } }, 'Definir ›') ]
+                : [ React.createElement('span', { key:'a', style:{ color:_pisoOk?C.green:C.red, flexShrink:0 } }
+                      , _pisoOk ? ('✓ folga '+_kBRL(_folgaPiso)) : ('⚠ falta '+_kBRL(_folgaPiso)+' ao piso'))
+                  , React.createElement('span', { key:'b', style:{ color:C.sub, fontWeight:600, minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }
+                      , 'menor saldo '+_kBRL(_minPtProj.saldo)+(_minPtProj.dia===_diaHojeNum?' (hoje)':' (dia '+_minPtProj.dia+')')+' · piso '+_kBRL(_piso)) ]
+            )
           /* Detalhe do ponto tocado: as despesas/receitas que fizeram o saldo
-             oscilar naquele dia — "Hoje" usa os movimentos JÁ realizados
-             (movimentosCaixaDoDia, mesmos campos/critérios de saldoCaixaAte);
-             "Projetado" usa os eventos futuros já calculados pra linha
-             tracejada (_eventosFuturos), sem duplicar nenhuma fórmula nova. */
-          , _saldoPontoSel && (saldoHojeFace===0 || saldoHojeFace===1) && (function(){
+             oscilar naquele dia — realizado (face 0) usa os movimentos JÁ
+             feitos (movimentosCaixaDoDia); projetado (face 1) usa os eventos
+             futuros já calculados pra linha pontilhada (_eventosFuturos). */
+          , _saldoPontoSel && (function(){
               var _diaPontoStr = _mesHoje + '-' + String(_saldoPontoSel.dia).padStart(2,'0');
               var _itensPonto = _saldoPontoSel.face===0
                 ? movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _diaPontoStr)
                 : _eventosFuturos.filter(function(ev){ return ev.dia === _saldoPontoSel.dia; }).map(function(ev){ return { tipo:ev.tipo, label:ev.label, valor:Math.abs(ev.delta) }; });
-              if (_saldoPontoSel.face !== saldoHojeFace || !_itensPonto.length) return null;
+              if (!_itensPonto.length) return null;
               return React.createElement('div', { style:{ marginTop:6, paddingTop:6, borderTop:'1px solid var(--c-border)' } }
                 , React.createElement('div', { style:{ fontSize:9, color:C.sub, fontWeight:700, marginBottom:4, textTransform:'capitalize' } }
                   , new Date(_diaPontoStr+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short',weekday:'short'}))
@@ -39817,6 +39604,112 @@ function _orcAplicarLocal(lista, res) {
     return [res.novo].concat(p);
   }
   if (res.removido != null) {
+
+/* ── Gráfico de saldo — linha CHEIA = saldo realizado até hoje, linha
+   PONTILHADA = saldo projetado de hoje até o fim do mês ──
+   Um único desenho para os dois painéis (Início/Estilo e Orçamento Pessoal),
+   pra não existir duas cópias da mesma conta de escala/gradiente.
+   o = {
+     uid:      string única (ids dos gradientes SVG não podem colidir),
+     solid:    [{dia,saldo}] realizado — o ÚLTIMO ponto é "hoje",
+     proj:     [{dia,saldo}] projetado — o PRIMEIRO ponto é "hoje" (mesmo
+               valor do último de `solid`), o último é o fim do mês,
+     diaIni/diaFim: domínio horizontal (dia do mês),
+     piso:     (opcional) saldo mínimo de segurança — linha tracejada,
+     minDia:   (opcional) dia do menor saldo projetado (ponto laranja),
+     selFase/selDia: ponto selecionado (0 = realizado, 1 = projetado),
+     onPoint:  (opcional) function(fase,dia) → handler de clique do ponto
+   }
+   Gradiente verde/vermelho com userSpaceOnUse: a cor muda exatamente onde o
+   saldo cruza o zero (mesma régua pra linha cheia, pontilhada e área). */
+function agSaldoLinhaChart(o) {
+  var W = 300, H = 50, padT = 6, padB = 14;
+  var solid = o.solid || [], proj = o.proj || [];
+  var vals = solid.map(function(p){ return p.saldo; }).concat(proj.map(function(p){ return p.saldo; }));
+  if (!vals.length) vals = [0];
+  var mnV = Math.min.apply(null, vals), mxV = Math.max.apply(null, vals);
+  var spV = Math.max(mxV - mnV, Math.abs(mxV) * 0.15, 1);
+  var piso = (o.piso !== null && o.piso !== undefined && !isNaN(o.piso)) ? o.piso : null;
+  /* piso só entra na escala se estiver perto da curva (até 3x a amplitude) —
+     um piso muito distante achataria a linha. */
+  var pisoNoGraf = piso !== null && piso >= mnV - 3 * spV && piso <= mxV + 3 * spV;
+  var esc = pisoNoGraf ? vals.concat([piso]) : vals;
+  var mn = Math.min.apply(null, esc), mx = Math.max.apply(null, esc), sp = (mx - mn) || 1;
+  var diaIni = o.diaIni, diaFim = o.diaFim;
+  var sx = function(d){ return (d - diaIni) / Math.max(1, diaFim - diaIni) * W; };
+  var sy = function(v){ return padT + (1 - (v - mn) / sp) * (H - padT - padB); };
+  var y0 = padT + (1 - (0 - mn) / sp) * (H - padT - padB);
+  var frac = Math.max(0, Math.min(1, y0 / H));
+  var stopA = Math.max(0, frac - 0.08), stopB = Math.min(1, frac + 0.08);
+  var smooth = function(pts){
+    if (pts.length < 2) return pts.length ? ('M' + pts[0].x + ',' + pts[0].y) : '';
+    var d = 'M' + pts[0].x + ',' + pts[0].y;
+    for (var i = 0; i < pts.length - 1; i++) {
+      var p0 = pts[i-1] || pts[i], p1 = pts[i], p2 = pts[i+1], p3 = pts[i+2] || p2;
+      d += ' C' + (p1.x + (p2.x - p0.x) / 8) + ',' + (p1.y + (p2.y - p0.y) / 8)
+        + ' ' + (p2.x - (p3.x - p1.x) / 8) + ',' + (p2.y - (p3.y - p1.y) / 8)
+        + ' ' + p2.x + ',' + p2.y;
+    }
+    return d;
+  };
+  var sPts = solid.map(function(p){ return { x: sx(p.dia), y: sy(p.saldo), dia: p.dia, saldo: p.saldo }; });
+  var pPts = proj.map(function(p){ return { x: sx(p.dia), y: sy(p.saldo), dia: p.dia, saldo: p.saldo }; });
+  var uid = String(o.uid || 'x');
+  var idS = 'gradSldS' + uid, idF = 'gradSldF' + uid, idG = 'glowSld' + uid;
+  var hojePt = sPts.length ? sPts[sPts.length - 1] : (pPts.length ? pPts[0] : null);
+  var fimPt = pPts.length ? pPts[pPts.length - 1] : hojePt;
+  var corHoje = hojePt && hojePt.saldo < 0 ? C.red : C.green;
+  var corFim = fimPt && fimPt.saldo < 0 ? C.red : C.green;
+  var isSel = function(f, d){ return o.selFase === f && o.selDia === d; };
+  var click = function(f, d){ return o.onPoint ? o.onPoint(f, d) : undefined; };
+  var kids = [];
+  kids.push(React.createElement('defs', { key:'defs' }
+    , React.createElement('linearGradient', { id:idS, gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:H }
+        , React.createElement('stop', { offset:0, stopColor:C.green })
+        , React.createElement('stop', { offset:stopA, stopColor:C.green })
+        , React.createElement('stop', { offset:stopB, stopColor:C.red })
+        , React.createElement('stop', { offset:1, stopColor:C.red }))
+    , React.createElement('linearGradient', { id:idF, gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:H }
+        , React.createElement('stop', { offset:0, stopColor:C.green, stopOpacity:0.22 })
+        , React.createElement('stop', { offset:stopA, stopColor:C.green, stopOpacity:0.04 })
+        , React.createElement('stop', { offset:stopB, stopColor:C.red, stopOpacity:0.02 })
+        , React.createElement('stop', { offset:1, stopColor:C.red, stopOpacity:0.13 }))
+    , React.createElement('radialGradient', { id:idG, cx:'50%', cy:'50%', r:'50%' }
+        , React.createElement('stop', { offset:0, stopColor:corFim, stopOpacity:0.35 })
+        , React.createElement('stop', { offset:1, stopColor:corFim, stopOpacity:0 }))));
+  if (pisoNoGraf) {
+    var pisoY = sy(piso);
+    kids.push(React.createElement('rect', { key:'pisoBand', x:0, y:pisoY, width:W, height:Math.max(0, H - pisoY), fill:C.red, fillOpacity:0.06 }));
+    kids.push(React.createElement('line', { key:'pisoLn', x1:0, y1:pisoY, x2:W, y2:pisoY, stroke:C.red, strokeOpacity:0.7, strokeWidth:1, strokeDasharray:'3,3' }));
+  }
+  if (sPts.length >= 2) {
+    var dSolid = smooth(sPts);
+    kids.push(React.createElement('path', { key:'area', d: dSolid + ' L' + sPts[sPts.length-1].x + ',' + H + ' L' + sPts[0].x + ',' + H + ' Z', fill:'url(#' + idF + ')', stroke:'none' }));
+    kids.push(React.createElement('path', { key:'solid', d:dSolid, fill:'none', stroke:'url(#' + idS + ')', strokeWidth:1.8, strokeLinecap:'round', strokeLinejoin:'round' }));
+  }
+  if (pPts.length >= 2) {
+    /* pontilhado: traço de comprimento ~0 + linecap redondo = bolinhas */
+    kids.push(React.createElement('path', { key:'dots', d:smooth(pPts), fill:'none', stroke:'url(#' + idS + ')', strokeWidth:2.2, strokeDasharray:'0.1,5', strokeLinecap:'round', strokeLinejoin:'round' }));
+    kids.push(React.createElement('circle', { key:'glow', cx:fimPt.x, cy:fimPt.y, r:13, fill:'url(#' + idG + ')' }));
+  }
+  /* pontos do realizado (menos "hoje", desenhado por último) */
+  sPts.slice(0, -1).forEach(function(p, i){
+    kids.push(React.createElement('circle', { key:'s' + i, cx:p.x, cy:p.y, r:isSel(0, p.dia) ? 4.5 : 1.8, fill:p.saldo < 0 ? C.red : C.green, style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(0, p.dia) }));
+  });
+  /* pontos intermediários do projetado (a 1a posição é "hoje", a última é o fim do mês) */
+  pPts.slice(1, -1).forEach(function(p, i){
+    var isMin = o.minDia !== null && o.minDia !== undefined && p.dia === o.minDia;
+    kids.push(React.createElement('circle', { key:'p' + i, cx:p.x, cy:p.y, r:isSel(1, p.dia) ? 4.5 : (isMin ? 3 : 2), fill:isMin ? '#E39D58' : (p.saldo < 0 ? C.red : C.green), style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(1, p.dia) }));
+  });
+  if (pPts.length >= 2) {
+    kids.push(React.createElement('circle', { key:'fim', cx:fimPt.x, cy:fimPt.y, r:isSel(1, fimPt.dia) ? 4.5 : 3.5, fill:'#fff', stroke:corFim, strokeWidth:2.4, style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(1, fimPt.dia) }));
+  }
+  if (hojePt) {
+    kids.push(React.createElement('circle', { key:'hoje', cx:hojePt.x, cy:hojePt.y, r:isSel(0, hojePt.dia) ? 4.5 : 3.5, fill:'#fff', stroke:corHoje, strokeWidth:2.4, style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(0, hojePt.dia) }));
+  }
+  return React.createElement.apply(null, ['svg', { viewBox:'0 0 ' + W + ' ' + H, width:'100%', height:o.height || 44, preserveAspectRatio:'none' }].concat(kids));
+}
+
     return p.filter(function(x){ return String(x.id) !== String(res.removido); });
   }
   if (res.id != null) {
@@ -40229,11 +40122,18 @@ function PessoalDash({
       })
     )
 
-    /* ══ "Saldo do orçamento" / "Despesas de hoje" — mesma estrutura visual
-       (classe ag-kpi-card, layout de duas colunas/linhas, BRLValue) dos
-       cards "Saldo nas contas hoje"/"Despesas de hoje" do Dashboard da
-       locadora (ver Inicio), adaptada pros dados de orçamento pessoal já
-       calculados acima (_saldo, _desps) — nenhum cálculo novo, só reuso. ══ */
+    /* ══ Painel "Saldo & Despesas" do Orçamento Pessoal ══
+       Mesma estrutura do painel da Estilo (Início), mas SÓ com números do
+       orçamento pessoal — nunca somados aos da locadora:
+         • coluna 1: saldo de contas hoje (recebido − pago no mês) + saldo
+           projetado (receitas − despesas previstas no mês, o mesmo `_saldo`
+           do card "Resultado Prev." lá em cima);
+         • coluna 2: despesas de hoje + faturas de cartão (categoria
+           "Cartao de Credito") ainda em aberto no mês;
+         • gráfico: linha CHEIA = saldo acumulado realizado até hoje, linha
+           PONTILHADA = projeção até o fim do mês, fechando em `_saldo`.
+       Nenhuma regra de saldo/baixa/recorrência nova: só reusa _itens/_desps/
+       _recs/_recLoc/_recPg/_desPg/_saldo já calculados acima. ══ */
     ,(function(){
       var _despsHojeP = _desps.filter(function(it){ return it.data===_hoje; });
       var _despHojeTotalP = _despsHojeP.reduce(function(s,it){ return s+parseFloat(it.valor||0); },0);
@@ -40243,21 +40143,81 @@ function PessoalDash({
       var _cardBaseP = { padding: RX.kpiCardPadP, background:'var(--c-card)' };
       /* Mesma fonte do mobile no PC (ver Inicio: card "Saldo nas contas hoje") */
       var _lblP = { fontSize: 13, fontWeight:600, color:'var(--c-sub)', marginBottom: 6 };
-      return React.createElement('div',{style:{display:'flex',flexDirection:RX.kpiFlexDir,gap:16}}
-        ,React.createElement('div',{className:'ag-kpi-card',style:Object.assign({},_cardBaseP,desktop?{flex:1}:null)}
-          ,React.createElement('div',{style:_lblP},'Saldo do orçamento')
-          ,React.createElement(BRLValue,{v:_saldo,size:16.5,weight:700,color:_saldo>=0?C.green:C.red})
-          ,React.createElement('div',{style:{fontSize:10.5,color:C.sub,fontWeight:700,marginTop:3}},'Saldo previsto para '+_ultimoDiaMesP+' de '+_mesNome)
+      var _supP = 10.5;
+
+      /* Dia de corte entre "realizado" (linha cheia) e "projetado"
+         (pontilhado): hoje no mês atual; fim do mês num mês passado (tudo
+         já aconteceu); dia 1 num mês futuro (tudo ainda é projeção). */
+      var _isMesAtualP = (_mes === mesAtual);
+      var _refDiaP = _isMesAtualP ? parseInt(_hoje.slice(8,10),10) : (_mes < mesAtual ? _ultimoDiaMesP : 1);
+      var _diaMovP = function(it){
+        var dt = (it.data_pagamento && String(it.data_pagamento).slice(0,7)===_mes) ? it.data_pagamento : it.data;
+        var d = parseInt(String(dt||'').slice(8,10),10);
+        if (!d || isNaN(d)) d = 1;
+        return Math.max(1, Math.min(_ultimoDiaMesP, d));
+      };
+      var _pagoP = function(it){ return it.tipo==='receita' ? (it.status==='recebido'||it.status==='pago') : it.status==='pago'; };
+      var _movRealP = {}, _movPendP = {};
+      var _addMovP = function(m,d,v){ m[d] = (m[d]||0) + v; };
+      if (_recLoc > 0) _addMovP(_movRealP, _recLocItems.length ? Math.min(_refDiaP,_diaMovP(_recLocItems[0])) : 1, _recLoc);
+      _itens.forEach(function(it){
+        var v = parseFloat(it.valor||0) * (it.tipo==='receita' ? 1 : -1);
+        var d = _diaMovP(it);
+        if (_pagoP(it)) _addMovP(_movRealP, Math.min(d,_refDiaP), v);
+        else _addMovP(_movPendP, Math.max(d,_refDiaP), v);   /* atrasado: ainda vai acontecer, então entra a partir de hoje */
+      });
+      var _solidP = [], _cumP = 0;
+      for (var _dP = 1; _dP <= _refDiaP; _dP++) {
+        _cumP += (_movRealP[_dP] || 0);
+        if (_dP === 1 || _dP === _refDiaP || _movRealP[_dP]) _solidP.push({ dia:_dP, saldo:_cumP });
+      }
+      var _saldoAtualP = _cumP;   /* == _recPg − _desPg */
+      var _projP = [{ dia:_refDiaP, saldo:_cumP }];
+      var _pcP = _cumP;
+      Object.keys(_movPendP).map(Number).sort(function(a,b){ return a-b; }).forEach(function(d){
+        _pcP += _movPendP[d];
+        var l = _projP[_projP.length-1];
+        if (l.dia === d && _projP.length > 1) l.saldo = _pcP; else _projP.push({ dia:d, saldo:_pcP });
+      });
+      if (_ultimoDiaMesP > _refDiaP) {
+        /* fecha no valor OFICIAL (_saldo) — o mesmo do card "Resultado Prev." */
+        var _lP = _projP[_projP.length-1];
+        if (_lP.dia === _ultimoDiaMesP) _lP.saldo = _saldo; else _projP.push({ dia:_ultimoDiaMesP, saldo:_saldo });
+      }
+
+      var _fatAbertasP = _desps.filter(function(it){ return (it.categoria||'')==='Cartao de Credito' && it.status!=='pago'; });
+      var _fatAbertasValP = _fatAbertasP.reduce(function(s,it){ return s+parseFloat(it.valor||0); },0);
+      var _bigP = function(v,cor){ return React.createElement(BRLValue,{v:v,size:16.5,weight:700,color:cor||'var(--c-text)'}); };
+
+      return React.createElement('div',{className:'ag-kpi-card',style:{padding:0,overflow:'hidden',background:'var(--c-card)'}}
+        ,React.createElement('div',{style:{display:'flex'}}
+          ,React.createElement('div',{style:Object.assign({},_cardBaseP,{flex:1,borderRight:'1px solid var(--c-border)'})}
+            ,React.createElement('div',{style:_lblP},_isMesAtualP ? 'Saldo de contas hoje' : 'Saldo realizado')
+            ,_bigP(_saldoAtualP, _saldoAtualP>=0?C.green:C.red)
+            ,React.createElement('div',{style:{fontSize:_supP,color:C.sub,fontWeight:700,marginTop:3}},'recebido − pago em '+_mesNome)
+            ,React.createElement('div',{style:Object.assign({},_lblP,{marginTop:9})},'Saldo projetado')
+            ,_bigP(_saldo, _saldo>=0?C.green:C.red)
+            ,React.createElement('div',{style:{fontSize:_supP,color:C.sub,fontWeight:700,marginTop:3}},'para '+_ultimoDiaMesP+' de '+_mesNome)
+          )
+          ,React.createElement('div',{style:Object.assign({},_cardBaseP,{flex:1})}
+            ,React.createElement('div',{style:_lblP},'Despesas de hoje')
+            ,_bigP(_despHojeTotalP, C.red)
+            ,React.createElement('div',{style:{fontSize:_supP,color:_despHojeAPagarP>0?C.red:C.green,fontWeight:700,marginTop:3}}
+              ,_despHojeTotalP>0
+                ? (_despHojeAPagarP>0
+                    ? [React.createElement(BRLValue,{key:'a',v:_despHojeAPagarP,size:_supP,weight:700,color:C.red}),' a pagar']
+                    : 'tudo pago')
+                : 'Nenhuma despesa prevista hoje')
+            ,React.createElement('div',{style:Object.assign({},_lblP,{marginTop:9})},'Faturas de cartão')
+            ,_bigP(_fatAbertasValP, _fatAbertasValP>0?C.red:undefined)
+            ,React.createElement('div',{style:{fontSize:_supP,color:_fatAbertasP.length>0?C.red:C.green,fontWeight:700,marginTop:3}}
+              ,_fatAbertasP.length>0
+                ? (_fatAbertasP.length+(_fatAbertasP.length===1?' fatura em aberto':' faturas em aberto'))
+                : 'nenhuma em aberto')
+          )
         )
-        ,React.createElement('div',{className:'ag-kpi-card',style:Object.assign({},_cardBaseP,desktop?{flex:1}:null)}
-          ,React.createElement('div',{style:_lblP},'Despesas de hoje')
-          ,React.createElement(BRLValue,{v:_despHojeTotalP,size:16.5,weight:700,color:C.red})
-          ,React.createElement('div',{style:{fontSize:10.5,color:_despHojeAPagarP>0?C.red:C.green,fontWeight:700,marginTop:3}}
-            ,_despHojeTotalP>0
-              ? (_despHojeAPagarP>0
-                  ? [React.createElement(BRLValue,{key:'a',v:_despHojeAPagarP,size:10.5,weight:700,color:C.red}),' a pagar · ',React.createElement(BRLValue,{key:'b',v:_despHojePagoP,size:10.5,weight:700,color:C.red}),' já pago']
-                  : [React.createElement(BRLValue,{key:'c',v:_despHojePagoP,size:10.5,weight:700,color:C.green}),' — tudo pago'])
-              : 'Nenhuma despesa prevista hoje')
+        ,React.createElement('div',{style:{padding:'4px 14px 8px'}}
+          ,agSaldoLinhaChart({ uid:'pessoal', solid:_solidP, proj:_projP, diaIni:1, diaFim:_ultimoDiaMesP })
         )
       );
     })()

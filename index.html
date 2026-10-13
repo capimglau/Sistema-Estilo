@@ -30252,8 +30252,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                                 elas.
          [ATUALIZADO] Não há mais faces: o card virou painel único (saldo hoje +
          projetado no mesmo gráfico, cheio/pontilhado; despesas + faturas ao lado)
-         e o saldo pessoal vive só no PessoalDash. O texto acima descreve a
-         origem de cada série. (despesasHojeFace ficou sem uso,
+         e o saldo pessoal vive só no PessoalDash. (despesasHojeFace ficou sem uso,
          igual antes). */
       var _diaHojeNum = parseInt(hoje.slice(8,10),10);
 
@@ -39398,6 +39397,112 @@ function computePrevisaoPessoal(itens, despesas, opts){
 }
 
 
+
+/* ── Gráfico de saldo — linha CHEIA = saldo realizado até hoje, linha
+   PONTILHADA = saldo projetado de hoje até o fim do mês ──
+   Um único desenho para os dois painéis (Início/Estilo e Orçamento Pessoal),
+   pra não existir duas cópias da mesma conta de escala/gradiente.
+   o = {
+     uid:      string única (ids dos gradientes SVG não podem colidir),
+     solid:    [{dia,saldo}] realizado — o ÚLTIMO ponto é "hoje",
+     proj:     [{dia,saldo}] projetado — o PRIMEIRO ponto é "hoje" (mesmo
+               valor do último de `solid`), o último é o fim do mês,
+     diaIni/diaFim: domínio horizontal (dia do mês),
+     piso:     (opcional) saldo mínimo de segurança — linha tracejada,
+     minDia:   (opcional) dia do menor saldo projetado (ponto laranja),
+     selFase/selDia: ponto selecionado (0 = realizado, 1 = projetado),
+     onPoint:  (opcional) function(fase,dia) → handler de clique do ponto
+   }
+   Gradiente verde/vermelho com userSpaceOnUse: a cor muda exatamente onde o
+   saldo cruza o zero (mesma régua pra linha cheia, pontilhada e área). */
+function agSaldoLinhaChart(o) {
+  var W = 300, H = 50, padT = 6, padB = 14;
+  var solid = o.solid || [], proj = o.proj || [];
+  var vals = solid.map(function(p){ return p.saldo; }).concat(proj.map(function(p){ return p.saldo; }));
+  if (!vals.length) vals = [0];
+  var mnV = Math.min.apply(null, vals), mxV = Math.max.apply(null, vals);
+  var spV = Math.max(mxV - mnV, Math.abs(mxV) * 0.15, 1);
+  var piso = (o.piso !== null && o.piso !== undefined && !isNaN(o.piso)) ? o.piso : null;
+  /* piso só entra na escala se estiver perto da curva (até 3x a amplitude) —
+     um piso muito distante achataria a linha. */
+  var pisoNoGraf = piso !== null && piso >= mnV - 3 * spV && piso <= mxV + 3 * spV;
+  var esc = pisoNoGraf ? vals.concat([piso]) : vals;
+  var mn = Math.min.apply(null, esc), mx = Math.max.apply(null, esc), sp = (mx - mn) || 1;
+  var diaIni = o.diaIni, diaFim = o.diaFim;
+  var sx = function(d){ return (d - diaIni) / Math.max(1, diaFim - diaIni) * W; };
+  var sy = function(v){ return padT + (1 - (v - mn) / sp) * (H - padT - padB); };
+  var y0 = padT + (1 - (0 - mn) / sp) * (H - padT - padB);
+  var frac = Math.max(0, Math.min(1, y0 / H));
+  var stopA = Math.max(0, frac - 0.08), stopB = Math.min(1, frac + 0.08);
+  var smooth = function(pts){
+    if (pts.length < 2) return pts.length ? ('M' + pts[0].x + ',' + pts[0].y) : '';
+    var d = 'M' + pts[0].x + ',' + pts[0].y;
+    for (var i = 0; i < pts.length - 1; i++) {
+      var p0 = pts[i-1] || pts[i], p1 = pts[i], p2 = pts[i+1], p3 = pts[i+2] || p2;
+      d += ' C' + (p1.x + (p2.x - p0.x) / 8) + ',' + (p1.y + (p2.y - p0.y) / 8)
+        + ' ' + (p2.x - (p3.x - p1.x) / 8) + ',' + (p2.y - (p3.y - p1.y) / 8)
+        + ' ' + p2.x + ',' + p2.y;
+    }
+    return d;
+  };
+  var sPts = solid.map(function(p){ return { x: sx(p.dia), y: sy(p.saldo), dia: p.dia, saldo: p.saldo }; });
+  var pPts = proj.map(function(p){ return { x: sx(p.dia), y: sy(p.saldo), dia: p.dia, saldo: p.saldo }; });
+  var uid = String(o.uid || 'x');
+  var idS = 'gradSldS' + uid, idF = 'gradSldF' + uid, idG = 'glowSld' + uid;
+  var hojePt = sPts.length ? sPts[sPts.length - 1] : (pPts.length ? pPts[0] : null);
+  var fimPt = pPts.length ? pPts[pPts.length - 1] : hojePt;
+  var corHoje = hojePt && hojePt.saldo < 0 ? C.red : C.green;
+  var corFim = fimPt && fimPt.saldo < 0 ? C.red : C.green;
+  var isSel = function(f, d){ return o.selFase === f && o.selDia === d; };
+  var click = function(f, d){ return o.onPoint ? o.onPoint(f, d) : undefined; };
+  var kids = [];
+  kids.push(React.createElement('defs', { key:'defs' }
+    , React.createElement('linearGradient', { id:idS, gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:H }
+        , React.createElement('stop', { offset:0, stopColor:C.green })
+        , React.createElement('stop', { offset:stopA, stopColor:C.green })
+        , React.createElement('stop', { offset:stopB, stopColor:C.red })
+        , React.createElement('stop', { offset:1, stopColor:C.red }))
+    , React.createElement('linearGradient', { id:idF, gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:H }
+        , React.createElement('stop', { offset:0, stopColor:C.green, stopOpacity:0.22 })
+        , React.createElement('stop', { offset:stopA, stopColor:C.green, stopOpacity:0.04 })
+        , React.createElement('stop', { offset:stopB, stopColor:C.red, stopOpacity:0.02 })
+        , React.createElement('stop', { offset:1, stopColor:C.red, stopOpacity:0.13 }))
+    , React.createElement('radialGradient', { id:idG, cx:'50%', cy:'50%', r:'50%' }
+        , React.createElement('stop', { offset:0, stopColor:corFim, stopOpacity:0.35 })
+        , React.createElement('stop', { offset:1, stopColor:corFim, stopOpacity:0 }))));
+  if (pisoNoGraf) {
+    var pisoY = sy(piso);
+    kids.push(React.createElement('rect', { key:'pisoBand', x:0, y:pisoY, width:W, height:Math.max(0, H - pisoY), fill:C.red, fillOpacity:0.06 }));
+    kids.push(React.createElement('line', { key:'pisoLn', x1:0, y1:pisoY, x2:W, y2:pisoY, stroke:C.red, strokeOpacity:0.7, strokeWidth:1, strokeDasharray:'3,3' }));
+  }
+  if (sPts.length >= 2) {
+    var dSolid = smooth(sPts);
+    kids.push(React.createElement('path', { key:'area', d: dSolid + ' L' + sPts[sPts.length-1].x + ',' + H + ' L' + sPts[0].x + ',' + H + ' Z', fill:'url(#' + idF + ')', stroke:'none' }));
+    kids.push(React.createElement('path', { key:'solid', d:dSolid, fill:'none', stroke:'url(#' + idS + ')', strokeWidth:1.8, strokeLinecap:'round', strokeLinejoin:'round' }));
+  }
+  if (pPts.length >= 2) {
+    /* pontilhado: traço de comprimento ~0 + linecap redondo = bolinhas */
+    kids.push(React.createElement('path', { key:'dots', d:smooth(pPts), fill:'none', stroke:'url(#' + idS + ')', strokeWidth:2.2, strokeDasharray:'0.1,5', strokeLinecap:'round', strokeLinejoin:'round' }));
+    kids.push(React.createElement('circle', { key:'glow', cx:fimPt.x, cy:fimPt.y, r:13, fill:'url(#' + idG + ')' }));
+  }
+  /* pontos do realizado (menos "hoje", desenhado por último) */
+  sPts.slice(0, -1).forEach(function(p, i){
+    kids.push(React.createElement('circle', { key:'s' + i, cx:p.x, cy:p.y, r:isSel(0, p.dia) ? 4.5 : 1.8, fill:p.saldo < 0 ? C.red : C.green, style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(0, p.dia) }));
+  });
+  /* pontos intermediários do projetado (a 1a posição é "hoje", a última é o fim do mês) */
+  pPts.slice(1, -1).forEach(function(p, i){
+    var isMin = o.minDia !== null && o.minDia !== undefined && p.dia === o.minDia;
+    kids.push(React.createElement('circle', { key:'p' + i, cx:p.x, cy:p.y, r:isSel(1, p.dia) ? 4.5 : (isMin ? 3 : 2), fill:isMin ? '#E39D58' : (p.saldo < 0 ? C.red : C.green), style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(1, p.dia) }));
+  });
+  if (pPts.length >= 2) {
+    kids.push(React.createElement('circle', { key:'fim', cx:fimPt.x, cy:fimPt.y, r:isSel(1, fimPt.dia) ? 4.5 : 3.5, fill:'#fff', stroke:corFim, strokeWidth:2.4, style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(1, fimPt.dia) }));
+  }
+  if (hojePt) {
+    kids.push(React.createElement('circle', { key:'hoje', cx:hojePt.x, cy:hojePt.y, r:isSel(0, hojePt.dia) ? 4.5 : 3.5, fill:'#fff', stroke:corHoje, strokeWidth:2.4, style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(0, hojePt.dia) }));
+  }
+  return React.createElement.apply(null, ['svg', { viewBox:'0 0 ' + W + ' ' + H, width:'100%', height:o.height || 44, preserveAspectRatio:'none' }].concat(kids));
+}
+
 // Mesma fórmula de "Saldo do orçamento" já usada em PessoalDash (_saldo =
 // _totRec - _totDes do mês, com recorrência projetada e retirada de lucro
 // somada) — extraída aqui pra o card "Saldo nas contas Estilo"/"Despesas
@@ -39604,112 +39709,6 @@ function _orcAplicarLocal(lista, res) {
     return [res.novo].concat(p);
   }
   if (res.removido != null) {
-
-/* ── Gráfico de saldo — linha CHEIA = saldo realizado até hoje, linha
-   PONTILHADA = saldo projetado de hoje até o fim do mês ──
-   Um único desenho para os dois painéis (Início/Estilo e Orçamento Pessoal),
-   pra não existir duas cópias da mesma conta de escala/gradiente.
-   o = {
-     uid:      string única (ids dos gradientes SVG não podem colidir),
-     solid:    [{dia,saldo}] realizado — o ÚLTIMO ponto é "hoje",
-     proj:     [{dia,saldo}] projetado — o PRIMEIRO ponto é "hoje" (mesmo
-               valor do último de `solid`), o último é o fim do mês,
-     diaIni/diaFim: domínio horizontal (dia do mês),
-     piso:     (opcional) saldo mínimo de segurança — linha tracejada,
-     minDia:   (opcional) dia do menor saldo projetado (ponto laranja),
-     selFase/selDia: ponto selecionado (0 = realizado, 1 = projetado),
-     onPoint:  (opcional) function(fase,dia) → handler de clique do ponto
-   }
-   Gradiente verde/vermelho com userSpaceOnUse: a cor muda exatamente onde o
-   saldo cruza o zero (mesma régua pra linha cheia, pontilhada e área). */
-function agSaldoLinhaChart(o) {
-  var W = 300, H = 50, padT = 6, padB = 14;
-  var solid = o.solid || [], proj = o.proj || [];
-  var vals = solid.map(function(p){ return p.saldo; }).concat(proj.map(function(p){ return p.saldo; }));
-  if (!vals.length) vals = [0];
-  var mnV = Math.min.apply(null, vals), mxV = Math.max.apply(null, vals);
-  var spV = Math.max(mxV - mnV, Math.abs(mxV) * 0.15, 1);
-  var piso = (o.piso !== null && o.piso !== undefined && !isNaN(o.piso)) ? o.piso : null;
-  /* piso só entra na escala se estiver perto da curva (até 3x a amplitude) —
-     um piso muito distante achataria a linha. */
-  var pisoNoGraf = piso !== null && piso >= mnV - 3 * spV && piso <= mxV + 3 * spV;
-  var esc = pisoNoGraf ? vals.concat([piso]) : vals;
-  var mn = Math.min.apply(null, esc), mx = Math.max.apply(null, esc), sp = (mx - mn) || 1;
-  var diaIni = o.diaIni, diaFim = o.diaFim;
-  var sx = function(d){ return (d - diaIni) / Math.max(1, diaFim - diaIni) * W; };
-  var sy = function(v){ return padT + (1 - (v - mn) / sp) * (H - padT - padB); };
-  var y0 = padT + (1 - (0 - mn) / sp) * (H - padT - padB);
-  var frac = Math.max(0, Math.min(1, y0 / H));
-  var stopA = Math.max(0, frac - 0.08), stopB = Math.min(1, frac + 0.08);
-  var smooth = function(pts){
-    if (pts.length < 2) return pts.length ? ('M' + pts[0].x + ',' + pts[0].y) : '';
-    var d = 'M' + pts[0].x + ',' + pts[0].y;
-    for (var i = 0; i < pts.length - 1; i++) {
-      var p0 = pts[i-1] || pts[i], p1 = pts[i], p2 = pts[i+1], p3 = pts[i+2] || p2;
-      d += ' C' + (p1.x + (p2.x - p0.x) / 8) + ',' + (p1.y + (p2.y - p0.y) / 8)
-        + ' ' + (p2.x - (p3.x - p1.x) / 8) + ',' + (p2.y - (p3.y - p1.y) / 8)
-        + ' ' + p2.x + ',' + p2.y;
-    }
-    return d;
-  };
-  var sPts = solid.map(function(p){ return { x: sx(p.dia), y: sy(p.saldo), dia: p.dia, saldo: p.saldo }; });
-  var pPts = proj.map(function(p){ return { x: sx(p.dia), y: sy(p.saldo), dia: p.dia, saldo: p.saldo }; });
-  var uid = String(o.uid || 'x');
-  var idS = 'gradSldS' + uid, idF = 'gradSldF' + uid, idG = 'glowSld' + uid;
-  var hojePt = sPts.length ? sPts[sPts.length - 1] : (pPts.length ? pPts[0] : null);
-  var fimPt = pPts.length ? pPts[pPts.length - 1] : hojePt;
-  var corHoje = hojePt && hojePt.saldo < 0 ? C.red : C.green;
-  var corFim = fimPt && fimPt.saldo < 0 ? C.red : C.green;
-  var isSel = function(f, d){ return o.selFase === f && o.selDia === d; };
-  var click = function(f, d){ return o.onPoint ? o.onPoint(f, d) : undefined; };
-  var kids = [];
-  kids.push(React.createElement('defs', { key:'defs' }
-    , React.createElement('linearGradient', { id:idS, gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:H }
-        , React.createElement('stop', { offset:0, stopColor:C.green })
-        , React.createElement('stop', { offset:stopA, stopColor:C.green })
-        , React.createElement('stop', { offset:stopB, stopColor:C.red })
-        , React.createElement('stop', { offset:1, stopColor:C.red }))
-    , React.createElement('linearGradient', { id:idF, gradientUnits:'userSpaceOnUse', x1:0, y1:0, x2:0, y2:H }
-        , React.createElement('stop', { offset:0, stopColor:C.green, stopOpacity:0.22 })
-        , React.createElement('stop', { offset:stopA, stopColor:C.green, stopOpacity:0.04 })
-        , React.createElement('stop', { offset:stopB, stopColor:C.red, stopOpacity:0.02 })
-        , React.createElement('stop', { offset:1, stopColor:C.red, stopOpacity:0.13 }))
-    , React.createElement('radialGradient', { id:idG, cx:'50%', cy:'50%', r:'50%' }
-        , React.createElement('stop', { offset:0, stopColor:corFim, stopOpacity:0.35 })
-        , React.createElement('stop', { offset:1, stopColor:corFim, stopOpacity:0 }))));
-  if (pisoNoGraf) {
-    var pisoY = sy(piso);
-    kids.push(React.createElement('rect', { key:'pisoBand', x:0, y:pisoY, width:W, height:Math.max(0, H - pisoY), fill:C.red, fillOpacity:0.06 }));
-    kids.push(React.createElement('line', { key:'pisoLn', x1:0, y1:pisoY, x2:W, y2:pisoY, stroke:C.red, strokeOpacity:0.7, strokeWidth:1, strokeDasharray:'3,3' }));
-  }
-  if (sPts.length >= 2) {
-    var dSolid = smooth(sPts);
-    kids.push(React.createElement('path', { key:'area', d: dSolid + ' L' + sPts[sPts.length-1].x + ',' + H + ' L' + sPts[0].x + ',' + H + ' Z', fill:'url(#' + idF + ')', stroke:'none' }));
-    kids.push(React.createElement('path', { key:'solid', d:dSolid, fill:'none', stroke:'url(#' + idS + ')', strokeWidth:1.8, strokeLinecap:'round', strokeLinejoin:'round' }));
-  }
-  if (pPts.length >= 2) {
-    /* pontilhado: traço de comprimento ~0 + linecap redondo = bolinhas */
-    kids.push(React.createElement('path', { key:'dots', d:smooth(pPts), fill:'none', stroke:'url(#' + idS + ')', strokeWidth:2.2, strokeDasharray:'0.1,5', strokeLinecap:'round', strokeLinejoin:'round' }));
-    kids.push(React.createElement('circle', { key:'glow', cx:fimPt.x, cy:fimPt.y, r:13, fill:'url(#' + idG + ')' }));
-  }
-  /* pontos do realizado (menos "hoje", desenhado por último) */
-  sPts.slice(0, -1).forEach(function(p, i){
-    kids.push(React.createElement('circle', { key:'s' + i, cx:p.x, cy:p.y, r:isSel(0, p.dia) ? 4.5 : 1.8, fill:p.saldo < 0 ? C.red : C.green, style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(0, p.dia) }));
-  });
-  /* pontos intermediários do projetado (a 1a posição é "hoje", a última é o fim do mês) */
-  pPts.slice(1, -1).forEach(function(p, i){
-    var isMin = o.minDia !== null && o.minDia !== undefined && p.dia === o.minDia;
-    kids.push(React.createElement('circle', { key:'p' + i, cx:p.x, cy:p.y, r:isSel(1, p.dia) ? 4.5 : (isMin ? 3 : 2), fill:isMin ? '#E39D58' : (p.saldo < 0 ? C.red : C.green), style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(1, p.dia) }));
-  });
-  if (pPts.length >= 2) {
-    kids.push(React.createElement('circle', { key:'fim', cx:fimPt.x, cy:fimPt.y, r:isSel(1, fimPt.dia) ? 4.5 : 3.5, fill:'#fff', stroke:corFim, strokeWidth:2.4, style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(1, fimPt.dia) }));
-  }
-  if (hojePt) {
-    kids.push(React.createElement('circle', { key:'hoje', cx:hojePt.x, cy:hojePt.y, r:isSel(0, hojePt.dia) ? 4.5 : 3.5, fill:'#fff', stroke:corHoje, strokeWidth:2.4, style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(0, hojePt.dia) }));
-  }
-  return React.createElement.apply(null, ['svg', { viewBox:'0 0 ' + W + ' ' + H, width:'100%', height:o.height || 44, preserveAspectRatio:'none' }].concat(kids));
-}
-
     return p.filter(function(x){ return String(x.id) !== String(res.removido); });
   }
   if (res.id != null) {

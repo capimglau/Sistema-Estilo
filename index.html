@@ -26959,6 +26959,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   const [lancTabExp, setLancTabExp] = React.useState(false);
   const [renDashExp, setRenDashExp] = React.useState(false);
   const [despDashExp, setDespDashExp] = React.useState(false);
+  const [despDotSel, setDespDotSel] = React.useState(null); /* dia selecionado na linha do mês das Despesas pendentes */
   const [recDashExp, setRecDashExp] = React.useState(false);
   const [manDashExp, setManDashExp] = React.useState(false);
   const [mulDashExp, setMulDashExp] = React.useState(false);
@@ -31130,58 +31131,74 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         );
       };
 
-      /* [despesas-linha-do-mes] Substitui a barra simples do painel Despesas pendentes:
-         cada despesa do mês vira um PONTO na posição do dia de vencimento (eixo 1→último dia).
-         Tamanho do ponto ∝ valor; verde = paga, vermelho = a pagar; despesas no mesmo dia
-         empilham pra cima; marcador "hoje" só no mês atual. Totais Pago/A pagar iguais aos de antes. */
+      /* [despesas-linha-do-mes] Painel Despesas pendentes — "Pirulito por valor":
+         UM ponto por dia de vencimento (despesas do mesmo dia agrupadas; nº de lançamentos dentro
+         do ponto), haste com gradiente cuja ALTURA segue o valor do dia, ponto com brilho em gradiente.
+         Verde = dia todo pago, vermelho = há a pagar. Toque no ponto = detalhe do dia (nomes e total);
+         toque no resto = abre o detalhamento como antes. Marcador "hoje" só no mês atual. */
       var _dotsRow = function(opts){
         var _ym = (dashMes||'').split('-'); var _y = parseInt(_ym[0],10), _m = parseInt(_ym[1],10);
         var _dias = (_y && _m) ? new Date(_y, _m, 0).getDate() : 30;
         var _mesesAbr = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
         var _isPg = function(d){ return d.status==='pago' || !!d.data_pagamento; };
-        var _its = (opts.items||[]).filter(function(d){ return d.data && d.data.slice(0,7)===dashMes; })
-          .slice().sort(function(a,b){ return (a.data||'').localeCompare(b.data||''); });
-        var _maxV = _its.reduce(function(m,d){ return Math.max(m, parseFloat(d.valor||0)); }, 1);
-        var _rOf = function(d){ return 4.5 + (parseFloat(d.valor||0)/_maxV)*4; };
-        var _x = function(day){ return ((Math.min(Math.max(day,1),_dias)-1)/Math.max(_dias-1,1))*100; };
-        /* empilhamento por dia: 1º ponto centrado no eixo; os seguintes sobem encostando */
-        var _porDia = {}; var _maxUp = 10;
+        var _brl = function(v){ return 'R$ '+parseFloat(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); };
+        var _its = (opts.items||[]).filter(function(d){ return d.data && d.data.slice(0,7)===dashMes; });
+        /* agrupa por dia */
+        var _gm = {};
         _its.forEach(function(d){
-          var day = parseInt(d.data.slice(8,10),10); var r = _rOf(d);
-          var g = _porDia[day] || (_porDia[day] = { last:null, c:0 });
-          var c = g.last===null ? 0 : g.c - (g.last + r + 1);
-          d.__c = c; d.__r = r; d.__day = day; g.last = r; g.c = c;
-          _maxUp = Math.max(_maxUp, -c + r);
+          var day = parseInt(d.data.slice(8,10),10);
+          var g = _gm[day] || (_gm[day] = { day:day, its:[], t:0, ok:true });
+          g.its.push(d); g.t += parseFloat(d.valor||0); if(!_isPg(d)) g.ok = false;
         });
-        var _topPad = 16; var _axisY = _topPad + _maxUp; var _H = _axisY + 26;
+        var _gs = Object.keys(_gm).map(function(k){ return _gm[k]; }).sort(function(a,b){ return a.day-b.day; });
+        var _maxT = _gs.reduce(function(m,g){ return Math.max(m,g.t); }, 1);
+        var _x = function(day){ return ((Math.min(Math.max(day,1),_dias)-1)/Math.max(_dias-1,1))*100; };
         var _hojeD = dashMes===hoje.slice(0,7) ? parseInt(hoje.slice(8,10),10) : -1;
-        var _pend = _its.filter(function(d){ return !_isPg(d); });
-        var _prox = _pend.filter(function(d){ return d.data>=hoje; })[0] || _pend[0] || null;
-        var _fmtDia = function(dt){ return parseInt(dt.slice(8,10),10)+' '+_mesesAbr[parseInt(dt.slice(5,7),10)-1]; };
+        /* seleção: a escolhida; senão o próximo vencimento a pagar; senão o 1º grupo */
+        var _gProx = _gs.filter(function(g){ return !g.ok && (_hojeD<0 || g.day>=_hojeD); })[0] || _gs.filter(function(g){ return !g.ok; })[0] || _gs[0] || null;
+        var _gSel = _gs.filter(function(g){ return g.day===despDotSel; })[0] || _gProx;
+        var _maxH = 52; var _axisY = 12 + 14 + 8 + 10 + _maxH; var _H = _axisY + 22;
         var _ticks = [1,10,20,_dias].filter(function(v,i,a){ return a.indexOf(v)===i; });
+        var _tone = function(c){ return {
+          stem:'linear-gradient(to top, color-mix(in srgb, '+c+' 10%, transparent) 0%, color-mix(in srgb, '+c+' 72%, transparent) 100%)',
+          dot:'radial-gradient(circle at 32% 26%, color-mix(in srgb, white 48%, '+c+') 0%, '+c+' 56%, color-mix(in srgb, black 24%, '+c+') 100%)',
+          glow:'color-mix(in srgb, '+c+' 55%, transparent)', halo:'color-mix(in srgb, '+c+' 18%, transparent)' }; };
         return React.createElement('div', { onClick:opts.onClick, style:{ padding:'0 16px 14px', cursor:'pointer' } }
           , React.createElement('div', { style:{ position:'relative', height:_H, margin:'0 8px' } }
             /* eixo */
             , React.createElement('div', { style:{ position:'absolute', left:0, right:0, top:_axisY-1, height:2, borderRadius:2, background:C.border } })
             /* ticks */
-            , _ticks.map(function(t){ return React.createElement('div', { key:'t'+t, style:{ position:'absolute', left:_x(t)+'%', top:_axisY+12, transform:'translateX(-50%)', fontSize:10, color:C.sub } }, t); })
+            , _ticks.map(function(t){ return React.createElement('div', { key:'t'+t, style:{ position:'absolute', left:_x(t)+'%', top:_axisY+10, transform:'translateX(-50%)', fontSize:10, color:C.sub } }, t); })
             /* hoje */
-            , _hojeD>0 && React.createElement('div', { style:{ position:'absolute', left:_x(_hojeD)+'%', top:12, height:_axisY-12+8, borderLeft:'1px dashed '+C.red, opacity:.8 } })
+            , _hojeD>0 && React.createElement('div', { style:{ position:'absolute', left:_x(_hojeD)+'%', top:12, height:_axisY-12+6, borderLeft:'1px dashed '+C.red, opacity:.7 } })
             , _hojeD>0 && React.createElement('div', { style:{ position:'absolute', left:_x(_hojeD)+'%', top:0, transform:'translateX(-50%)', fontSize:10, fontWeight:700, color:C.red } }, 'hoje')
-            /* pontos */
-            , _its.map(function(d, i){
-                var r = d.__r;
-                return React.createElement('div', { key:(d.id||'d')+'-'+i, style:{
-                  position:'absolute', left:'calc('+_x(d.__day)+'% - '+r+'px)', top:(_axisY + d.__c - r),
-                  width:r*2, height:r*2, borderRadius:'50%', boxSizing:'border-box',
-                  background:_isPg(d) ? C.green : C.red, border:'1.5px solid '+C.card } });
+            /* hastes (gradiente) */
+            , _gs.map(function(g){
+                var h = 10 + (g.t/_maxT)*_maxH; var tn = _tone(g.ok ? C.green : C.red);
+                return React.createElement('div', { key:'s'+g.day, style:{ position:'absolute', left:'calc('+_x(g.day)+'% - 1.25px)', width:2.5, top:_axisY-h, height:h, borderRadius:2, background:tn.stem } });
               })
+            /* pontos (gradiente + brilho), um por dia */
+            , _gs.map(function(g){
+                var h = 10 + (g.t/_maxT)*_maxH; var r = g.its.length>1 ? 7.5 : 5; var sel = _gSel && _gSel.day===g.day;
+                var tn = _tone(g.ok ? C.green : C.red); var hit = r*2+10;
+                return React.createElement('div', { key:'p'+g.day, onClick:function(e){ e.stopPropagation(); setDespDotSel(g.day); },
+                  style:{ position:'absolute', left:'calc('+_x(g.day)+'% - '+(hit/2)+'px)', top:(_axisY-h-hit/2), width:hit, height:hit, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' } }
+                  , React.createElement('div', { style:{ width:r*2, height:r*2, borderRadius:'50%', boxSizing:'border-box', background:tn.dot, border:'1.5px solid '+C.card,
+                      boxShadow:(sel?'0 0 0 4px '+tn.halo+', ':'')+'0 2px 6px -1px '+tn.glow, display:'flex', alignItems:'center', justifyContent:'center',
+                      fontSize:10, fontWeight:700, color:'#fff', lineHeight:1, transition:'box-shadow .15s' } }, g.its.length>1 ? g.its.length : null));
+              })
+            /* valor do dia selecionado, acima do ponto */
+            , _gSel && React.createElement('div', { style:{ position:'absolute', left:_x(_gSel.day)+'%', top:_axisY-(10+(_gSel.t/_maxT)*_maxH)-(_gSel.its.length>1?7.5:5)-18, transform:'translateX(-50%)', fontSize:10, fontWeight:700, color:'var(--c-text)', whiteSpace:'nowrap', pointerEvents:'none' } }, 'R$ '+Math.round(_gSel.t).toLocaleString('pt-BR'))
           )
-          , _prox && React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', gap:8, marginTop:4, fontSize:11, color:C.sub } }
-            , React.createElement('div', { style:{ minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }
-              , 'Próximo: ', React.createElement('b', { style:{ fontWeight:700, color:'var(--c-text)' } }, _fmtDia(_prox.data)+' · '+(_prox.descricao||_prox.categoria||'Despesa')))
-            , React.createElement('div', { style:{ flexShrink:0, fontWeight:700, color:'var(--c-text)' } }, 'R$ '+parseFloat(_prox.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})))
-          , React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', marginTop:8 } }
+          /* detalhe do dia selecionado */
+          , _gSel && React.createElement('div', { style:{ marginTop:6, padding:'8px 10px', borderRadius:10, background:'color-mix(in srgb, '+(_gSel.ok?C.green:C.red)+' 7%, transparent)' } }
+            , React.createElement('div', { style:{ fontSize:12, color:'var(--c-text)' } }
+              , React.createElement('b', { style:{ fontWeight:700 } }, _gSel.day+' '+_mesesAbr[(_m||1)-1])
+              , ' · '+_gSel.its.length+' '+(_gSel.its.length>1?'despesas':'despesa')+' · '
+              , React.createElement('b', { style:{ fontWeight:700 } }, _brl(_gSel.t)))
+            , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } },
+                _gSel.its.map(function(d){ return d.descricao||d.categoria||'Despesa'; }).join(' · ')))
+          , React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', marginTop:10 } }
             , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:opts.corPago } }, opts.labelPago+': ', React.createElement(BRLValue, { v:opts.pago, size:12, weight:700, color:opts.corPago }))
             , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:opts.corRestante } }, opts.labelRestante+': ', React.createElement(BRLValue, { v:Math.max(0,opts.total-opts.pago), size:12, weight:700, color:opts.corRestante }))
           )

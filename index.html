@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="9c8ddcf"/>
+<meta name="ag-build" content="869e30b"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -26960,6 +26960,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   const [renDashExp, setRenDashExp] = React.useState(false);
   const [despDashExp, setDespDashExp] = React.useState(false);
   const [despDotSel, setDespDotSel] = React.useState(null); /* dia selecionado na linha do mês das Despesas pendentes */
+  const [recDotSel, setRecDotSel] = React.useState(null); /* dia selecionado na linha do mês dos Recebimentos de locação */
   const [recDashExp, setRecDashExp] = React.useState(false);
   const [manDashExp, setManDashExp] = React.useState(false);
   const [mulDashExp, setMulDashExp] = React.useState(false);
@@ -31106,6 +31107,20 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var _despTotalBar  = _despTodasMesBar.reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
       var _despPagoBar   = _despTodasMesBar.filter(function(d){ return d.status==='pago' || !!d.data_pagamento; }).reduce(function(s,d){ return s+parseFloat(d.valor||0); }, 0);
 
+      /* [recebimentos-linha-do-mes] Mesma "linha do mês" das Despesas, agora para os contratos:
+         pago = data em que entrou (data_pagamento); em aberto = previsão. Cancelado/isento fora. */
+      var _recChartItens = (contratos||[]).filter(function(c){
+          return c.status!=='cancelado' && c.status_pagamento!=='isento' && rdMesDoContrato(c)===dashMes;
+        }).map(function(c){
+          var _pg = c.status_pagamento==='pago';
+          var _cl = (clientes||[]).find(function(x){ return x.id==c.cliente_id; });
+          return { id:c.id, data:String((_pg ? (c.data_pagamento||c.previsao_pagamento) : c.previsao_pagamento)||'').slice(0,10),
+                   valor:parseFloat(c.valor_total||0), status:_pg?'pago':'aberto',
+                   descricao:(_cl&&_cl.nome)||('CT-'+String(c.id).padStart(4,'0')) };
+        }).filter(function(d){ return d.data; });
+      var _recTotalBar = _recChartItens.reduce(function(s,d){ return s+d.valor; }, 0);
+      var _recPagoBar  = _recChartItens.filter(function(d){ return d.status==='pago'; }).reduce(function(s,d){ return s+d.valor; }, 0);
+
       var _barModalState = React.useState(null); var _barModal = _barModalState[0]; var setBarModal = _barModalState[1];
 
       var _barRow = function(opts){
@@ -31140,7 +31155,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         var _ym = (dashMes||'').split('-'); var _y = parseInt(_ym[0],10), _m = parseInt(_ym[1],10);
         var _dias = (_y && _m) ? new Date(_y, _m, 0).getDate() : 30;
         var _mesesAbr = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
-        var _isPg = function(d){ return d.status==='pago' || !!d.data_pagamento; };
+        var _isPg = opts.isPg || function(d){ return d.status==='pago' || !!d.data_pagamento; };
+        var _un = opts.un || ['despesa','despesas'];
+        var _selDia = opts.sel!==undefined ? opts.sel : despDotSel; var _setSel = opts.setSel || setDespDotSel;
         var _brl = function(v){ return 'R$ '+parseFloat(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); };
         var _its = (opts.items||[]).filter(function(d){ return d.data && d.data.slice(0,7)===dashMes; });
         /* agrupa por dia */
@@ -31151,19 +31168,22 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           g.its.push(d); g.t += parseFloat(d.valor||0); if(!_isPg(d)) g.ok = false;
         });
         var _gs = Object.keys(_gm).map(function(k){ return _gm[k]; }).sort(function(a,b){ return a.day-b.day; });
+        /* grupo atrasado = ainda a pagar/receber e com a data já passada */
+        _gs.forEach(function(g){ g.venc = !g.ok && (dashMes+'-'+(g.day<10?'0':'')+g.day) < hoje; });
+        var _corG = function(g){ return opts.corGrupo ? opts.corGrupo(g) : (g.ok ? C.green : C.red); };
         var _maxT = _gs.reduce(function(m,g){ return Math.max(m,g.t); }, 1);
         var _x = function(day){ return ((Math.min(Math.max(day,1),_dias)-1)/Math.max(_dias-1,1))*100; };
         var _hojeD = dashMes===hoje.slice(0,7) ? parseInt(hoje.slice(8,10),10) : -1;
         /* seleção: a escolhida; senão o próximo vencimento a pagar; senão o 1º grupo */
         var _gProx = _gs.filter(function(g){ return !g.ok && (_hojeD<0 || g.day>=_hojeD); })[0] || _gs.filter(function(g){ return !g.ok; })[0] || _gs[0] || null;
-        var _gSel = _gs.filter(function(g){ return g.day===despDotSel; })[0] || _gProx;
+        var _gSel = _gs.filter(function(g){ return g.day===_selDia; })[0] || _gProx;
         var _maxH = 52; var _axisY = 12 + 14 + 8 + 10 + _maxH; var _H = _axisY + 22;
         var _ticks = [1,10,20,_dias].filter(function(v,i,a){ return a.indexOf(v)===i; });
         var _tone = function(c){ return {
           stem:'linear-gradient(to top, color-mix(in srgb, '+c+' 10%, transparent) 0%, color-mix(in srgb, '+c+' 72%, transparent) 100%)',
           dot:'radial-gradient(circle at 32% 26%, color-mix(in srgb, white 48%, '+c+') 0%, '+c+' 56%, color-mix(in srgb, black 24%, '+c+') 100%)',
           glow:'color-mix(in srgb, '+c+' 55%, transparent)', halo:'color-mix(in srgb, '+c+' 18%, transparent)' }; };
-        return React.createElement('div', { onClick:opts.onClick, style:{ padding:'0 16px 14px', cursor:'pointer' } }
+        return React.createElement('div', { onClick:opts.onClick, style:{ padding:'0 16px 14px', cursor:opts.onClick?'pointer':'default' } }
           , React.createElement('div', { style:{ position:'relative', height:_H, margin:'0 8px' } }
             /* eixo */
             , React.createElement('div', { style:{ position:'absolute', left:0, right:0, top:_axisY-1, height:2, borderRadius:2, background:C.border } })
@@ -31174,14 +31194,14 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
             , _hojeD>0 && React.createElement('div', { style:{ position:'absolute', left:_x(_hojeD)+'%', top:0, transform:'translateX(-50%)', fontSize:10, fontWeight:700, color:C.red } }, 'hoje')
             /* hastes (gradiente) */
             , _gs.map(function(g){
-                var h = 10 + (g.t/_maxT)*_maxH; var tn = _tone(g.ok ? C.green : C.red);
+                var h = 10 + (g.t/_maxT)*_maxH; var tn = _tone(_corG(g));
                 return React.createElement('div', { key:'s'+g.day, style:{ position:'absolute', left:'calc('+_x(g.day)+'% - 1.25px)', width:2.5, top:_axisY-h, height:h, borderRadius:2, background:tn.stem } });
               })
             /* pontos (gradiente + brilho), um por dia */
             , _gs.map(function(g){
                 var h = 10 + (g.t/_maxT)*_maxH; var r = g.its.length>1 ? 7.5 : 5; var sel = _gSel && _gSel.day===g.day;
-                var tn = _tone(g.ok ? C.green : C.red); var hit = r*2+10;
-                return React.createElement('div', { key:'p'+g.day, onClick:function(e){ e.stopPropagation(); setDespDotSel(g.day); },
+                var tn = _tone(_corG(g)); var hit = r*2+10;
+                return React.createElement('div', { key:'p'+g.day, onClick:function(e){ e.stopPropagation(); _setSel(g.day); },
                   style:{ position:'absolute', left:'calc('+_x(g.day)+'% - '+(hit/2)+'px)', top:(_axisY-h-hit/2), width:hit, height:hit, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' } }
                   , React.createElement('div', { style:{ width:r*2, height:r*2, borderRadius:'50%', boxSizing:'border-box', background:tn.dot, border:'1.5px solid '+C.card,
                       boxShadow:(sel?'0 0 0 4px '+tn.halo+', ':'')+'0 2px 6px -1px '+tn.glow, display:'flex', alignItems:'center', justifyContent:'center',
@@ -31191,10 +31211,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
             , _gSel && React.createElement('div', { style:{ position:'absolute', left:_x(_gSel.day)+'%', top:_axisY-(10+(_gSel.t/_maxT)*_maxH)-(_gSel.its.length>1?7.5:5)-18, transform:'translateX(-50%)', fontSize:10, fontWeight:700, color:'var(--c-text)', whiteSpace:'nowrap', pointerEvents:'none' } }, 'R$ '+Math.round(_gSel.t).toLocaleString('pt-BR'))
           )
           /* detalhe do dia selecionado */
-          , _gSel && React.createElement('div', { style:{ marginTop:6, padding:'8px 10px', borderRadius:10, background:'color-mix(in srgb, '+(_gSel.ok?C.green:C.red)+' 7%, transparent)' } }
+          , _gSel && React.createElement('div', { style:{ marginTop:6, padding:'8px 10px', borderRadius:10, background:'color-mix(in srgb, '+_corG(_gSel)+' 7%, transparent)' } }
             , React.createElement('div', { style:{ fontSize:12, color:'var(--c-text)' } }
               , React.createElement('b', { style:{ fontWeight:700 } }, _gSel.day+' '+_mesesAbr[(_m||1)-1])
-              , ' · '+_gSel.its.length+' '+(_gSel.its.length>1?'despesas':'despesa')+' · '
+              , ' · '+_gSel.its.length+' '+(_gSel.its.length>1?_un[1]:_un[0])+' · '
               , React.createElement('b', { style:{ fontWeight:700 } }, _brl(_gSel.t)))
             , React.createElement('div', { style:{ fontSize:11, color:C.sub, marginTop:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } },
                 _gSel.its.map(function(d){ return d.descricao||d.categoria||'Despesa'; }).join(' · ')))
@@ -31864,6 +31884,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
             , _recList.length===0
               ? null
               : React.createElement(React.Fragment, null
+                  , _recTotalBar>0 && _dotsRow({ items:_recChartItens, sel:recDotSel, setSel:setRecDotSel, un:['recebimento','recebimentos'],
+                      isPg:function(d){ return d.status==='pago'; },
+                      corGrupo:function(g){ return g.ok ? C.green : (g.venc ? C.red : C.orange); },
+                      pago:_recPagoBar, total:_recTotalBar, corPago:C.green, corRestante:C.orange, labelPago:'Recebido', labelRestante:'A receber' })
                   , React.createElement('div', { style:_panList }, _recShow.map(_recCard))
                   , _moreBtn(_recMore, recDashExp, setRecDashExp, C.green)
                 )

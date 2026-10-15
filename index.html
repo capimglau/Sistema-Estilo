@@ -31130,6 +31130,64 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         );
       };
 
+      /* [despesas-linha-do-mes] Substitui a barra simples do painel Despesas pendentes:
+         cada despesa do mês vira um PONTO na posição do dia de vencimento (eixo 1→último dia).
+         Tamanho do ponto ∝ valor; verde = paga, vermelho = a pagar; despesas no mesmo dia
+         empilham pra cima; marcador "hoje" só no mês atual. Totais Pago/A pagar iguais aos de antes. */
+      var _dotsRow = function(opts){
+        var _ym = (dashMes||'').split('-'); var _y = parseInt(_ym[0],10), _m = parseInt(_ym[1],10);
+        var _dias = (_y && _m) ? new Date(_y, _m, 0).getDate() : 30;
+        var _mesesAbr = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+        var _isPg = function(d){ return d.status==='pago' || !!d.data_pagamento; };
+        var _its = (opts.items||[]).filter(function(d){ return d.data && d.data.slice(0,7)===dashMes; })
+          .slice().sort(function(a,b){ return (a.data||'').localeCompare(b.data||''); });
+        var _maxV = _its.reduce(function(m,d){ return Math.max(m, parseFloat(d.valor||0)); }, 1);
+        var _rOf = function(d){ return 4.5 + (parseFloat(d.valor||0)/_maxV)*4; };
+        var _x = function(day){ return ((Math.min(Math.max(day,1),_dias)-1)/Math.max(_dias-1,1))*100; };
+        /* empilhamento por dia: 1º ponto centrado no eixo; os seguintes sobem encostando */
+        var _porDia = {}; var _maxUp = 10;
+        _its.forEach(function(d){
+          var day = parseInt(d.data.slice(8,10),10); var r = _rOf(d);
+          var g = _porDia[day] || (_porDia[day] = { last:null, c:0 });
+          var c = g.last===null ? 0 : g.c - (g.last + r + 1);
+          d.__c = c; d.__r = r; d.__day = day; g.last = r; g.c = c;
+          _maxUp = Math.max(_maxUp, -c + r);
+        });
+        var _topPad = 16; var _axisY = _topPad + _maxUp; var _H = _axisY + 26;
+        var _hojeD = dashMes===hoje.slice(0,7) ? parseInt(hoje.slice(8,10),10) : -1;
+        var _pend = _its.filter(function(d){ return !_isPg(d); });
+        var _prox = _pend.filter(function(d){ return d.data>=hoje; })[0] || _pend[0] || null;
+        var _fmtDia = function(dt){ return parseInt(dt.slice(8,10),10)+' '+_mesesAbr[parseInt(dt.slice(5,7),10)-1]; };
+        var _ticks = [1,10,20,_dias].filter(function(v,i,a){ return a.indexOf(v)===i; });
+        return React.createElement('div', { onClick:opts.onClick, style:{ padding:'0 16px 14px', cursor:'pointer' } }
+          , React.createElement('div', { style:{ position:'relative', height:_H, margin:'0 8px' } }
+            /* eixo */
+            , React.createElement('div', { style:{ position:'absolute', left:0, right:0, top:_axisY-1, height:2, borderRadius:2, background:C.border } })
+            /* ticks */
+            , _ticks.map(function(t){ return React.createElement('div', { key:'t'+t, style:{ position:'absolute', left:_x(t)+'%', top:_axisY+12, transform:'translateX(-50%)', fontSize:10, color:C.sub } }, t); })
+            /* hoje */
+            , _hojeD>0 && React.createElement('div', { style:{ position:'absolute', left:_x(_hojeD)+'%', top:12, height:_axisY-12+8, borderLeft:'1px dashed '+C.red, opacity:.8 } })
+            , _hojeD>0 && React.createElement('div', { style:{ position:'absolute', left:_x(_hojeD)+'%', top:0, transform:'translateX(-50%)', fontSize:10, fontWeight:700, color:C.red } }, 'hoje')
+            /* pontos */
+            , _its.map(function(d, i){
+                var r = d.__r;
+                return React.createElement('div', { key:(d.id||'d')+'-'+i, style:{
+                  position:'absolute', left:'calc('+_x(d.__day)+'% - '+r+'px)', top:(_axisY + d.__c - r),
+                  width:r*2, height:r*2, borderRadius:'50%', boxSizing:'border-box',
+                  background:_isPg(d) ? C.green : C.red, border:'1.5px solid '+C.card } });
+              })
+          )
+          , _prox && React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', gap:8, marginTop:4, fontSize:11, color:C.sub } }
+            , React.createElement('div', { style:{ minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }
+              , 'Próximo: ', React.createElement('b', { style:{ fontWeight:700, color:'var(--c-text)' } }, _fmtDia(_prox.data)+' · '+(_prox.descricao||_prox.categoria||'Despesa')))
+            , React.createElement('div', { style:{ flexShrink:0, fontWeight:700, color:'var(--c-text)' } }, 'R$ '+parseFloat(_prox.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})))
+          , React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', marginTop:8 } }
+            , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:opts.corPago } }, opts.labelPago+': ', React.createElement(BRLValue, { v:opts.pago, size:12, weight:700, color:opts.corPago }))
+            , React.createElement('div', { style:{ fontSize:12, fontWeight:700, color:opts.corRestante } }, opts.labelRestante+': ', React.createElement(BRLValue, { v:Math.max(0,opts.total-opts.pago), size:12, weight:700, color:opts.corRestante }))
+          )
+        );
+      };
+
       var _renShow  = renDashExp  ? _renList      : _renList.slice(0,4);
       var _despShow = despDashExp ? _despPendList : _despPendList.slice(0,4);
       var _recShow  = recDashExp  ? _recList      : _recList.slice(0,4);
@@ -31758,7 +31816,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         /* ── DESPESAS PENDENTES ── */
         , _mostraPan(_despPendList.length) && React.createElement('div', { style:_panBase }
           , _panHdr('Despesas pendentes', _despPendList.length, C.red)
-          , _despTotalBar>0 && _barRow({ pago:_despPagoBar, total:_despTotalBar, corPago:C.green, corRestante:C.red, labelPago:'Pago', labelRestante:'A pagar', onClick:function(){ setBarModal('despesas'); } })
+          , _despTotalBar>0 && _dotsRow({ items:_despTodasMesBar, pago:_despPagoBar, total:_despTotalBar, corPago:C.green, corRestante:C.red, labelPago:'Pago', labelRestante:'A pagar', onClick:function(){ setBarModal('despesas'); } })
           , React.createElement('div', { style:_panBody }
             , _despPendList.length===0
               ? null

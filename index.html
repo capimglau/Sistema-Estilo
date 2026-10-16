@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="e903037"/>
+<meta name="ag-build" content="eed688e"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -52501,6 +52501,57 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
      usuário). */
   }, [desktop, mostrarBoard, dias, atrasadosRecolhido, diasExpandidos]);
 
+  /* [agenda-rente-pc] Mesmo comportamento do mobile no PC: o painel da Agenda tem a altura do MAIOR
+     card entre as colunas que estão VISÍVEIS agora (as que cruzam a janela de rolagem lateral), e não da
+     coluna mais alta do mês inteiro — um dia escondido à direita com 4+ cards deixava um vão enorme
+     entre o último card da Agenda e os painéis de baixo (bug reportado por print). Remede quando a
+     rolagem lateral para, ao redimensionar, ao expandir um baralho "+N" e quando os dados mudam. */
+  React.useLayoutEffect(function(){
+    if (!desktop || !mostrarBoard) return;
+    var wrap = _boardWrapRef.current;
+    if (!wrap) return;
+    var _medirPc = function(){
+      if (!wrap.offsetParent) return; /* Dashboard oculta (Orçamento Pessoal): não grava altura colapsada */
+      var wr = wrap.getBoundingClientRect();
+      if (!wr.width) return;
+      var els = _colElsRef.current, maxH = 0, padV = 0, achou = false;
+      Object.keys(els).forEach(function(k){
+        var el = els[k]; if (!el) return;
+        var r = el.getBoundingClientRect();
+        var overlap = Math.min(r.right, wr.right) - Math.max(r.left, wr.left);
+        if (overlap < 8) return;
+        achou = true;
+        if (el.scrollHeight > maxH) maxH = el.scrollHeight;
+        if (!padV) {
+          var b = el.parentElement, cs = b ? window.getComputedStyle(b) : null;
+          padV = cs ? ((parseFloat(cs.paddingTop)||0) + (parseFloat(cs.paddingBottom)||0)) : 0;
+        }
+      });
+      if (!achou) return;
+      var h = Math.ceil(maxH + padV);
+      _setBoardH(function(prev){ return (prev != null && Math.abs(prev - h) < 2) ? prev : h; });
+    };
+    _medirPc();
+    var _tm = null;
+    var _deb = function(){ clearTimeout(_tm); _tm = setTimeout(_medirPc, 80); };
+    wrap.addEventListener('scroll', _deb, { passive:true });
+    window.addEventListener('resize', _medirPc);
+    var _remedirPc = function(){ requestAnimationFrame(function(){ requestAnimationFrame(_medirPc); }); };
+    window.addEventListener('ag:dash-mode-changed', _remedirPc);
+    var _ro = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      _ro = new ResizeObserver(_deb);
+      Object.keys(_colElsRef.current).forEach(function(k){ if (_colElsRef.current[k]) _ro.observe(_colElsRef.current[k]); });
+    }
+    return function(){
+      clearTimeout(_tm);
+      wrap.removeEventListener('scroll', _deb);
+      window.removeEventListener('resize', _medirPc);
+      window.removeEventListener('ag:dash-mode-changed', _remedirPc);
+      if (_ro) _ro.disconnect();
+    };
+  }, [desktop, mostrarBoard, dias, atrasadosRecolhido, diasExpandidos, filtro]);
+
   /* [agenda-assentar-rapido] Rede de segurança do enquadramento no mobile: quando a rolagem lateral
      entre colunas (ex.: Atrasados ↔ Hoje) para PELA METADE e o scroll-snap nativo não assenta (relato:
      8s ou mais), 140ms depois do último evento de scroll — e com o dedo fora da tela — calcula a coluna
@@ -52636,7 +52687,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
         )
       )
       , React.createElement('div', { className:"agk2-board-wrap"+(desktop?" agk2-board-wrap-desktop":""), ref:_boardWrapRef,
-          style: _boardH!=null ? { height:_boardH+"px" } : null }
+          style: _boardH!=null ? (desktop ? { height:_boardH+"px", flex:"0 0 auto" } : { height:_boardH+"px" }) : null }
         , !dias.length
           ? React.createElement('div', { className:"agk2-day-empty", style:{ margin:"4px 20px" } }, "Sem eventos no período")
           : React.createElement('div', { className: mostrarBoard ? ("agk2-board"+(!desktop?" agk2-board-mobile":"")) : "agk2-timeline" }

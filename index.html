@@ -40628,6 +40628,25 @@ function PessoalDash({
           var vsCor = vsMed===null||Math.abs(vsMed)<5 ? C.sub : ((vsMed>0)!==se.inv ? C.red : C.green);
           var itsC = _desps.filter(function(it){return (it.categoria||'Outros')===se.cat;}).sort(function(a,b){return (a.data||'').localeCompare(b.data||'');});
           var mAb=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+          /* Editar direto da lista do envelope — mesma regra de recorrência das Pendências:
+             ocorrência projetada nunca abre o template; edita a filha do mês ou prepara a criação dela. */
+          function _editarEnv(it){
+            var _tpl = _itSrc.find(function(x){ return String(x.id) === String(it.id); }) || it;
+            var _emTpl = _tpl.data ? _tpl.data.slice(0,7) : _tpl.mes;
+            var _ehProj = !!(_tpl.recorrente && _emTpl !== _mes);
+            if (_ehProj) {
+              var _filho = _itSrc.find(function(x){
+                return String(x.recorrencia_origem_id) === String(_tpl.id) && (x.data ? x.data.slice(0,7) : x.mes) === _mes;
+              });
+              if (_filho) { setPForm(Object.assign({}, _filho)); setPEdit(_filho.id); }
+              else {
+                setPForm(Object.assign({}, _tpl, { id: undefined, data: it.data || _tpl.data, mes: _mes, status: 'previsto', data_pagamento: null, recorrente: false, recorrencia_origem_id: _tpl.id }));
+                setPEdit(null);
+              }
+            } else { setPForm(Object.assign({}, _tpl)); setPEdit(_tpl.id); }
+            _setEnvSel(null);
+            setPModal(true);
+          }
           sheetEl = React.createElement(Modal,{open:true,onClose:function(){_setEnvSel(null);},wide:true,title:icOf(se.cat)+' '+nomeOf(se.cat)}
             ,React.createElement('div',{style:{fontSize:12,color:C.sub,marginBottom:10}},GRP_P[se.g].n+(se.ref>0?(' · '+(se.tipo==='orc'?'orçamento ':'mês anterior ')+f0(se.ref)):' · sem referência'))
             ,se.ref>0?React.createElement('div',{style:{display:'flex',height:12,borderRadius:99,overflow:'hidden',background:'rgba(120,120,128,0.16)'}}
@@ -40658,11 +40677,12 @@ function PessoalDash({
             ,itsC.length===0?React.createElement('div',{style:{padding:'14px 0',fontSize:12.5,color:C.sub}},'Nenhum lançamento neste mês.'):itsC.map(function(it,i){
               var dt = it.data ? new Date(it.data.slice(0,10)+'T00:00:00') : null;
               var pg = it.status==='pago', atr = !pg && it.data && it.data.slice(0,10)<_hoje;
-              return React.createElement('div',{key:it.id||i,style:{display:'flex',alignItems:'center',gap:8,padding:'9px 0',borderTop:i?'1px solid '+C.borderSoft:'none'}}
+              return React.createElement('div',{key:it.id||i,role:'button',tabIndex:0,onClick:function(){_editarEnv(it);},style:{display:'flex',alignItems:'center',gap:8,padding:'9px 0',cursor:'pointer',borderTop:i?'1px solid '+C.borderSoft:'none'}}
                 ,React.createElement('span',{style:{fontSize:10,color:C.sub,fontWeight:600,minWidth:34,flexShrink:0}},dt?(dt.getDate()+' '+mAb[dt.getMonth()]):'')
                 ,React.createElement('span',{style:{fontSize:13,flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},it.descricao||nomeOf(se.cat))
                 ,React.createElement('span',{style:{display:'inline-block',fontSize:10,fontWeight:700,padding:'2px 6px',borderRadius:99,background:(pg?C.green:atr?C.red:C.sub)+'26',color:pg?C.green:atr?C.red:C.sub}},pg?'Pago':atr?'Atrasado':'A pagar')
                 ,React.createElement(BRLValue,{v:it.valor,size:13,weight:700})
+                ,React.createElement('span',{style:{fontSize:16,color:C.sub,marginLeft:2,lineHeight:1}},'\u203A')
               );
             })
           );
@@ -41181,11 +41201,10 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     try {
       if (edit) {
         /* USA return=minimal: só verifica se HTTP 200/204, sem precisar de SELECT */
-        var _hdr = { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY,
-          'Content-Type': 'application/json', 'Prefer': 'return=minimal' };
-        var _r = await fetch(SB_URL + '/rest/v1/orcamento_pessoal?id=eq.' + String(edit), {
+        var _hdr = Object.assign({}, HDR, { 'Prefer': 'return=minimal' });
+        var _r = await _agFetchAuth(SB_URL + '/rest/v1/orcamento_pessoal?id=eq.' + encodeURIComponent(String(edit)), {
           method: 'PATCH', headers: _hdr, body: JSON.stringify(payload)
-        });
+        }, 30000);
         if (!_r.ok) {
           var _ej = null;
           try { _ej = await _r.json(); } catch(_){}
@@ -41233,7 +41252,7 @@ function OrcamentoPessoal({ contratos, despesas, receitas, manutencoes, multas, 
     } catch(e) {
       console.error("save error:", e);
       var _em = (e.message || String(e));
-      alert('Erro ao salvar:\n' + _em + '\n\nSe for problema de permissão, execute no Supabase SQL Editor:\nalter table orcamento_pessoal disable row level security;\ngrant all on orcamento_pessoal to anon;');
+      toast('❌ Erro ao salvar: ' + _em + (/permission denied/i.test(_em) ? ' — saia e entre de novo no app para renovar a sessão' : ''), 'error');
       toast("❌ Erro ao salvar", "error");
     }
     setSaving(false);

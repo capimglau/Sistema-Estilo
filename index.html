@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="0fd43c7"/>
+<meta name="ag-build" content="2123817"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -30188,7 +30188,76 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       );
     })()
 
-    /* ══ Saldo nas contas (logo abaixo da Agenda) ══
+    /* ── PAINÉIS: Despesas por Categoria + Receitas por Cliente ──
+       (pedido do usuário: logo abaixo da Agenda, antes do Saldo nas contas. O marginTop
+       negativo é o mesmo "puxão" em direção à Agenda que antes era do card Saldo.) */
+    , (() => {
+      /* [rd-mes] A conta vive em rdLinhasReceitaCliente/rdLinhasDespesaCategoria
+         (escopo global) — a mesma que Relatórios › Gráficos usa. Antes cada
+         tela tinha a sua cópia e elas divergiam: aqui era a competência do
+         mês, lá era o histórico inteiro. */
+      var rdReceitaRowsInicio = rdLinhasReceitaCliente(receitas, contratos, clientes, dashMes);
+      var rdDespesaRowsInicio = rdLinhasDespesaCategoria(despesas, manutencoes, dashMes);
+      var despesaItems = rdGroupBy(rdDespesaRowsInicio, new Set(), RD_COR_CATEGORIA);
+      var receitaItems = rdGroupBy(rdReceitaRowsInicio, new Set(), RD_PALETTE_CLIENTE);
+      var totalDespesaInicio = rdSum(rdDespesaRowsInicio);
+      var totalReceitaInicio = rdSum(rdReceitaRowsInicio);
+
+      /* Painel único reaproveitado pelos dois lados — cabeçalho clicável +
+         total + FunnelBars. Sem slice/corte de itens: mostra TODAS as
+         categorias/clientes do mês, sem cortar linhas. */
+      function _painelFunil(opts){
+        return React.createElement('div', { style:{ flex:1, minWidth:0, display:"flex", flexDirection:"column" } }
+          , React.createElement('div', { onClick:opts.onTitleClick, style:{ fontSize:12, fontWeight:700, color:C.sub, marginBottom:8, cursor:opts.onTitleClick?"pointer":"default", display:"flex", alignItems:"center", gap:4 } }
+            , opts.title
+            , opts.onTitleClick && React.createElement('span', { style:{ fontSize:11, opacity:0.55 } }, "→")
+          )
+          , React.createElement('div', { style:{ background:C.card, borderRadius:18, border:"1px solid "+C.border, padding:"14px 16px 16px", flex:1 } }
+            /* size 17 (era 20, −3px pedido do usuário) */
+            , (function(){
+                /* [trilho-pendente] barra fina dividida (já andou x falta) + legenda, só quando existe pendência */
+                var _tI = 0, _pI = 0; opts.items.forEach(function(it){ _tI += it.value||0; _pI += it.pendente||0; });
+                var _on = _pI > 0.005 && _tI > 0 && !!opts.rotuloPendente;
+                var _tom = opts.rotuloPendente === 'a pagar' ? C.red : C.orange;
+                var _pPend = Math.min(100, (_pI/_tI)*100);
+                return React.createElement(React.Fragment, null
+                  , React.createElement('div', { style:{ marginBottom:_on?0:16 } }, React.createElement(BRLValue, { v: opts.total, size:17, weight:800, color:opts.color }))
+                  , _on && React.createElement('div', { style:{ height:2, borderRadius:2, display:'flex', gap:1.5, overflow:'hidden', margin:'9px 0 7px' } }
+                      , _pPend < 100 && React.createElement('i', { style:{ display:'block', width:(100-_pPend)+'%', borderRadius:2, background:'linear-gradient(90deg, color-mix(in srgb, white 45%, '+C.green+'), '+C.green+')' } })
+                      , React.createElement('i', { style:{ display:'block', flex:1, borderRadius:2, background:'linear-gradient(90deg, color-mix(in srgb, white 35%, '+_tom+'), '+_tom+')' } }))
+                  , _on && React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', gap:8, fontSize:10.5, fontWeight:700, marginBottom:14 } }
+                      , React.createElement('span', { style:{ color:C.green } }, _fmtBarVal(_tI-_pI))
+                      , React.createElement('span', { style:{ color:_tom } }, _fmtBarVal(_pI))));
+              })()
+            , opts.items.length === 0
+              ? React.createElement('div', { style:{ padding:"18px 0", textAlign:"center", color:C.sub, fontSize:13 } }, opts.emptyMsg)
+              /* [barra-pendente] `pend` viaja junto: a barra esmaece a fatia que
+                 ainda não andou e escreve o valor dela no balão. */
+              : FunnelBars(opts.items.map(function(it){ return { label: opts.firstNameOnly ? (it.key||"").trim().split(/\s+/)[0] : it.key, val: it.value, pend: it.pendente, color: it.color, fullKey: it.key }; }), { C:C, onBarClick:opts.onBarClick, rotuloPendente: opts.rotuloPendente })
+          )
+        );
+      }
+
+      /* Espaçamento entre "Despesas por Categoria" e "Receitas por Cliente":
+         igualado a 21px, o mesmo valor usado em toda a coluna do Dashboard
+         (ex.: Saldo→Despesas) — pedido do usuário pra todos os painéis
+         terem a mesma distância entre si, sem exceção de "mesmo grupo". */
+      return React.createElement('div', { style:{ display:"flex", flexDirection: RX.kpiFlexDir, gap:21, alignItems:"stretch", marginTop:-(Math.round(RX.dashGap*0.15)+RX.estiloPull) } }
+        , _painelFunil({
+            icon:"💸", title:"Despesas por Categoria", total:totalDespesaInicio, color:C.red,
+            items:despesaItems, emptyMsg:"Nenhuma despesa neste m\xeas", rotuloPendente:"a pagar", rotuloPago:"pago",
+            onTitleClick:function(){ setTab("financeiro"); },
+            onBarClick:function(x,e){ e.stopPropagation(); setFinDeepLink({subTab:"despesas",cat:x.fullKey}); setTab("financeiro"); }
+          })
+        , _painelFunil({
+            icon:"💰", title:"Receitas por Cliente", total:totalReceitaInicio, color:C.green,
+            items:receitaItems, emptyMsg:"Nenhuma receita neste m\xeas", firstNameOnly:true, rotuloPendente:"a receber", rotuloPago:"recebido",
+            onTitleClick:function(){ setTab("clientes"); }
+          })
+      );
+    })()
+
+    /* ══ Saldo nas contas (abaixo de Despesas por Categoria + Receitas por Cliente, que ficam logo abaixo da Agenda) ══
        "Saldo nas contas hoje" reaproveita saldoCaixaAte (mesma fórmula da
        linha azul do gráfico/fluxo de caixa). "Despesas de hoje" — mesmo
        rótulo, tem que ser mesmo escopo: só o que vence HOJE, não o mês
@@ -30493,6 +30562,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
          perto da Agenda logo acima) — quebra de propósito, só aqui, a
          regra de "mesmo gap entre todos os painéis": -15% de RX.dashGap
          (21px mobile / 31px desktop), arredondado. */
+      /* [linha-eventos-datas] sem toque, o ponto ativo é o PRÓXIMO evento do projetado
+         (igual ao próximo vencimento pré-selecionado nas Despesas pendentes). */
+      var _proxEvDia = (_eventosFuturos.filter(function(ev){ return ev.dia > _diaHojeNum; })[0] || {}).dia;
+      var _pontoAtivo = _saldoPontoSel || (_proxEvDia ? { face:1, dia:_proxEvDia } : null);
       var _colSaldo = React.createElement('div', { style:Object.assign({},_cardBase,{flex:1,borderRight:'1px solid var(--c-border)',position:'relative'}) }
             , React.createElement('div', { style:_lbl }, 'Saldo nas contas Estilo')
             , _big(_saldoAtual)
@@ -30521,7 +30594,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
             , React.createElement('div', { style:{ fontSize: _supFs, color:C.sub, fontWeight:700, marginTop:3 } }
               , 'vencidas e não pagas')
       );
-      return React.createElement('div', { className:"ag-kpi-card", style:Object.assign({},_cardBase,{cursor:'pointer',padding:0,overflow:'hidden',position:'relative',marginTop:-(Math.round(RX.dashGap*0.15)+RX.estiloPull)}), onClick:function(){ _setSaldoPontoSel(null); setSaldoHojeTick(function(v){ return v+1; }); } }
+      return React.createElement('div', { className:"ag-kpi-card", style:Object.assign({},_cardBase,{cursor:'pointer',padding:0,overflow:'hidden',position:'relative'}), onClick:function(){ _setSaldoPontoSel(null); setSaldoHojeTick(function(v){ return v+1; }); } }
         , React.createElement('div', { key:'face'+saldoHojeFace, className:'ag-kpi-flip', style:{ display:'flex' } }
           , saldoHojeFace===0 ? _colSaldo : _colDesp
           , saldoHojeFace===0 ? _colProj : _colFat
@@ -30529,7 +30602,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         , React.createElement('div', { style:{ padding:'4px 14px 6px' } }
           , agSaldoLinhaChart({ uid:'estilo', solid:_histRecente, proj:_projSerie, diaIni:_diaInicioRecente, diaFim:_ultimoDiaMesHoje,
               piso:_piso, minDia:(_piso!==null ? _minPtProj.dia : null),
-              selFase:(_saldoPontoSel ? _saldoPontoSel.face : null), selDia:(_saldoPontoSel ? _saldoPontoSel.dia : null),
+              selFase:(_pontoAtivo ? _pontoAtivo.face : null), selDia:(_pontoAtivo ? _pontoAtivo.dia : null),
               onPoint:_toggleSaldoPonto })
           /* Linha do piso (aparece sempre agora que não há mais faces).
              Toque na linha edita o piso (stopPropagation no handler). */
@@ -30547,11 +30620,11 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
              oscilar naquele dia — realizado (face 0) usa os movimentos JÁ
              feitos (movimentosCaixaDoDia); projetado (face 1) usa os eventos
              futuros já calculados pra linha pontilhada (_eventosFuturos). */
-          , _saldoPontoSel && (function(){
-              var _diaPontoStr = _mesHoje + '-' + String(_saldoPontoSel.dia).padStart(2,'0');
-              var _itensPonto = _saldoPontoSel.face===0
+          , _pontoAtivo && (function(){
+              var _diaPontoStr = _mesHoje + '-' + String(_pontoAtivo.dia).padStart(2,'0');
+              var _itensPonto = _pontoAtivo.face===0
                 ? movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _diaPontoStr)
-                : _eventosFuturos.filter(function(ev){ return ev.dia === _saldoPontoSel.dia; }).map(function(ev){ return { tipo:ev.tipo, label:ev.label, valor:Math.abs(ev.delta) }; });
+                : _eventosFuturos.filter(function(ev){ return ev.dia === _pontoAtivo.dia; }).map(function(ev){ return { tipo:ev.tipo, label:ev.label, valor:Math.abs(ev.delta) }; });
               if (!_itensPonto.length) return null;
               return React.createElement('div', { style:{ marginTop:6, paddingTop:6, borderTop:'1px solid var(--c-border)' } }
                 , React.createElement('div', { style:{ fontSize:9, color:C.sub, fontWeight:700, marginBottom:4, textTransform:'capitalize' } }
@@ -31937,73 +32010,6 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 );
               })
       )
-      );
-    })()
-
-    /* ── PAINÉIS: Despesas por Categoria + Receitas por Cliente ── */
-    , (() => {
-      /* [rd-mes] A conta vive em rdLinhasReceitaCliente/rdLinhasDespesaCategoria
-         (escopo global) — a mesma que Relatórios › Gráficos usa. Antes cada
-         tela tinha a sua cópia e elas divergiam: aqui era a competência do
-         mês, lá era o histórico inteiro. */
-      var rdReceitaRowsInicio = rdLinhasReceitaCliente(receitas, contratos, clientes, dashMes);
-      var rdDespesaRowsInicio = rdLinhasDespesaCategoria(despesas, manutencoes, dashMes);
-      var despesaItems = rdGroupBy(rdDespesaRowsInicio, new Set(), RD_COR_CATEGORIA);
-      var receitaItems = rdGroupBy(rdReceitaRowsInicio, new Set(), RD_PALETTE_CLIENTE);
-      var totalDespesaInicio = rdSum(rdDespesaRowsInicio);
-      var totalReceitaInicio = rdSum(rdReceitaRowsInicio);
-
-      /* Painel único reaproveitado pelos dois lados — cabeçalho clicável +
-         total + FunnelBars. Sem slice/corte de itens: mostra TODAS as
-         categorias/clientes do mês, sem cortar linhas. */
-      function _painelFunil(opts){
-        return React.createElement('div', { style:{ flex:1, minWidth:0, display:"flex", flexDirection:"column" } }
-          , React.createElement('div', { onClick:opts.onTitleClick, style:{ fontSize:12, fontWeight:700, color:C.sub, marginBottom:8, cursor:opts.onTitleClick?"pointer":"default", display:"flex", alignItems:"center", gap:4 } }
-            , opts.title
-            , opts.onTitleClick && React.createElement('span', { style:{ fontSize:11, opacity:0.55 } }, "→")
-          )
-          , React.createElement('div', { style:{ background:C.card, borderRadius:18, border:"1px solid "+C.border, padding:"14px 16px 16px", flex:1 } }
-            /* size 17 (era 20, −3px pedido do usuário) */
-            , (function(){
-                /* [trilho-pendente] barra fina dividida (já andou x falta) + legenda, só quando existe pendência */
-                var _tI = 0, _pI = 0; opts.items.forEach(function(it){ _tI += it.value||0; _pI += it.pendente||0; });
-                var _on = _pI > 0.005 && _tI > 0 && !!opts.rotuloPendente;
-                var _tom = opts.rotuloPendente === 'a pagar' ? C.red : C.orange;
-                var _pPend = Math.min(100, (_pI/_tI)*100);
-                return React.createElement(React.Fragment, null
-                  , React.createElement('div', { style:{ marginBottom:_on?0:16 } }, React.createElement(BRLValue, { v: opts.total, size:17, weight:800, color:opts.color }))
-                  , _on && React.createElement('div', { style:{ height:2, borderRadius:2, display:'flex', gap:1.5, overflow:'hidden', margin:'9px 0 7px' } }
-                      , _pPend < 100 && React.createElement('i', { style:{ display:'block', width:(100-_pPend)+'%', borderRadius:2, background:'linear-gradient(90deg, color-mix(in srgb, white 45%, '+C.green+'), '+C.green+')' } })
-                      , React.createElement('i', { style:{ display:'block', flex:1, borderRadius:2, background:'linear-gradient(90deg, color-mix(in srgb, white 35%, '+_tom+'), '+_tom+')' } }))
-                  , _on && React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', gap:8, fontSize:10.5, fontWeight:700, marginBottom:14 } }
-                      , React.createElement('span', { style:{ color:C.green } }, _fmtBarVal(_tI-_pI))
-                      , React.createElement('span', { style:{ color:_tom } }, _fmtBarVal(_pI))));
-              })()
-            , opts.items.length === 0
-              ? React.createElement('div', { style:{ padding:"18px 0", textAlign:"center", color:C.sub, fontSize:13 } }, opts.emptyMsg)
-              /* [barra-pendente] `pend` viaja junto: a barra esmaece a fatia que
-                 ainda não andou e escreve o valor dela no balão. */
-              : FunnelBars(opts.items.map(function(it){ return { label: opts.firstNameOnly ? (it.key||"").trim().split(/\s+/)[0] : it.key, val: it.value, pend: it.pendente, color: it.color, fullKey: it.key }; }), { C:C, onBarClick:opts.onBarClick, rotuloPendente: opts.rotuloPendente })
-          )
-        );
-      }
-
-      /* Espaçamento entre "Despesas por Categoria" e "Receitas por Cliente":
-         igualado a 21px, o mesmo valor usado em toda a coluna do Dashboard
-         (ex.: Saldo→Despesas) — pedido do usuário pra todos os painéis
-         terem a mesma distância entre si, sem exceção de "mesmo grupo". */
-      return React.createElement('div', { style:{ display:"flex", flexDirection: RX.kpiFlexDir, gap:21, alignItems:"stretch" } }
-        , _painelFunil({
-            icon:"💸", title:"Despesas por Categoria", total:totalDespesaInicio, color:C.red,
-            items:despesaItems, emptyMsg:"Nenhuma despesa neste m\xeas", rotuloPendente:"a pagar", rotuloPago:"pago",
-            onTitleClick:function(){ setTab("financeiro"); },
-            onBarClick:function(x,e){ e.stopPropagation(); setFinDeepLink({subTab:"despesas",cat:x.fullKey}); setTab("financeiro"); }
-          })
-        , _painelFunil({
-            icon:"💰", title:"Receitas por Cliente", total:totalReceitaInicio, color:C.green,
-            items:receitaItems, emptyMsg:"Nenhuma receita neste m\xeas", firstNameOnly:true, rotuloPendente:"a receber", rotuloPago:"recebido",
-            onTitleClick:function(){ setTab("clientes"); }
-          })
       );
     })()
 
@@ -39679,7 +39685,45 @@ function agSaldoLinhaChart(o) {
   if (hojePt) {
     kids.push(React.createElement('circle', { key:'hoje', cx:hojePt.x, cy:hojePt.y, r:isSel(0, hojePt.dia) ? 4.5 : 3.5, fill:'#fff', stroke:corHoje, strokeWidth:2.4, style:{ cursor: o.onPoint ? 'pointer' : 'default' }, onClick:click(0, hojePt.dia) }));
   }
-  return React.createElement.apply(null, ['svg', { viewBox:'0 0 ' + W + ' ' + H, width:'100%', height:o.height || 44, preserveAspectRatio:'none' }].concat(kids));
+  var hgt = o.height || 44;
+  var svgEl = React.createElement.apply(null, ['svg', { viewBox:'0 0 ' + W + ' ' + H, width:'100%', height:hgt, preserveAspectRatio:'none', style:{ display:'block' } }].concat(kids));
+  /* [linha-eventos-datas] Mesmo padrão da linha do mês das Despesas pendentes: rótulo de
+     data (dia) sob cada evento, "hoje" marcado e o valor do ponto selecionado em cima do
+     ponto. Rótulos muito colados (< 6,5% da largura) não se repetem — a prioridade é
+     hoje > eventos do projetado > fim do mês > dias do realizado. */
+  var xPct = function(d){ return sx(d) / W * 100; };
+  var hojeDia = hojePt ? hojePt.dia : null;
+  var cand = [];
+  if (hojeDia !== null) cand.push({ dia:hojeDia, pr:5, hoje:true });
+  pPts.slice(1, -1).forEach(function(p){ cand.push({ dia:p.dia, pr:4 }); });
+  if (pPts.length >= 2 && fimPt) cand.push({ dia:fimPt.dia, pr:3 });
+  sPts.slice(0, -1).forEach(function(p){ cand.push({ dia:p.dia, pr:2 }); });
+  cand.sort(function(a, b){ return b.pr - a.pr; });
+  var okTicks = [];
+  cand.forEach(function(c){
+    if (okTicks.some(function(t){ return t.dia === c.dia || Math.abs(xPct(t.dia) - xPct(c.dia)) < 6.5; })) return;
+    okTicks.push(c);
+  });
+  okTicks.sort(function(a, b){ return a.dia - b.dia; });
+  var corSub = 'color-mix(in srgb, ' + C.sub + ' 65%, var(--c-text))';
+  var tickEls = okTicks.map(function(t){
+    var sel = o.selDia === t.dia;
+    return React.createElement('div', { key:'tk' + t.dia, style:{ position:'absolute', left:xPct(t.dia) + '%', top:0, transform:'translateX(-50%)', fontSize:10, fontWeight:(t.hoje || sel) ? 700 : 600, color:t.hoje ? C.red : (sel ? 'var(--c-text)' : corSub), lineHeight:'12px', whiteSpace:'nowrap' } }, t.hoje ? 'hoje' : t.dia);
+  });
+  var selPt = null;
+  if (o.selDia !== null && o.selDia !== undefined) {
+    var arr = o.selFase === 1 ? pPts : sPts;
+    for (var si = 0; si < arr.length; si++) { if (arr[si].dia === o.selDia) { selPt = arr[si]; break; } }
+  }
+  var kFmt = function(v){ var a = Math.abs(v); var t = a >= 1000 ? (a / 1000).toFixed(1).replace('.', ',') + 'k' : String(Math.round(a)); return (v < 0 ? '−' : '') + 'R$ ' + t; };
+  var selLbl = selPt ? React.createElement('div', { key:'sellbl', style:{ position:'absolute', left:xPct(selPt.dia) + '%', top:Math.max(0, 12 + selPt.y * hgt / H - 18), transform:'translateX(-50%)', fontSize:10, fontWeight:700, color:selPt.saldo < 0 ? C.red : 'var(--c-text)', whiteSpace:'nowrap', pointerEvents:'none', fontVariantNumeric:'tabular-nums' } }, kFmt(selPt.saldo)) : null;
+  var hojeLn = hojePt ? React.createElement('div', { key:'hojeln', style:{ position:'absolute', left:xPct(hojePt.dia) + '%', top:12, height:hgt, borderLeft:'1px dashed ' + C.red, opacity:0.45, pointerEvents:'none' } }) : null;
+  return React.createElement('div', { style:{ position:'relative', paddingTop:12 } }
+    , hojeLn
+    , svgEl
+    , selLbl
+    , React.createElement('div', { style:{ position:'relative', height:13, marginTop:2 } }, tickEls)
+  );
 }
 
 // Mesma fórmula de "Saldo do orçamento" já usada em PessoalDash (_saldo =

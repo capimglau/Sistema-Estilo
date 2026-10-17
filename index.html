@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="835faf2"/>
+<meta name="ag-build" content="272522d"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -30291,7 +30291,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                   return React.createElement('div', { style:{ margin:'0 0 14px' } }, _totalEl, _rodape);
                 }
                 /* ── geometria (viewBox) ── */
-                var W = desktop ? 480 : 340, padL = 8, padR = 8, yTop = 20, yBase = 76, H = 96;
+                var W = desktop ? 480 : 340, padL = 8, padR = 8, yTop = 18, yBase = 68, H = 88;
                 var plotW = W - padL - padR, plotH = yBase - yTop;
                 var _mes = String(dashMes || _gArr[0].data.slice(0,7));
                 var _y0 = parseInt(_mes.slice(0,4),10), _m0 = parseInt(_mes.slice(5,7),10);
@@ -30319,6 +30319,35 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 /* trecho plano do último ponto até o fim do mês, no mesmo estilo do último trecho */
                 var _xFim = _xOf(_hi);
                 if (_ult.x < _xFim - 0.5) _segs.push({ a:_ult, b:{ x:_xFim, y:_ult.y }, pg:(_ult.est === 'pago') });
+                /* [curva-suave] tangentes monotônicas (Fritsch-Carlson): a linha passa suave pelos pontos, sem overshoot */
+                var _vx = [_segs[0].a.x], _vy = [_segs[0].a.y];
+                _segs.forEach(function(sg){ _vx.push(sg.b.x); _vy.push(sg.b.y); });
+                var _dk = [], _mt = [];
+                for (var qi = 0; qi < _vx.length - 1; qi++) _dk.push((_vy[qi+1] - _vy[qi]) / Math.max(0.0001, (_vx[qi+1] - _vx[qi])));
+                for (var qm = 0; qm < _vx.length; qm++) {
+                  if (qm === 0) _mt.push(_dk[0]); else if (qm === _vx.length - 1) _mt.push(_dk[_dk.length-1]);
+                  else _mt.push((_dk[qm-1] * _dk[qm] <= 0) ? 0 : (_dk[qm-1] + _dk[qm]) / 2);
+                }
+                for (var qj = 0; qj < _dk.length; qj++) {
+                  if (Math.abs(_dk[qj]) < 1e-9) { _mt[qj] = 0; _mt[qj+1] = 0; continue; }
+                  var al = _mt[qj] / _dk[qj], be = _mt[qj+1] / _dk[qj], hh = al*al + be*be;
+                  if (hh > 9) { var ta = 3 / Math.sqrt(hh); _mt[qj] = ta * al * _dk[qj]; _mt[qj+1] = ta * be * _dk[qj]; }
+                }
+                _segs.forEach(function(sg, qk){
+                  var dx = sg.b.x - sg.a.x;
+                  sg.c1x = sg.a.x + dx/3; sg.c1y = sg.a.y + _mt[qk] * dx/3;
+                  sg.c2x = sg.b.x - dx/3; sg.c2y = sg.b.y - _mt[qk+1] * dx/3;
+                  sg.dC = 'C'+_f1(sg.c1x)+' '+_f1(sg.c1y)+' '+_f1(sg.c2x)+' '+_f1(sg.c2y)+' '+_f1(sg.b.x)+' '+_f1(sg.b.y);
+                });
+                var _bezY = function(sg, x){
+                  var lo = 0, hi = 1, t = 0.5;
+                  for (var it2 = 0; it2 < 22; it2++) {
+                    t = (lo + hi) / 2; var u = 1 - t;
+                    var bx = u*u*u*sg.a.x + 3*u*u*t*sg.c1x + 3*u*t*t*sg.c2x + t*t*t*sg.b.x;
+                    if (bx < x) lo = t; else hi = t;
+                  }
+                  var u2 = 1 - t; return u2*u2*u2*sg.a.y + 3*u2*u2*t*sg.c1y + 3*u2*t*t*sg.c2y + t*t*t*sg.b.y;
+                };
                 /* hoje */
                 var _hojeISO = _brNow().toISOString().slice(0,10);
                 var _temHoje = _hojeISO.slice(0,7) === _mes;
@@ -30326,10 +30355,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 if (_temHoje) {
                   var _it = _idx(_hojeISO); _hx = _xOf(_it);
                   _hy = _ult.y;
-                  for (var hi = 1; hi < _pts.length; hi++) {
-                    var P = _pts[hi-1], Q = _pts[hi], ip = (P.ini ? _lo : P.g.idx), iq = Q.g.idx;
-                    if (_it >= ip && _it <= iq) { var tt = iq === ip ? 1 : (_it - ip) / (iq - ip); _hy = P.y + (Q.y - P.y) * tt; break; }
-                  }
+                  for (var hi = 0; hi < _segs.length; hi++) { if (_hx >= _segs[hi].a.x && _hx <= _segs[hi].b.x) { _hy = _bezY(_segs[hi], _hx); break; } }
                 }
                 /* rótulos: pula os que ficariam colados no anterior (o toque no ponto mostra data + valor) */
                 var _gap = desktop ? 30 : 30, _lastX = -1e9;
@@ -30346,14 +30372,14 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                       , React.createElement('stop', { offset:'0%', style:{ stopColor:_tom, stopOpacity:0.24 } }), React.createElement('stop', { offset:'100%', style:{ stopColor:_tom, stopOpacity:0 } }))));
                 /* áreas (um polígono por trecho) */
                 _segs.forEach(function(sg, i){
-                  var d = 'M'+_f1(sg.a.x)+' '+_f1(sg.a.y)+' L'+_f1(sg.b.x)+' '+_f1(sg.b.y)+' L'+_f1(sg.b.x)+' '+yBase+' L'+_f1(sg.a.x)+' '+yBase+' Z';
+                  var d = 'M'+_f1(sg.a.x)+' '+_f1(sg.a.y)+' '+sg.dC+' L'+_f1(sg.b.x)+' '+yBase+' L'+_f1(sg.a.x)+' '+yBase+' Z';
                   _els.push(React.createElement('path', { key:'ar'+i, d:d, style:{ fill:'url(#'+(sg.pg ? _gidG : _gidT)+')', stroke:'url(#'+(sg.pg ? _gidG : _gidT)+')', strokeWidth:0.6 } }));
                 });
                 /* eixo */
                 _els.push(React.createElement('line', { key:'ax', x1:padL, y1:yBase, x2:W-padR, y2:yBase, style:{ stroke:C.border, strokeWidth:1 } }));
                 /* linhas */
                 _segs.forEach(function(sg, i){
-                  _els.push(React.createElement('line', { key:'ln'+i, x1:_f1(sg.a.x), y1:_f1(sg.a.y), x2:_f1(sg.b.x), y2:_f1(sg.b.y),
+                  _els.push(React.createElement('path', { key:'ln'+i, d:'M'+_f1(sg.a.x)+' '+_f1(sg.a.y)+' '+sg.dC, fill:'none',
                     style:{ stroke:(sg.pg ? C.green : _tom), strokeWidth:1.4, strokeLinecap:'round' }, strokeDasharray: sg.pg ? undefined : '3 2.5' }));
                 });
                 /* hoje */

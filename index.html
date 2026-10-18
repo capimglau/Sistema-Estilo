@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="c0bc2e6"/>
+<meta name="ag-build" content="23556b0"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -24373,7 +24373,7 @@ function movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas
   });
   (multas||[]).forEach(function(mu){
     if(mu.status==='cancelada'||mu.status==='cancelado') return;
-    if(mu.status==='pago'&&mu.data_pagamento===diaStr) itens.push({ tipo:'despesa', label:'Multa', valor:parseFloat(mu.valor||0) });
+    if(mu.status==='pago'&&mu.data_pagamento===diaStr) itens.push({ tipo:'despesa', label:'Multa', valor:parseFloat(mu.valor||0), ret:true });
     if(mu.cobrado_cliente==='pago'){
       var dtCob=mu.data_cobranca_cliente||mu.data_pagamento;
       if(dtCob===diaStr) itens.push({ tipo:'receita', label:'Multa cobrada do cliente', valor:parseFloat(mu.valor_cobrado||mu.valor||0) });
@@ -30326,6 +30326,15 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var _hojeMaisUm = (function(){ var x=new Date(hoje+'T12:00:00'); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); })();
       var _saldoAtual = saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _hojeMaisUm);
       var _mesHoje = hoje.slice(0,7);
+      /* O painel segue o mês escolhido no Dashboard (dashMes), como todo o resto:
+         mês atual = saldo de hoje + projeção; mês passado = saldo no fim do mês;
+         mês futuro = saldo no início do mês + projeção. */
+      var _mesSel = (typeof dashMes === 'string' && /^\d{4}-\d{2}$/.test(dashMes)) ? dashMes : _mesHoje;
+      var _cmpMes = _mesSel < _mesHoje ? -1 : (_mesSel > _mesHoje ? 1 : 0);
+      var _ultimoDiaMesSel = new Date(parseInt(_mesSel.slice(0,4),10), parseInt(_mesSel.slice(5,7),10), 0).getDate();
+      var _proxMesSel = (function(){ var y=parseInt(_mesSel.slice(0,4),10), m=parseInt(_mesSel.slice(5,7),10); return m===12 ? (y+1)+'-01' : y+'-'+String(m+1).padStart(2,'0'); })();
+      var _saldoRef = _cmpMes===0 ? _saldoAtual : saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, (_cmpMes<0 ? _proxMesSel : _mesSel) + '-01');
+      var _diaRef = _cmpMes===0 ? parseInt(hoje.slice(8,10),10) : (_cmpMes<0 ? _ultimoDiaMesSel : 0);
       /* Todas as despesas/manutenções de HOJE (não só as pendentes) — base
          única pra derivar previstas/pagas/a pagar do card "Despesas de
          hoje", sem duplicar a resolução de recorrência em 3 filtros soltos. */
@@ -30357,8 +30366,8 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
          consistência do CLAUDE.md: nunca duplicar a fórmula. */
       var _aReceberMes = Math.max(0, prevMes - recMes);
       var _aPagarMesProj = Math.max(0, (_despTotalKpi + _manTotalKpi) - (_despPagoKpi + _manPagoKpi));
-      var _saldoProjetado = _saldoAtual + _aReceberMes - _aPagarMesProj;
-      var _ultimoDiaMesHoje = new Date(parseInt(_mesHoje.slice(0,4),10), parseInt(_mesHoje.slice(5,7),10), 0).getDate();
+      var _saldoProjetado = _saldoRef + _aReceberMes - _aPagarMesProj;
+      var _ultimoDiaMesHoje = _ultimoDiaMesSel;
       /* Mesmo tamanho/altura dos cards de KPI do banner "Faturamento ×
          Resultado Previsto" logo acima (ag-kpi-card, rótulo 10.5px, valor
          16.5/15px, texto de apoio 9/10.5px) — pedido do usuário depois de o
@@ -30475,30 +30484,30 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
 
       /* ---- Face "Projetado": eventos reais com vencimento entre hoje e
          o fim do mês, acumulados a partir de _saldoAtual ---- */
-      var _despMesTodasList = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), _mesHoje);
-      var _manMesTodasList = filtrarManParaBarras(manutencoes, despesas, _mesHoje);
+      var _despMesTodasList = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), _mesSel);
+      var _manMesTodasList = filtrarManParaBarras(manutencoes, despesas, _mesSel);
       var _eventosFuturos = [];
       (ctsMes||[]).forEach(function(c){
         if (c.status === 'cancelado' || c.status_pagamento === 'pago' || c.status_pagamento === 'isento') return;
-        if (!c.previsao_pagamento || c.previsao_pagamento <= hoje) return;
+        if (!c.previsao_pagamento || c.previsao_pagamento <= hoje || c.previsao_pagamento.slice(0,7) !== _mesSel) return;
         var falta = parseFloat(c.valor_total||0) - (c.status_pagamento === 'parcial' ? parseFloat(c.valor_pago||0) : 0);
         if (falta <= 0) return;
         _eventosFuturos.push({ dia: parseInt(c.previsao_pagamento.slice(8,10),10), delta: falta, tipo:'receita', label:'Contrato' });
       });
       _despMesTodasList.forEach(function(d){
         if (d.status === 'pago' || d.data_pagamento) return;
-        if (!d.data || d.data <= hoje) return;
+        if (!d.data || d.data <= hoje || d.data.slice(0,7) !== _mesSel) return;
         _eventosFuturos.push({ dia: parseInt(d.data.slice(8,10),10), delta: -parseFloat(d.valor||0), tipo:'despesa', label:d.descricao||d.categoria||'Despesa' });
       });
       _manMesTodasList.forEach(function(m){
         var _dtM = m.data_previsao_pagamento || m.data_entrada || '';
         if (m.status_financeiro === 'pago' || m.data_pagamento) return;
-        if (!_dtM || _dtM <= hoje) return;
+        if (!_dtM || _dtM <= hoje || _dtM.slice(0,7) !== _mesSel) return;
         _eventosFuturos.push({ dia: parseInt(_dtM.slice(8,10),10), delta: -parseFloat(m.custo||0), tipo:'despesa', label:'Manutenção'+(m.tipo?' · '+m.tipo:'') });
       });
       _eventosFuturos.sort(function(a,b){ return a.dia - b.dia; });
-      var _projDias = [{ dia:_diaHojeNum, saldo:_saldoAtual }];
-      var _acumProj = _saldoAtual;
+      var _projDias = [{ dia:_diaRef, saldo:_saldoRef }];
+      var _acumProj = _saldoRef;
       _eventosFuturos.forEach(function(ev){
         _acumProj += ev.delta;
         var _ultimo = _projDias[_projDias.length-1];
@@ -30571,7 +30580,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
          faces — e a face "Pessoal" saiu daqui: o saldo pessoal vive só no
          Orçamento Pessoal (PessoalDash), nunca misturado com o da Estilo. ── */
       var _projSerie = _projDias.map(function(p){ return { dia:p.dia, saldo:p.saldo }; });
-      if (_ultimoDiaMesHoje > _diaHojeNum) {
+      if (_ultimoDiaMesHoje > _diaRef) {
         var _lastProjS = _projSerie[_projSerie.length-1];
         /* fecha no valor OFICIAL (_saldoProjetado), que já cobre recorrentes/
            avulsas sem data fixa — a linha e o número do card não se contradizem. */
@@ -30582,11 +30591,11 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
          realizado (dias da janela até hoje, via movimentosCaixaDoDia) + previsto (eventos futuros). */
       var _movsGraf = [];
       var _movDiaGet = function(d){ for (var _q=0; _q<_movsGraf.length; _q++){ if (_movsGraf[_q].dia===d) return _movsGraf[_q]; } var _n={ dia:d, rec:0, dep:0, ret:0 }; _movsGraf.push(_n); return _n; };
-      for (var _dm = _diaInicioRecente; _dm <= _diaHojeNum; _dm++) {
+      for (var _dm = _diaInicioRecente; _cmpMes===0 && _dm <= _diaHojeNum; _dm++) {
         var _itsM = movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _mesHoje + '-' + String(_dm).padStart(2,'0')) || [];
         _itsM.forEach(function(it){ var _mv=_movDiaGet(_dm); var _vv=Math.abs(parseFloat(it.valor||0)); if (it.tipo==='receita') _mv.rec+=_vv; else if (it.ret) _mv.ret+=_vv; else _mv.dep+=_vv; });
       }
-      _eventosFuturos.forEach(function(ev){ if (ev.dia <= _diaHojeNum) return; var _mv=_movDiaGet(ev.dia); if (ev.delta>0) _mv.rec+=ev.delta; else _mv.dep+=Math.abs(ev.delta); });
+      _eventosFuturos.forEach(function(ev){ if (ev.dia <= _diaRef) return; var _mv=_movDiaGet(ev.dia); if (ev.delta>0) _mv.rec+=ev.delta; else _mv.dep+=Math.abs(ev.delta); });
       _movsGraf = _movsGraf.filter(function(m){ return m.rec>0.005 || m.dep>0.005 || m.ret>0.005; }).sort(function(a,b){ return a.dia-b.dia; });
       var _minPtProj = { saldo:_saldoProjetado, dia:_ultimoDiaMesHoje };
       _projDias.forEach(function(p){ if (p.saldo < _minPtProj.saldo) _minPtProj = { saldo:p.saldo, dia:p.dia }; });
@@ -30599,7 +30608,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
          rec/dep = receitas/despesas do dia (valor do lançamento), mostradas nos pontos; a cor já diz o que é. */
       /* chaves (categoria de despesa / cliente de receita) dos lançamentos de um dia — mesmas linhas que alimentam os tubos de baixo */
       var _saldoChavesDia = function(dia){
-        var iso = _mesHoje + '-' + String(dia).padStart(2,'0');
+        var iso = _mesSel + '-' + String(dia).padStart(2,'0');
         var uq = function(rows){ var o = []; (rows || []).forEach(function(r){ if (String(r.data || '').slice(0,10) === iso && r.chave != null && o.indexOf(r.chave) < 0) o.push(r.chave); }); return o; };
         return { rec:uq(rdLinhasReceitaCliente(receitas, contratos, clientes, dashMes)), dep:uq(rdLinhasDespesaCategoria(despesas, manutencoes, dashMes)) }; /* mesmas linhas dos tubos de baixo (calculadas só no toque) */
       };
@@ -30611,23 +30620,23 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       };
       var _saldoPts = (function(){
         var _pad2 = function(n){ return String(n).padStart(2,'0'); };
-        var _proxD = function(d){ var x=new Date(_mesHoje+'-'+_pad2(d)+'T12:00:00'); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); };
+        var _proxD = function(d){ var x=new Date(_mesSel+'-'+_pad2(d)+'T12:00:00'); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); };
         var pts = [], _movReal = [];
-        for (var d=1; d<=_diaHojeNum; d++) {
-          var its = movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _mesHoje+'-'+_pad2(d)) || [];
+        for (var d=1; d<=_diaRef; d++) {
+          var its = movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _mesSel+'-'+_pad2(d)) || [];
           var rec=0, dep=0, ret=0;
           its.forEach(function(it){ var v=Math.abs(parseFloat(it.valor||0)); if (it.tipo==='receita') rec+=v; else if (it.ret) ret+=v; else dep+=v; });
           if (rec>0.005 || dep>0.005 || ret>0.005) _movReal.push({ dia:d, rec:rec, dep:dep, ret:ret });
         }
         if (!_movReal.length || _movReal[0].dia > 1) {
-          pts.push({ dia:1, saldo: saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _mesHoje+'-01'), rec:0, dep:0, real:true, sem:true });
+          pts.push({ dia:1, saldo: saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _mesSel+'-01'), rec:0, dep:0, real:true, sem:true });
         }
         _movReal.forEach(function(m){
-          pts.push({ dia:m.dia, saldo: (m.dia===_diaHojeNum ? _saldoAtual : saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _proxD(m.dia))), rec:m.rec, dep:m.dep, ret:(m.ret||0), real:true });
+          pts.push({ dia:m.dia, saldo: (m.dia===_diaRef ? _saldoRef : saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _proxD(m.dia))), rec:m.rec, dep:m.dep, ret:(m.ret||0), real:true });
         });
-        if (pts[pts.length-1].dia < _diaHojeNum) pts.push({ dia:_diaHojeNum, saldo:_saldoAtual, rec:0, dep:0, real:true, sem:true });
+        if (pts[pts.length-1].dia < _diaRef) pts.push({ dia:_diaRef, saldo:_saldoRef, rec:0, dep:0, real:true, sem:true });
         _projSerie.forEach(function(p){
-          if (p.dia <= _diaHojeNum) return;
+          if (p.dia <= _diaRef) return;
           var mv = null; _movsGraf.forEach(function(m){ if (m.dia===p.dia) mv = m; });
           pts.push({ dia:p.dia, saldo:p.saldo, rec:(mv?mv.rec:0), dep:(mv?mv.dep:0), ret:(mv?(mv.ret||0):0), real:false, sem:!mv });
         });
@@ -30645,8 +30654,8 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var _pontoAtivo = _saldoPontoSel || null; /* sem pré-seleção do próximo evento (pedido do usuário); só aparece ao tocar num ponto */
       var _colSaldo = React.createElement('div', { style:Object.assign({},_cardBase,{flex:1,borderRight:'1px solid var(--c-border)',position:'relative'},(desktop ? {textAlign:'center',display:'flex',flexDirection:'column',justifyContent:'center'} : {})) }
             , React.createElement('div', { style:_lbl }, 'Saldo nas contas Estilo')
-            , _big(_saldoAtual)
-            , _despHojeAPagar>0 ? React.createElement('div', { style:{ fontSize: _supFs, color: _saldoLivre>=0?C.green:C.red, fontWeight:700, marginTop:3 } }
+            , _big(_saldoRef)
+            , (_cmpMes===0 && _despHojeAPagar>0) ? React.createElement('div', { style:{ fontSize: _supFs, color: _saldoLivre>=0?C.green:C.red, fontWeight:700, marginTop:3 } }
               , ['~', React.createElement(BRLValue,{key:'v',v:_saldoLivre,size:_supFs,weight:700,color:_saldoLivre>=0?C.green:C.red}), ' após pagar hoje']) : null
       );
       var _colProj = React.createElement('div', { style:Object.assign({},_cardBase,{flex:1},(desktop ? {textAlign:'center',display:'flex',flexDirection:'column',justifyContent:'center'} : {})) }
@@ -30668,14 +30677,14 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           , saldoHojeFace===0 ? _colSaldo : _colDesp
           , saldoHojeFace===0 ? _colProj : _colFat
         )
-        , React.createElement(CurvaSaldo, { pts:_saldoPts, diaHoje:_diaHojeNum, ultimo:_ultimoDiaMesHoje, mes:_mesHoje, C:C, desktop:desktop, onPulse:_saldoPulsar })
+        , React.createElement(CurvaSaldo, { key:'cvs'+_mesSel, pts:_saldoPts, diaHoje:_diaRef, hojeMarca:(_cmpMes===0), ultimo:_ultimoDiaMesSel, mes:_mesSel, C:C, desktop:desktop, onPulse:_saldoPulsar })
         , React.createElement('div', { style:{ padding: _pontoAtivo ? '4px 14px 6px' : 0 } }
           /* Detalhe do ponto tocado: as despesas/receitas que fizeram o saldo
              oscilar naquele dia — realizado (face 0) usa os movimentos JÁ
              feitos (movimentosCaixaDoDia); projetado (face 1) usa os eventos
              futuros já calculados pra linha pontilhada (_eventosFuturos). */
           , _pontoAtivo && (function(){
-              var _diaPontoStr = _mesHoje + '-' + String(_pontoAtivo.dia).padStart(2,'0');
+              var _diaPontoStr = _mesSel + '-' + String(_pontoAtivo.dia).padStart(2,'0');
               var _itensPonto = _pontoAtivo.face===0
                 ? movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _diaPontoStr)
                 : _eventosFuturos.filter(function(ev){ return ev.dia === _pontoAtivo.dia; }).map(function(ev){ return { tipo:ev.tipo, label:ev.label, valor:Math.abs(ev.delta) }; });
@@ -43765,8 +43774,10 @@ function CurvaSaldo(p){
   /* hoje: ponto real do dia de hoje (existe sempre na série) */
   var hoje = p.diaHoje, hx = X(hoje), hy = py[0];
   pts.forEach(function(q, k){ if (q.dia === hoje) hy = py[k]; });
-  els.push(React.createElement('line', { key:'hj', x1:f1(hx), y1:12, x2:f1(hx), y2:yBase, style:{ stroke:C.blue, strokeWidth:1 }, strokeDasharray:'1 2.5' }));
-  els.push(React.createElement('circle', { key:'hjd', cx:f1(hx), cy:f1(hy), r:3.4, style:{ fill:C.blue, stroke:C.card, strokeWidth:1.2 } }));
+  if (p.hojeMarca !== false) {
+    els.push(React.createElement('line', { key:'hj', x1:f1(hx), y1:12, x2:f1(hx), y2:yBase, style:{ stroke:C.blue, strokeWidth:1 }, strokeDasharray:'1 2.5' }));
+    els.push(React.createElement('circle', { key:'hjd', cx:f1(hx), cy:f1(hy), r:3.4, style:{ fill:C.blue, stroke:C.card, strokeWidth:1.2 } }));
+  }
   var ab = function(v){ var x = Math.abs(v); if (x >= 1e6) return (x/1e6).toFixed(1).replace('.',',').replace(',0','')+'M'; if (x >= 1000) return (x/1000).toFixed(1).replace('.',',').replace(',0','')+'k'; return String(Math.round(x)); };
   var ddFull = function(dia){ var mm = (p.mes || '').slice(5,7); return String(dia).padStart(2,'0') + '/' + (mm || ''); };
   var dd = function(dia){ return p.desktop ? ddFull(dia) : String(dia).padStart(2,'0'); }; /* mobile: só o dia, sem o mês */
@@ -43819,7 +43830,7 @@ function CurvaSaldo(p){
         , ddFull(selPt.q.dia) + ' · ' + fmtBRL(selPt.q.saldo)
         , selPt.q.rec > 0.005 && React.createElement('div', { style:{ color:G, fontWeight:600 } }, 'receitas ' + fmtBRL(selPt.q.rec))
         , selPt.q.dep > 0.005 && React.createElement('div', { style:{ color:R, fontWeight:600 } }, 'despesas ' + fmtBRL(selPt.q.dep))
-        , selPt.q.ret > 0.005 && React.createElement('div', { style:{ color:C.orange, fontWeight:600 } }, 'retirada/ajuste ' + fmtBRL(selPt.q.ret)))
+        , selPt.q.ret > 0.005 && React.createElement('div', { style:{ color:C.orange, fontWeight:600 } }, 'retiradas/ajustes/multas ' + fmtBRL(selPt.q.ret)))
     , React.createElement('svg', { viewBox:'0 0 ' + W + ' ' + H, width:'100%', style:{ display:'block', overflow:'visible' }, role:'img', 'aria-label':'Saldo do mês — receitas e despesas' }, els));
 }
 

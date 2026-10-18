@@ -24365,7 +24365,7 @@ function movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas
   (despesas||[]).forEach(function(d){
     if(d.manutencao_id) return;
     var dt=d.data_pagamento||d.data; if(dt!==diaStr) return;
-    if(d.status==='pago'||d.data_pagamento) itens.push({ tipo:'despesa', label:d.descricao||d.categoria||'Despesa', valor:parseFloat(d.valor||0) });
+    if(d.status==='pago'||d.data_pagamento) itens.push({ tipo:'despesa', label:d.descricao||d.categoria||'Despesa', valor:parseFloat(d.valor||0), ret:isRetLucro(d) });
   });
   (manutencoes||[]).forEach(function(m){
     var dt=m.data_pagamento; if(dt!==diaStr) return;
@@ -30581,13 +30581,13 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       /* [grafico-saldo-movimentos] Receitas e despesas de cada dia exibidas junto ao saldo no gráfico:
          realizado (dias da janela até hoje, via movimentosCaixaDoDia) + previsto (eventos futuros). */
       var _movsGraf = [];
-      var _movDiaGet = function(d){ for (var _q=0; _q<_movsGraf.length; _q++){ if (_movsGraf[_q].dia===d) return _movsGraf[_q]; } var _n={ dia:d, rec:0, dep:0 }; _movsGraf.push(_n); return _n; };
+      var _movDiaGet = function(d){ for (var _q=0; _q<_movsGraf.length; _q++){ if (_movsGraf[_q].dia===d) return _movsGraf[_q]; } var _n={ dia:d, rec:0, dep:0, ret:0 }; _movsGraf.push(_n); return _n; };
       for (var _dm = _diaInicioRecente; _dm <= _diaHojeNum; _dm++) {
         var _itsM = movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _mesHoje + '-' + String(_dm).padStart(2,'0')) || [];
-        _itsM.forEach(function(it){ var _mv=_movDiaGet(_dm); var _vv=Math.abs(parseFloat(it.valor||0)); if (it.tipo==='receita') _mv.rec+=_vv; else _mv.dep+=_vv; });
+        _itsM.forEach(function(it){ var _mv=_movDiaGet(_dm); var _vv=Math.abs(parseFloat(it.valor||0)); if (it.tipo==='receita') _mv.rec+=_vv; else if (it.ret) _mv.ret+=_vv; else _mv.dep+=_vv; });
       }
       _eventosFuturos.forEach(function(ev){ if (ev.dia <= _diaHojeNum) return; var _mv=_movDiaGet(ev.dia); if (ev.delta>0) _mv.rec+=ev.delta; else _mv.dep+=Math.abs(ev.delta); });
-      _movsGraf = _movsGraf.filter(function(m){ return m.rec>0.005 || m.dep>0.005; }).sort(function(a,b){ return a.dia-b.dia; });
+      _movsGraf = _movsGraf.filter(function(m){ return m.rec>0.005 || m.dep>0.005 || m.ret>0.005; }).sort(function(a,b){ return a.dia-b.dia; });
       var _minPtProj = { saldo:_saldoProjetado, dia:_ultimoDiaMesHoje };
       _projDias.forEach(function(p){ if (p.saldo < _minPtProj.saldo) _minPtProj = { saldo:p.saldo, dia:p.dia }; });
       var _folgaPiso = _piso!==null ? (_minPtProj.saldo - _piso) : null;
@@ -30604,6 +30604,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         return { rec:uq(rdLinhasReceitaCliente(receitas, contratos, clientes, dashMes)), dep:uq(rdLinhasDespesaCategoria(despesas, manutencoes, dashMes)) }; /* mesmas linhas dos tubos de baixo (calculadas só no toque) */
       };
       var _saldoPulsar = function(q, tipo){
+        if (tipo === 'ret') return;
         var c = _saldoChavesDia(q.dia);
         if (tipo !== 'rec') __tuboPiscar('desp', c.dep);
         if (tipo !== 'dep') __tuboPiscar('rec', c.rec);
@@ -30614,21 +30615,21 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         var pts = [], _movReal = [];
         for (var d=1; d<=_diaHojeNum; d++) {
           var its = movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _mesHoje+'-'+_pad2(d)) || [];
-          var rec=0, dep=0;
-          its.forEach(function(it){ var v=Math.abs(parseFloat(it.valor||0)); if (it.tipo==='receita') rec+=v; else dep+=v; });
-          if (rec>0.005 || dep>0.005) _movReal.push({ dia:d, rec:rec, dep:dep });
+          var rec=0, dep=0, ret=0;
+          its.forEach(function(it){ var v=Math.abs(parseFloat(it.valor||0)); if (it.tipo==='receita') rec+=v; else if (it.ret) ret+=v; else dep+=v; });
+          if (rec>0.005 || dep>0.005 || ret>0.005) _movReal.push({ dia:d, rec:rec, dep:dep, ret:ret });
         }
         if (!_movReal.length || _movReal[0].dia > 1) {
           pts.push({ dia:1, saldo: saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _mesHoje+'-01'), rec:0, dep:0, real:true, sem:true });
         }
         _movReal.forEach(function(m){
-          pts.push({ dia:m.dia, saldo: (m.dia===_diaHojeNum ? _saldoAtual : saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _proxD(m.dia))), rec:m.rec, dep:m.dep, real:true });
+          pts.push({ dia:m.dia, saldo: (m.dia===_diaHojeNum ? _saldoAtual : saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _proxD(m.dia))), rec:m.rec, dep:m.dep, ret:(m.ret||0), real:true });
         });
         if (pts[pts.length-1].dia < _diaHojeNum) pts.push({ dia:_diaHojeNum, saldo:_saldoAtual, rec:0, dep:0, real:true, sem:true });
         _projSerie.forEach(function(p){
           if (p.dia <= _diaHojeNum) return;
           var mv = null; _movsGraf.forEach(function(m){ if (m.dia===p.dia) mv = m; });
-          pts.push({ dia:p.dia, saldo:p.saldo, rec:(mv?mv.rec:0), dep:(mv?mv.dep:0), real:false, sem:!mv });
+          pts.push({ dia:p.dia, saldo:p.saldo, rec:(mv?mv.rec:0), dep:(mv?mv.dep:0), ret:(mv?(mv.ret||0):0), real:false, sem:!mv });
         });
         return pts;
       })();
@@ -43771,15 +43772,16 @@ function CurvaSaldo(p){
   var dd = function(dia){ return p.desktop ? ddFull(dia) : String(dia).padStart(2,'0'); }; /* mobile: só o dia, sem o mês */
   var lastUp = -1e9, lastDown = -1e9, datas = [], selPt = null;
   pts.forEach(function(q, k){
-    if (!(q.rec > 0.005 || q.dep > 0.005)) return;
+    if (!(q.rec > 0.005 || q.dep > 0.005 || q.ret > 0.005)) return;
     var cx = px[k], cy = py[k], xl = Math.min(Math.max(cx, 22), W - 22), sel = (selDia === q.dia);
     if (sel) selPt = { q:q, x:cx };
-    var cor = q.rec >= q.dep ? G : R;
+    var _ret = q.ret || 0, cor = (q.rec >= q.dep && q.rec >= _ret) ? G : (q.dep >= _ret ? R : C.orange);
     if (sel) els.push(React.createElement('circle', { key:'h'+k, cx:f1(cx), cy:f1(cy), r:6.5, style:{ fill:cor, opacity:0.18 } }));
     els.push(React.createElement('circle', { key:'d'+k, cx:f1(cx), cy:f1(cy), r:(sel ? 3.8 : 2.8), style:{ fill:cor, stroke:C.card, strokeWidth:1.2 } }));
     var labs = [];
     if (q.rec > 0.005) labs.push({ v:q.rec, c:G, id:'r' });
     if (q.dep > 0.005) labs.push({ v:q.dep, c:R, id:'d' });
+    if (_ret > 0.005) labs.push({ v:_ret, c:C.orange, id:'x' });
     labs.sort(function(a, b){ return b.v - a.v; });
     var desenhou = false;
     labs.forEach(function(lb){
@@ -43791,7 +43793,7 @@ function CurvaSaldo(p){
       } else {
         if ((cx - lastDown) < 30) return;
         lastDown = cx; desenhou = true;
-        els.push(React.createElement('text', { key:'vd'+k, x:f1(xl), y:f1(cy + 14), textAnchor:'middle', onClick:function(e){ e.stopPropagation(); if (p.onPulse) p.onPulse(q, 'dep'); }, style:{ fontSize:11, fontWeight:700, fill:lb.c, cursor:'pointer' } }, ab(lb.v)));
+        els.push(React.createElement('text', { key:'v'+lb.id+k, x:f1(xl), y:f1(cy + 14), textAnchor:'middle', onClick:function(e){ e.stopPropagation(); if (p.onPulse) p.onPulse(q, lb.id === 'x' ? 'ret' : 'dep'); }, style:{ fontSize:11, fontWeight:700, fill:lb.c, cursor:'pointer' } }, ab(lb.v)));
       }
     });
     datas.push({ x:xl, t:dd(q.dia), k:k }); /* data de TODO dia com evento, todas na mesma linha */
@@ -43816,7 +43818,8 @@ function CurvaSaldo(p){
     , selPt && React.createElement('div', { style:Object.assign({ position:'absolute', top:0, background:C.card, border:'1px solid ' + C.border, borderRadius:9, padding:'3px 9px', fontSize:11, fontWeight:700, lineHeight:1.3, whiteSpace:'nowrap', color:C.text, boxShadow:'0 2px 6px rgba(0,0,0,0.08)', pointerEvents:'none', zIndex:3 }, pos) }
         , ddFull(selPt.q.dia) + ' · ' + fmtBRL(selPt.q.saldo)
         , selPt.q.rec > 0.005 && React.createElement('div', { style:{ color:G, fontWeight:600 } }, 'receitas ' + fmtBRL(selPt.q.rec))
-        , selPt.q.dep > 0.005 && React.createElement('div', { style:{ color:R, fontWeight:600 } }, 'despesas ' + fmtBRL(selPt.q.dep)))
+        , selPt.q.dep > 0.005 && React.createElement('div', { style:{ color:R, fontWeight:600 } }, 'despesas ' + fmtBRL(selPt.q.dep))
+        , selPt.q.ret > 0.005 && React.createElement('div', { style:{ color:C.orange, fontWeight:600 } }, 'retirada/ajuste ' + fmtBRL(selPt.q.ret)))
     , React.createElement('svg', { viewBox:'0 0 ' + W + ' ' + H, width:'100%', style:{ display:'block', overflow:'visible' }, role:'img', 'aria-label':'Saldo do mês — receitas e despesas' }, els));
 }
 

@@ -30283,6 +30283,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 curva:{ title:opts.title, total:opts.total, color:opts.color, items:opts.items, rowsAll:(opts.semCurva ? [] : opts.rowsAll), rotuloPendente:opts.rotuloPendente, rotuloPago:opts.rotuloPago, mes:dashMes, C:C, desktop:desktop },
                 items: opts.items.map(function(it){ return { label: opts.firstNameOnly ? (it.key||"").trim().split(/\s+/)[0] : it.key, val: it.value, pend: it.pendente, color: it.color, fullKey: it.key }; }),
                 tubosOpts:{ C:C, onBarClick:opts.onBarClick, rotuloPendente: opts.rotuloPendente },
+                tipoPisca: (opts.rotuloPendente === 'a pagar') ? 'desp' : 'rec',
                 emptyEl: React.createElement('div', { style:{ padding:"18px 0", textAlign:"center", color:C.sub, fontSize:13 } }, opts.emptyMsg) })
           )
         );
@@ -30596,6 +30597,17 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       /* [grafico-saldo-curva] Pontos da curva do saldo no mês: início do mês → cada dia com movimento até hoje (saldo real
          daquele dia, via saldoCaixaAte/movimentosCaixaDoDia) → hoje → eventos futuros (_projDias) → fim do mês (_saldoProjetado).
          rec/dep = receitas/despesas do dia (valor do lançamento), mostradas nos pontos; a cor já diz o que é. */
+      /* chaves (categoria de despesa / cliente de receita) dos lançamentos de um dia — mesmas linhas que alimentam os tubos de baixo */
+      var _saldoChavesDia = function(dia){
+        var iso = _mesHoje + '-' + String(dia).padStart(2,'0');
+        var uq = function(rows){ var o = []; (rows || []).forEach(function(r){ if (String(r.data || '').slice(0,10) === iso && r.chave != null && o.indexOf(r.chave) < 0) o.push(r.chave); }); return o; };
+        return { rec:uq(rdLinhasReceitaCliente(receitas, contratos, clientes, dashMes)), dep:uq(rdLinhasDespesaCategoria(despesas, manutencoes, dashMes)) }; /* mesmas linhas dos tubos de baixo (calculadas só no toque) */
+      };
+      var _saldoPulsar = function(q, tipo){
+        var c = _saldoChavesDia(q.dia);
+        if (tipo !== 'rec') __tuboPiscar('desp', c.dep);
+        if (tipo !== 'dep') __tuboPiscar('rec', c.rec);
+      };
       var _saldoPts = (function(){
         var _pad2 = function(n){ return String(n).padStart(2,'0'); };
         var _proxD = function(d){ var x=new Date(_mesHoje+'-'+_pad2(d)+'T12:00:00'); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); };
@@ -30655,7 +30667,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           , saldoHojeFace===0 ? _colSaldo : _colDesp
           , saldoHojeFace===0 ? _colProj : _colFat
         )
-        , React.createElement(CurvaSaldo, { pts:_saldoPts, diaHoje:_diaHojeNum, ultimo:_ultimoDiaMesHoje, mes:_mesHoje, C:C, desktop:desktop })
+        , React.createElement(CurvaSaldo, { pts:_saldoPts, diaHoje:_diaHojeNum, ultimo:_ultimoDiaMesHoje, mes:_mesHoje, C:C, desktop:desktop, onPulse:_saldoPulsar })
         , React.createElement('div', { style:{ padding: _pontoAtivo ? '4px 14px 6px' : 0 } }
           /* Detalhe do ponto tocado: as despesas/receitas que fizeram o saldo
              oscilar naquele dia — realizado (face 0) usa os movimentos JÁ
@@ -43775,16 +43787,16 @@ function CurvaSaldo(p){
       if (lb.id === 'r') {
         if ((cx - lastUp) < 30) return;
         lastUp = cx; desenhou = true;
-        els.push(React.createElement('text', { key:'vr'+k, x:f1(xl), y:f1(cy - 8), textAnchor:'middle', style:{ fontSize:11, fontWeight:700, fill:lb.c } }, ab(lb.v)));
+        els.push(React.createElement('text', { key:'vr'+k, x:f1(xl), y:f1(cy - 8), textAnchor:'middle', onClick:function(e){ e.stopPropagation(); if (p.onPulse) p.onPulse(q, 'rec'); }, style:{ fontSize:11, fontWeight:700, fill:lb.c, cursor:'pointer' } }, ab(lb.v)));
       } else {
         if ((cx - lastDown) < 30) return;
         lastDown = cx; desenhou = true;
-        els.push(React.createElement('text', { key:'vd'+k, x:f1(xl), y:f1(cy + 14), textAnchor:'middle', style:{ fontSize:11, fontWeight:700, fill:lb.c } }, ab(lb.v)));
+        els.push(React.createElement('text', { key:'vd'+k, x:f1(xl), y:f1(cy + 14), textAnchor:'middle', onClick:function(e){ e.stopPropagation(); if (p.onPulse) p.onPulse(q, 'dep'); }, style:{ fontSize:11, fontWeight:700, fill:lb.c, cursor:'pointer' } }, ab(lb.v)));
       }
     });
     datas.push({ x:xl, t:dd(q.dia), k:k }); /* data de TODO dia com evento, todas na mesma linha */
     els.push(React.createElement('circle', { key:'hit'+k, cx:f1(cx), cy:f1(cy), r:13, style:{ fill:'transparent', cursor:'pointer', WebkitTapHighlightColor:'transparent' },
-      onClick:function(e){ e.stopPropagation(); setSel(function(c){ return c === q.dia ? null : q.dia; }); } }));
+      onClick:function(e){ e.stopPropagation(); setSel(function(c){ return c === q.dia ? null : q.dia; }); if (p.onPulse) p.onPulse(q); } }));
   });
   /* datas na MESMA linha: se duas ficarem coladas, as duas diminuem a fonte (9,5) e se afastam um pouco */
   var _wd = function(t, fs){ return t.length * fs * 0.56; };
@@ -43974,9 +43986,24 @@ function CurvaAcumulada(opts){
                 );
 }
 
+/* [pisca-tubo-saldo] Tocar numa receita/despesa do gráfico de Saldo faz piscar o tubo correspondente nos painéis de baixo
+   (Despesas por Categoria / Receitas por Cliente). Store global simples: quem toca publica as chaves; cada painel escuta o seu tipo. */
+var __tuboPisca = { subs:[], data:{ desp:{ keys:[], t:0 }, rec:{ keys:[], t:0 } } };
+function __tuboPiscar(tipo, keys){
+  if (!keys || !keys.length) return;
+  var d = __tuboPisca.data[tipo]; d.keys = keys; d.t++;
+  __tuboPisca.subs.slice().forEach(function(f){ f(); });
+}
 /* [pisca-tubo] Curva + tubos juntos: tocar num ponto da curva faz piscar o(s) tubo(s) da categoria/cliente daquele lançamento. */
 function CurvaComTubos(p){
   var st = React.useState({ keys:[], tick:0 });
+  React.useEffect(function(){
+    if (!p.tipoPisca) return;
+    var last = __tuboPisca.data[p.tipoPisca].t;
+    var f = function(){ var d = __tuboPisca.data[p.tipoPisca]; if (d.t !== last) { last = d.t; st[1](function(c){ return { keys:d.keys, tick:c.tick + 1 }; }); } };
+    __tuboPisca.subs.push(f);
+    return function(){ __tuboPisca.subs = __tuboPisca.subs.filter(function(x){ return x !== f; }); };
+  }, [p.tipoPisca]);
   var curva = Object.assign({}, p.curva, { onPontoClick:function(g){ st[1](function(c){ return { keys:(g && g.chaves) || [], tick:c.tick + 1 }; }); } });
   var tubos = Object.assign({}, p.tubosOpts, { piscaKeys:st[0].keys, piscaTick:st[0].tick });
   return React.createElement(React.Fragment, null

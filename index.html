@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="02732c6"/>
+<meta name="ag-build" content="9bdde8a"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -30272,7 +30272,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           , React.createElement('div', { className:'ag-apple-card', style:{ background:C.card, borderRadius:18, border:"1px solid "+C.border, padding:"14px 16px 16px", flex:1 } }
             /* size 17 (era 20, −3px pedido do usuário) */
             , React.createElement(CurvaComTubos, {
-                curva:{ title:opts.title, total:opts.total, color:opts.color, items:opts.items, rowsAll:opts.rowsAll, rotuloPendente:opts.rotuloPendente, rotuloPago:opts.rotuloPago, mes:dashMes, C:C, desktop:desktop },
+                curva:{ title:opts.title, total:opts.total, color:opts.color, items:opts.items, rowsAll:(opts.semCurva ? [] : opts.rowsAll), rotuloPendente:opts.rotuloPendente, rotuloPago:opts.rotuloPago, mes:dashMes, C:C, desktop:desktop },
                 items: opts.items.map(function(it){ return { label: opts.firstNameOnly ? (it.key||"").trim().split(/\s+/)[0] : it.key, val: it.value, pend: it.pendente, color: it.color, fullKey: it.key }; }),
                 tubosOpts:{ C:C, onBarClick:opts.onBarClick, rotuloPendente: opts.rotuloPendente },
                 emptyEl: React.createElement('div', { style:{ padding:"18px 0", textAlign:"center", color:C.sub, fontSize:13 } }, opts.emptyMsg) })
@@ -30287,7 +30287,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       return React.createElement('div', { style:{ display:"flex", flexDirection: RX.kpiFlexDir, gap:21, alignItems:"stretch", marginTop:-(Math.round(RX.dashGap*0.15)+RX.estiloPull) } }
         , _painelFunil({
             icon:"💸", title:"Despesas por Categoria", total:totalDespesaInicio, color:C.red,
-            items:despesaItems, rowsAll:rdDespesaRowsInicio, emptyMsg:"Nenhuma despesa neste m\xeas", rotuloPendente:"a pagar", rotuloPago:"pago",
+            items:despesaItems, semCurva:true, rowsAll:rdDespesaRowsInicio, emptyMsg:"Nenhuma despesa neste m\xeas", rotuloPendente:"a pagar", rotuloPago:"pago",
             onTitleClick:function(){ setTab("financeiro"); },
             onBarClick:function(x,e){ e.stopPropagation(); setFinDeepLink({subTab:"despesas",cat:x.fullKey}); setTab("financeiro"); }
           })
@@ -30585,6 +30585,34 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var _pisoOk = _folgaPiso!==null && _folgaPiso>=0;
       var _kBRL = function(v){ var _a=Math.abs(v); return _a>=1000 ? 'R$ '+(_a/1000).toFixed(1).replace('.',',')+'k' : 'R$ '+Math.round(_a); };
 
+      /* [grafico-saldo-curva] Pontos da curva do saldo no mês: início do mês → cada dia com movimento até hoje (saldo real
+         daquele dia, via saldoCaixaAte/movimentosCaixaDoDia) → hoje → eventos futuros (_projDias) → fim do mês (_saldoProjetado).
+         rec/dep = receitas/despesas do dia (valor do lançamento), mostradas nos pontos; a cor já diz o que é. */
+      var _saldoPts = (function(){
+        var _pad2 = function(n){ return String(n).padStart(2,'0'); };
+        var _proxD = function(d){ var x=new Date(_mesHoje+'-'+_pad2(d)+'T12:00:00'); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); };
+        var pts = [], _movReal = [];
+        for (var d=1; d<=_diaHojeNum; d++) {
+          var its = movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _mesHoje+'-'+_pad2(d)) || [];
+          var rec=0, dep=0;
+          its.forEach(function(it){ var v=Math.abs(parseFloat(it.valor||0)); if (it.tipo==='receita') rec+=v; else dep+=v; });
+          if (rec>0.005 || dep>0.005) _movReal.push({ dia:d, rec:rec, dep:dep });
+        }
+        if (!_movReal.length || _movReal[0].dia > 1) {
+          pts.push({ dia:1, saldo: saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _mesHoje+'-01'), rec:0, dep:0, real:true, sem:true });
+        }
+        _movReal.forEach(function(m){
+          pts.push({ dia:m.dia, saldo: (m.dia===_diaHojeNum ? _saldoAtual : saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _proxD(m.dia))), rec:m.rec, dep:m.dep, real:true });
+        });
+        if (pts[pts.length-1].dia < _diaHojeNum) pts.push({ dia:_diaHojeNum, saldo:_saldoAtual, rec:0, dep:0, real:true, sem:true });
+        _projSerie.forEach(function(p){
+          if (p.dia <= _diaHojeNum) return;
+          var mv = null; _movsGraf.forEach(function(m){ if (m.dia===p.dia) mv = m; });
+          pts.push({ dia:p.dia, saldo:p.saldo, rec:(mv?mv.rec:0), dep:(mv?mv.dep:0), real:false, sem:!mv });
+        });
+        return pts;
+      })();
+
 
       /* marginTop negativo (pedido do usuário: subir este card 15% mais
          perto da Agenda logo acima) — quebra de propósito, só aqui, a
@@ -30597,16 +30625,12 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var _colSaldo = React.createElement('div', { style:Object.assign({},_cardBase,{flex:1,borderRight:'1px solid var(--c-border)',position:'relative'},(desktop ? {textAlign:'center',display:'flex',flexDirection:'column',justifyContent:'center'} : {})) }
             , React.createElement('div', { style:_lbl }, 'Saldo nas contas Estilo')
             , _big(_saldoAtual)
-            , React.createElement('div', { style:{ fontSize: _supFs, color: _saldoLivre>=0?C.green:C.red, fontWeight:700, marginTop:3 } }
-              , _despHojeAPagar>0
-                  ? ['~', React.createElement(BRLValue,{key:'v',v:_saldoLivre,size:_supFs,weight:700,color:_saldoLivre>=0?C.green:C.red}), ' após pagar hoje']
-                  : 'Nenhuma despesa hoje')
+            , _despHojeAPagar>0 ? React.createElement('div', { style:{ fontSize: _supFs, color: _saldoLivre>=0?C.green:C.red, fontWeight:700, marginTop:3 } }
+              , ['~', React.createElement(BRLValue,{key:'v',v:_saldoLivre,size:_supFs,weight:700,color:_saldoLivre>=0?C.green:C.red}), ' após pagar hoje']) : null
       );
       var _colProj = React.createElement('div', { style:Object.assign({},_cardBase,{flex:1},(desktop ? {textAlign:'center',display:'flex',flexDirection:'column',justifyContent:'center'} : {})) }
             , React.createElement('div', { style:_lbl }, 'Saldo projetado')
             , _big(_saldoProjetado, _saldoProjetado>=0?undefined:C.red)
-            , React.createElement('div', { style:{ fontSize: _supFs, color:_saldoProjetado>=0?C.green:C.red, fontWeight:700, marginTop:3 } }
-              , 'para '+_ultimoDiaMesHoje+' de '+new Date(_mesHoje+"-15").toLocaleString("pt-BR",{month:"long"}))
       );
       var _colDesp = React.createElement('div', { style:Object.assign({},_cardBase,{flex:1,borderRight:'1px solid var(--c-border)',position:'relative'},(desktop ? {textAlign:'center',display:'flex',flexDirection:'column',justifyContent:'center'} : {})) }
             , React.createElement('div', { style:_lbl }, 'Despesas Estilo')
@@ -30627,6 +30651,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           , saldoHojeFace===0 ? _colSaldo : _colDesp
           , saldoHojeFace===0 ? _colProj : _colFat
         )
+        , React.createElement(CurvaSaldo, { pts:_saldoPts, diaHoje:_diaHojeNum, ultimo:_ultimoDiaMesHoje, C:C })
         , React.createElement('div', { style:{ padding: _pontoAtivo ? '4px 14px 6px' : 0 } }
           /* Detalhe do ponto tocado: as despesas/receitas que fizeram o saldo
              oscilar naquele dia — realizado (face 0) usa os movimentos JÁ
@@ -43671,6 +43696,76 @@ function _rdBarraBg(cor, total, pendente) {
 }
 function _luminance(hex){ var r=parseInt(hex.slice(1,3),16)/255,g=parseInt(hex.slice(3,5),16)/255,b=parseInt(hex.slice(5,7),16)/255; return 0.299*r+0.587*g+0.114*b; }
 // Barras estilo "funil" (pontas abauladas + balão de valor) — uma cor por categoria/cliente
+/* [grafico-saldo-curva] Curva do saldo no mês (mesmo estilo das curvas de Despesas/Receitas): eixo X = dias do mês, linha suave
+   (cúbica monotônica), sólida até hoje e tracejada depois, bolinha azul = hoje. Em cada dia com movimento: bolinha verde (receita)
+   ou vermelha (despesa) com o valor ABREVIADO em cima (sem sinal — a cor diz o que é) e a data embaixo. Toque no ponto = balão. */
+function CurvaSaldo(p){
+  var C = p.C, pts = (p.pts || []).slice().sort(function(a,b){ return a.dia - b.dia; });
+  var _st = React.useState(null), selDia = _st[0], setSel = _st[1];
+  if (pts.length < 2) return null;
+  var W = 340, padL = 8, padR = 8, yTop = 24, yBase = 78, H = 98, pw = W - padL - padR;
+  var nd = Math.max(p.ultimo || 30, pts[pts.length-1].dia, 2);
+  var X = function(d){ return padL + ((d - 1) / (nd - 1)) * pw; };
+  var vals = pts.map(function(q){ return q.saldo; });
+  var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals), sp = Math.max(mx - mn, Math.abs(mx) * 0.02, 1);
+  var vmin = mn - sp * 0.12, vmax = mx + sp * 0.12;
+  var Y = function(v){ return yBase - ((v - vmin) / (vmax - vmin)) * (yBase - yTop); };
+  var px = pts.map(function(q){ return X(q.dia); }), py = pts.map(function(q){ return Y(q.saldo); });
+  var n = pts.length, d = [], m = [], i;
+  for (i = 0; i < n - 1; i++) d.push((py[i+1] - py[i]) / Math.max(0.0001, px[i+1] - px[i]));
+  for (i = 0; i < n; i++) { if (i === 0) m.push(d[0]); else if (i === n - 1) m.push(d[n-2]); else m.push(d[i-1] * d[i] <= 0 ? 0 : (d[i-1] + d[i]) / 2); }
+  for (i = 0; i < n - 1; i++) { if (Math.abs(d[i]) < 1e-9) { m[i] = 0; m[i+1] = 0; continue; } var a = m[i] / d[i], b = m[i+1] / d[i], h = a*a + b*b; if (h > 9) { var t = 3 / Math.sqrt(h); m[i] = t * a * d[i]; m[i+1] = t * b * d[i]; } }
+  var f1 = function(v){ return Math.round(v * 10) / 10; };
+  var segs = [];
+  for (i = 0; i < n - 1; i++) { var dx = px[i+1] - px[i]; segs.push({ ax:px[i], ay:py[i], c1x:px[i] + dx/3, c1y:py[i] + m[i]*dx/3, c2x:px[i+1] - dx/3, c2y:py[i+1] - m[i+1]*dx/3, bx:px[i+1], by:py[i+1], real: !!pts[i+1].real }); }
+  var _bez = function(s, t){ var u = 1 - t; return [u*u*u*s.ax + 3*u*u*t*s.c1x + 3*u*t*t*s.c2x + t*t*t*s.bx, u*u*u*s.ay + 3*u*u*t*s.c1y + 3*u*t*t*s.c2y + t*t*t*s.by]; };
+  var dStr = function(s){ return 'M'+f1(s.ax)+' '+f1(s.ay)+' C'+f1(s.c1x)+' '+f1(s.c1y)+' '+f1(s.c2x)+' '+f1(s.c2y)+' '+f1(s.bx)+' '+f1(s.by); };
+  var G = C.green, R = C.red;
+  var _gid = 'cvSaldoG';
+  var els = [];
+  els.push(React.createElement('defs', { key:'df' }, React.createElement('linearGradient', { id:_gid, gradientUnits:'userSpaceOnUse', x1:0, y1:yTop, x2:0, y2:yBase }
+    , React.createElement('stop', { offset:'0%', style:{ stopColor:G, stopOpacity:0.26 } }), React.createElement('stop', { offset:'100%', style:{ stopColor:G, stopOpacity:0 } }))));
+  segs.forEach(function(s, k){ els.push(React.createElement('path', { key:'ar'+k, d:dStr(s)+' L'+f1(s.bx)+' '+yBase+' L'+f1(s.ax)+' '+yBase+' Z', style:{ fill:'url(#'+_gid+')', stroke:'none', opacity: s.real ? 1 : 0.55 } })); });
+  els.push(React.createElement('line', { key:'ax', x1:padL, y1:yBase, x2:W - padR, y2:yBase, style:{ stroke:C.border, strokeWidth:1 } }));
+  segs.forEach(function(s, k){ els.push(React.createElement('path', { key:'ln'+k, d:dStr(s), fill:'none', style:{ stroke:G, strokeWidth:1.4, strokeLinecap:'round', opacity: s.real ? 1 : 0.8 }, strokeDasharray: s.real ? undefined : '3 2.5' })); });
+  /* hoje: ponto real do dia de hoje (existe sempre na série) */
+  var hoje = p.diaHoje, hx = X(hoje), hy = py[0];
+  pts.forEach(function(q, k){ if (q.dia === hoje) hy = py[k]; });
+  els.push(React.createElement('line', { key:'hj', x1:f1(hx), y1:10, x2:f1(hx), y2:yBase, style:{ stroke:C.blue, strokeWidth:1 }, strokeDasharray:'1 2.5' }));
+  els.push(React.createElement('circle', { key:'hjd', cx:f1(hx), cy:f1(hy), r:3.4, style:{ fill:C.blue, stroke:C.card, strokeWidth:1.2 } }));
+  var ab = function(v){ var x = Math.abs(v); if (x >= 1e6) return (x/1e6).toFixed(1).replace('.',',').replace(',0','')+'M'; if (x >= 1000) return (x/1000).toFixed(1).replace('.',',').replace(',0','')+'k'; return String(Math.round(x)); };
+  var dd = function(dia){ var mm = (p.mes || '').slice(5,7); return String(dia).padStart(2,'0') + '/' + (mm || ''); };
+  var lastLab = -1e9, lastDate = -1e9, selPt = null;
+  pts.forEach(function(q, k){
+    if (!(q.rec > 0.005 || q.dep > 0.005)) return;
+    var cx = px[k], cy = py[k], xl = Math.min(Math.max(cx, 22), W - 22), sel = (selDia === q.dia);
+    if (sel) selPt = { q:q, x:cx };
+    var cor = q.rec >= q.dep ? G : R;
+    if (sel) els.push(React.createElement('circle', { key:'h'+k, cx:f1(cx), cy:f1(cy), r:6.5, style:{ fill:cor, opacity:0.18 } }));
+    els.push(React.createElement('circle', { key:'d'+k, cx:f1(cx), cy:f1(cy), r:(sel ? 3.8 : 2.8), style:{ fill:cor, stroke:C.card, strokeWidth:1.2 } }));
+    var colide = (cx - lastLab) < 30, ya = colide ? cy + 15 : cy - 8;
+    if (q.rec > 0.005 && q.dep > 0.005) {
+      els.push(React.createElement('text', { key:'vr'+k, x:f1(xl), y:f1(cy - 8), textAnchor:'middle', style:{ fontSize:11, fontWeight:700, fill:G } }, ab(q.rec)));
+      els.push(React.createElement('text', { key:'vd'+k, x:f1(xl), y:f1(cy + 15), textAnchor:'middle', style:{ fontSize:11, fontWeight:700, fill:R } }, ab(q.dep)));
+      lastLab = cx;
+    } else {
+      els.push(React.createElement('text', { key:'v'+k, x:f1(xl), y:f1(ya), textAnchor:'middle', style:{ fontSize:11, fontWeight:700, fill:cor } }, ab(q.rec > 0.005 ? q.rec : q.dep)));
+      if (!colide) lastLab = cx;
+    }
+    if ((cx - lastDate) >= 30) { els.push(React.createElement('text', { key:'t'+k, x:f1(xl), y:yBase + 16, textAnchor:'middle', style:{ fontSize:11, fontWeight:500, fill:C.sub } }, dd(q.dia))); lastDate = cx; }
+    els.push(React.createElement('circle', { key:'hit'+k, cx:f1(cx), cy:f1(cy), r:13, style:{ fill:'transparent', cursor:'pointer', WebkitTapHighlightColor:'transparent' },
+      onClick:function(e){ e.stopPropagation(); setSel(function(c){ return c === q.dia ? null : q.dia; }); } }));
+  });
+  var pc = selPt ? (selPt.x / W) * 100 : 0;
+  var pos = pc < 24 ? { left:0 } : (pc > 76 ? { right:0 } : { left:pc + '%', transform:'translateX(-50%)' });
+  return React.createElement('div', { style:{ borderTop:'1px solid ' + C.borderSoft, padding:'10px 14px 8px', position:'relative' } }
+    , selPt && React.createElement('div', { style:Object.assign({ position:'absolute', top:0, background:C.card, border:'1px solid ' + C.border, borderRadius:9, padding:'3px 9px', fontSize:11, fontWeight:700, lineHeight:1.3, whiteSpace:'nowrap', color:C.text, boxShadow:'0 2px 6px rgba(0,0,0,0.08)', pointerEvents:'none', zIndex:3 }, pos) }
+        , dd(selPt.q.dia) + ' · ' + fmtBRL(selPt.q.saldo)
+        , selPt.q.rec > 0.005 && React.createElement('div', { style:{ color:G, fontWeight:600 } }, 'receitas ' + fmtBRL(selPt.q.rec))
+        , selPt.q.dep > 0.005 && React.createElement('div', { style:{ color:R, fontWeight:600 } }, 'despesas ' + fmtBRL(selPt.q.dep)))
+    , React.createElement('svg', { viewBox:'0 0 ' + W + ' ' + H, width:'100%', style:{ display:'block', overflow:'visible' }, role:'img', 'aria-label':'Saldo do mês — receitas e despesas' }, els));
+}
+
 /* [curva-acumulada] Gráfico de curva acumulada do mês (eixo X = dias, Y em raiz quadrada, curva suave, valores abreviados nos pontos).
    Usado em Início › Despesas por Categoria / Receitas por Cliente e em Orçamento Pessoal › Receitas / Despesas por Categoria.
    props: title, total, color, items (value|val, pendente|pend), rowsAll [{data,valor,pendente}], rotuloPendente, rotuloPago, mes ("YYYY-MM"), C, desktop. */

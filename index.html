@@ -40818,7 +40818,7 @@ function PessoalDash({
               ,React.createElement('div',{style:{height:5,borderRadius:9,background:'rgba(120,120,128,0.2)',overflow:'hidden'}}
                 ,React.createElement('i',{style:{display:'block',height:'100%',borderRadius:9,width:pP+'%',background:cor}})
               )
-              ,React.createElement('span',{style:{display:'inline-block',alignSelf:'flex-start',fontSize:11,fontWeight:700,padding:'4px 9px',borderRadius:99,background:tc+'26',color:tc,whiteSpace:'nowrap'}},quitado?'\u2713 Tudo pago':'Falta '+f0(falta))
+              ,React.createElement('span',{style:{display:'inline-block',alignSelf:'flex-start',fontSize:11,fontWeight:700,padding:'4px 9px',borderRadius:99,background:tc+'26',color:tc,whiteSpace:'nowrap'}},quitado?'\u2713':'Falta '+f0(falta))
             );
           })
         );
@@ -40840,6 +40840,106 @@ function PessoalDash({
       if(_totRec>0){ var fxp=pct(fixasP,_totRec); ins.push({cor:fxp>50?C.orange:C.green,ic:'🔁',t:'Despesas fixas = '+fxp+'% da receita',s:fxp>50?'Acima de 50%: pouca folga para imprevistos se a receita cair.':'Abaixo de 50%: boa margem de segurança se a receita oscilar.'}); }
       var poupH = HIST.filter(function(h){return h.rec>0 && h.des>0;}).map(function(h){return (h.rec-h.des+h.inv)/h.rec;});
       if(_totRec>0 && poupH.length>=2){ var pAvg=Math.round(poupH.reduce(function(s,x){return s+x;},0)/poupH.length*100); var pNow=Math.round((_saldo+(gTotP.inv||0))/_totRec*100); ins.push({cor:pNow>=pAvg?C.green:C.orange,ic:pNow>=pAvg?'💚':'📉',t:'Poupança de '+pNow+'% neste mês',s:'Média dos '+poupH.length+' meses anteriores: '+pAvg+'%. Considera sobra do mês + investimento.'}); }
+      /* ═════ [ana-conjunta] Análise crítica Pessoal × Estilo (a Estilo sustenta o orçamento pessoal) ═════
+         Lucro da Estilo antes da retirada = resultado previsto da locadora + retirada já lançada.
+         Regra prática: no máximo 70% desse lucro vira retirada; 30% fica de reserva
+         (manutenção, IPVA, renovação da frota). Não altera nenhuma regra de saldo, baixa ou recorrência. ═════ */
+      var anaEl = (function(){
+        if(!(_totRec>0 || _totDes>0)) return null;
+        var RES = 0.7;
+        function lucroEmp(m){ return _resultPrevLoc(m) + retiradaLucroDoMes(despesas,m); }
+        var luc = lucroEmp(_mes);
+        var ret = _recLoc;
+        var dep = _totRec>0 ? Math.round(ret/_totRec*100) : 0;
+        var payout = luc>0 ? Math.round(ret/luc*100) : (ret>0 ? 999 : 0);
+        var folga = Math.max(0, luc*RES - ret);
+        var cob = _totDes>0 ? _totRec/_totDes : 0;
+        var gap = _saldo<0 ? -_saldo : 0;
+        var divT = gTotP.div||0;
+        var corP = cob>=1.1 ? C.green : (cob>=1 ? C.orange : C.red);
+        var corE = luc<=0 ? C.red : (payout<=70 ? C.green : (payout<=100 ? C.orange : C.red));
+
+        var fut = [];
+        [1,2,3].forEach(function(q){
+          var mf = _addM(_mes,q);
+          var itF = _itSrc.filter(function(it){return _vis(it,mf);}).map(function(it){return _projetar(it,mf);});
+          var dF = sumV(itF.filter(function(it){return it.tipo==='despesa';}));
+          var rF = retiradaLucroDoMes(despesas,mf) + sumV(itF.filter(function(it){return it.tipo==='receita' && !_retLocDespId(it);}));
+          fut.push({m:mf,des:dF,sal:rF-dF});
+        });
+        var futNeg = fut.filter(function(x){return x.des>0 && x.sal<0;});
+
+        var fd = [];
+        if(luc<=0) fd.push({cor:C.red,ic:'🏢',t:'Estilo sem lucro previsto neste mês',s:'Resultado previsto de '+f0(luc)+' antes da retirada. Qualquer retirada hoje sai do caixa da empresa, não do lucro.'});
+        else if(payout>100) fd.push({cor:C.red,ic:'🏢',t:'Retirada de '+payout+'% do lucro da Estilo',s:'Você retira '+f0(ret)+' de um lucro previsto de '+f0(luc)+'. Acima de 100% a empresa se descapitaliza para bancar o pessoal.'});
+        else if(payout>70) fd.push({cor:C.orange,ic:'🏢',t:'Retirada consome '+payout+'% do lucro da Estilo',s:'Acima de 70% sobra pouco para manutenção, IPVA e renovação da frota. Teto sugerido: '+f0(luc*RES)+'.'});
+        else if(ret>0) fd.push({cor:C.green,ic:'🏢',t:'Retirada sustentável: '+payout+'% do lucro da Estilo',s:'Folga de '+f0(folga)+' até o teto de 70%, mantendo reserva na empresa.'});
+        if(ret>0 && dep>=85) fd.push({cor:C.orange,ic:'🧲',t:dep+'% da sua receita vem da Estilo',s:'Fonte única de renda: um mês fraco na locadora derruba o orçamento pessoal junto. Uma reserva pessoal de 3 meses de despesas reduz esse risco.'});
+        if(_totDes>0 && divT/_totDes>=0.3) fd.push({cor:C.red,ic:'💳',t:'Cartão e dívidas = '+pct(divT,_totDes)+'% das despesas',s:f0(divT)+' no mês. É a alavanca de maior impacto: pagar a fatura integral, renegociar prazo e juros do empréstimo e evitar o rotativo.'});
+        if(_totDes>0){
+          if(cob<1) fd.push({cor:C.red,ic:'📉',t:'Receita cobre só '+Math.round(cob*100)+'% das despesas',s:'Faltam '+f0(gap)+' para fechar o mês.'});
+          else if(cob<1.1) fd.push({cor:C.orange,ic:'⚖️',t:'Margem pessoal apertada: '+Math.round((cob-1)*100)+'% de sobra',s:'Qualquer imprevisto vira déficit. O ideal é fechar o mês com pelo menos 10% de folga.'});
+          else fd.push({cor:C.green,ic:'✅',t:'Orçamento pessoal fecha com folga',s:'Receita cobre '+Math.round(cob*100)+'% das despesas do mês.'});
+        }
+        if(futNeg.length) fd.push({cor:C.orange,ic:'🔭',t:'Próximos meses: '+futNeg.length+' fechando no vermelho',s:futNeg.map(function(x){return _nomMesOf(x.m)+' '+f0(x.sal);}).join(' · ')+'. Considera só o que já está lançado; confira se a retirada desses meses foi registrada.'});
+
+        var plano = [];
+        if(gap>0){
+          var rest = gap;
+          if(luc<=0){
+            plano.push({t:'Não aumente a retirada',s:'A Estilo não tem lucro previsto; tirar mais agrava os dois lados. O ajuste precisa vir de corte de gastos ou de renda extra.'});
+          } else if(folga>=gap){
+            plano.push({t:'Cobrir com retirada extra de '+f0(gap),s:'A Estilo comporta: a retirada iria para '+Math.round((ret+gap)/luc*100)+'% do lucro, ainda dentro do teto de 70%.'});
+            rest = 0;
+          } else {
+            rest = gap-folga;
+            plano.push({t:folga>0?'Retirada extra de até '+f0(folga):'Sem folga na Estilo para aumentar a retirada',s:(folga>0?'É o que a empresa comporta sem passar de 70% do lucro. ':'')+'Faltam '+f0(rest)+'. Para liberar isso via retirada, o lucro da Estilo teria de subir cerca de '+f0(rest/RES)+' (cobrar atrasados, reajustar diárias, reduzir ociosidade).'});
+          }
+          if(rest>0){
+            var disc = (gTotP.vida||0)+(gTotP.out||0);
+            if(disc>0){
+              var c30 = disc*0.3;
+              plano.push({t:'Cortar 30% de Estilo de vida e Outros: '+f0(c30),s:disc/_totDes<0.1 ? 'Gastos discricionários são só '+pct(disc,_totDes)+'% das despesas: cortar supérfluos não resolve o déficit sozinho.' : (c30>=rest ? 'Cobre a lacuna restante.' : 'Cobre '+pct(c30,rest)+'% da lacuna restante.')});
+            }
+            if(divT>0) plano.push({t:'Renegociar cartão e empréstimo',s:'Simulação: reduzir 20% da parcela de dívidas libera '+f0(divT*0.2)+' por mês. Dívida de curto prazo no cartão é o gasto mais caro do orçamento.'});
+          }
+        }
+
+        function linha(x,i){
+          return React.createElement('div',{key:i,style:{display:'flex',gap:11,background:C.card,borderRadius:14,border:'1px solid '+C.border,borderLeft:'4px solid '+x.cor,padding:'12px 14px'}}
+            ,React.createElement('div',{style:{fontSize:19}},x.ic)
+            ,React.createElement('div',{style:{minWidth:0}}
+              ,React.createElement('div',{style:{fontSize:13.5,fontWeight:700,marginBottom:2}},x.t)
+              ,React.createElement('div',{style:{fontSize:12.5,color:C.sub}},x.s)
+            )
+          );
+        }
+        var tileSt = {background:'rgba(120,120,128,0.10)',borderRadius:12,padding:'9px 10px',minWidth:0};
+        function tile(lbl,node){ return React.createElement('div',{style:tileSt},React.createElement('div',{style:{fontSize:11,color:C.sub}},lbl),React.createElement('div',{style:{marginTop:2,fontSize:16,fontWeight:800}},node)); }
+        return React.createElement('div',null
+          ,React.createElement('div',{style:lblSec},'🧭 Saúde conjunta · Estilo × Pessoal')
+          ,React.createElement('div',{style:Object.assign({},cardSt,{padding:12,marginBottom:10})}
+            ,React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:8}}
+              ,tile('Retirada da Estilo',React.createElement(BRLValue,{v:ret,size:16,weight:800}))
+              ,tile('Lucro previsto da Estilo',React.createElement(BRLValue,{v:luc,size:16,weight:800,color:luc>=0?C.green:C.red}))
+              ,tile('Retirada ÷ lucro',React.createElement('span',{style:{color:corE}},payout>=999?'—':payout+'%'))
+              ,tile('Cobertura pessoal',React.createElement('span',{style:{color:corP}},cob.toFixed(2).replace('.',',')+'×'))
+            )
+            ,React.createElement('div',{style:{fontSize:10.5,color:C.sub,marginTop:8}},'Lucro previsto = resultado da locadora antes da retirada. Referência: retirar no máximo 70% dele e deixar 30% de reserva na empresa.')
+          )
+          ,React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:10}}
+            ,fd.map(linha)
+            ,plano.length ? React.createElement('div',{style:Object.assign({},cardSt,{borderLeft:'4px solid '+C.red})}
+              ,React.createElement('div',{style:{fontSize:13.5,fontWeight:700,marginBottom:8}},'🛟 Plano para o déficit de '+f0(gap))
+              ,plano.map(function(p,i){ return React.createElement('div',{key:i,style:{padding:'8px 0',borderTop:i?'1px solid '+C.borderSoft:'none'}}
+                ,React.createElement('div',{style:{fontSize:13,fontWeight:700}},(i+1)+'. '+p.t)
+                ,React.createElement('div',{style:{fontSize:12.5,color:C.sub,marginTop:2}},p.s)
+              ); })
+            ) : null
+          )
+        );
+      })();
+
       var insEl = ins.length===0 ? null : React.createElement('div',null
         ,React.createElement('div',{style:lblSec},'🧠 Insights do mês')
         ,ins.slice(0,5).map(function(x,i){
@@ -40966,8 +41066,8 @@ function PessoalDash({
         }
       }
 
-      if(!secEnv && !insEl && !recEl && !despEl) return null;
-      return React.createElement(React.Fragment,null,recEl,despEl,secEnv,insEl,sheetEl);
+      if(!secEnv && !anaEl && !insEl && !recEl && !despEl) return null;
+      return React.createElement(React.Fragment,null,recEl,despEl,secEnv,anaEl,insEl,sheetEl);
     })()
 
     /* ══ Pendências do mês — formato ledger, igual ao painel de Boletos do

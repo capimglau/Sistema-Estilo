@@ -197,6 +197,9 @@ body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix) .agk2-day-col-h
    ao lado (o layout é flex com gap fixo, não reflui com o transform). */
 @keyframes ag-logo-pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.14);opacity:0.72}}
 .ag-logo-pulse{animation:ag-logo-pulse 1.6s ease-in-out infinite;transform-origin:center;}
+@keyframes ag-val-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.35;transform:scale(1.22)}}
+.ag-val-pulse{animation:ag-val-pulse 1.3s ease-in-out infinite;transform-box:fill-box;transform-origin:center;pointer-events:none;}
+@media (prefers-reduced-motion:reduce){.ag-val-pulse{animation:none}}
 /* =============================================
    ANIMAÇÕES PWA — iPhone & PC
    ============================================= */
@@ -24908,17 +24911,17 @@ function multaMesRef(m) { return multaDataFluxo(m).slice(0, 7); }
      que projetado em todo mês passado inflaria o número com dívida que não
      existe);
    - Retirada de Lucro / Ajuste de Saldo não são despesa. */
-function despesasPendentesAteHoje(despesas, hoje) {
+function despesasPendentesAteHoje(despesas, hoje, oculta) {
   hoje = String(hoje || "").slice(0, 10);
   if (!hoje) return 0;
   var mes = hoje.slice(0, 7);
   var lista = (despesas || []).filter(function(d){ return d && !isRetLucro(d); });
   var emAberto = function(d){ return d.status !== "pago" && !d.data_pagamento; };
   var doMes = resolverDespesasDoMes(lista, mes).filter(function(d){
-    return emAberto(d) && (d.data || "") && (d.data || "") <= hoje;
+    return emAberto(d) && (d.data || "") && (d.data || "") <= hoje && !(oculta && oculta("despesa|" + d.id + "|" + d.data));
   }).length;
   var atrasadasAntes = lista.filter(function(d){
-    return !d.recorrente && emAberto(d) && (d.data || "") && (d.data || "").slice(0, 7) < mes;
+    return !d.recorrente && emAberto(d) && (d.data || "") && (d.data || "").slice(0, 7) < mes && !(oculta && oculta("despesa|" + d.id + "|" + d.data));
   }).length;
   return doMes + atrasadasAntes;
 }
@@ -30667,6 +30670,20 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       /* [linha-eventos-datas] sem toque, o ponto ativo é o PRÓXIMO evento do projetado
          (igual ao próximo vencimento pré-selecionado nas Despesas pendentes). */
       var _proxEvDia = (_eventosFuturos.filter(function(ev){ return ev.dia > _diaHojeNum; })[0] || {}).dia;
+      /* [pulso-hoje] o que ainda vence/recebe HOJE na Estilo (em aberto, fora o que foi adiado na Agenda) */
+      var _hojePendFn = function(){
+        if (_cmpMes !== 0) return null;
+        var ag = agAdiaAgora(), oc = function(k){ return agAdiaOculto(k, ag); }, dep = 0, rec = 0;
+        _despHojeTodasList.forEach(function(d){ if (d.status==='pago' || d.data_pagamento) return; if (oc('despesa|'+d.id+'|'+d.data)) return; dep += parseFloat(d.valor||0); });
+        _manHojeTodasList.forEach(function(m){ if (m.status_financeiro==='pago' || m.data_pagamento) return; var dtm = m.data_previsao_pagamento || m.data_entrada || ''; if (oc('manutencao|'+m.id+'|'+dtm)) return; dep += parseFloat(m.custo||0); });
+        (contratos||[]).forEach(function(c){
+          if (c.status==='cancelado' || c.status_pagamento==='pago' || c.status_pagamento==='isento' || c.previsao_pagamento !== hoje) return;
+          if (oc('pagamento|'+c.id+'|'+c.previsao_pagamento)) return;
+          rec += Math.max(0, parseFloat(c.valor_total||0) - (c.status_pagamento==='parcial' ? parseFloat(c.valor_pago||0) : 0));
+        });
+        (receitas||[]).forEach(function(r){ if (r.data !== hoje || r.ref_fatura || r.status==='recebido' || r.status==='isento') return; if (oc('receita|'+r.id+'|'+r.data)) return; rec += parseFloat(r.valor||0); });
+        return { rec:rec, dep:dep };
+      };
       var _pontoAtivo = _saldoPontoSel || null; /* sem pré-seleção do próximo evento (pedido do usuário); só aparece ao tocar num ponto */
       var _colSaldo = React.createElement('div', { style:Object.assign({},_cardBase,{flex:1,borderRight:'1px solid var(--c-border)',position:'relative'},(desktop ? {textAlign:'center',display:'flex',flexDirection:'column',justifyContent:'center'} : {})) }
             , React.createElement('div', { style:_lbl }, 'Saldo nas contas Estilo')
@@ -30693,7 +30710,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           , saldoHojeFace===0 ? _colSaldo : _colDesp
           , saldoHojeFace===0 ? _colProj : _colFat
         )
-        , React.createElement(CurvaSaldo, { key:'cvs'+_mesSel, pts:_saldoPts, diaHoje:_diaRef, hojeMarca:(_cmpMes===0), ultimo:_ultimoDiaMesSel, mes:_mesSel, C:C, desktop:desktop, onPulse:_saldoPulsar })
+        , React.createElement(CurvaSaldo, { key:'cvs'+_mesSel, pts:_saldoPts, diaHoje:_diaRef, hojeMarca:(_cmpMes===0), ultimo:_ultimoDiaMesSel, mes:_mesSel, C:C, desktop:desktop, hojePend:_hojePendFn, onPulse:_saldoPulsar })
         , React.createElement('div', { style:{ padding: _pontoAtivo ? '4px 14px 6px' : 0 } }
           /* Detalhe do ponto tocado: as despesas/receitas que fizeram o saldo
              oscilar naquele dia — realizado (face 0) usa os movimentos JÁ
@@ -39999,7 +40016,7 @@ function orcVisivelNoMes(it, itens, mes) {
    é projetada mês a mês pela `orcVisivelNoMes` (que já pula o mês cuja parcela
    tem linha-filha), e o que está pago, ou não venceu, não entra.
    Limite de 24 meses para trás, como a aba "Atrasados". */
-function orcDespesasPendentesAteHoje(orcItens, hoje) {
+function orcDespesasPendentesAteHoje(orcItens, hoje, oculta) {
   hoje = String(hoje || "").slice(0, 10);
   if (!hoje) return 0;
   var mes = hoje.slice(0, 7);
@@ -40025,7 +40042,7 @@ function orcDespesasPendentesAteHoje(orcItens, hoje) {
       // lançamento concreto (avulso ou parcela): em aberto e já vencido
       if (!aberto(it)) return;
       var dt = it.data || (base + "-01");
-      if (dt <= hoje) n++;
+      if (dt <= hoje && !(oculta && oculta("orcamento|" + it.id + "|" + dt))) n++;
       return;
     }
     // template recorrente: uma ocorrência por mês, da base até o mês atual
@@ -40034,7 +40051,7 @@ function orcDespesasPendentesAteHoje(orcItens, hoje) {
       if (orcVisivelNoMes(it, itens, m)) {
         var proprio = m === base;
         var dtM = proprio ? (it.data || (m + "-01")) : projDia(it, m);
-        if ((proprio ? aberto(it) : true) && dtM <= hoje) n++;
+        if ((proprio ? aberto(it) : true) && dtM <= hoje && !(oculta && oculta("orcamento|" + it.id + "|" + dtM))) n++;
       }
       m = mesAnterior(m); guard++;
     }
@@ -40664,6 +40681,18 @@ function PessoalDash({
         else _ptsP.push({ dia:_ultimoDiaMesP, saldo:_saldo, rec:0, dep:0, ret:0, real:false, sem:true });
       }
 
+      /* [pulso-hoje] o que ainda vence/recebe HOJE no Pessoal (em aberto, fora o que foi adiado na Agenda) */
+      var _hojePendP = function(){
+        if (!_isMesAtualP) return null;
+        var ag = agAdiaAgora(), rec = 0, dep = 0;
+        _itens.forEach(function(it){
+          if (_retLocDespId(it) || _pagoP(it) || _diaMovP(it) !== _refDiaP) return;
+          if (agAdiaOculto('orcamento|' + it.id + '|' + it.data, ag)) return;
+          var v = parseFloat(it.valor || 0);
+          if (it.tipo === 'receita') rec += v; else dep += v;
+        });
+        return { rec:rec, dep:dep };
+      };
       var _fatAbertasP = _desps.filter(function(it){ return (it.categoria||'')==='Cartao de Credito' && it.status!=='pago'; });
       var _fatAbertasValP = _fatAbertasP.reduce(function(s,it){ return s+parseFloat(it.valor||0); },0);
       var _bigP = function(v,cor){ return React.createElement(BRLValue,{v:v,size:16.5,weight:700,color:cor||'var(--c-text)'}); };
@@ -40702,7 +40731,7 @@ function PessoalDash({
           ,_fcP===0 ? _colSaldo : _colDesp
           ,_fcP===0 ? _colProj : _colFat
         )
-        ,React.createElement(CurvaSaldo,{ key:'cvsP'+_mes, pts:_ptsP, diaHoje:_refDiaP, hojeMarca:_isMesAtualP, ultimo:_ultimoDiaMesP, mes:_mes, C:C, desktop:desktop })
+        ,React.createElement(CurvaSaldo,{ key:'cvsP'+_mes, pts:_ptsP, diaHoje:_refDiaP, hojeMarca:_isMesAtualP, ultimo:_ultimoDiaMesP, mes:_mes, C:C, desktop:desktop, hojePend:_hojePendP })
       );
     })()
 
@@ -43917,6 +43946,13 @@ function SaldoPortal(p){
 function CurvaSaldo(p){
   var C = p.C, pts = (p.pts || []).slice().sort(function(a,b){ return a.dia - b.dia; });
   var _st = React.useState(null), selDia = _st[0], setSel = _st[1];
+  /* [pulso-hoje] re-renderiza quando algo é adiado/resolvido na Agenda, pra o pulso sumir na hora */
+  var _stA = React.useState(0);
+  React.useEffect(function(){
+    var f = function(){ _stA[1](function(n){ return n + 1; }); };
+    document.addEventListener('ag:adia-sync', f);
+    return function(){ document.removeEventListener('ag:adia-sync', f); };
+  }, []);
   if (pts.length < 2) return null;
   var W = 340, padL = 8, padR = 8, yTop = 22, yBase = 74, H = 94, pw = W - padL - padR;
   var nd = Math.max(p.ultimo || 30, pts[pts.length-1].dia, 2);
@@ -43970,6 +44006,15 @@ function CurvaSaldo(p){
   var ab = function(v){ var x = Math.abs(v); if (x >= 1e6) return (x/1e6).toFixed(1).replace('.',',').replace(',0','')+'M'; if (x >= 1000) return (x/1000).toFixed(1).replace('.',',').replace(',0','')+'k'; return String(Math.round(x)); };
   var ddFull = function(dia){ var mm = (p.mes || '').slice(5,7); return String(dia).padStart(2,'0') + '/' + (mm || ''); };
   var dd = function(dia){ return p.desktop ? ddFull(dia) : String(dia).padStart(2,'0'); }; /* mobile: só o dia, sem o mês */
+  /* [pulso-hoje] A pagar / a receber HOJE (ainda em aberto e não adiado): o valor pulsa na linha, na posição de hoje.
+     p.hojePend = função () => {rec, dep}. Se já existe rótulo de movimento já pago hoje, o pulsante sai um pouco ao lado. */
+  var _hp = (typeof p.hojePend === 'function' ? p.hojePend() : p.hojePend) || null;
+  if (_hp && p.hojeMarca !== false) {
+    var _hjTem = pts.some(function(q){ return q.dia === hoje && (q.rec > 0.005 || q.dep > 0.005 || (q.ret || 0) > 0.005); });
+    var _hxl = Math.min(Math.max(hx + (_hjTem ? 18 : 0), 22), W - 22);
+    if (_hp.rec > 0.005) els.push(React.createElement('text', { key:'hpr', x:f1(_hxl), y:f1(hy - 8), textAnchor:'middle', className:'ag-val-pulse', style:{ fontSize:11, fontWeight:700, fill:G } }, ab(_hp.rec)));
+    if (_hp.dep > 0.005) els.push(React.createElement('text', { key:'hpd', x:f1(_hxl), y:f1(hy + 14), textAnchor:'middle', className:'ag-val-pulse', style:{ fontSize:11, fontWeight:700, fill:R } }, ab(_hp.dep)));
+  }
   var lastUp = -1e9, lastDown = -1e9, datas = [], selPt = null;
   pts.forEach(function(q, k){
     if (!(q.rec > 0.005 || q.dep > 0.005 || q.ret > 0.005)) return;
@@ -58730,22 +58775,35 @@ function App() {
   // recorrente cuja origem é de um mês anterior, só confia no status cru
   // quando já existe um lançamento-filho concreto pro mês atual — sem
   // filho, projeta a data pro mês atual e trata como pendente.
+  /* [logo-pulsa-pessoal] Pulsa quando há algo A PAGAR (vencido ou de hoje) ou A RECEBER HOJE no Orçamento Pessoal,
+     fora o que foi adiado/resolvido na Agenda (o pulso para na hora do "Adiar"). Receita só conta no próprio dia do
+     vencimento, e o espelho da Retirada de Lucro nunca conta. */
+  var _adiaTickO = React.useState(0);
+  React.useEffect(function() {
+    var f = function() { _adiaTickO[1](function(n) { return n + 1; }); };
+    document.addEventListener("ag:adia-sync", f);
+    return function() { document.removeEventListener("ag:adia-sync", f); };
+  }, []);
   var _orcAgendaPendente = React.useMemo(function() {
     var _hj = _brNow().toISOString().slice(0, 10);
     var _mesAtualOrc = _hj.slice(0, 7);
     var _oi = orcItens || [];
+    var _agoraO = agAdiaAgora();
     function _emOf(it) { return it.data ? it.data.slice(0, 7) : it.mes; }
     return _oi.some(function(it) {
-      if (it.tipo === "receita") return false;
+      var _ehRec = it.tipo === "receita";
+      if (_ehRec && _retLocDespId(it)) return false;
+      var _vence = function(dt) {
+        return !!dt && (_ehRec ? dt === _hj : dt <= _hj) && !agAdiaOculto("orcamento|" + it.id + "|" + dt, _agoraO);
+      };
       var em = _emOf(it);
       if (!it.recorrente) {
         if (it.status === "pago" || it.status === "recebido") return false;
-        var dt = it.data || (it.mes ? it.mes + "-01" : "");
-        return !!dt && dt <= _hj;
+        return _vence(it.data || (it.mes ? it.mes + "-01" : ""));
       }
       if (em === _mesAtualOrc) {
         if (it.status === "pago" || it.status === "recebido") return false;
-        return it.data ? it.data <= _hj : true;
+        return it.data ? _vence(it.data) : !_ehRec;
       }
       if (em && em < _mesAtualOrc) {
         var temFilhoNoMes = _oi.some(function(x) { return String(x.recorrencia_origem_id) === String(it.id) && _emOf(x) === _mesAtualOrc; });
@@ -58755,11 +58813,11 @@ function App() {
         var ultimoDia = new Date(ano, mesN, 0).getDate();
         var diaProj = Math.min(dia, ultimoDia);
         var dtProj = _mesAtualOrc + "-" + (diaProj < 10 ? "0" + diaProj : String(diaProj));
-        return dtProj <= _hj;
+        return _vence(dtProj);
       }
       return false;
     });
-  }, [orcItens]);
+  }, [orcItens, _adiaTickO[0]]);
   const [empresa, setEmpresa] = useState(() => { var c = cache.get("config"); return (c && c[0]) || {}; });
   // Chave da IA removida do cliente: agora vive só no secret da Edge Function
   // claude-proxy. Apaga resquício de instalações anteriores deste navegador.
@@ -59565,7 +59623,9 @@ function App() {
       var _hojeB = _brNow().toISOString().slice(0, 10);
       /* Locadora + Orçamento Pessoal: o selo é "o que vence hoje ou já venceu",
          de qualquer um dos dois lados. */
-      info.n = despesasPendentesAteHoje(despesasBadgeRef.current, _hojeB) + orcDespesasPendentesAteHoje(orcBadgeRef.current, _hojeB);
+      /* [badge-adiadas] o que foi ADIADO na Agenda (ou resolvido) não conta no selo: some do ícone na hora. */
+      var _agoraB = agAdiaAgora(), _ocB = function(k){ return agAdiaOculto(k, _agoraB); };
+      info.n = despesasPendentesAteHoje(despesasBadgeRef.current, _hojeB, _ocB) + orcDespesasPendentesAteHoje(orcBadgeRef.current, _hojeB, _ocB);
       if (info.n > 0) await navigator.setAppBadge(info.n);
       else if (navigator.clearAppBadge) await navigator.clearAppBadge();
     } catch (e) { info.erro = (e && e.message) || String(e); }
@@ -59577,7 +59637,9 @@ function App() {
     function aoVoltar() { if (!document.hidden) atualizarBadgeDespesas(); }
     document.addEventListener("visibilitychange", aoVoltar);
     window.addEventListener("ag:notif-mudou", atualizarBadgeDespesas);
+    document.addEventListener("ag:adia-sync", atualizarBadgeDespesas);
     return function() {
+      document.removeEventListener("ag:adia-sync", atualizarBadgeDespesas);
       document.removeEventListener("visibilitychange", aoVoltar);
       window.removeEventListener("ag:notif-mudou", atualizarBadgeDespesas);
     };

@@ -30286,9 +30286,28 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var receitaItems = rdGroupBy(rdReceitaRowsInicio, new Set(), RD_PALETTE_CLIENTE);
       var totalDespesaInicio = rdSum(rdDespesaRowsInicio);
       var totalReceitaInicio = rdSum(rdReceitaRowsInicio);
-      /* [info-retirada] Retirada de Lucro do mês: aparece no painel de despesas SÓ como informação (não soma no total). */
-      var _retValInicio = retiradaLucroDoMes(despesas, dashMes);
-      var _retInfoInicio = _retValInicio > 0.005 ? [{ label:"Retirada de Lucro", val:_retValInicio, color:C.orange }] : [];
+      /* [info-retirada] Só informação no painel de despesas (fora do total/pago/a pagar):
+         • Retirada de Lucro do mês (sólida + ✓ quando já saiu; listrada só no que falta sair);
+         • Multas: pagas pela empresa no mês, reembolsadas pelo cliente no mês e o que ainda FALTA reembolsar
+           (multa já paga pela empresa com a cobrança ao cliente emitida e ainda não paga — saldo em aberto, de qualquer mês).
+           Multa que não foi cobrada do cliente (cobrado_cliente "nao") não entra em "falta reembolsar". */
+      var _retLinhasInicio = resolverDespesasDoMes(despesas || [], dashMes).filter(isRetLucroPura);
+      var _retValInicio = _retLinhasInicio.reduce(function(a, d){ return a + parseFloat(d.valor || 0); }, 0);
+      var _retPendInicio = _retLinhasInicio.filter(function(d){ return !(d.status === "pago" || d.data_pagamento); }).reduce(function(a, d){ return a + parseFloat(d.valor || 0); }, 0);
+      var _muPagas = 0, _muReemb = 0, _muFalta = 0;
+      (multas || []).forEach(function(mu){
+        if (mu.status === "cancelada" || mu.status === "cancelado") return;
+        if (mu.status === "pago") {
+          if ((mu.data_pagamento || "").slice(0, 7) === dashMes) _muPagas += parseFloat(mu.valor || 0);
+          if (mu.cobrado_cliente === "pendente") _muFalta += parseFloat(mu.valor_cobrado || mu.valor || 0);
+        }
+        if (mu.cobrado_cliente === "pago" && (mu.data_cobranca_cliente || mu.data_pagamento || "").slice(0, 7) === dashMes) _muReemb += parseFloat(mu.valor_cobrado || mu.valor || 0);
+      });
+      var _retInfoInicio = [];
+      if (_retValInicio > 0.005) _retInfoInicio.push({ label:"Retirada de Lucro", val:_retValInicio, pend:_retPendInicio, color:"#C99A3E" });
+      if (_muPagas > 0.005) _retInfoInicio.push({ label:"Multas pagas", val:_muPagas, pend:0, color:"#5B7FA6" });
+      if (_muReemb > 0.005) _retInfoInicio.push({ label:"Reembolsado pelo cliente", val:_muReemb, pend:0, color:"#4F9A78" });
+      if (_muFalta > 0.005) _retInfoInicio.push({ label:"Falta reembolsar", val:_muFalta, pend:_muFalta, color:"#D9822B" });
 
       /* Painel único reaproveitado pelos dois lados — cabeçalho clicável +
          total + FunnelBars. Sem slice/corte de itens: mostra TODAS as
@@ -44264,23 +44283,17 @@ function CurvaComTubos(p){
     , (p.items.length === 0) ? React.createElement(React.Fragment, null, p.emptyEl || null, _funnelInfoRows(tubos.infoItems, 0, tubos)) : FunnelBars(p.items, tubos));
 }
 
-/* [info-retirada] Linhas SÓ INFORMATIVAS embaixo das barras (ex.: Retirada de Lucro no painel de Despesas por Categoria).
-   Não entram em total, pago, a pagar nem na curva: servem pra saber PRA ONDE foi o dinheiro. Visual próprio (contorno tracejado). */
+/* [info-retirada] Linhas SÓ INFORMATIVAS embaixo das barras (Retirada de Lucro e Multas no painel de Despesas por Categoria).
+   Não entram em total, pago, a pagar nem na curva: servem pra saber PRA ONDE foi o dinheiro. Usam as mesmas barras do painel:
+   sólido + ✓ quando já foi pago/recebido, listrado só na fatia que ainda falta. items: [{label, val, pend, color}] */
 function _funnelInfoRows(infoItems, mx, opts) {
   if (!infoItems || !infoItems.length) return null;
   var C = opts.C;
+  var lista = infoItems.map(function(x){ return { label:x.label, val:x.val, pend:(x.pend || 0), color:x.color, fullKey:x.label }; });
+  var oi = { C:C, rotuloPendente:(opts.infoRotuloPendente || "a reembolsar") };
   return React.createElement('div', { style:{ marginTop:12, paddingTop:10, borderTop:"1px dashed " + C.border } }
     , React.createElement('div', { style:{ fontSize:10.5, fontWeight:600, color:C.sub, marginBottom:7 } }, "Só informação \u00b7 não entra nas despesas")
-    , infoItems.map(function(x, i){
-        var cor = x.color || C.orange;
-        var pct = Math.max(22, Math.round(Math.min(1, (x.val / (mx || x.val || 1))) * (opts.rotuloPendente ? 62 : 74)));
-        return React.createElement('div', { key:"info" + i, style:{ display:"flex", alignItems:"center", height:34 } }
-          , React.createElement('div', { style:{ flex:"0 0 auto", width:pct + "%", minWidth:"max-content", height:34, borderRadius:999, display:"flex", alignItems:"center", padding:"0 13px", boxSizing:"border-box", border:"1.5px dashed " + cor, background:"color-mix(in srgb, " + cor + " 12%, transparent)" } }
-            , React.createElement('span', { style:{ fontSize:(opts.rotuloPendente ? 11.5 : 12.5), fontWeight:700, color:cor, whiteSpace:"nowrap" } }, x.label || ""))
-          , React.createElement('div', { style:{ marginLeft:-1, flexShrink:0, display:"flex", alignItems:"center", filter:"drop-shadow(0 1px 2px rgba(0,0,0,0.10))" } }
-            , React.createElement('div', { style:{ width:0, height:0, borderTop:"5px solid transparent", borderBottom:"5px solid transparent", borderRight:"6px solid " + C.card } })
-            , React.createElement('div', { style:{ background:C.card, border:"1px solid " + C.border, borderRadius:999, padding:"3px 9px", fontSize:(opts.rotuloPendente ? 12 : 14), fontWeight:700, color:"var(--c-text)", whiteSpace:"nowrap", lineHeight:1.15 } }, _fmtBarVal(x.val))));
-      }));
+    , _funnelBarsLista(lista, oi));
 }
 function FunnelBars(items, opts) {
   opts = opts || {};

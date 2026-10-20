@@ -41161,9 +41161,37 @@ function PessoalDash({
         return React.createElement('div',null
           ,React.createElement('div',{style:lblSec},opts.title)
           ,React.createElement('div',{style:cardSt}
-            ,React.createElement(CurvaComTubos,{curva:{title:opts.title,total:opts.total,color:opts.color,items:opts.items,rowsAll:(desktop ? opts.rowsAll : []),rotuloPendente:opts.rotuloPendente,rotuloPago:opts.rotuloPago,mes:_mes,C:C,desktop:desktop},items:opts.items,tubosOpts:{C:C,onBarClick:opts.onBarClick,rotuloPendente:opts.rotuloPendente}})
+            ,React.createElement(opts.grupos ? CurvaComTubosDivididos : CurvaComTubos,{grupos:opts.grupos,onEditar:opts.onEditar,rotuloPend:opts.rotuloPendente,rotuloPago:opts.rotuloPago,corPend:(opts.rotuloPendente==='a pagar'?C.red:C.orange),curva:{title:opts.title,total:opts.total,color:opts.color,items:opts.items,rowsAll:(desktop ? opts.rowsAll : []),rotuloPendente:opts.rotuloPendente,rotuloPago:opts.rotuloPago,mes:_mes,C:C,desktop:desktop},items:opts.items,tubosOpts:{C:C,onBarClick:opts.onBarClick,rotuloPendente:opts.rotuloPendente}})
           )
         );
+      }
+
+      /* [pessoal-tubo-editar] Igual ao painel da locadora: tocar no tubo ABRE os lançamentos ali mesmo (sem janela) e tocar num
+         lançamento abre a edição. Mesma regra de recorrência das Pendências: ocorrência projetada nunca abre o template —
+         edita a filha do mês ou prepara a criação dela. */
+      function _editarItemP(l){
+        if (l.despId == null) return; // Retirada de Lucro vem da locadora: só leitura aqui
+        var it = _itens.find(function(x){ return String(x.id) === String(l.despId); }) || { id:l.despId, data:l.data };
+        var _tpl = _itSrc.find(function(x){ return String(x.id) === String(it.id); }) || it;
+        var _emTpl = _tpl.data ? _tpl.data.slice(0,7) : _tpl.mes;
+        var _ehProj = !!(_tpl.recorrente && _emTpl !== _mes);
+        if (_ehProj) {
+          var _filho = _itSrc.find(function(x){
+            return String(x.recorrencia_origem_id) === String(_tpl.id) && (x.data ? x.data.slice(0,7) : x.mes) === _mes;
+          });
+          if (_filho) { setPForm(Object.assign({}, _filho)); setPEdit(_filho.id); }
+          else {
+            setPForm(Object.assign({}, _tpl, { id: undefined, data: it.data || _tpl.data, mes: _mes, status: 'previsto', data_pagamento: null, recorrente: false, recorrencia_origem_id: _tpl.id }));
+            setPEdit(null);
+          }
+        } else { setPForm(Object.assign({}, _tpl)); setPEdit(_tpl.id); }
+        setPModal(true);
+      }
+      function _lancsP(list, pendFn, fallbackDesc){
+        return list.slice().sort(function(a,b){ return String(a.data||'').localeCompare(String(b.data||'')); }).map(function(it){
+          var v = parseFloat(it.valor||0);
+          return { desc: it.descricao || fallbackDesc, cat:'', valor:v, pend:(pendFn(it) ? v : 0), data:it.data, despId:(it.id != null ? it.id : null) };
+        });
       }
 
       /* Receitas */
@@ -41176,10 +41204,13 @@ function PessoalDash({
       });
       if(_recLoc>0) recCatMapP['Retirada de Lucro']=(recCatMapP['Retirada de Lucro']||0)+_recLoc;
       var recPalP=['#34C759','#30B0C7','#5AC8FA','#63C7B2','#8FD19E','#B7E4C7'];
-      var recItemsP = Object.keys(recCatMapP).sort(function(a,b){return recCatMapP[b]-recCatMapP[a];}).map(function(cat,i){ return { label:cat, val:recCatMapP[cat], pend:recPendMapP[cat]||0, color: cat==='Retirada de Lucro'?C.green:recPalP[i%recPalP.length] }; }).filter(function(x){return x.val>0.005;});
-      var recEl = recItemsP.length===0 ? null : _painelFunilP({title:'Receitas',total:_totRec,color:C.green,items:recItemsP,rotuloPendente:'a receber',rotuloPago:'recebido',rowsAll:_recs.map(function(it){ var v=parseFloat(it.valor||0); return { chave:(it.categoria||it.descricao||'Outros'), data:it.data, valor:v, pendente:(it.status!=='pago' && it.status!=='recebido') ? v : 0 }; })});
+      var recItemsP = Object.keys(recCatMapP).sort(function(a,b){return recCatMapP[b]-recCatMapP[a];}).map(function(cat,i){ var _lcR = cat==='Retirada de Lucro'
+          ? _lancsP(_recLocItems, function(x){ return !(x.status==='pago' || x.data_pagamento); }, 'Retirada de Lucro').map(function(l){ return Object.assign({}, l, { despId:null, rotuloAcao:'da locadora' }); })
+          : _lancsP(_recs.filter(function(it){ return (it.categoria||it.descricao||'Outros')===cat; }), function(x){ return x.status!=='pago' && x.status!=='recebido'; }, cat);
+        return { label:cat, val:recCatMapP[cat], pend:recPendMapP[cat]||0, color: cat==='Retirada de Lucro'?C.green:recPalP[i%recPalP.length], fullKey:cat, lancs:_lcR }; }).filter(function(x){return x.val>0.005;});
+      var recEl = recItemsP.length===0 ? null : _painelFunilP({title:'Receitas',total:_totRec,color:C.green,items:recItemsP,grupos:[{titulo:'Receitas',semCabecalho:true,items:recItemsP}],onEditar:_editarItemP,rotuloPendente:'a receber',rotuloPago:'recebido',rowsAll:_recs.map(function(it){ var v=parseFloat(it.valor||0); return { chave:(it.categoria||it.descricao||'Outros'), data:it.data, valor:v, pendente:(it.status!=='pago' && it.status!=='recebido') ? v : 0 }; })});
 
-      /* Despesas por categoria — toque na barra abre o detalhe do envelope (e de lá dá pra editar) */
+      /* Despesas por categoria — toque na barra abre os lançamentos ali mesmo e dá pra editar (igual à locadora) */
       var desCatMapP = {}, desPendMapP = {};
       _desps.forEach(function(it){
         var c=it.categoria||'Outros';
@@ -41187,8 +41218,8 @@ function PessoalDash({
         desCatMapP[c]=(desCatMapP[c]||0)+v;
         if(it.status!=='pago') desPendMapP[c]=(desPendMapP[c]||0)+v;
       });
-      var desItemsP = Object.keys(desCatMapP).sort(function(a,b){return desCatMapP[b]-desCatMapP[a];}).map(function(cat){ return { label:nomeOf(cat), val:desCatMapP[cat], pend:desPendMapP[cat]||0, color:corOf(cat), fullKey:cat }; }).filter(function(x){return x.val>0.005;});
-      var despEl = desItemsP.length===0 ? null : _painelFunilP({title:'Despesas por Categoria',total:_totDes,color:C.red,items:desItemsP,rotuloPendente:'a pagar',rotuloPago:'pago',rowsAll:_desps.map(function(it){ var v=parseFloat(it.valor||0); return { chave:(it.categoria||'Outros'), data:it.data, valor:v, pendente:(it.status!=='pago') ? v : 0 }; }),onBarClick:function(x,e){ if(e&&e.stopPropagation) e.stopPropagation(); _setEnvSel(x.fullKey); }});
+      var desItemsP = Object.keys(desCatMapP).sort(function(a,b){return desCatMapP[b]-desCatMapP[a];}).map(function(cat){ return { label:nomeOf(cat), val:desCatMapP[cat], pend:desPendMapP[cat]||0, color:corOf(cat), fullKey:cat, lancs:_lancsP(_desps.filter(function(it){ return (it.categoria||'Outros')===cat; }), function(x){ return x.status!=='pago'; }, nomeOf(cat)) }; }).filter(function(x){return x.val>0.005;});
+      var despEl = desItemsP.length===0 ? null : _painelFunilP({title:'Despesas por Categoria',total:_totDes,color:C.red,items:desItemsP,grupos:[{titulo:'Despesas',semCabecalho:true,items:desItemsP}],onEditar:_editarItemP,rotuloPendente:'a pagar',rotuloPago:'pago',rowsAll:_desps.map(function(it){ var v=parseFloat(it.valor||0); return { chave:(it.categoria||'Outros'), data:it.data, valor:v, pendente:(it.status!=='pago') ? v : 0 }; })});
 
       /* ═════ Detalhe do envelope (Modal padrão do app) ═════ */
       var sheetEl = null;

@@ -30395,6 +30395,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       );
     })()
 
+    /* ══ Pedágios: importação do relatório, cruzamento placa/data/hora → contrato e cobrança ══ */
+    , React.createElement(PedagiosPainel, { veiculos:veiculos, clientes:clientes, contratos:contratos, setReceitas:setReceitas, toast:toast })
+
     /* ══ Saldo nas contas + Boletos — logo abaixo de Despesas por Categoria / Receitas por Cliente (pedido do
        usuário). No PC ficam lado a lado; no mobile continuam empilhados (Saldo, depois Boletos). ══ */
     , (function(){
@@ -55818,6 +55821,296 @@ function Fornecedores({ manutencoes, toast }) {
    Antes existia só um textarea "Sinistros / Observações" no veículo: dava
    para escrever o que aconteceu, mas não para saber quanto custou, se a
    seguradora pagou, ou qual contrato estava em curso na hora. */
+/* ── PEDÁGIOS: leitura do relatório + cruzamento placa/data/hora → contrato ── */
+var AGPedagio = (function () {
+  var RE_PLACA = /\b([A-Z]{3}\d[A-Z0-9]\d{2})\b/;
+  var RE_A = /^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})\s+(.+?)\s+R\$\s*([\d.]*\d,\d{2})(?:\s+\d{1,3})?\s*$/;
+  var RE_DT = /(\d{2})\/(\d{2})\/(\d{4})\s*[-–]\s*(\d{2}):(\d{2})/;
+  var RE_VAL = /R\$\s*([\d.]*\d,\d{2})/;
+  function normPlaca(s) { return String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+  function num(s) { return Math.round(parseFloat(String(s).replace(/\./g, "").replace(",", ".")) * 100) / 100; }
+  function chave(r) { return [r.placa, r.data, r.hora, Math.round(r.valor * 100)].join("|"); }
+
+  /* Aceita as linhas do relatório consolidado (PDF/planilha) e o texto do extrato do app (OCR da imagem). */
+  function lerLinhas(linhas) {
+    var out = [], placa = null, prev = "";
+    for (var i = 0; i < linhas.length; i++) {
+      var L = String(linhas[i] || "").replace(/\s+/g, " ").trim();
+      if (!L) continue;
+      var a = L.match(RE_A);
+      if (a) {
+        out.push({ placa: placa, data: a[3] + "-" + a[2] + "-" + a[1], hora: a[4] + ":" + a[5], descricao: a[6].trim(), valor: num(a[7]) });
+        continue;
+      }
+      var b = L.match(RE_DT);
+      if (b) {
+        var v = L.match(RE_VAL), j = i + 1;
+        while (!v && j <= i + 2 && j < linhas.length) { v = String(linhas[j]).match(RE_VAL); j++; }
+        var loc = String(linhas[i + 1] || "").replace(/\s+/g, " ").trim();
+        if (!loc || RE_DT.test(loc) || /PASSAGEM|^Pago$/i.test(loc) || RE_VAL.test(loc)) loc = "";
+        if (v) out.push({ placa: placa, data: b[3] + "-" + b[2] + "-" + b[1], hora: b[4] + ":" + b[5], descricao: ((prev ? prev + " " : "") + loc).trim(), valor: num(v[1]) });
+        continue;
+      }
+      var p = L.match(RE_PLACA);
+      if (p && !/TOTAL/i.test(L)) { placa = p[1]; prev = ""; continue; }
+      if (!/^(Pago|Extrato|Filtrar)/i.test(L) && !/PASSAGEM/i.test(L)) prev = L;
+    }
+    out.forEach(function (r) { r.placa = normPlaca(r.placa); r.chave = chave(r); });
+    return out.filter(function (r) { return r.placa && r.valor > 0; });
+  }
+
+  function _ts(d, h, pad) { return d + "T" + String(h || pad).slice(0, 5); }
+
+  /* Descobre de quem é cada passagem: contrato do veículo vigente na data E hora. */
+  function cruzar(rows, ctx) {
+    var veic = {}, vistos = {};
+    (ctx.veiculos || []).forEach(function (v) { veic[normPlaca(v.placa)] = v; });
+    (ctx.existentes || []).forEach(function (e) { vistos[e.chave] = true; });
+    var cli = {}; (ctx.clientes || []).forEach(function (c) { cli[String(c.id)] = c; });
+    return rows.map(function (r) {
+      var o = Object.assign({}, r), v = veic[r.placa];
+      if (vistos[r.chave]) { o.status = "duplicado"; return o; }
+      vistos[r.chave] = true;
+      if (!v) { o.status = "placa_desconhecida"; return o; }
+      o.veiculo_id = v.id;
+      var m = _ts(r.data, r.hora, "00:00");
+      var cands = (ctx.contratos || []).filter(function (c) {
+        if (String(c.veiculo_id) !== String(v.id) || c.status === "cancelado" || !c.data_inicio) return false;
+        var ini = _ts(c.data_inicio, c.hora_retirada, "00:00");
+        var fim = c.data_fim ? _ts(c.data_fim, c.hora_devolucao, "23:59") : "9999-12-31T23:59";
+        return m >= ini && m <= fim;
+      });
+      if (!cands.length) { o.status = "sem_locatario"; return o; }
+      var c = cands[0];
+      o.contrato_id = c.id; o.cliente_id = c.cliente_id;
+      o.cliente_nome = (cli[String(c.cliente_id)] || {}).nome || "";
+      var troca = (r.data === c.data_inicio && !c.hora_retirada) || (r.data === c.data_fim && !c.hora_devolucao);
+      o.status = (cands.length > 1 || troca) ? "a_conferir" : "a_cobrar";
+      return o;
+    });
+  }
+  return { lerLinhas: lerLinhas, cruzar: cruzar, normPlaca: normPlaca };
+})();
+
+/* ══ PEDÁGIOS — painel do Dashboard + importação (PDF do relatório ou print do extrato) ══ */
+var _pedTessP = null;
+function _pedEnsureTesseract() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (_pedTessP) return _pedTessP;
+  _pedTessP = new Promise(function (res, rej) {
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+    s.onload = function () { res(window.Tesseract); };
+    s.onerror = function () { _pedTessP = null; rej(new Error('Falha ao carregar o leitor de imagem (verifique a conexão).')); };
+    document.head.appendChild(s);
+  });
+  return _pedTessP;
+}
+
+function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
+  var h = React.createElement;
+  var [lista, setLista] = React.useState([]);
+  var [erro, setErro] = React.useState(false);
+  var [aba, setAba] = React.useState("cliente");
+  var [mes, setMes] = React.useState("todos");
+  var [aberto, setAberto] = React.useState(null);
+  var [modal, setModal] = React.useState(false);
+  var [previa, setPrevia] = React.useState(null);
+  var [msg, setMsg] = React.useState("");
+  var [ocupado, setOcupado] = React.useState(false);
+
+  var COR = { a_cobrar: "#FF9500", cobrado: "#34C759", a_conferir: "#5AC8FA", sem_locatario: "#8E8E93", placa_desconhecida: "#FF3B30", duplicado: "#8E8E93" };
+  var ROT = { a_cobrar: "A cobrar", cobrado: "Cobrado", a_conferir: "A conferir", sem_locatario: "Sem locatário", placa_desconhecida: "Placa não cadastrada", duplicado: "Já importado" };
+  var CARDP = { borderRadius: 20, padding: 16, background: "var(--c-card)", border: "1px solid var(--c-border)", color: "var(--c-text)", marginTop: 21 };
+  var PILL = { border: "1px solid var(--c-border)", background: "transparent", color: "var(--c-text)", borderRadius: 999, padding: "6px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" };
+
+  async function carregar() {
+    try { setLista((await db.getAll("pedagios")) || []); setErro(false); } catch (e) { setErro(true); }
+  }
+  React.useEffect(function () { carregar(); }, []);
+
+  function cl(id) { return (clientes || []).find(function (c) { return String(c.id) === String(id); }); }
+  function ve(id) { return (veiculos || []).find(function (v) { return String(v.id) === String(id); }); }
+  function dm(d) { var x = String(d || "").split("-"); return x.length === 3 ? x[2] + "/" + x[1] : ""; }
+  function ctsDe(vid) {
+    return (contratos || []).filter(function (c) { return String(c.veiculo_id) === String(vid) && c.status !== "cancelado"; })
+      .sort(function (a, b) { return String(b.data_inicio).localeCompare(String(a.data_inicio)); });
+  }
+  function seletor(vid, valor, onSel) {
+    return h('select', { style: Object.assign({}, FI, { minHeight: 34, padding: "4px 8px", fontSize: 12 }), value: valor || "", onChange: function (e) { onSel(e.target.value); } }
+      , h('option', { value: "" }, "— sem locatário —")
+      , ctsDe(vid).map(function (c) {
+          var k = cl(c.cliente_id);
+          return h('option', { key: c.id, value: c.id }, "#" + c.id + " · " + ((k && k.nome) || "?").split(" ")[0] + " · " + dm(c.data_inicio) + "–" + (c.data_fim ? dm(c.data_fim) : "aberto"));
+        }));
+  }
+
+  async function aoEscolher(e) {
+    var files = Array.prototype.slice.call(e.target.files || []); e.target.value = "";
+    if (!files.length) return;
+    setOcupado(true); var linhas = [];
+    try {
+      for (var i = 0; i < files.length; i++) {
+        var f = files[i], n = (f.name || "").toLowerCase();
+        setMsg("Lendo " + (i + 1) + "/" + files.length + "…");
+        if (/\.pdf$/.test(n)) linhas = linhas.concat(await _extrairLinhasPdf(await f.arrayBuffer()));
+        else if (/^image\//.test(f.type) || /\.(png|jpe?g|webp)$/.test(n)) {
+          var T = await _pedEnsureTesseract(); var r = await T.recognize(f, "por");
+          linhas = linhas.concat(String(r.data.text || "").split("\n"));
+        } else linhas = linhas.concat((await f.text()).split("\n"));
+      }
+      var rows = AGPedagio.lerLinhas(linhas);
+      if (!rows.length) toast("Não encontrei passagens nesse arquivo.");
+      else setPrevia(AGPedagio.cruzar(rows, { veiculos: veiculos, contratos: contratos, clientes: clientes, existentes: lista }));
+    } catch (err) { toast("Erro ao ler o arquivo: " + ((err && err.message) || err)); }
+    setMsg(""); setOcupado(false);
+  }
+
+  function ajustarPrevia(i, ctId) {
+    var c = (contratos || []).find(function (x) { return String(x.id) === String(ctId); });
+    setPrevia(function (pv) {
+      return pv.map(function (r, j) {
+        if (j !== i) return r;
+        return Object.assign({}, r, c ? { contrato_id: c.id, cliente_id: c.cliente_id, status: "a_cobrar" } : { contrato_id: null, cliente_id: null, status: "sem_locatario" });
+      });
+    });
+  }
+
+  async function salvar() {
+    var novos = (previa || []).filter(function (r) { return r.status !== "duplicado" && r.status !== "placa_desconhecida"; });
+    if (!novos.length) { toast("Nada novo para salvar."); return; }
+    setOcupado(true);
+    try {
+      for (var i = 0; i < novos.length; i += 8) {
+        await Promise.all(novos.slice(i, i + 8).map(function (r) {
+          return db.post("pedagios", { placa: r.placa, veiculo_id: r.veiculo_id || null, contrato_id: r.contrato_id || null, cliente_id: r.cliente_id || null, data: r.data, hora: r.hora, descricao: r.descricao, valor: r.valor, status: r.status, chave: r.chave });
+        }));
+      }
+      toast(novos.length + " passagens importadas.");
+      setModal(false); setPrevia(null); carregar();
+    } catch (err) { toast("Erro ao salvar: " + ((err && err.message) || err) + " — o SQL de pedágios já foi rodado no Supabase?"); }
+    setOcupado(false);
+  }
+
+  async function cobrar(itens) {
+    var it = itens.filter(function (p) { return p.status === "a_cobrar"; });
+    if (!it.length) return;
+    var tot = Math.round(it.reduce(function (s, p) { return s + Number(p.valor || 0); }, 0) * 100) / 100;
+    var p0 = it[0], hoje = _brNow().toISOString().split("T")[0];
+    var datas = it.map(function (p) { return p.data; }).sort();
+    setOcupado(true);
+    try {
+      var nova = await db.post("receitas", {
+        descricao: "Pedágios — " + it.length + " passagem(ns), " + dm(datas[0]) + " a " + dm(datas[datas.length - 1]) + " (" + p0.placa + ")",
+        valor: tot, categoria: "Pedágio", data: hoje, data_vencimento: hoje, status: "previsto", forma_pagamento: "Pix",
+        cliente_id: p0.cliente_id, veiculo_id: p0.veiculo_id, contrato_id: p0.contrato_id
+      });
+      if (setReceitas) setReceitas(function (pr) { return [nova].concat(pr); });
+      await Promise.all(it.map(function (p) { return db.patch("pedagios", p.id, { status: "cobrado", receita_id: nova.id }); }));
+      toast("Cobrança de " + fmtBRL(tot) + " lançada no contrato.");
+      carregar();
+    } catch (err) { toast("Erro ao lançar a cobrança: " + ((err && err.message) || err)); }
+    setOcupado(false);
+  }
+
+  async function atribuir(p, ctId) {
+    var c = (contratos || []).find(function (x) { return String(x.id) === String(ctId); });
+    var up = c ? { contrato_id: c.id, cliente_id: c.cliente_id, status: "a_cobrar" } : { contrato_id: null, cliente_id: null, status: "sem_locatario" };
+    try { await db.patch("pedagios", p.id, up); carregar(); } catch (err) { toast("Erro: " + ((err && err.message) || err)); }
+  }
+
+  var meses = Object.keys(lista.reduce(function (m, p) { m[String(p.data).slice(0, 7)] = 1; return m; }, {})).sort().reverse();
+  var vis = lista.filter(function (p) { return mes === "todos" || String(p.data).slice(0, 7) === mes; });
+  function soma(st) { return vis.filter(function (p) { return p.status === st; }).reduce(function (s, p) { return s + Number(p.valor || 0); }, 0); }
+  function qtd(st) { return vis.filter(function (p) { return p.status === st; }).length; }
+  function agrupar(itens, kf, rf) {
+    var m = {};
+    itens.forEach(function (p) { var k = kf(p); if (!m[k]) m[k] = { k: k, rotulo: rf(p), itens: [], total: 0 }; m[k].itens.push(p); m[k].total += Number(p.valor || 0); });
+    return Object.keys(m).map(function (k) { return m[k]; }).sort(function (a, b) { return b.total - a.total; });
+  }
+  var conferir = vis.filter(function (p) { return p.status === "a_conferir" || p.status === "sem_locatario"; });
+  var grupos = aba === "cliente"
+    ? agrupar(vis.filter(function (p) { return p.status === "a_cobrar" || p.status === "cobrado"; }), function (p) { return "c" + p.contrato_id; }, function (p) { var k = cl(p.cliente_id); return ((k && k.nome) || "Cliente") + " · " + p.placa; })
+    : aba === "veiculo"
+      ? agrupar(vis, function (p) { return p.placa; }, function (p) { var v = ve(p.veiculo_id); return p.placa + (v && v.modelo ? " · " + String(v.modelo).split(" ")[0] : ""); })
+      : [];
+  var maxT = grupos.reduce(function (m, g) { return Math.max(m, g.total); }, 1);
+
+  function kpi(rot, val, cor) {
+    return h('div', { style: { flex: "1 1 45%", minWidth: 120 } }
+      , h('div', { style: { fontSize: 12, opacity: 0.6 } }, rot)
+      , h('div', { style: { fontSize: 18, fontWeight: 700, color: cor } }, val));
+  }
+  function linhaPass(p) {
+    return h('div', { key: p.id, style: { display: "flex", gap: 8, fontSize: 12, padding: "5px 0", alignItems: "center", borderTop: "1px solid var(--c-border)" } }
+      , h('span', { style: { opacity: 0.6, whiteSpace: "nowrap" } }, dm(p.data) + " " + p.hora)
+      , h('span', { style: { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.descricao)
+      , h('span', { style: { width: 7, height: 7, borderRadius: 4, background: COR[p.status], flexShrink: 0 } })
+      , h('span', { style: { fontWeight: 600, whiteSpace: "nowrap" } }, fmtBRL(Number(p.valor || 0))));
+  }
+
+  var painel = h('div', { className: "lg-card", style: CARDP }
+    , h('div', { style: { display: "flex", alignItems: "center", gap: 8 } }
+      , h('div', { style: { fontSize: 16, fontWeight: 700, flex: 1 } }, "🛣️ Pedágios")
+      , meses.length ? h('select', { style: Object.assign({}, FI, { width: "auto", minHeight: 34, padding: "4px 8px", fontSize: 12 }), value: mes, onChange: function (e) { setMes(e.target.value); } }
+          , h('option', { value: "todos" }, "Todos")
+          , meses.map(function (m) { return h('option', { key: m, value: m }, m.slice(5) + "/" + m.slice(0, 4)); })) : null
+      , h('button', { style: PILL, onClick: function () { setPrevia(null); setModal(true); } }, "Importar"))
+    , erro ? h('div', { style: { fontSize: 12, color: "#FF3B30", marginTop: 10 } }, "Tabela 'pedagios' não encontrada. Rode o SQL de pedágios no Supabase.") : null
+    , h('div', { style: { display: "flex", flexWrap: "wrap", gap: 12, marginTop: 14 } }
+      , kpi("A cobrar", fmtBRL(soma("a_cobrar")), COR.a_cobrar)
+      , kpi("Cobrado", fmtBRL(soma("cobrado")), COR.cobrado)
+      , kpi("A conferir", qtd("a_conferir") + " · " + fmtBRL(soma("a_conferir")), COR.a_conferir)
+      , kpi("Sem locatário", qtd("sem_locatario") + " · " + fmtBRL(soma("sem_locatario")), COR.sem_locatario))
+    , h('div', { style: { display: "flex", gap: 6, marginTop: 16 } }
+      , [["cliente", "Por cliente"], ["veiculo", "Por veículo"], ["conferir", "A conferir" + (conferir.length ? " (" + conferir.length + ")" : "")]].map(function (t) {
+          return h('button', { key: t[0], style: Object.assign({}, PILL, aba === t[0] ? { background: "var(--c-text)", color: "var(--c-card)" } : {}), onClick: function () { setAba(t[0]); setAberto(null); } }, t[1]);
+        }))
+    , aba === "conferir"
+      ? h('div', { style: { marginTop: 10 } }
+          , conferir.length ? conferir.map(function (p) {
+              return h('div', { key: p.id, style: { padding: "8px 0", borderTop: "1px solid var(--c-border)" } }
+                , h('div', { style: { display: "flex", gap: 8, fontSize: 13 } }
+                  , h('span', { style: { flex: 1 } }, p.placa + " · " + dm(p.data) + " " + p.hora)
+                  , h('span', { style: { color: COR[p.status], fontWeight: 600 } }, ROT[p.status])
+                  , h('span', { style: { fontWeight: 700 } }, fmtBRL(Number(p.valor || 0))))
+                , h('div', { style: { marginTop: 6 } }, seletor(p.veiculo_id, p.contrato_id, function (v) { atribuir(p, v); })));
+            }) : h('div', { style: { fontSize: 13, opacity: 0.6, padding: "14px 0" } }, "Nada para conferir."))
+      : h('div', { style: { marginTop: 10 } }
+          , grupos.length ? grupos.map(function (g) {
+              var abre = aberto === g.k, aCobrar = g.itens.filter(function (p) { return p.status === "a_cobrar"; });
+              return h('div', { key: g.k, style: { padding: "9px 0", borderTop: "1px solid var(--c-border)" } }
+                , h('div', { style: { display: "flex", gap: 8, alignItems: "baseline", cursor: "pointer" }, onClick: function () { setAberto(abre ? null : g.k); } }
+                  , h('span', { style: { flex: 1, fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, g.rotulo)
+                  , h('span', { style: { fontSize: 12, opacity: 0.6 } }, g.itens.length + "x")
+                  , h('span', { style: { fontSize: 14, fontWeight: 700 } }, fmtBRL(g.total)))
+                , h('div', { style: { height: 4, borderRadius: 2, background: "var(--c-border)", marginTop: 6 } }
+                  , h('div', { style: { height: 4, borderRadius: 2, width: Math.max(4, Math.round(g.total / maxT * 100)) + "%", background: aCobrar.length ? COR.a_cobrar : COR.cobrado } }))
+                , abre ? h('div', { style: { marginTop: 8 } }
+                    , g.itens.slice().sort(function (a, b) { return (b.data + b.hora).localeCompare(a.data + a.hora); }).map(linhaPass)
+                    , aba === "cliente" && aCobrar.length ? h('button', { disabled: ocupado, style: Object.assign({}, PILL, { marginTop: 10, width: "100%", background: COR.a_cobrar, color: "#fff", border: "none" }), onClick: function () { cobrar(aCobrar); } }, "Cobrar " + fmtBRL(aCobrar.reduce(function (s, p) { return s + Number(p.valor || 0); }, 0)) + " no contrato") : null) : null);
+            }) : h('div', { style: { fontSize: 13, opacity: 0.6, padding: "14px 0" } }, "Nenhum pedágio ainda. Toque em Importar e envie o relatório.")));
+
+  var contagem = previa ? previa.reduce(function (m, r) { m[r.status] = (m[r.status] || 0) + 1; return m; }, {}) : {};
+  var modalImp = h(Modal, { open: modal, onClose: function () { setModal(false); setPrevia(null); }, title: "Importar pedágios", wide: true }
+    , h('div', { style: { display: "flex", flexDirection: "column", gap: 12 } }
+      , h('input', { type: "file", multiple: true, accept: ".pdf,image/*,.txt,.csv", style: FI, disabled: ocupado, onChange: aoEscolher })
+      , h('div', { style: { fontSize: 12, opacity: 0.6 } }, msg || "Aceita o relatório consolidado (PDF) ou prints do extrato (imagem).")
+      , previa ? h('div', null
+          , h('div', { style: { fontSize: 13, marginBottom: 8 } }, Object.keys(contagem).map(function (k) { return contagem[k] + " " + ROT[k].toLowerCase(); }).join(" · "))
+          , h('div', { style: { maxHeight: "46vh", overflowY: "auto" } }, previa.map(function (r, i) {
+              return h('div', { key: i, style: { padding: "6px 0", borderTop: "1px solid var(--c-border)", opacity: r.status === "duplicado" ? 0.45 : 1 } }
+                , h('div', { style: { display: "flex", gap: 8, fontSize: 12 } }
+                  , h('span', { style: { whiteSpace: "nowrap" } }, r.placa + " · " + dm(r.data) + " " + r.hora)
+                  , h('span', { style: { flex: 1, color: COR[r.status], fontWeight: 600 } }, ROT[r.status] + (r.cliente_nome ? " · " + r.cliente_nome.split(" ")[0] : ""))
+                  , h('span', { style: { fontWeight: 700 } }, fmtBRL(r.valor)))
+                , (r.status === "a_conferir" || r.status === "sem_locatario") ? h('div', { style: { marginTop: 4 } }, seletor(r.veiculo_id, r.contrato_id, function (v) { ajustarPrevia(i, v); })) : null);
+            }))
+          , h('button', { disabled: ocupado, style: Object.assign({}, PILL, { marginTop: 12, width: "100%", background: COR.a_cobrar, color: "#fff", border: "none" }), onClick: salvar }, "Salvar " + previa.filter(function (r) { return r.status !== "duplicado" && r.status !== "placa_desconhecida"; }).length + " passagens")) : null));
+
+  return h(React.Fragment, null, painel, modalImp);
+}
+
 function Sinistros({ veiculos, clientes, contratos, toast }) {
   var [lista, setLista] = React.useState([]);
   var [carregando, setCarregando] = React.useState(true);

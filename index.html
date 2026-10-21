@@ -56046,23 +56046,29 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
     setOcupado(false);
   }
 
-  /* 2) Cobrar do cliente: gera a receita prevista ligada ao contrato */
+  /* 2) Cobrar do cliente: UMA receita prevista por cliente, nas Receitas (fora do contrato). Entra na Agenda pelo vencimento. */
   async function cobrar(itens) {
     var it = itens.filter(function (p) { return p.status === "a_cobrar" && etapaCob(p) === "nao"; });
     if (!it.length) return;
     var tot = Math.round(somaV(it) * 100) / 100;
     var p0 = it[0], hoje = _brNow().toISOString().split("T")[0];
     var datas = it.map(function (p) { return p.data; }).sort();
+    var placas = Object.keys(it.reduce(function (m, p) { m[p.placa] = 1; return m; }, {}));
+    var r = await window.__agPrompt2({ title: "Cobrar pedágios — " + nomeCl(p0.cliente_id), icon: "🛣️", label1: "Valor a cobrar (R$)", type1: "text", default1: tot.toFixed(2).replace(".", ","), label2: "Vencimento", type2: "date", default2: hoje });
+    if (!r || !r.ok) return;
+    var valor = brNum(r.v1);
+    if (!isFinite(valor) || valor <= 0) { toast("Informe um valor."); return; }
+    var venc = r.v2 || hoje;
     setOcupado(true);
     try {
       var nova = await db.post("receitas", {
-        descricao: "Pedágios — " + it.length + " passagem(ns), " + dm(datas[0]) + " a " + dm(datas[datas.length - 1]) + " (" + p0.placa + ")",
-        valor: tot, categoria: "Pedágio", data: hoje, data_vencimento: hoje, status: "previsto", forma_pagamento: "Pix",
-        cliente_id: p0.cliente_id, veiculo_id: p0.veiculo_id, contrato_id: p0.contrato_id
+        descricao: "Pedágios · " + nomeCl(p0.cliente_id) + " — " + it.length + " passagem(ns), " + dm(datas[0]) + " a " + dm(datas[datas.length - 1]) + " (" + placas.join(", ") + ")",
+        valor: Math.round(valor * 100) / 100, categoria: "Pedágio", data: venc, data_vencimento: venc, status: "previsto", forma_pagamento: "Pix",
+        cliente_id: p0.cliente_id, veiculo_id: placas.length === 1 ? p0.veiculo_id : null
       });
       if (setReceitas) setReceitas(function (pr) { return [nova].concat(pr); });
       await Promise.all(it.map(function (p) { return db.patch("pedagios", p.id, { cobrado_cliente: "pendente", data_cobranca_cliente: hoje, valor_cobrado: p.valor, receita_id: nova.id }); }));
-      toast("Receita de " + brl(tot) + " gerada no contrato.");
+      toast("Receita de " + brl(valor) + " lançada para " + nomeCl(p0.cliente_id).split(" ")[0] + " (vence " + dm(venc) + "). Já está na Agenda.");
       carregar();
     } catch (err) { toast("Erro ao gerar a receita: " + ((err && err.message) || err)); }
     setOcupado(false);
@@ -56168,6 +56174,7 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
   /* ── Aba Clientes ── */
   var abaClientes = agrupar(itCob, function (p) { return "k" + p.cliente_id; }, function (p) { return nomeCl(p.cliente_id); }).map(function (g) {
     var cor = corCl(g.itens[0].cliente_id), abre = aberto === g.k;
+    var naoCli = g.itens.filter(function (p) { return etapaCob(p) === "nao" && p.status === "a_cobrar"; });
     var nao = somaL(g.itens.filter(function (p) { return etapaCob(p) === "nao"; })), pen = somaL(g.itens.filter(function (p) { return etapaCob(p) === "pendente"; })), pag = somaL(g.itens.filter(function (p) { return etapaCob(p) === "pago"; }));
     var placas = Object.keys(g.itens.reduce(function (m, p) { m[p.placa] = 1; return m; }, {})).join(", ");
     var avatar = h('div', { style: { width: 34, height: 34, borderRadius: 17, display: "grid", placeItems: "center", fontWeight: 700, fontSize: 12, flexShrink: 0, background: "color-mix(in srgb," + cor + " 16%,transparent)", color: cor } }, ini(g.rotulo));
@@ -56175,6 +56182,7 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
     return h('div', { key: g.k, style: { borderTop: "1px solid " + C.border, padding: "6px 0" } }
       , cab(g.rotulo, subLinha(placas, "· " + g.itens.length + " passagens"), d[0], d[1], d[2] + (pag > 0 && d[2] !== "pagou" ? " · pagou " + brl(pag) : ""), avatar, function () { setAberto(abre ? null : g.k); })
       , abre ? h('div', { style: { paddingLeft: 44, paddingBottom: 6 } }
+        , (naoCli.length ? h('div', { style: { margin: "2px 0 10px" } }, btn("Cobrar cliente · " + brl(somaL(naoCli)) + " (gera receita)", function () { cobrar(naoCli); }, true)) : null)
         , agrupar(g.itens, function (p) { return "ct" + p.contrato_id; }, function (p) { return p.contrato_id; }).map(function (c) {
             var p0 = c.itens[0], ct = (contratos || []).find(function (x) { return String(x.id) === String(p0.contrato_id); });
             var tot = somaL(c.itens), locIt = c.itens.filter(function (p) { return p.pago_locadora; });
@@ -56190,7 +56198,6 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
               , c.itens.slice().sort(porData).map(function (p) { return linhaPass(p, false); })
               , h('div', { style: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 } }
                 , locIt.length < c.itens.length ? btn("Locadora pagou", function () { locadoraPagou(c.itens); }) : null
-                , naoIt.length ? btn("Cobrar cliente · " + brl(somaL(naoIt)), function () { cobrar(naoIt); }, true) : null
                 , penIt.length ? btn("Cliente pagou · " + brl(somaL(penIt)), function () { clientePagou(penIt); }) : null));
           })) : null);
   });

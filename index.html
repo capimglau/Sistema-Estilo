@@ -30352,12 +30352,14 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       });
       var _retInfoInicio = [];
       if (_retValInicio > 0.005) _retInfoInicio.push({ label:"Retirada de Lucro", val:_retValInicio, pend:_retPendInicio, color:"#C99A3E" });
-      if (_muPagas > 0.005) _retInfoInicio.push({ label:"Multas pagas", val:_muPagas, pend:0, color:"#5B7FA6" });
-      if (_muReemb > 0.005) _retInfoInicio.push({ label:"Reembolsado pelo cliente", val:_muReemb, pend:0, color:"#4F9A78" });
-      if (_muFalta > 0.005) _retInfoInicio.push({ label:"Falta reembolsar", val:_muFalta, pend:_muFalta, color:"#D9822B" });
-      if (_pdPagos > 0.005) _retInfoInicio.push({ label:"Pedágios pagos", val:_pdPagos, pend:0, color:"#5B7FA6" });
-      if (_pdReemb > 0.005) _retInfoInicio.push({ label:"Pedágio reembolsado", val:_pdReemb, pend:0, color:"#4F9A78" });
-      if (_pdFalta > 0.005) _retInfoInicio.push({ label:"Pedágio a reembolsar", val:_pdFalta, pend:_pdFalta, color:"#D9822B" });
+      /* [reembolso-unico] Multas + pedágios numa linha só: liso = já reembolsado, listrado = falta o cliente devolver.
+         Toque abre o detalhe por tipo. O total nunca fica menor que reembolsado + falta (itens de meses diferentes). */
+      var _rbMu = Math.max(_muPagas, _muReemb + _muFalta), _rbPd = Math.max(_pdPagos, _pdReemb + _pdFalta);
+      if (_rbMu + _rbPd > 0.005) _retInfoInicio.push({ label:"Reembolso de clientes", val:_rbMu + _rbPd, pend:_muFalta + _pdFalta, color:"#4F9A78",
+        filhos:[
+          (_rbMu > 0.005 ? { label:"Multas", val:_rbMu, pend:_muFalta, color:"#5B7FA6" } : null),
+          (_rbPd > 0.005 ? { label:"Pedágios", val:_rbPd, pend:_pdFalta, color:"#5B8FA6" } : null)
+        ].filter(Boolean) });
 
       /* Painel único reaproveitado pelos dois lados — cabeçalho clicável +
          total + FunnelBars. Sem slice/corte de itens: mostra TODAS as
@@ -44512,14 +44514,27 @@ function CurvaComTubosDivididos(p){
 /* [info-retirada] Linhas SÓ INFORMATIVAS embaixo das barras (Retirada de Lucro e Multas no painel de Despesas por Categoria).
    Não entram em total, pago, a pagar nem na curva: servem pra saber PRA ONDE foi o dinheiro. Usam as mesmas barras do painel:
    sólido + ✓ quando já foi pago/recebido, listrado só na fatia que ainda falta. items: [{label, val, pend, color}] */
+function _InfoGrupo(p) {
+  var st = React.useState(false), aberto = st[0], setAberto = st[1];
+  var it = p.item, C = p.C, mxFixo = Math.max(p.mxRef || 0, it.val);
+  var head = { label: it.label + (aberto ? "  \u2304" : "  \u203A"), val: it.val, pend: it.pend, color: it.color, fullKey: it.label };
+  var oiHead = Object.assign({}, p.oi, { mxFixo: mxFixo, onBarClick: function (x, e) { if (e && e.stopPropagation) e.stopPropagation(); setAberto(function (a) { return !a; }); } });
+  var oiFilhos = Object.assign({}, p.oi, { mxFixo: mxFixo });
+  return React.createElement('div', { style: { marginTop: 7 } }
+    , _funnelBarsLista([head], oiHead)
+    , aberto ? React.createElement('div', { style: { margin: "7px 0 0 14px", paddingLeft: 10, borderLeft: "2px solid " + C.border } }
+        , _funnelBarsLista(it.filhos.map(function (f) { return { label: f.label, val: f.val, pend: (f.pend || 0), color: f.color, fullKey: f.label }; }), oiFilhos)) : null);
+}
 function _funnelInfoRows(infoItems, mx, opts) {
   if (!infoItems || !infoItems.length) return null;
   var C = opts.C;
-  var lista = infoItems.map(function(x){ return { label:x.label, val:x.val, pend:(x.pend || 0), color:x.color, fullKey:x.label }; });
+  var norm = infoItems.filter(function (x) { return !x.filhos; }).map(function (x) { return { label:x.label, val:x.val, pend:(x.pend || 0), color:x.color, fullKey:x.label }; });
+  var grupos = infoItems.filter(function (x) { return !!x.filhos; });
   var oi = { C:C, rotuloPendente:(opts.infoRotuloPendente || "a reembolsar") };
   return React.createElement('div', { style:{ marginTop:12, paddingTop:10, borderTop:"1px dashed " + C.border } }
     , React.createElement('div', { style:{ fontSize:10.5, fontWeight:600, color:C.sub, marginBottom:7 } }, "Só informação \u00b7 não entra nas despesas")
-    , _funnelBarsLista(lista, oi));
+    , norm.length ? _funnelBarsLista(norm, oi) : null
+    , grupos.map(function (g) { return React.createElement(_InfoGrupo, { key:g.label, item:g, oi:oi, C:C, mxRef:(norm[0] || {}).val || 0 }); }));
 }
 function FunnelBars(items, opts) {
   opts = opts || {};
@@ -44531,7 +44546,7 @@ function _funnelBarsLista(items, opts) {
   var C = opts.C;
   var n = items.length;
   if (n === 0) return null;
-  var mx = items[0].val || 1;
+  var mx = opts.mxFixo || items[0].val || 1;
   /* [barra-pendente] A barra mostra o TOTAL do mês; a fatia que ainda não
      entrou (ou não saiu) fica esmaecida no fim dela, e o valor a receber vem
      escrito no balão. Antes a barra era sólida do começo ao fim e não havia

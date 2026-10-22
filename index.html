@@ -55973,6 +55973,8 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
   var [msg, setMsg] = React.useState("");
   var [ocupado, setOcupado] = React.useState(false);
   var [jaPaga, setJaPaga] = React.useState(false);
+  var [sel, setSel] = React.useState({});      // passagens marcadas na aba Conferir
+  var [cliSel, setCliSel] = React.useState(""); // cliente escolhido para aplicar em lote
 
   var COR = { a_cobrar: C.orange, nao: C.orange, cobrado: C.blue, pendente: C.blue, pago: C.green, a_conferir: "#AF52DE", sem_locatario: C.sub, placa_desconhecida: C.red, duplicado: C.sub };
   var ROT = { a_cobrar: "A cobrar", cobrado: "Cobrado", a_conferir: "A conferir", sem_locatario: "Sem locatário", placa_desconhecida: "Placa não cadastrada", duplicado: "Já importado" };
@@ -56129,6 +56131,54 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
     setOcupado(false);
   }
 
+  /* ── seleção em lote na aba Conferir ── */
+  function toggleSel(id) { setSel(function (m) { var n = Object.assign({}, m); if (n[id]) delete n[id]; else n[id] = true; return n; }); }
+  function selecionarTodos() {
+    setSel(function (m) {
+      var tudo = conferir.length > 0 && conferir.every(function (p) { return m[p.id]; });
+      if (tudo) return {};
+      var n = {}; conferir.forEach(function (p) { n[p.id] = true; }); return n;
+    });
+  }
+  function dias(a, b) { return Math.abs(new Date(a + "T00:00:00") - new Date(b + "T00:00:00")) / 864e5; }
+  /* contrato do cliente escolhido para aquele veículo: o que cobre a data ou, no máximo, a 3 dias dela; senão fica só o cliente */
+  function ctDoCliente(p, cid) {
+    var best = null, bd = 1e12;
+    (contratos || []).forEach(function (c) {
+      if (c.status === "cancelado" || String(c.veiculo_id) !== String(p.veiculo_id) || String(c.cliente_id) !== String(cid) || !c.data_inicio) return;
+      var fim = c.data_fim || "9999-12-31";
+      var d = p.data < c.data_inicio ? dias(p.data, c.data_inicio) : p.data > fim ? dias(fim, p.data) : 0;
+      if (d < bd) { bd = d; best = c; }
+    });
+    return bd <= 3 ? best : null;
+  }
+  async function aplicarCliente() {
+    var itens = conferir.filter(function (p) { return sel[p.id]; });
+    if (!itens.length) return;
+    if (!cliSel) { toast("Escolha o cliente."); return; }
+    setOcupado(true);
+    try {
+      await Promise.all(itens.map(function (p) {
+        var ct = ctDoCliente(p, cliSel);
+        return db.patch("pedagios", p.id, { cliente_id: cliSel, contrato_id: ct ? ct.id : null, status: "a_cobrar" });
+      }));
+      toast(itens.length + " passagens atribuídas a " + nomeCl(cliSel).split(" ")[0] + ".");
+      setSel({}); setCliSel(""); carregar();
+    } catch (err) { toast("Erro: " + ((err && err.message) || err)); }
+    setOcupado(false);
+  }
+  function seletorCliente(valor, onSel, vids) {
+    var comCt = {};
+    (contratos || []).forEach(function (c) { if (vids[String(c.veiculo_id)] && c.status !== "cancelado") comCt[String(c.cliente_id)] = 1; });
+    var todos = (clientes || []).slice().sort(function (a, b) { return String(a.nome || "").localeCompare(String(b.nome || "")); });
+    var A = todos.filter(function (c) { return comCt[String(c.id)]; }), B = todos.filter(function (c) { return !comCt[String(c.id)]; });
+    function opt(c) { return h('option', { key: c.id, value: c.id }, c.nome || ("#" + c.id)); }
+    return h('select', { style: Object.assign({}, FI, { minHeight: 34, padding: "4px 8px", fontSize: 12 }), value: valor || "", onChange: function (e) { onSel(e.target.value); } }
+      , h('option', { value: "" }, "— escolher cliente —")
+      , A.length ? h('optgroup', { label: "Com contrato nesses veículos" }, A.map(opt)) : null
+      , h('optgroup', { label: "Todos os clientes" }, B.map(opt)));
+  }
+
   /* confirmar a sugestão do cruzamento como está (trocar o contrato no seletor já confirma a nova escolha) */
   async function confirmar(p) {
     try { await db.patch("pedagios", p.id, { status: "a_cobrar" }); toast("Confirmado: " + nomeCl(p.cliente_id).split(" ")[0] + "."); carregar(); }
@@ -56169,6 +56219,8 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
   function porData(a, b) { return (b.data + b.hora).localeCompare(a.data + a.hora); }
   var conferir = vis.filter(ehConf);
   var sugConf = conferir.filter(function (p) { return p.status === "a_conferir" && p.contrato_id; });
+  var nSel = conferir.filter(function (p) { return sel[p.id]; }).length, todosSel = conferir.length > 0 && nSel === conferir.length;
+  var vidsSel = {}; conferir.forEach(function (p) { if (sel[p.id] && p.veiculo_id != null) vidsSel[String(p.veiculo_id)] = 1; });
 
   /* escala de fontes igual aos painéis de Despesas / Renovações */
   var CF = {
@@ -56239,7 +56291,7 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
             var ultLoc = locIt.map(function (p) { return p.data_pagamento || ""; }).sort().pop();
             var naoIt = c.itens.filter(function (p) { return etapaCob(p) === "nao"; }), penIt = c.itens.filter(function (p) { return etapaCob(p) === "pendente"; });
             return h('div', { key: c.k, style: { marginBottom: 12 } }
-              , h('div', { style: Object.assign({}, CF.tit, { color: "var(--c-text)" }) }, "Contrato #" + p0.contrato_id + " · " + p0.placa + (ct ? " · " + dm(ct.data_inicio) + "–" + (ct.data_fim ? dm(ct.data_fim) : "aberto") : ""))
+              , h('div', { style: Object.assign({}, CF.tit, { color: "var(--c-text)" }) }, (p0.contrato_id ? "Contrato #" + p0.contrato_id : "Sem contrato") + " · " + p0.placa + (ct ? " · " + dm(ct.data_inicio) + "–" + (ct.data_fim ? dm(ct.data_fim) : "aberto") : ""))
               , h('div', { style: { display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" } }
                 , locIt.length === c.itens.length ? chip("✓ Locadora pagou" + (ultLoc ? " " + dm(ultLoc) : ""), C.green) : chip(locIt.length ? "◐ Locadora pagou " + brl(somaL(locIt)) : "○ Locadora não pagou", locIt.length ? C.orange : C.sub)
                 , cobIt.length ? chip("✓ Cobrado " + brl(somaL(cobIt)), C.blue) : chip("○ Não cobrado", C.sub)
@@ -56288,9 +56340,18 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
   /* ── Aba Conferir ── */
   var abaConferir = h('div', { style: { marginTop: 4 } }
     , (sugConf.length > 1 ? h('div', { style: { margin: "4px 0 8px" } }, btn("Confirmar todas as sugestões (" + sugConf.length + ")", function () { confirmarTodos(sugConf); }, true)) : null)
+    , (conferir.length ? h('div', { style: { display: "flex", flexDirection: "column", gap: 8, padding: "6px 0 8px" } }
+        , h('label', { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" } }
+          , h('input', { type: "checkbox", checked: todosSel, onChange: selecionarTodos, style: { width: 18, height: 18, accentColor: C.orange } })
+          , todosSel ? "Desmarcar tudo" : "Selecionar tudo (" + conferir.length + ")"
+          , nSel ? h('span', { style: { color: C.sub, fontWeight: 500 } }, "· " + nSel + (nSel > 1 ? " selecionadas" : " selecionada")) : null)
+        , nSel ? h('div', { style: { display: "flex", gap: 8, alignItems: "center" } }
+            , h('div', { style: { flex: 1, minWidth: 0 } }, seletorCliente(cliSel, setCliSel, vidsSel))
+            , btn("Aplicar a " + nSel, aplicarCliente, true)) : null) : null)
     , conferir.length ? conferir.map(function (p) {
         return h('div', { key: p.id, style: { padding: "9px 0", borderTop: "1px solid " + C.border } }
           , h('div', { style: { display: "flex", gap: 8, alignItems: "center" } }
+            , h('input', { type: "checkbox", checked: !!sel[p.id], onChange: function () { toggleSel(p.id); }, style: { width: 18, height: 18, flexShrink: 0, accentColor: C.orange } })
             , h('span', { style: Object.assign({}, CF.nome, { flex: 1 }) }, p.placa + " · " + dm(p.data) + " " + p.hora)
             , tagCli(p), val(p.valor, "var(--c-text)"))
           , h('div', { style: Object.assign({}, CF.cap, { margin: "3px 0 6px" }) }, p.descricao + (p.cliente_id ? " · sugestão: " + nomeCl(p.cliente_id) : ""))

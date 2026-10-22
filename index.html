@@ -24939,6 +24939,13 @@ function despesasPendentesAteHoje(despesas, hoje, oculta) {
   return doMes + atrasadasAntes;
 }
 
+/* [saldo-a-receber] Quanto AINDA falta entrar num contrato: valor_total menos o já recebido quando o pagamento é parcial.
+   Todo painel de "a receber" deve usar isto, não valor_total direto. */
+function ctSaldoReceber(c) {
+  var t = parseFloat(c && c.valor_total || 0) || 0;
+  return (c && c.status_pagamento === "parcial") ? Math.max(0, t - (parseFloat(c.valor_pago || 0) || 0)) : t;
+}
+
 var STATUS = {
   PAGO: "pago", RECEBIDO: "recebido", PREVISTO: "previsto", PENDENTE: "pendente",
   PARCIAL: "parcial", ISENTO: "isento",
@@ -26753,8 +26760,8 @@ function _buildFaturaBody(ct, cl, ve, emp) {
   var valorTotal = parseFloat(ct.valor_total || 0);
   var locBase = Math.max(0, valorTotal - kmExc - extrasSum + parseFloat(ct.desconto||0));
   var vd = dias > 0 ? locBase / dias : 0;
-  var isVencida = ct.previsao_pagamento && ct.previsao_pagamento < hoje && ct.status_pagamento !== "recebido";
-  var isPago = ct.status_pagamento === "recebido";
+  var isPago = STATUS.ehQuitado(ct.status_pagamento);
+  var isVencida = !isPago && ct.status_pagamento !== "isento" && ct.previsao_pagamento && ct.previsao_pagamento < hoje;
   var statusLabel = isPago ? "PAGO" : isVencida ? "VENCIDO" : "PENDENTE";
   var statusBg = isPago ? "#E8F8EE" : isVencida ? "#FEECEB" : "#FFF3E0";
   var statusColor = isPago ? "#1A7A3E" : isVencida ? "#C0392B" : "#E65100";
@@ -28376,6 +28383,14 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         else if (isParcial) {
           /* parcial: gráfico mostra só o que entrou no caixa (valor_pago), igual ao sheet do dia */
           _ctsChartMap[day].pago += parseFloat(c.valor_pago||0);
+          /* [parcial] o que ainda falta entrar fica como pendente, no dia da previsão (igual à lista/sheet do dia) */
+          var _restP = Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0));
+          if (_restP > 0.005) {
+            var _dpP = _semFimDeSemana(c.previsao_pagamento || dt);
+            var _diaP = (_dpP && _dpP.slice(0,7) === dashMes) ? parseInt(_dpP.slice(8,10), 10) : day;
+            if (!_ctsChartMap[_diaP]) _ctsChartMap[_diaP] = { pago:0, pendente:0 };
+            _ctsChartMap[_diaP].pendente += _restP;
+          }
         } else { _ctsChartMap[day].pendente += parseFloat(c.valor_total||0); }
       });
       var _ctsDays = Object.keys(_ctsChartMap).map(Number).sort(function(a,b){return a-b;});
@@ -31285,7 +31300,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
             var cl=(clientes||[]).find(function(x){ return x.id==c.cliente_id; });
             var ve=(veiculos||[]).find(function(x){ return x.id==c.veiculo_id; });
             var d=_diasAteVencPend(c.previsao_pagamento);
-            return { nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), sub:(ve&&ve.placa||'--')+' · '+(-d)+'d atraso', valor:parseFloat(c.valor_total||0),
+            return { nome:(cl&&cl.nome)||('CT-'+String(c.id).padStart(4,'0')), sub:(ve&&ve.placa||'--')+' · '+(-d)+'d atraso', valor:ctSaldoReceber(c),
               onVer:function(){ onItemNav({type:'contrato',id:c.id},'contratos'); },
               /* Tocar já pergunta se quer resolver — mesma função única do
                  swipe "Baixar" da Recebimentos de locação (_agBaixar já
@@ -31513,10 +31528,11 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           var _cl = (clientes||[]).find(function(x){ return x.id==c.cliente_id; });
           return { id:c.id, data:String((_pg ? (c.data_pagamento||c.previsao_pagamento) : c.previsao_pagamento)||'').slice(0,10),
                    valor:parseFloat(c.valor_total||0), status:_pg?'pago':'aberto',
+                   recebido:(_pg ? parseFloat(c.valor_total||0) : (c.status_pagamento==='parcial' ? (parseFloat(c.valor_pago||0)||0) : 0)),
                    descricao:(_cl&&_cl.nome)||('CT-'+String(c.id).padStart(4,'0')) };
         }).filter(function(d){ return d.data; });
       var _recTotalBar = _recChartItens.reduce(function(s,d){ return s+d.valor; }, 0);
-      var _recPagoBar  = _recChartItens.filter(function(d){ return d.status==='pago'; }).reduce(function(s,d){ return s+d.valor; }, 0);
+      var _recPagoBar  = _recChartItens.reduce(function(s,d){ return s+Math.min(d.valor, d.recebido||0); }, 0); /* [parcial] inclui o já recebido dos contratos parciais */
 
       var _barModalState = React.useState(null); var _barModal = _barModalState[0]; var setBarModal = _barModalState[1];
 
@@ -31926,6 +31942,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         var statusTxt = venceu ? diasAt+'d atraso' : venceHj ? 'vence hoje' : '';
         var isUrgenteRec = venceu || venceHj;
         var _cid  = c.id;
+        var _parcRec = c.status_pagamento==='parcial' ? (parseFloat(c.valor_pago||0)||0) : 0;
+        var _vRestRec = ctSaldoReceber(c);
+        if (_parcRec > 0.005) statusTxt = (statusTxt ? statusTxt+' \u00b7 ' : '') + 'parcial';
         /* Tocar no cartão já pergunta se quer receber — mesma função única
            do swipe "Baixar" logo abaixo (_agBaixar já pede a data e cuida
            do desfazer). "Ver" continua no swipe (action2), sem perguntar
@@ -31949,8 +31968,9 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
               ) : null
           )
           /* valor */
-          , React.createElement('div', { style:{ flexShrink:0, display:'flex', alignItems:'center', padding:'0 14px 0 8px' } }
-            , React.createElement(BRLValue, { v:c.valor_total||0, size:13, weight:800, color:_flagCorPastel(cor), centSize:9 })
+          , React.createElement('div', { style:{ flexShrink:0, display:'flex', flexDirection:'column', alignItems:'flex-end', justifyContent:'center', padding:'0 14px 0 8px' } }
+            , React.createElement(BRLValue, { v:_vRestRec, size:13, weight:800, color:_flagCorPastel(cor), centSize:9 })
+            , (_parcRec > 0.005) ? React.createElement('div', { style:{ fontSize:10, fontWeight:600, color:C.sub, marginTop:2, whiteSpace:'nowrap' } }, 'recebido ' + fmtBRLsm(_parcRec)) : null
           )
         );
 
@@ -51729,9 +51749,9 @@ function PrevisaoCaixa({ contratos, veiculos, clientes, despesas, receitas, manu
   var entradas = [], saidas = [];
   (contratos||[]).forEach(function(c){
     if (c.status==="cancelado"||c.status==="concluido") return;
-    if (c.previsao_pagamento && c.previsao_pagamento>=hoje && c.previsao_pagamento<=fim && c.status_pagamento!=="recebido") {
+    if (c.previsao_pagamento && c.previsao_pagamento>=hoje && c.previsao_pagamento<=fim && !STATUS.ehQuitado(c.status_pagamento) && c.status_pagamento!=="isento") {
       var cl=(clientes||[]).find(function(x){return x.id===c.cliente_id;})||{}; var ve=(veiculos||[]).find(function(x){return x.id===c.veiculo_id;})||{};
-      entradas.push({data:c.previsao_pagamento,valor:parseFloat(c.valor_total||0),desc:"Contrato #"+numCt(c.id)+" — "+(cl.nome||"")+" / "+(ve.placa||"")});
+      entradas.push({data:c.previsao_pagamento,valor:ctSaldoReceber(c),desc:"Contrato #"+numCt(c.id)+" — "+(cl.nome||"")+" / "+(ve.placa||"")});
     }
     if (c.status==="ativo"&&c.data_fim&&c.data_fim>=hoje&&c.data_fim<=fim) {
       var cl2=(clientes||[]).find(function(x){return x.id===c.cliente_id;})||{}; var ve2=(veiculos||[]).find(function(x){return x.id===c.veiculo_id;})||{};

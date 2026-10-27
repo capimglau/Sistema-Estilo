@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="565cb75"/>
+<meta name="ag-build" content="377fe2e"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -35106,6 +35106,115 @@ function DocsModalBody({ contrato, clientes, veiculos, onSave }) {
 
 // -- CONTRATOS --------------------------------------------------------------
 
+/* ── Pátio da frota (Contratos): cada vaga é um carro na cor da situação.
+   Situação vem de statusEfetivoVeiculo() — mesma fonte da verdade da Frota.
+   Toque/clique (ou passar o mouse) mostra veículo + locação; legenda destaca. ── */
+function PatioFrota(props) {
+  var h = React.createElement;
+  var veiculos = props.veiculos || [], contratos = props.contratos || [], clientes = props.clientes || [], manutencoes = props.manutencoes || [];
+  var _f = React.useState(null), filtro = _f[0], setFiltro = _f[1];
+  var _s = React.useState(null), selId = _s[0], setSelId = _s[1];
+  var _h = React.useState(null), hovId = _h[0], setHovId = _h[1];
+  var hoje = _hojeISO();
+  var dd = function(a, b) { return Math.round((Date.parse(a + "T12:00:00") - Date.parse(b + "T12:00:00")) / 864e5); };
+  var ddmm = function(d) { return d ? d.slice(8, 10) + "/" + d.slice(5, 7) : "--"; };
+  var frota = React.useMemo(function() {
+    var lista = veiculos.filter(function(v) { return v.status !== "inativo" && v.status !== "vendido"; }).map(function(v) {
+      var st = statusEfetivoVeiculo(v, contratos);
+      var k = st === "alugado" ? "a" : st === "manutencao" ? "m" : "d";
+      var cts = contratos.filter(function(c) { return String(c.veiculo_id) === String(v.id) && c.status !== "cancelado"; });
+      var ct = null, cl = null, man = null, livreDias = null, vencido = null, restam = null;
+      if (k === "a") {
+        ct = cts.find(function(c) { return c.status === "ativo" && (!c.data_fim || c.data_fim >= hoje); }) || null;
+        if (ct) { cl = clientes.find(function(x) { return String(x.id) === String(ct.cliente_id); }) || null; restam = ct.data_fim ? dd(ct.data_fim, hoje) : null; }
+      } else if (k === "m") {
+        man = manutencoes.find(function(m) { return String(m.veiculo_id) === String(v.id) && m.status === "em_andamento"; }) || null;
+      } else {
+        vencido = cts.find(function(c) { return c.status === "ativo" && c.data_fim && c.data_fim < hoje; }) || null;
+        var fins = cts.filter(function(c) { return c.data_fim && c.data_fim <= hoje; }).map(function(c) { return c.data_fim; }).sort();
+        if (fins.length) livreDias = Math.max(0, dd(hoje, fins[fins.length - 1]));
+      }
+      return { v: v, k: k, ct: ct, cl: cl, man: man, livreDias: livreDias, vencido: vencido, restam: restam };
+    });
+    var ordem = { a: 0, m: 1, d: 2 };
+    lista.sort(function(x, y) { return ordem[x.k] - ordem[y.k] || (x.k === "a" ? (x.restam == null ? 9999 : x.restam) - (y.restam == null ? 9999 : y.restam) : 0); });
+    return lista;
+  }, [veiculos, contratos, clientes, manutencoes, hoje]);
+  if (!frota.length) return null;
+  var nA = frota.filter(function(x) { return x.k === "a"; }).length;
+  var nD = frota.filter(function(x) { return x.k === "d"; }).length;
+  var nM = frota.filter(function(x) { return x.k === "m"; }).length;
+  var volta7 = function(x) { return x.k === "a" && x.restam != null && x.restam <= 7; };
+  var nR = frota.filter(volta7).length;
+  var ocup = Math.round(nA / frota.length * 100);
+  var parado = frota.filter(function(x) { return x.k !== "a"; }).reduce(function(s, x) { return s + parseFloat(x.v.valor_diaria || 0); }, 0);
+  var COR = { a: C.green, d: C.blue, m: C.orange };
+  var NOME = { a: "Alugado", d: "Disponível", m: "Em manutenção" };
+  var casa = function(x) { return !filtro || (filtro === "r" ? volta7(x) : x.k === filtro); };
+  var mostraId = hovId != null ? hovId : selId;
+  var it = mostraId != null ? frota.find(function(x) { return String(x.v.id) === String(mostraId); }) : null;
+  var linha = function(l, val, cor) {
+    return h('div', { key: l, style: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13, padding: "3px 0" } }
+      , h('span', { style: { color: C.sub } }, l)
+      , h('span', { style: { fontWeight: 600, color: cor || "var(--c-text)", textAlign: "right" } }, val));
+  };
+  var detalhe = function() {
+    if (!it) return h('div', { style: { fontSize: 13, color: C.sub, padding: "6px 0" } }, "Toque (ou passe o mouse) num carro para ver o veículo e a locação.");
+    var v = it.v, ct = it.ct, rows = [];
+    if (it.k === "a" && ct) {
+      var r = it.restam;
+      var rTxt = r == null ? "sem data de fim" : r < 0 ? "vencido há " + (-r) + " d" : r === 0 ? "devolve hoje" : r === 1 ? "devolve amanhã" : "faltam " + r + " dias";
+      var pg = ct.status_pagamento === "pago" ? "pago" : ct.status_pagamento === "parcial" ? "parcial" : ct.status_pagamento === "isento" ? "isento" : (ct.previsao_pagamento && ct.previsao_pagamento < hoje ? "atrasado" : "a receber");
+      rows.push(linha("Cliente", it.cl ? it.cl.nome : "--"));
+      rows.push(linha("Período", ddmm(ct.data_inicio) + " → " + ddmm(ct.data_fim) + " · " + rTxt, r != null && r <= 1 ? C.red : r != null && r <= 3 ? C.orange : null));
+      rows.push(linha("Valor", fmtBRL(ct.valor_total) + " · " + pg, pg === "atrasado" ? C.red : pg === "pago" ? C.green : null));
+      rows.push(linha("Diária", fmtBRL(v.valor_diaria)));
+    } else if (it.k === "m") {
+      var m = it.man;
+      rows.push(linha("Serviço", m && m.tipo ? m.tipo : "Manutenção"));
+      if (m && m.data_entrada) rows.push(linha("Entrada", ddmm(m.data_entrada) + " (" + Math.max(0, dd(hoje, m.data_entrada)) + " d parado)"));
+      if (m && m.data_saida) rows.push(linha("Saída prevista", ddmm(m.data_saida)));
+      rows.push(linha("Diária parada", fmtBRL(v.valor_diaria) + "/dia", C.orange));
+    } else {
+      rows.push(linha("Situação", it.livreDias != null ? "livre há " + it.livreDias + (it.livreDias === 1 ? " dia" : " dias") : "livre"));
+      rows.push(linha("Diária", fmtBRL(v.valor_diaria)));
+      if (it.vencido) rows.push(linha("Atenção", "contrato #" + numCt(it.vencido.id) + " vencido sem baixa", C.orange));
+    }
+    var alvo = it.k === "a" ? ct : it.vencido;
+    return h('div', null
+      , h('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 } }
+        , h('div', { style: { fontWeight: 800, fontSize: 15, color: "var(--c-text)" } }, v.placa, " · ", [v.marca, v.modelo].filter(Boolean).join(" "), v.ano ? " " + v.ano : "")
+        , h('span', { style: { fontSize: 11, fontWeight: 800, color: "#fff", background: COR[it.k], borderRadius: 8, padding: "3px 8px", whiteSpace: "nowrap" } }, NOME[it.k]))
+      , rows
+      , alvo && props.onAbrir && h('button', { onClick: function() { props.onAbrir(alvo.id); }, style: { marginTop: 8, width: "100%", padding: "9px 0", borderRadius: 12, border: "1px solid var(--c-border)", background: "transparent", color: "var(--c-text)", fontWeight: 700, fontSize: 13, cursor: "pointer" } }, "Abrir contrato #" + numCt(alvo.id)));
+  };
+  var pill = function(k, cor, txt) {
+    var on = filtro === k;
+    return h('button', { key: k, onClick: function() { setFiltro(on ? null : k); }, style: { display: "flex", alignItems: "center", gap: 7, padding: "6px 12px", borderRadius: 20, border: "1.5px solid " + (on ? "var(--c-text)" : "var(--c-border)"), background: "transparent", color: "var(--c-text)", fontSize: 13, fontWeight: 600, cursor: "pointer" } }
+      , h('span', { style: { width: 9, height: 9, borderRadius: "50%", background: cor } }), txt);
+  };
+  return h('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)" } }
+    , h('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 } }
+      , h('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub, letterSpacing: 0.4 } }, "FROTA")
+      , h('span', { style: { fontSize: 13, fontWeight: 800, color: "var(--c-text)" } }, ocup + "% ocupada · " + frota.length + " veículos"))
+    , h('div', { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(36px,1fr))", borderTop: "2px solid var(--c-border)" }, onMouseLeave: function() { setHovId(null); } }
+      , frota.map(function(x) {
+        var sel = String(selId) === String(x.v.id);
+        var dot = x.k === "a" && x.restam != null && x.restam <= 3 ? (x.restam <= 0 ? C.red : C.orange) : null;
+        return h('div', { key: x.v.id, style: { aspectRatio: "0.62", borderLeft: "2px solid var(--c-border)", borderBottom: "2px solid var(--c-border)", display: "flex", alignItems: "center", justifyContent: "center", padding: 4 } }
+          , h('div', { role: "button", "aria-label": x.v.placa, onClick: function() { setSelId(sel ? null : x.v.id); }, onMouseEnter: function() { setHovId(x.v.id); },
+            style: { position: "relative", width: "100%", height: "84%", borderRadius: 9, cursor: "pointer", transition: "opacity .2s, transform .15s", opacity: casa(x) ? 1 : 0.18, transform: sel || String(hovId) === String(x.v.id) ? "scale(1.12)" : "none", outline: sel ? "2.5px solid var(--c-text)" : "none", outlineOffset: 1,
+              background: x.k === "m" ? "repeating-linear-gradient(45deg," + C.orange + " 0 5px, rgba(0,0,0,0.25) 5px 10px)" : COR[x.k] } }
+            , h('div', { style: { position: "absolute", left: "18%", right: "18%", top: "22%", height: "18%", background: "rgba(0,0,0,0.28)", borderRadius: 3 } })
+            , h('div', { style: { position: "absolute", left: "18%", right: "18%", bottom: "16%", height: "18%", background: "rgba(0,0,0,0.28)", borderRadius: 3 } })
+            , dot && h('span', { style: { position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%", background: dot, border: "1.5px solid " + C.card } })));
+      }))
+    , h('div', { style: { marginTop: 10, minHeight: 44 } }, detalhe())
+    , h('div', { style: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 } }
+      , pill("a", C.green, nA + " em locação"), pill("d", C.blue, nD + " disponíveis"), nM > 0 && pill("m", C.orange, nM + " em manutenção"), nR > 0 && pill("r", C.red, nR + " voltam em 7 dias"))
+    , parado > 0 && h('div', { style: { marginTop: 10, fontSize: 12, color: C.sub } }, "Parado hoje: ", h('b', { style: { color: C.red } }, fmtBRL(parado) + "/dia"), " em diárias"));
+}
+
 function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, empresa, usos, setUsos, receitas, setReceitas, manutencoes, toast, ctDeepLink, setCtDeepLink, setTab }) {
   /* Marca se a ação em andamento (renovar/baixar) veio da Agenda Mensal do
      Início (ctDeepLink.voltarInicio) — nesse caso, ao fechar a janela que
@@ -36370,6 +36479,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         , temFiltro && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: limparFiltros, __self: this, __source: {fileName: _jsxFileName, lineNumber: 973}}, "Limpar filtros" )
       )
     )
+    , React.createElement(PatioFrota, { veiculos: veiculos, contratos: contratos, clientes: clientes, manutencoes: manutencoes, onAbrir: function(id) { if (setCtDeepLink) setCtDeepLink({ itemId: id, acao: "editar" }); } })
     , fil2.length > 0 && React.createElement(React.Fragment, null
       /* ── Barra de progresso (navega por mês via swipe) ── */
       , React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" }, onTouchStart: _kpiBarTouchStart, onTouchEnd: _kpiBarTouchEnd, onWheel: _kpiBarWheel }

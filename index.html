@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="62475b7"/>
+<meta name="ag-build" content="797609c"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -30499,7 +30499,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
     })()
 
     /* ══ Pedágios: importação do relatório, cruzamento placa/data/hora → contrato e cobrança ══ */
-    , React.createElement(PedagiosPainel, { veiculos:veiculos, clientes:clientes, contratos:contratos, receitas:receitas, setReceitas:setReceitas, toast:toast })
+    , React.createElement(PedagiosPainel, { veiculos:veiculos, clientes:clientes, contratos:contratos, receitas:receitas, mesRef:dashMes, setReceitas:setReceitas, toast:toast })
 
     /* ══ Saldo nas contas + Boletos — logo abaixo de Despesas por Categoria / Receitas por Cliente (pedido do
        usuário). No PC ficam lado a lado; no mobile continuam empilhados (Saldo, depois Boletos). ══ */
@@ -56427,12 +56427,13 @@ function _pedEnsureTesseract() {
   return _pedTessP;
 }
 
-function PedagiosPainel({ veiculos, clientes, contratos, receitas, setReceitas, toast }) {
+function PedagiosPainel({ veiculos, clientes, contratos, receitas, mesRef, setReceitas, toast }) {
   var h = React.createElement;
   var [lista, setLista] = React.useState([]);
   var [erro, setErro] = React.useState(false);
   var [aba, setAba] = React.useState("cliente");
-  var [mes, setMes] = React.useState("todos");
+  var [mes, setMes] = React.useState((typeof mesRef === "string" && /^\d{4}-\d{2}$/.test(mesRef)) ? mesRef : "todos");
+  React.useEffect(function () { if (typeof mesRef === "string" && /^\d{4}-\d{2}$/.test(mesRef)) setMes(mesRef); }, [mesRef]); /* acompanha o mês escolhido no Início; "Todos" continua no Filtrar */
   var [aberto, setAberto] = React.useState(null);
   var [modal, setModal] = React.useState(false);
   var [previa, setPrevia] = React.useState(null);
@@ -56669,8 +56670,19 @@ function PedagiosPainel({ veiculos, clientes, contratos, receitas, setReceitas, 
     try { await db.patch("pedagios", p.id, up); carregar(); } catch (err) { toast("Erro: " + ((err && err.message) || err)); }
   }
 
-  var meses = Object.keys(lista.reduce(function (m, p) { m[String(p.data).slice(0, 7)] = 1; return m; }, {})).sort().reverse();
-  var vis = lista.filter(function (p) { return mes === "todos" || String(p.data).slice(0, 7) === mes; });
+  /* [pedagios-agendado] A locadora paga o pedágio num mês e o cliente pode ser cobrado em outro. Cada passagem aparece em TODOS os meses
+     que a envolvem: o da passagem, o do pagamento da locadora e o do vencimento da cobrança (receita lançada) — assim, no mês do
+     vencimento ela volta ao painel para emitir o boleto. No mês de origem, a cobrança com vencimento DEPOIS do mês visto vira
+     um trecho próprio (azul claro) com valor e data, em vez de ficar "esperando" no tubo. */
+  var _mesHoje = _brNow().toISOString().slice(0, 7);
+  var _refMes = mes !== "todos" ? mes : _mesHoje;
+  var _recMap = {}; (receitas || []).forEach(function (r) { _recMap[String(r.id)] = r; });
+  function vencDe(p) { var r = p.receita_id != null ? _recMap[String(p.receita_id)] : null; return r ? String(r.data_vencimento || r.data || "").slice(0, 10) : ""; }
+  function ehAg(p) { var v = vencDe(p); return etapaCob(p) === "pendente" && !!v && v.slice(0, 7) > _refMes; }
+  function agDe(itens) { var a = itens.filter(ehAg); return { v: somaL(a), d: a.map(vencDe).sort()[0] || "" }; }
+  function mesesDe(p) { return [String(p.data).slice(0, 7), String(p.data_pagamento || "").slice(0, 7), vencDe(p).slice(0, 7)]; }
+  var meses = Object.keys(lista.reduce(function (m, p) { mesesDe(p).forEach(function (k) { if (/^\d{4}-\d{2}$/.test(k)) m[k] = 1; }); return m; }, {})).sort().reverse();
+  var vis = lista.filter(function (p) { return mes === "todos" || mesesDe(p).indexOf(mes) >= 0; });
   function soma(st) { return vis.filter(function (p) { return p.status === st; }).reduce(function (s, p) { return s + Number(p.valor || 0); }, 0); }
   function qtd(st) { return vis.filter(function (p) { return p.status === st; }).length; }
   function agrupar(itens, kf, rf) {
@@ -56759,13 +56771,6 @@ function PedagiosPainel({ veiculos, clientes, contratos, receitas, setReceitas, 
   var _mxT = _gCli.length ? _gCli[0].total : 1;
   var _rowH = _gCli.some(function (g) { var pg = somaL(g.itens.filter(function (p) { return etapaCob(p) === "pago"; })); return pg > 0.005 && g.total - pg > 0.005; }) ? 40 : 34; /* mesmo critério dos outros painéis */
   var TUBO_COR = ["#44917f", "#9a5f72", "#5a7fa8", "#d4a53c", "#6e9672", "#b07a4f"];
-  /* [pedagios-agendado] Cobrança já lançada com vencimento em OUTRO mês (receita prevista com data_vencimento depois do mês atual):
-     não fica "esperando" no tubo deste mês — vira um trecho próprio (azul claro) com o valor e a data de vencimento. */
-  var _mesHoje = _brNow().toISOString().slice(0, 7);
-  var _recMap = {}; (receitas || []).forEach(function (r) { _recMap[String(r.id)] = r; });
-  function vencDe(p) { var r = p.receita_id != null ? _recMap[String(p.receita_id)] : null; return r ? String(r.data_vencimento || r.data || "").slice(0, 10) : ""; }
-  function ehAg(p) { var v = vencDe(p); return etapaCob(p) === "pendente" && !!v && v.slice(0, 7) > _mesHoje; }
-  function agDe(itens) { var a = itens.filter(ehAg); return { v: somaL(a), d: a.map(vencDe).sort()[0] || "" }; }
   var _resP = (function () {
     var lenV = function (v) { return Math.abs(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).length + 3; };
     var mc = 0, ok = false;
@@ -56802,7 +56807,7 @@ function PedagiosPainel({ veiculos, clientes, contratos, receitas, setReceitas, 
             , h('div', { onClick: function (e) { e.stopPropagation(); setDetalhe({ t: "cli", m: "ambos", k: g.k }); }, style: { cursor: "pointer", flexShrink: 0, textAlign: "left", fontSize: 12, fontWeight: 700, lineHeight: 1.15, whiteSpace: "nowrap" } }
               , h('div', { style: { color: (temP && !parcial) ? C.orange : "var(--c-text)" } }, !temP ? h('span', { style: { color: C.green, marginRight: 4, fontWeight: 800 } }, "\u2713") : null, fmtBRLsm(g.total))
               , (temR && parcial) ? h('div', { style: { fontSize: 10.5, fontWeight: 700, color: C.orange, marginTop: 1 } }, fmtBRLsm(resto)) : null
-              , temAg ? h('div', { style: { fontSize: 10.5, fontWeight: 700, color: C.blue, marginTop: 1 } }, fmtBRLsm(ag) + (agI.d ? " \u00b7 " + dm(agI.d) : "")) : null));
+              , temAg ? h('div', { style: { fontSize: 10.5, fontWeight: 700, color: C.blue, marginTop: 1 } }, fmtBRLsm(ag), agI.d ? " \u00b7 " + dm(agI.d) : "") : null));
         })()
       , abre ? h('div', { style: { margin: "2px 0 8px 14px", paddingLeft: 10, paddingBottom: 4, borderLeft: "2px solid " + C.border } }
         , (naoCli.length ? h('div', { style: { margin: "2px 0 10px" } }, btn("Cobrar cliente · " + brl(somaL(naoCli)) + " (gera receita)", function () { cobrar(naoCli); }, true)) : null)
@@ -56939,7 +56944,7 @@ function PedagiosPainel({ veiculos, clientes, contratos, receitas, setReceitas, 
             , h('span', { onClick: function () { setDetalhe({ t: "cli", m: "pago" }); }, style: { color: C.green, cursor: "pointer", padding: "4px 0" } }, "Recebido: ", fmtBRLsm(recF))
             , h('span', { onClick: function () { setDetalhe({ t: "cli", m: "falta" }); }, style: { color: C.orange, cursor: "pointer", padding: "4px 0" } }, "A receber: ", fmtBRLsm(aRecF)))
           , (agTot.v > 0.005) ? h('div', { onClick: function () { setDetalhe({ t: "cli", m: "falta" }); }, style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, fontWeight: 700, margin: "-6px 0 12px", color: C.blue, cursor: "pointer" } }
-            , h('span', null, "Cobrado p/ outro mês"), h('span', null, fmtBRLsm(agTot.v) + (agTot.d ? " \u00b7 vence " + dm(agTot.d) : ""))) : null
+            , h('span', null, "Cobrado p/ outro mês"), h('span', null, fmtBRLsm(agTot.v), agTot.d ? " \u00b7 vence " + dm(agTot.d) : "")) : null
           , aba === "analise" ? (lista.length ? abaAnalise : vazio)
             : h('div', null, (aba === "cliente" ? abaClientes : abaVeiculos).length ? (aba === "cliente" ? abaClientes : abaVeiculos) : vazio)
           , itCobF.length ? h('div', { style: { marginTop: 14, paddingTop: 12, borderTop: "1px dashed " + C.border } }

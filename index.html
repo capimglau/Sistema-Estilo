@@ -44464,8 +44464,23 @@ function CurvaSaldo(p){
     document.addEventListener('ag:adia-sync', f);
     return function(){ document.removeEventListener('ag:adia-sync', f); };
   }, []);
+  /* [curva-saldo-desktop] No PC o card é largo: o SVG (viewBox fixo 340×94, width 100%) era esticado e as fontes/altura cresciam junto.
+     Agora, no PC, o gráfico usa a LARGURA REAL do card como unidade (1 unidade = 1px): mesma altura e mesmas fontes do mobile, só mais espaço
+     horizontal. No mobile nada muda (340). */
+  var _wrapRef = React.useRef(null), _stCw = React.useState(0), _cwD = _stCw[0];
+  var _temPts = pts.length >= 2;
+  React.useLayoutEffect(function(){
+    if (!p.desktop) return;
+    var el = _wrapRef.current; if (!el) return;
+    var m = function(){ var w = Math.round(el.getBoundingClientRect().width) - 28; if (w > 0) _stCw[1](function(q){ return Math.abs(q - w) < 1 ? q : w; }); };
+    m();
+    var ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(m) : null;
+    if (ro) ro.observe(el);
+    window.addEventListener('resize', m);
+    return function(){ if (ro) ro.disconnect(); window.removeEventListener('resize', m); };
+  }, [p.desktop, _temPts]);
   if (pts.length < 2) return null;
-  var W = 340, padL = 8, padR = 8, yTop = 22, yBase = 74, H = 94, pw = W - padL - padR;
+  var W = (p.desktop && _cwD > 0) ? Math.max(340, Math.min(1400, _cwD)) : 340, padL = 8, padR = 8, yTop = 22, yBase = 74, H = 94, pw = W - padL - padR;
   var nd = Math.max(p.ultimo || 30, pts[pts.length-1].dia, 2);
   var X = function(d){ return padL + ((d - 1) / (nd - 1)) * pw; };
   var vals = pts.map(function(q){ return q.saldo; });
@@ -44572,7 +44587,7 @@ function CurvaSaldo(p){
   datas.forEach(function(o){ els.push(React.createElement('text', { key:'t'+o.k, x:f1(o.x), y:yBase + 15, textAnchor:'middle', style:{ fontSize:o.fs, fontWeight:500, fill:C.sub, pointerEvents:'none' } }, o.t)); });
   var pc = selPt ? (selPt.x / W) * 100 : 0;
   var pos = pc < 24 ? { left:0 } : (pc > 76 ? { right:0 } : { left:pc + '%', transform:'translateX(-50%)' });
-  return React.createElement('div', { style:{ borderTop:'1px solid ' + C.borderSoft, padding:'4px 14px 6px', position:'relative' } }
+  return React.createElement('div', { ref:_wrapRef, style:{ borderTop:'1px solid ' + C.borderSoft, padding:'4px 14px 6px', position:'relative' } }
     , selPt && React.createElement('div', { style:Object.assign({ position:'absolute', top:0, background:C.card, border:'1px solid ' + C.border, borderRadius:9, padding:'3px 9px', fontSize:11, fontWeight:700, lineHeight:1.3, whiteSpace:'nowrap', color:C.text, boxShadow:'0 2px 6px rgba(0,0,0,0.08)', pointerEvents:'none', zIndex:3 }, pos) }
         , ddFull(selPt.q.dia) + ' · ', fmtBRLsm(selPt.q.saldo)
         , selPt.q.rec > 0.005 && React.createElement('div', { style:{ color:G, fontWeight:600 } }, 'receitas ', fmtBRLsm(selPt.q.rec))
@@ -44896,7 +44911,7 @@ function _funnelBarsLista(items, opts) {
     items.forEach(function (y) { _maxCh = Math.max(_maxCh, _lenV(y.val), (y.pend || 0) > 0.005 ? _lenV(y.pend) : 0); if (!((y.pend || 0) > 0.005)) _algumOk = true; });
     _resPx = Math.ceil(_maxCh * 6.2 + (_algumOk ? 16 : 0) + 16);
   }
-  return React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:(opts.rotuloPendente ? 13 : 7) } }
+  return React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:(opts.rotuloPendente ? 10 : 7) } }
     , items.map(function(x, i){
         var textColor = _luminance(x.color) > 0.6 ? "var(--c-text)" : "#fff";
         /* Teto de 80% (não 100%): o balão de valor fica À DIREITA da ponta da
@@ -44925,8 +44940,8 @@ function _funnelBarsLista(items, opts) {
         /* [listras-pendente] Nos painéis do Início a fatia pendente vira listras finas em movimento NA COR DA PRÓPRIA
            categoria (paleta pastel original); o pago fica sólido. O vermelho/laranja fica só nos valores. */
         var _lista = !!opts.rotuloPendente && _temP;
-        var _s1 = x.color;
-        var _s2 = "color-mix(in srgb, " + x.color + (opts.rotuloPendente ? " 74%" : " 58%") + ", white)";
+        var _s1 = _lista ? "color-mix(in srgb, " + x.color + " 90%, black)" : x.color;
+        var _s2 = opts.rotuloPendente ? "color-mix(in srgb, " + _s1 + " 82%, white)" : "color-mix(in srgb, " + x.color + " 58%, white)";
         /* [tubo-largura-total] Painéis do Início/Orçamento (opts.rotuloPendente): nome e valor em cima, tubo de largura total
            embaixo. Sólido = já pago/recebido; listras em movimento da ponta do pago até o FIM do tubo = ainda não efetivado.
            O número dentro do tubo é a fatia do item no total do painel. Fontes iguais às do desenho anterior. */
@@ -44934,21 +44949,20 @@ function _funnelBarsLista(items, opts) {
           var _totC = opts.totalRef || items.reduce(function (a, y) { return a + (y.val || 0); }, 0);
           var _pcC = _totC > 0 ? Math.round((x.val / _totC) * 100) : 0;
           var _pisC = !!(opts.piscaKeys && opts.piscaKeys.length && opts.piscaKeys.indexOf(x.fullKey != null ? x.fullKey : x.label) >= 0);
-          /* [tubo-c3] Nome FORA do tubo (em cima), valor na MESMA linha, logo depois da ponta. O maior tubo vai até onde sobra
-             espaço só pro valor; os demais seguem a proporção ao maior. Sólido = já pago/recebido; listras em movimento = pendente. */
-          var _tubeC = { position:"relative", flex:"0 0 auto", width:"calc((100% - " + _resPx + "px) * " + ((mx > 0 ? (x.val / mx) : 1)).toFixed(4) + ")", minWidth:8, height:14, borderRadius:999, overflow:"hidden", boxShadow:"inset 0 1px 2px rgba(0,0,0,0.10)", background:(_lista ? undefined : x.color) };
+          /* [tubo-a21] Nome (branco) DENTRO do tubo (21px, fonte 12), sem %, valor logo no FIM do tubo na mesma linha. O maior tubo vai até
+             onde sobra espaço só pro valor; os demais seguem a proporção ao maior. Sólido = já pago/recebido; listras em movimento = pendente. */
+          var _tubeC = { position:"relative", flex:"0 0 auto", width:"calc((100% - " + _resPx + "px) * " + ((mx > 0 ? (x.val / mx) : 1)).toFixed(4) + ")", minWidth:"max-content", height:21, borderRadius:999, overflow:"hidden", display:"flex", alignItems:"center", padding:"0 11px", boxSizing:"border-box", boxShadow:"inset 0 1px 2px rgba(0,0,0,0.10)", background:(_lista ? undefined : x.color) };
           if (_lista) { _tubeC["--s1"] = _s1; _tubeC["--s2"] = _s2; }
-          var _rowC = React.createElement('div', { onClick:function(e){ opts.onBarClick && opts.onBarClick(x, e); }, style:{ cursor:opts.onBarClick ? "pointer" : "default" } }
-            , React.createElement('div', { style:{ fontSize:12, fontWeight:700, letterSpacing:0.1, lineHeight:1.1, color:"var(--c-text)", margin:"0 0 3px 2px", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" } }, x.label || "")
-            , React.createElement('div', { style:{ display:"flex", alignItems:"flex-start", gap:8 } }
-              , React.createElement('div', { className:(_lista ? "ag-stripes ag-mv" : undefined), style:_tubeC }
-                , (_lista && _stop !== "0.0%") && React.createElement('div', { style:{ position:"absolute", left:0, top:0, bottom:0, width:_stop, background:x.color, boxShadow:"2px 0 0 rgba(255,255,255,0.55)" } })
-                , _pisC && React.createElement('div', { key:'pv'+opts.piscaTick, className:'ag-pisca-ov' }))
-              , React.createElement('div', { style:{ flexShrink:0, textAlign:"left", fontSize:12, fontWeight:700, color:"var(--c-text)", lineHeight:"14px", whiteSpace:"nowrap", marginBottom:((_temP && _escrevePend) ? -9 : 0) } }
-                , React.createElement('div', null
-                  , !_temP && React.createElement('span', { style:{ color:C.green, marginRight:4, fontWeight:800 } }, "\u2713")
-                  , (_temP && !_escrevePend) ? React.createElement('span', { style:{ color:_tomPend } }, fmtBRLsm(x.val)) : fmtBRLsm(x.val))
-                , (_temP && _escrevePend) ? React.createElement('div', { style:{ fontSize:10.5, fontWeight:700, color:_tomPend, marginTop:1 } }, fmtBRLsm(_pend)) : null)));
+          var _rowC = React.createElement('div', { onClick:function(e){ opts.onBarClick && opts.onBarClick(x, e); }, style:{ display:"flex", alignItems:"center", gap:8, cursor:opts.onBarClick ? "pointer" : "default" } }
+            , React.createElement('div', { className:(_lista ? "ag-stripes ag-mv" : undefined), style:_tubeC }
+              , (_lista && _stop !== "0.0%") && React.createElement('div', { style:{ position:"absolute", left:0, top:0, bottom:0, width:_stop, background:_s1, boxShadow:"2px 0 0 rgba(255,255,255,0.55)" } })
+              , React.createElement('span', { style:{ position:"relative", zIndex:2, fontSize:12, fontWeight:700, letterSpacing:0.1, color:"#fff", whiteSpace:"nowrap", textShadow:"0 1px 2px rgba(0,0,0,0.5)" } }, x.label || "")
+              , _pisC && React.createElement('div', { key:'pv'+opts.piscaTick, className:'ag-pisca-ov' }))
+            , React.createElement('div', { style:{ flexShrink:0, textAlign:"left", fontSize:12, fontWeight:700, color:"var(--c-text)", lineHeight:1.15, whiteSpace:"nowrap" } }
+              , React.createElement('div', null
+                , !_temP && React.createElement('span', { style:{ color:C.green, marginRight:4, fontWeight:800 } }, "\u2713")
+                , (_temP && !_escrevePend) ? React.createElement('span', { style:{ color:_tomPend } }, fmtBRLsm(x.val)) : fmtBRLsm(x.val))
+              , (_temP && _escrevePend) ? React.createElement('div', { style:{ fontSize:10.5, fontWeight:700, color:_tomPend, marginTop:1 } }, fmtBRLsm(_pend)) : null));
           if (x.detalheEl) return React.createElement('div', { key:i }, _rowC, x.detalheEl);
           if (x.detalhe && x.detalhe.length) return React.createElement('div', { key:i }, _rowC
             , React.createElement('div', { style:{ fontSize:10.5, color:C.sub, lineHeight:1.45, margin:'3px 0 2px 14px' } }, x.detalhe.map(function(t, j){ return React.createElement('div', { key:j }, t); })));
@@ -56674,17 +56688,17 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
       , (function () {
           var tc = TUBO_COR[ix % TUBO_COR.length], pend = Math.max(0, g.total - pag), temP = pend > 0.005, parcial = temP && pag > 0.005;
           var pct = Math.max(10, Math.round(g.total / _mxT * 56)), larg = "calc((100% - " + _resP + "px) * " + (_mxT > 0 ? g.total / _mxT : 1).toFixed(4) + ")", stop = Math.max(0, Math.min(100, pag / g.total * 100)).toFixed(1) + "%";
-          var bs = { position: "relative", flex: "0 0 auto", width: larg, minWidth: 8, height: 14, borderRadius: 999, overflow: "hidden", boxShadow: "inset 0 1px 2px rgba(0,0,0,0.10)" };
-          if (temP) { bs["--s1"] = tc; bs["--s2"] = "color-mix(in srgb, " + tc + " 74%, white)"; } else { bs.background = tc; }
-          /* [tubo-c3] mesmo desenho dos painéis do Início: nome fora (em cima), valor na linha do tubo, listras em movimento = falta o cliente pagar */
-          return h('div', { onClick: function () { setAberto(abre ? null : g.k); }, style: { cursor: "pointer", margin: "6px 0 8px" } }
-            , h('div', { style: { fontSize: 12, fontWeight: 700, letterSpacing: 0.1, lineHeight: 1.1, color: "var(--c-text)", margin: "0 0 3px 2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, String(g.rotulo).split(" ")[0])
-            , h('div', { style: { display: "flex", alignItems: "flex-start", gap: 8 } }
-              , h('div', { className: temP ? "ag-stripes ag-mv" : undefined, style: bs }
-                , parcial ? h('div', { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: stop, background: tc, boxShadow: "2px 0 0 rgba(255,255,255,0.55)" } }) : null)
-              , h('div', { onClick: function (e) { e.stopPropagation(); setDetalhe({ t: "cli", m: "ambos", k: g.k }); }, style: { cursor: "pointer", flexShrink: 0, textAlign: "left", fontSize: 12, fontWeight: 700, lineHeight: "14px", whiteSpace: "nowrap", marginBottom: (parcial ? -9 : 0) } }
-                , h('div', { style: { color: (temP && !parcial) ? C.orange : "var(--c-text)" } }, !temP ? h('span', { style: { color: C.green, marginRight: 4, fontWeight: 800 } }, "\u2713") : null, fmtBRLsm(g.total))
-                , parcial ? h('div', { style: { fontSize: 10.5, fontWeight: 700, color: C.orange, marginTop: 1 } }, fmtBRLsm(pend)) : null)));
+          var tcb = temP ? "color-mix(in srgb, " + tc + " 90%, black)" : tc;
+          var bs = { position: "relative", flex: "0 0 auto", width: larg, minWidth: "max-content", height: 21, borderRadius: 999, display: "flex", alignItems: "center", padding: "0 11px", boxSizing: "border-box", overflow: "hidden", boxShadow: "inset 0 1px 2px rgba(0,0,0,0.10)" };
+          if (temP) { bs["--s1"] = tcb; bs["--s2"] = "color-mix(in srgb, " + tcb + " 82%, white)"; } else { bs.background = tc; }
+          /* [tubo-a21] mesmo desenho dos painéis do Início: nome dentro (branco), tubo 21px, valor na linha, listras em movimento = falta o cliente pagar */
+          return h('div', { onClick: function () { setAberto(abre ? null : g.k); }, style: { display: "flex", alignItems: "center", gap: 8, cursor: "pointer", margin: "5px 0" } }
+            , h('div', { className: temP ? "ag-stripes ag-mv" : undefined, style: bs }
+              , parcial ? h('div', { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: stop, background: tcb, boxShadow: "2px 0 0 rgba(255,255,255,0.55)" } }) : null
+              , h('span', { style: { position: "relative", zIndex: 2, fontSize: 12, fontWeight: 700, letterSpacing: 0.1, color: "#fff", whiteSpace: "nowrap", textShadow: "0 1px 2px rgba(0,0,0,0.5)" } }, String(g.rotulo).split(" ")[0]))
+            , h('div', { onClick: function (e) { e.stopPropagation(); setDetalhe({ t: "cli", m: "ambos", k: g.k }); }, style: { cursor: "pointer", flexShrink: 0, textAlign: "left", fontSize: 12, fontWeight: 700, lineHeight: 1.15, whiteSpace: "nowrap" } }
+              , h('div', { style: { color: (temP && !parcial) ? C.orange : "var(--c-text)" } }, !temP ? h('span', { style: { color: C.green, marginRight: 4, fontWeight: 800 } }, "\u2713") : null, fmtBRLsm(g.total))
+              , parcial ? h('div', { style: { fontSize: 10.5, fontWeight: 700, color: C.orange, marginTop: 1 } }, fmtBRLsm(pend)) : null));
         })()
       , abre ? h('div', { style: { margin: "2px 0 8px 14px", paddingLeft: 10, paddingBottom: 4, borderLeft: "2px solid " + C.border } }
         , (naoCli.length ? h('div', { style: { margin: "2px 0 10px" } }, btn("Cobrar cliente · " + brl(somaL(naoCli)) + " (gera receita)", function () { cobrar(naoCli); }, true)) : null)

@@ -8,7 +8,7 @@
 <!-- Identificador do build. O workflow de deploy troca o placeholder abaixo pelo
      commit publicado; rodando local ele fica como está. Serve para detectar
      quando o navegador está servindo uma cópia velha do app. -->
-<meta name="ag-build" content="13c2980"/>
+<meta name="ag-build" content="0921bdb"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <meta name="theme-color" content="#FFFFFF" id="ag-theme-color"/>
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" id="ag-theme-color-dark"/>
@@ -34022,11 +34022,36 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
   );
 }
 
-/* Situação do veículo no cadastro: Automático (disponível/alugado), Manutenção, Inativo, Vendido e Roubo/Furto.
-   Roubo/furto grava status "inativo" (único valor que o resto do sistema já trata) e marca o motivo na 1ª linha de observacoes. */
-function _veMotivo(obs) { var m = String(obs || "").match(/^Motivo: ([^\n]*)/); return m ? m[1].trim() : ""; }
-function _veTexto(obs) { return String(obs || "").replace(/^Motivo: [^\n]*\n?/, ""); }
-function _veComMotivo(obs, motivo, texto) { return (motivo ? "Motivo: " + motivo + (texto ? "\n" : "") : "") + (texto || ""); }
+/* Baixa do veículo (venda, roubo/furto): sem coluna nova no banco, os dados ficam nas primeiras linhas de
+   `observacoes` — "Motivo:", "Data:", "Valor:" e "Substituto:" (id do veículo que ficou no lugar) —, seguidas do texto livre.
+   Roubo/furto grava status "inativo" (valor que o resto do sistema já trata) com Motivo: Roubo/Furto. */
+function _veMeta(obs) {
+  var o = {}, ls = String(obs || "").split("\n");
+  for (var i = 0; i < ls.length; i++) {
+    var m = ls[i].match(/^(Motivo|Data|Valor|Substituto): ?(.*)$/);
+    if (!m) break;
+    o[{ Motivo: "motivo", Data: "data", Valor: "valor", Substituto: "subst" }[m[1]]] = m[2].trim();
+  }
+  return o;
+}
+function _veMotivo(obs) { return _veMeta(obs).motivo || ""; }
+function _veTexto(obs) {
+  var ls = String(obs || "").split("\n"), i = 0;
+  while (i < ls.length && /^(Motivo|Data|Valor|Substituto): ?/.test(ls[i])) i++;
+  return ls.slice(i).join("\n");
+}
+function _veComMeta(meta, texto) {
+  var h = [];
+  if (meta.motivo) h.push("Motivo: " + meta.motivo);
+  if (meta.data) h.push("Data: " + meta.data);
+  if (meta.valor) h.push("Valor: " + meta.valor);
+  if (meta.subst) h.push("Substituto: " + meta.subst);
+  return h.join("\n") + (h.length && texto ? "\n" : "") + (texto || "");
+}
+function _veSituacao(v) {
+  if (v.status === "inativo" && /roubo/i.test(_veMotivo(v.observacoes))) return "roubo";
+  return (v.status === "vendido" || v.status === "inativo") ? v.status : "ativos";
+}
 function _veRotulo(v, contratos) {
   var st = statusEfetivoVeiculo(v, contratos);
   return (st === "inativo" && /roubo/i.test(_veMotivo(v.observacoes))) ? "Roubo/Furto" : rotuloStatus(st);
@@ -34045,6 +34070,7 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
   const [edit, setEdit] = useState(null);
   const [search, setSearch] = useState("");
   const [sortFrota, setSortFrota] = useState("placa_asc");
+  const [filtroSit, setFiltroSit] = useState("ativos"); // ativos (padrão) | vendido | roubo | inativo | todos
   const [loading, setLoading] = useState(false);
   const SC = { disponivel: C.green, alugado: C.blue, manutencao: C.purple, inativo: C.red, vendido: C.gray };
   const [veicSheet, setVeicSheet] = useState(null); // Effect 12: veículo selecionado para a janela de detalhe
@@ -34083,7 +34109,7 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
     window.addEventListener('ag:open-item', handleOpenItem);
     return function() { window.removeEventListener('ag:open-item', handleOpenItem); };
   }, []);
-  const fil = veiculos.filter(v => ((v.placa || "") + " " + (v.modelo || "") + " " + (v.marca || "")).toLowerCase().includes(search.toLowerCase()));
+  const fil = veiculos.filter(v => ((v.placa || "") + " " + (v.modelo || "") + " " + (v.marca || "")).toLowerCase().includes(search.toLowerCase()) && (search.trim() !== "" || filtroSit === "todos" || _veSituacao(v) === filtroSit));
   if (sortFrota === "placa_asc") fil.sort(function(a,b){return (a.placa||"").localeCompare(b.placa||"");});
   else if (sortFrota === "placa_desc") fil.sort(function(a,b){return (b.placa||"").localeCompare(a.placa||"");});
   else if (sortFrota === "modelo_asc") fil.sort(function(a,b){return (a.modelo||"").localeCompare(b.modelo||"");});
@@ -34158,6 +34184,14 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
         , React.createElement('option', { value: "diaria_desc" }, "Diária ↓")
       )
     )
+    , React.createElement('div', { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 } }
+      , [["ativos", "Ativos"], ["vendido", "Vendidos"], ["roubo", "Roubo/Furto"], ["inativo", "Inativos"], ["todos", "Todos"]].map(function(f) {
+          var n = f[0] === "todos" ? veiculos.length : veiculos.filter(function(v){ return _veSituacao(v) === f[0]; }).length;
+          if (!n && f[0] !== "ativos" && f[0] !== "todos" && filtroSit !== f[0]) return null;
+          var on = filtroSit === f[0];
+          return React.createElement('button', { key: f[0], onClick: function(){ setFiltroSit(f[0]); }, style: { flexShrink: 0, padding: "7px 13px", borderRadius: 16, border: "1.5px solid " + (on ? "var(--c-text)" : "var(--c-border)"), background: on ? "var(--c-text)" : "transparent", color: on ? "var(--c-bg, #fff)" : "var(--c-text)", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, f[1] + " · " + n);
+        })
+    )
     , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 12 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 515}}
       , fil.map(v => (
         React.createElement(SwipeRow, { key: v.id,
@@ -34186,6 +34220,20 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
               return React.createElement('div', { style: { fontSize: 11, color: C.blue, background: "rgba(0,122,255,0.08)", borderRadius: 8, padding: "6px 9px", fontWeight: 600 } }
                 , Ico("cadeado", 13), " Preso pelo contrato " + seguram.map(function(c){ return "#" + numCt(c.id) + (c.data_fim ? " (até " + fmtDateShort(c.data_fim) + ")" : " (sem data fim)"); }).join(", ")
               );
+            })()
+          , (function() {
+              var m = _veMeta(v.observacoes), ls = [];
+              if (v.status === "vendido" || _veSituacao(v) === "roubo") {
+                var ps = [(v.status === "vendido" ? "Vendido" : "Roubo/Furto") + (m.data ? " em " + fmtDate(m.data) : "")];
+                if (m.valor) ps.push(fmtBRL(m.valor));
+                var sub = m.subst && (veiculos || []).find(function(x){ return String(x.id) === String(m.subst); });
+                if (sub) ps.push("no lugar: " + sub.placa);
+                ls.push(ps.join(" · "));
+              }
+              var ant = (veiculos || []).find(function(x){ return x.id !== v.id && String(_veMeta(x.observacoes).subst || "") === String(v.id) && (x.status === "vendido" || x.status === "inativo"); });
+              if (ant) ls.push("Entrou no lugar de " + ant.placa);
+              if (!ls.length) return null;
+              return React.createElement('div', { style: { fontSize: 11, color: C.sub, background: "rgba(120,120,128,0.10)", borderRadius: 8, padding: "6px 9px", fontWeight: 600 } }, ls.join(" — "));
             })()
           , React.createElement('div', { style: { fontSize: 12, color: C.sub, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }
             , v.ano && React.createElement('span', { style: { fontWeight: 600, color: "var(--c-text)", fontSize: 12, background: "rgba(120,120,128,0.12)", borderRadius: 6, padding: "2px 7px" } }, v.ano)
@@ -34312,26 +34360,38 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast }) {
         , React.createElement(Lbl, { label: "Situação do veículo" }
           , (function() {
               var stEf = edit ? statusEfetivoVeiculo((veiculos||[]).find(function(x){return x.id===edit;})||{}, contratos||[]) : "disponivel";
-              var roubo = form.status === "inativo" && /roubo/i.test(_veMotivo(form.observacoes));
+              var meta = _veMeta(form.observacoes), texto = _veTexto(form.observacoes);
+              var roubo = form.status === "inativo" && /roubo/i.test(meta.motivo || "");
               var cur = roubo ? "roubo" : (form.status === "manutencao" || form.status === "inativo" || form.status === "vendido") ? form.status : "disponivel";
               var ops = [["disponivel", stEf === "alugado" ? "Alugado (auto)" : "Disponível (auto)", C.green], ["manutencao", "Manutenção", C.orange], ["vendido", "Vendido", C.gray], ["roubo", "Roubo/Furto", C.red], ["inativo", "Inativo", C.red]];
               function escolher(k) {
-                var txt = _veTexto(form.observacoes);
-                if (k === "roubo") { F("status", "inativo"); F("observacoes", _veComMotivo("", "Roubo/Furto", txt)); }
-                else { F("status", k); if (_veMotivo(form.observacoes)) F("observacoes", txt); }
+                var hj = _brNow().toISOString().split("T")[0];
+                if (k === "roubo") { F("status", "inativo"); F("observacoes", _veComMeta({ motivo: "Roubo/Furto", data: meta.data || hj, valor: meta.valor, subst: meta.subst }, texto)); }
+                else if (k === "vendido") { F("status", "vendido"); F("observacoes", _veComMeta({ data: meta.data || hj, valor: meta.valor, subst: meta.subst }, texto)); }
+                else { F("status", k); F("observacoes", texto); }
               }
-              var dica = { manutencao: "Observação da manutenção", vendido: "Dados da venda (comprador, data, valor...)", roubo: "Dados da ocorrência (data, B.O., delegacia...)", inativo: "Motivo da inativação" }[cur];
-              var ph = { manutencao: "Ex: troca de embreagem, previsão de volta 05/11", vendido: "Ex: Vendido em 01/09/2026 para João Silva, CPF 000.000.000-00, tel (11) 90000-0000, por R$ 45.000", roubo: "Ex: Furtado em 20/10/2026, B.O. nº 123456, 5º DP", inativo: "Ex: parado para reforma, sem previsão de volta" }[cur];
+              function setMeta(p) { F("observacoes", _veComMeta(Object.assign({}, meta, p), texto)); }
+              var dica = { manutencao: "Observação da manutenção", vendido: "Observações da venda (comprador, CPF, contato...)", roubo: "Dados da ocorrência (B.O., delegacia...)", inativo: "Motivo da inativação" }[cur];
+              var ph = { manutencao: "Ex: troca de embreagem, previsão de volta 05/11", vendido: "Ex: João Silva, CPF 000.000.000-00, tel (11) 90000-0000", roubo: "Ex: B.O. nº 123456, 5º DP", inativo: "Ex: parado para reforma, sem previsão de volta" }[cur];
+              var baixa = cur === "vendido" || cur === "roubo";
+              var outros = (veiculos || []).filter(function(x){ return String(x.id) !== String(edit) && x.status !== "vendido" && x.status !== "inativo"; });
               return React.createElement('div', null
                 , React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 8 } }
                   , ops.map(function(o) {
                       var on = cur === o[0];
                       return React.createElement('button', { key: o[0], type: "button", onClick: function(){ escolher(o[0]); }, style: { padding: "8px 13px", borderRadius: 16, border: "1.5px solid " + (on ? o[2] : "var(--c-border)"), background: on ? o[2] : "transparent", color: on ? "#fff" : "var(--c-text)", fontSize: 13, fontWeight: 700, cursor: "pointer" } }, o[1]);
                     }))
+                , baixa && React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 10, marginTop: 12 } }
+                  , React.createElement('div', { style: { display: "flex", gap: 10 } }
+                    , React.createElement(Lbl, { label: cur === "vendido" ? "Data da venda" : "Data da ocorrência", flex: 1 }, React.createElement('input', { style: FI, type: "date", value: meta.data || "", onChange: function(e){ setMeta({ data: e.target.value }); } }))
+                    , React.createElement(Lbl, { label: cur === "vendido" ? "Valor da venda (R$)" : "Indenização recebida (R$)", flex: 1 }, React.createElement('input', { style: FI, type: "text", inputMode: "decimal", value: meta.valor || "", onChange: function(e){ setMeta({ valor: _mv(e.target.value) }); }, placeholder: "Ex: 45000" })))
+                  , React.createElement(Lbl, { label: "Veículo que ficou no lugar" }, React.createElement('select', { style: FI, value: meta.subst || "", onChange: function(e){ setMeta({ subst: e.target.value }); } }
+                    , React.createElement('option', { value: "" }, "Nenhum / ainda não definido")
+                    , outros.map(function(x){ return React.createElement('option', { key: x.id, value: String(x.id) }, (x.placa || "?") + " — " + [x.marca, x.modelo].filter(Boolean).join(" ")); }))))
                 , dica && React.createElement('div', { style: { marginTop: 10 } }
                   , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: C.sub, marginBottom: 4 } }, dica)
-                  , React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 60 }), value: _veTexto(form.observacoes), onChange: function(e){ F("observacoes", _veComMotivo("", roubo ? "Roubo/Furto" : "", e.target.value)); }, placeholder: ph }))
-                , (cur === "inativo" || cur === "vendido" || cur === "roubo") && React.createElement('div', { style: { marginTop: 8, fontSize: 12, color: C.sub } }, "O veículo sai da frota ativa (disponibilidade, ocupação e lucratividade). Contratos existentes não são encerrados automaticamente."));
+                  , React.createElement('textarea', { style: Object.assign({}, FI, { resize: "vertical", minHeight: 60 }), value: texto, onChange: function(e){ F("observacoes", _veComMeta(meta, e.target.value)); }, placeholder: ph }))
+                , (cur === "inativo" || baixa) && React.createElement('div', { style: { marginTop: 8, fontSize: 12, color: C.sub } }, "O veículo sai da frota ativa (disponibilidade, ocupação e lucratividade). Contratos existentes não são encerrados automaticamente."));
             })()
         )
         , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 566}}

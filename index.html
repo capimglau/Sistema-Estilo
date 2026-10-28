@@ -30499,7 +30499,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
     })()
 
     /* ══ Pedágios: importação do relatório, cruzamento placa/data/hora → contrato e cobrança ══ */
-    , React.createElement(PedagiosPainel, { veiculos:veiculos, clientes:clientes, contratos:contratos, setReceitas:setReceitas, toast:toast })
+    , React.createElement(PedagiosPainel, { veiculos:veiculos, clientes:clientes, contratos:contratos, receitas:receitas, setReceitas:setReceitas, toast:toast })
 
     /* ══ Saldo nas contas + Boletos — logo abaixo de Despesas por Categoria / Receitas por Cliente (pedido do
        usuário). No PC ficam lado a lado; no mobile continuam empilhados (Saldo, depois Boletos). ══ */
@@ -56427,7 +56427,7 @@ function _pedEnsureTesseract() {
   return _pedTessP;
 }
 
-function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
+function PedagiosPainel({ veiculos, clientes, contratos, receitas, setReceitas, toast }) {
   var h = React.createElement;
   var [lista, setLista] = React.useState([]);
   var [erro, setErro] = React.useState(false);
@@ -56759,12 +56759,20 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
   var _mxT = _gCli.length ? _gCli[0].total : 1;
   var _rowH = _gCli.some(function (g) { var pg = somaL(g.itens.filter(function (p) { return etapaCob(p) === "pago"; })); return pg > 0.005 && g.total - pg > 0.005; }) ? 40 : 34; /* mesmo critério dos outros painéis */
   var TUBO_COR = ["#44917f", "#9a5f72", "#5a7fa8", "#d4a53c", "#6e9672", "#b07a4f"];
+  /* [pedagios-agendado] Cobrança já lançada com vencimento em OUTRO mês (receita prevista com data_vencimento depois do mês atual):
+     não fica "esperando" no tubo deste mês — vira um trecho próprio (azul claro) com o valor e a data de vencimento. */
+  var _mesHoje = _brNow().toISOString().slice(0, 7);
+  var _recMap = {}; (receitas || []).forEach(function (r) { _recMap[String(r.id)] = r; });
+  function vencDe(p) { var r = p.receita_id != null ? _recMap[String(p.receita_id)] : null; return r ? String(r.data_vencimento || r.data || "").slice(0, 10) : ""; }
+  function ehAg(p) { var v = vencDe(p); return etapaCob(p) === "pendente" && !!v && v.slice(0, 7) > _mesHoje; }
+  function agDe(itens) { var a = itens.filter(ehAg); return { v: somaL(a), d: a.map(vencDe).sort()[0] || "" }; }
   var _resP = (function () {
     var lenV = function (v) { return Math.abs(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).length + 3; };
     var mc = 0, ok = false;
     _gCli.forEach(function (g) {
       var pg = somaL(g.itens.filter(function (p) { return etapaCob(p) === "pago"; })), pd = Math.max(0, g.total - pg);
-      mc = Math.max(mc, lenV(g.total), (pg > 0.005 && pd > 0.005) ? lenV(pd) : 0);
+      var _ag = agDe(g.itens).v;
+      mc = Math.max(mc, lenV(g.total), (pg > 0.005 && pd > 0.005) ? lenV(pd) : 0, _ag > 0.005 ? lenV(_ag) + 8 : 0);
       if (pd <= 0.005) ok = true;
     });
     return Math.ceil(mc * 6.2 + (ok ? 16 : 0) + 16);
@@ -56779,19 +56787,22 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
     var d = nao > 0 ? [nao, C.orange, "a cobrar"] : pen > 0 ? [pen, C.blue, "aguardando"] : [pag, C.green, "pagou"];
     return h('div', { key: g.k, style: { padding: 0 } }
       , (function () {
-          var tc = TUBO_COR[ix % TUBO_COR.length], pend = Math.max(0, g.total - pag), temP = pend > 0.005, parcial = temP && pag > 0.005;
-          var pct = Math.max(10, Math.round(g.total / _mxT * 56)), larg = _largP[ix], stop = Math.max(0, Math.min(100, pag / g.total * 100)).toFixed(1) + "%";
-          var tcb = temP ? "color-mix(in srgb, " + tc + " 90%, black)" : tc;
+          var tc = TUBO_COR[ix % TUBO_COR.length], pend = Math.max(0, g.total - pag), temP = pend > 0.005;
+          var agI = agDe(g.itens), ag = Math.min(agI.v, pend), resto = Math.max(0, pend - ag), temR = resto > 0.005, temAg = ag > 0.005, parcial = temP && (pag > 0.005 || temAg);
+          var larg = _largP[ix], pPag = Math.max(0, Math.min(100, pag / g.total * 100)), pAg = Math.max(0, Math.min(100 - pPag, ag / g.total * 100));
+          var tcb = temR ? "color-mix(in srgb, " + tc + " 90%, black)" : tc, agCor = "color-mix(in srgb, " + tc + " 48%, white)";
           var bs = { position: "relative", flex: "0 0 auto", width: larg, minWidth: "max-content", height: ((typeof window !== "undefined" && window.innerWidth < 768) ? 25 : 22), borderRadius: 999, display: "flex", alignItems: "center", padding: "0 11px", boxSizing: "border-box", overflow: "hidden", boxShadow: "inset 0 1px 2px rgba(0,0,0,0.10)" };
-          if (temP) { bs["--s1"] = tcb; bs["--s2"] = "color-mix(in srgb, " + tcb + " 82%, white)"; } else { bs.background = tc; }
-          /* [tubo-a21] mesmo desenho dos painéis do Início: nome dentro (branco), tubo 21px, valor na linha, listras em movimento = falta o cliente pagar */
+          if (temR) { bs["--s1"] = tcb; bs["--s2"] = "color-mix(in srgb, " + tcb + " 82%, white)"; } else { bs.background = temAg ? agCor : tc; }
+          /* [tubo-a21] nome dentro (branco); sólido = cliente já pagou; azul claro = cobrado p/ outro mês (agendado); listras em movimento = falta cobrar/receber neste mês */
           return h('div', { onClick: function () { setAberto(abre ? null : g.k); }, style: { display: "flex", alignItems: "center", gap: 8, cursor: "pointer", margin: "5px 0" } }
-            , h('div', { className: temP ? "ag-stripes ag-mv" : undefined, style: bs }
-              , parcial ? h('div', { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: stop, background: tcb, boxShadow: "2px 0 0 rgba(255,255,255,0.55)" } }) : null
+            , h('div', { className: temR ? "ag-stripes ag-mv" : undefined, style: bs }
+              , (temAg && temR) ? h('div', { style: { position: "absolute", left: pPag + "%", top: 0, bottom: 0, width: pAg + "%", background: agCor, boxShadow: "2px 0 0 rgba(255,255,255,0.55)" } }) : null
+              , (pag > 0.005 && parcial) ? h('div', { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: pPag + "%", background: tcb, boxShadow: "2px 0 0 rgba(255,255,255,0.55)" } }) : null
               , h('span', { style: { position: "relative", zIndex: 2, fontSize: 12, fontWeight: 700, letterSpacing: 0.1, color: "#fff", whiteSpace: "nowrap", textShadow: "0 1px 2px rgba(0,0,0,0.5)" } }, String(g.rotulo).trim().split(/\s+/).slice(0,2).join(" ")))
             , h('div', { onClick: function (e) { e.stopPropagation(); setDetalhe({ t: "cli", m: "ambos", k: g.k }); }, style: { cursor: "pointer", flexShrink: 0, textAlign: "left", fontSize: 12, fontWeight: 700, lineHeight: 1.15, whiteSpace: "nowrap" } }
               , h('div', { style: { color: (temP && !parcial) ? C.orange : "var(--c-text)" } }, !temP ? h('span', { style: { color: C.green, marginRight: 4, fontWeight: 800 } }, "\u2713") : null, fmtBRLsm(g.total))
-              , parcial ? h('div', { style: { fontSize: 10.5, fontWeight: 700, color: C.orange, marginTop: 1 } }, fmtBRLsm(pend)) : null));
+              , (temR && parcial) ? h('div', { style: { fontSize: 10.5, fontWeight: 700, color: C.orange, marginTop: 1 } }, fmtBRLsm(resto)) : null
+              , temAg ? h('div', { style: { fontSize: 10.5, fontWeight: 700, color: C.blue, marginTop: 1 } }, fmtBRLsm(ag) + (agI.d ? " \u00b7 " + dm(agI.d) : "")) : null));
         })()
       , abre ? h('div', { style: { margin: "2px 0 8px 14px", paddingLeft: 10, paddingBottom: 4, borderLeft: "2px solid " + C.border } }
         , (naoCli.length ? h('div', { style: { margin: "2px 0 10px" } }, btn("Cobrar cliente · " + brl(somaL(naoCli)) + " (gera receita)", function () { cobrar(naoCli); }, true)) : null)
@@ -56896,6 +56907,7 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
 
   /* [pedagios-tubos] totais do cabeçalho + situação da locadora (trilho fino) + painel do link "Filtrar" */
   var totF = somaL(itCobF), recF = somaL(itCobF.filter(function (p) { return etapaCob(p) === "pago"; })), aRecF = Math.max(0, totF - recF);
+  var agTot = agDe(itCobF);
   var locF = somaL(itCobF.filter(function (p) { return p.pago_locadora; })), faltaF = Math.max(0, totF - locF), pLoc = totF > 0 ? Math.min(100, locF / totF * 100) : 0;
   function lnk(txt, fn) { return h('button', { onClick: fn, style: { background: "none", border: "none", padding: 0, color: C.blue, fontSize: 13, fontWeight: 700, cursor: "pointer" } }, txt); }
   var painelFiltro = filtroAberto ? h('div', { style: { marginBottom: 14, paddingBottom: 12, borderBottom: "1px solid " + C.border } }
@@ -56926,6 +56938,8 @@ function PedagiosPainel({ veiculos, clientes, contratos, setReceitas, toast }) {
           , h('div', { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, fontWeight: 700, margin: "4px 0 12px", paddingBottom: 12, borderBottom: "1px solid " + C.border } }
             , h('span', { onClick: function () { setDetalhe({ t: "cli", m: "pago" }); }, style: { color: C.green, cursor: "pointer", padding: "4px 0" } }, "Recebido: ", fmtBRLsm(recF))
             , h('span', { onClick: function () { setDetalhe({ t: "cli", m: "falta" }); }, style: { color: C.orange, cursor: "pointer", padding: "4px 0" } }, "A receber: ", fmtBRLsm(aRecF)))
+          , (agTot.v > 0.005) ? h('div', { onClick: function () { setDetalhe({ t: "cli", m: "falta" }); }, style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, fontWeight: 700, margin: "-6px 0 12px", color: C.blue, cursor: "pointer" } }
+            , h('span', null, "Cobrado p/ outro mês"), h('span', null, fmtBRLsm(agTot.v) + (agTot.d ? " \u00b7 vence " + dm(agTot.d) : ""))) : null
           , aba === "analise" ? (lista.length ? abaAnalise : vazio)
             : h('div', null, (aba === "cliente" ? abaClientes : abaVeiculos).length ? (aba === "cliente" ? abaClientes : abaVeiculos) : vazio)
           , itCobF.length ? h('div', { style: { marginTop: 14, paddingTop: 12, borderTop: "1px dashed " + C.border } }

@@ -28926,12 +28926,12 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                   var _cacc=0;
                   var cp=Object.keys(cmap).map(Number).sort(function(a,b){return a-b;}).map(function(day){
                     var _cpago=cmap[day].pago||0;var _dayv=_cpago+(cmap[day].pendente||0);_cacc+=_dayv;
-                    return{x:_xCal(mes,day),y:yCt(_cacc),day:day,mes:mes,val:_cacc,dayVal:_dayv,pago:_cpago,isHoje:mes===mesAtual&&day===_td,isVence:(cmap[day].pendente||0)>0&&_cpago===0};
+                    return{x:_xCal(mes,day),y:yCt(_cacc),day:day,mes:mes,val:_cacc,dayVal:_dayv,pago:_cpago,pend:(cmap[day].pendente||0),isHoje:mes===mesAtual&&day===_td,isVence:(cmap[day].pendente||0)>0&&_cpago===0};
                   });
                   var _dacc=0;
                   var dp=Object.keys(dmap).map(Number).sort(function(a,b){return a-b;}).map(function(day){
                     var _dpago=dmap[day].pago||0;var _dayv=_dpago+(dmap[day].previsto||0);_dacc+=_dayv;
-                    return{x:_xCal(mes,day),y:yDp(_dacc),day:day,mes:mes,val:_dacc,dayVal:_dayv,pago:_dpago,isHoje:mes===mesAtual&&day===_td,isPrevisto:(dmap[day].previsto||0)>0&&_dpago===0};
+                    return{x:_xCal(mes,day),y:yDp(_dacc),day:day,mes:mes,val:_dacc,dayVal:_dayv,pago:_dpago,pend:(dmap[day].previsto||0),isHoje:mes===mesAtual&&day===_td,isPrevisto:(dmap[day].previsto||0)>0&&_dpago===0};
                   });
                   return{cp:cp,dp:dp};
                 }
@@ -29008,6 +29008,27 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 var bAreaD=bPts.length>0?bFullLineD+" L"+bPts[bPts.length-1].x.toFixed(1)+","+midY+" L"+bPts[0].x.toFixed(1)+","+midY+" Z":"";
                 var cAreaD=cPts.length>0?cLineD+" L"+cPts[cPts.length-1].x.toFixed(1)+","+midY+" L"+cPts[0].x.toFixed(1)+","+midY+" Z":"";
                 var dAreaD=dPts.length>0?dLineD+" L"+dPts[dPts.length-1].x.toFixed(1)+","+midY+" L"+dPts[0].x.toFixed(1)+","+midY+" Z":"";
+                /* Faixas móveis exclusivas dos trechos previstos — contrato e despesa.
+                   Para pagamentos parciais, só o percentual não liquidado do trecho
+                   recebe listras, jamais o valor já pago. */
+                function _ugPendAreas(pts, id){
+                  var result=[];
+                  for(var k=1;k<pts.length;k++){
+                    var a=pts[k-1], b=pts[k], pend=Math.max(0,b.pend||0);
+                    if(pend<=0.005 || b.dayVal<=0.005 || b.x<=a.x)continue;
+                    var fr=Math.max(0,Math.min(1,pend/b.dayVal));
+                    var xStart=b.x-(b.x-a.x)*fr;
+                    var cpId=id+'Clip'+k;
+                    var area=_mkSmooth([a,b])+' L'+b.x.toFixed(1)+','+midY+
+                      ' L'+a.x.toFixed(1)+','+midY+' Z';
+                    result.push(React.createElement('g',{key:cpId},
+                      React.createElement('defs',null,React.createElement('clipPath',{id:cpId,clipPathUnits:'userSpaceOnUse'},
+                        React.createElement('rect',{x:xStart,y:0,width:Math.max(0.01,b.x-xStart),height:H}))),
+                      agGraficoPendSombra(area,id,{clipPath:'url(#'+cpId+')'})));
+                  }
+                  return result;
+                }
+
                 function _fML(ms){var d=new Date(ms+"-15");return d.toLocaleDateString('pt-BR',{month:'short'}).replace('.','');}
                 /* movimento de caixa de um dia — MESMA definição do saldo:
                    passado = só efetivado; futuro = projeção (inclui pendente/previsto). Inclui retiradas. */
@@ -29724,6 +29745,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                             , React.createElement('stop', { offset:"0%",   stopColor: _isDark?"#FF3A6E":"#FF2055", stopOpacity: _isDark?"0.02":"0.02" })
                             , React.createElement('stop', { offset:"100%", stopColor: _isDark?"#FF3A6E":"#FF2055", stopOpacity: _isDark?"0.28":"0.20" })
                           )
+                          /* Listras só na sombra de títulos e despesas NÃO efetivados.
+                             IDs próprios evitam vazamento para outros SVGs na página. */
+                          , agGraficoPendDefs('ugPendCt', _isDark?'#00FFB2':'#00B978', padT, midY, W, H)
+                          , agGraficoPendDefs('ugPendDp', _isDark?'#FF3A6E':'#D93659', H-padB, midY, W, H)
                           /* glass shine (claro) */
                           , React.createElement('linearGradient', { id:"ugShine", x1:"0", y1:"0", x2:"0", y2:"1" }
                             , React.createElement('stop', { offset:"0%",   stopColor:"rgba(255,255,255,0.18)" })
@@ -29764,6 +29789,8 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                     /* áreas */
                     , cAreaD && React.createElement('path', { d:cAreaD, fill:"url(#ugCtGrad)" })
                     , dAreaD && React.createElement('path', { d:dAreaD, fill:"url(#ugDpGrad)" })
+                    , _ugPendAreas(cPts,'ugPendCt')
+                    , _ugPendAreas(dPts,'ugPendDp')
                     /* linhas — tracejadas (pendente) + sólidas (liquidado) */
                     , (function(){
                         var _dk=window._agChartDark;
@@ -40397,6 +40424,35 @@ function computePrevisaoPessoal(itens, despesas, opts){
 /* [grafico-saldo-sem-distorcao] O SVG tinha viewBox fixo 300x50 com preserveAspectRatio:none: no PC, num card
    largo, o desenho era esticado ~2,5x na horizontal e as bolinhas viravam elipses. Agora a largura REAL do
    contêiner é medida e vira o W do viewBox (e a altura real vira o H), então 1 unidade = 1px nos dois eixos. */
+/* [AG-LISTRAS-PENDENTES-TODOS-GRAFICOS] Padrão SVG único para PC e celular.
+   Usar SOMENTE em áreas de valores não efetivados. Não altera valores,
+   datas, status nem o preenchimento de áreas já pagas/recebidas.
+   Padrão de 11px/1.5s igual aos tubos; anima apenas patternTransform,
+   nunca opacity do gráfico inteiro. Respeita movimento reduzido. */
+function agGraficoPendDefs(id, cor, yCurva, yBase, largura, altura){
+  var parado = typeof window !== 'undefined' && window.matchMedia &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  return [
+    React.createElement('pattern', { key:id+'p', id:id+'Padrao', patternUnits:'userSpaceOnUse', width:11, height:11 },
+      React.createElement('path', { d:'M-5.5 0L5.5 11 M0 -5.5L11 5.5 M5.5 0L16.5 11 M11 -5.5L22 5.5',
+        stroke:cor, strokeWidth:5, strokeOpacity:0.49, fill:'none' }),
+      !parado && React.createElement('animateTransform', {
+        attributeName:'patternTransform', type:'translate', from:'0 0', to:'11 0', dur:'1.5s', repeatCount:'indefinite'
+      })),
+    React.createElement('linearGradient', { key:id+'g', id:id+'MascGrad', gradientUnits:'userSpaceOnUse',
+      x1:0, y1:yCurva, x2:0, y2:yBase },
+      React.createElement('stop', { offset:'0%', stopColor:'#fff', stopOpacity:0.76 }),
+      React.createElement('stop', { offset:'100%', stopColor:'#fff', stopOpacity:0.025 })),
+    React.createElement('mask', { key:id+'m', id:id+'Masc', maskUnits:'userSpaceOnUse',
+      x:0, y:0, width:largura, height:altura },
+      React.createElement('rect', { x:0, y:0, width:largura, height:altura,
+        fill:'url(#'+id+'MascGrad)' }))
+  ];
+}
+function agGraficoPendSombra(d, id, props){
+  return React.createElement('path', Object.assign({ d:d, fill:'url(#'+id+'Padrao)',
+    mask:'url(#'+id+'Masc)', stroke:'none', pointerEvents:'none' }, props||{}));
+}
 function agSaldoLinhaChart(o) { return React.createElement(AgSaldoLinhaChartBox, { o:o }); }
 function AgSaldoLinhaChartBox(props) {
   var ref = React.useRef(null);
@@ -40468,6 +40524,7 @@ function _agSaldoLinhaChartImpl(o) {
   var pPts = proj.map(function(p){ return { x: sx(p.dia), y: sy(p.saldo), dia: p.dia, saldo: p.saldo }; });
   var uid = String(o.uid || 'x');
   var idS = 'gradSldS' + uid, idF = 'gradSldF' + uid, idG = 'glowSld' + uid;
+  var idPend = 'agPendSaldo' + uid;
   var hojePt = sPts.length ? sPts[sPts.length - 1] : (pPts.length ? pPts[0] : null);
   var fimPt = pPts.length ? pPts[pPts.length - 1] : hojePt;
   var corHoje = hojePt && hojePt.saldo < 0 ? C.red : C.green;
@@ -40486,6 +40543,7 @@ function _agSaldoLinhaChartImpl(o) {
         , React.createElement('stop', { offset:stopA, stopColor:C.green, stopOpacity:0.04 })
         , React.createElement('stop', { offset:stopB, stopColor:C.red, stopOpacity:0.02 })
         , React.createElement('stop', { offset:1, stopColor:C.red, stopOpacity:0.13 }))
+    , agGraficoPendDefs(idPend, C.green, padT, H, W, H)
     , React.createElement('radialGradient', { id:idG, cx:'50%', cy:'50%', r:'50%' }
         , React.createElement('stop', { offset:0, stopColor:corFim, stopOpacity:0.35 })
         , React.createElement('stop', { offset:1, stopColor:corFim, stopOpacity:0 }))));
@@ -40498,6 +40556,15 @@ function _agSaldoLinhaChartImpl(o) {
     var dSolid = smooth(sPts);
     kids.push(React.createElement('path', { key:'area', d: dSolid + ' L' + sPts[sPts.length-1].x + ',' + H + ' L' + sPts[0].x + ',' + H + ' Z', fill:'url(#' + idF + ')', stroke:'none' }));
     kids.push(React.createElement('path', { key:'solid', d:dSolid, fill:'none', stroke:'url(#' + idS + ')', strokeWidth:1.8, strokeLinecap:'round', strokeLinejoin:'round' }));
+  }
+  if (pPts.length >= 2) {
+    /* Área projetada: o sombreado listrado acompanha só o TRECHO FUTURO;
+       o realizado não muda e não pulsa. */
+    var pendD = smooth(pPts) + ' L' + pPts[pPts.length-1].x + ',' + (H-padB) +
+      ' L' + pPts[0].x + ',' + (H-padB) + ' Z';
+    kids.push(React.createElement('path', { key:'areaFutura', d:pendD,
+      fill:'url(#'+idF+')', stroke:'none' }));
+    kids.push(agGraficoPendSombra(pendD, idPend, { key:'sombraFutura' }));
   }
   if (pPts.length >= 2) {
     /* pontilhado: traço de comprimento ~0 + linecap redondo = bolinhas */
@@ -44706,10 +44773,24 @@ function CurvaSaldo(p){
     return out;
   };
   var _segReal = segs.filter(function(s){ return s.real; }), _segProj = segs.filter(function(s){ return !s.real; });
-  els.push(React.createElement('defs', { key:'dfc' }, React.createElement('clipPath', { id:'cvSaldoClip' }, React.createElement('rect', { x:padL, y:8, width:pw, height:yBase - 8 }))));
+  var _pendUpId='cvSaldoPendUp', _pendDnId='cvSaldoPendDn';
+  els.push(React.createElement('defs', { key:'dfc' },
+    React.createElement('clipPath', { id:'cvSaldoClip' }, React.createElement('rect', { x:padL, y:8, width:pw, height:yBase - 8 })),
+    agGraficoPendDefs(_pendUpId,G,yTop,8,W,H),
+    agGraficoPendDefs(_pendDnId,R,yTop,yBase,W,H)));
   els.push(React.createElement('g', { key:'sombra', clipPath:'url(#cvSaldoClip)' }
     , _camadas(_segReal, true, 0.022, 'sur'), _camadas(_segReal, false, 0.022, 'sdr')
     , _camadas(_segProj, true, 0.014, 'sup'), _camadas(_segProj, false, 0.014, 'sdp')));
+  /* O preenchimento animado acompanha os dois lados da curva futura;
+     o trecho já realizado continua com sombra totalmente estática. */
+  _segProj.forEach(function(seg,k){
+    var topD=dStr(seg)+' L'+f1(seg.bx)+' '+f1(seg.by-17.6)+
+      ' L'+f1(seg.ax)+' '+f1(seg.ay-17.6)+' Z';
+    var bottomD=dStr(seg)+' L'+f1(seg.bx)+' '+f1(seg.by+17.6)+
+      ' L'+f1(seg.ax)+' '+f1(seg.ay+17.6)+' Z';
+    els.push(agGraficoPendSombra(topD,_pendUpId,{key:'pstUp'+k,clipPath:'url(#cvSaldoClip)'}));
+    els.push(agGraficoPendSombra(bottomD,_pendDnId,{key:'pstDn'+k,clipPath:'url(#cvSaldoClip)'}));
+  });
   els.push(React.createElement('line', { key:'ax', x1:padL, y1:yBase, x2:W - padR, y2:yBase, style:{ stroke:C.border, strokeWidth:1 } }));
   segs.forEach(function(s, k){ els.push(React.createElement('path', { key:'ln'+k, d:dStr(s), fill:'none', style:{ stroke:G, strokeWidth:1.4, strokeLinecap:'round', opacity: s.real ? 1 : 0.8 }, strokeDasharray: s.real ? undefined : '3 2.5' })); });
   /* hoje: ponto real do dia de hoje (existe sempre na série) */
@@ -46904,6 +46985,20 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       });
       var pathD = pts.length ? ("M" + pts.map(function(p){ return p[0].toFixed(1)+","+p[1].toFixed(1); }).join(" L")) : "";
       var areaD = pts.length ? (pathD + " L" + (pts[pts.length-1][0]).toFixed(1) + "," + spH + " L" + pts[0][0].toFixed(1) + "," + spH + " Z") : "";
+      /* Linha do Tempo: a sombra só recebe listras nos dias/meses que
+         possuem registros não liquidados; períodos 100% pagos ficam lisos. */
+      var _fxPendAreas=[];
+      for(var _fi=1;_fi<pts.length;_fi++){
+        var _row=serieAsc[_fi];
+        var _aberto=(_row.eventos||[]).some(function(e){ return !STATUS_PAID[e.status]; });
+        if(!_aberto)continue;
+        var _pa=pts[_fi-1], _pb=pts[_fi];
+        var _fxd='M'+_pa[0].toFixed(1)+','+_pa[1].toFixed(1)+
+          ' L'+_pb[0].toFixed(1)+','+_pb[1].toFixed(1)+
+          ' L'+_pb[0].toFixed(1)+','+spH+
+          ' L'+_pa[0].toFixed(1)+','+spH+' Z';
+        _fxPendAreas.push(agGraficoPendSombra(_fxd,'fxPend',{key:'fxp'+_fi}));
+      }
 
       var mkPill = function(active, onClick, label, key){
         return React.createElement('button', { key: key, onClick: onClick, style: {
@@ -47039,8 +47134,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                   , React.createElement('stop', { offset:"0%", stopColor: P.blue, stopOpacity:"0.28" })
                   , React.createElement('stop', { offset:"100%", stopColor: P.blue, stopOpacity:"0.02" })
                 )
+                , agGraficoPendDefs('fxPend',P.blue,padY,spH,spW,spH)
               )
               , React.createElement('path', { d: areaD, fill:"url(#fxGrad)" })
+              , _fxPendAreas
               , React.createElement('path', { d: pathD, fill:"none", stroke: P.blue, strokeWidth:"1.5", strokeLinejoin:"round", strokeLinecap:"round" })
             )
           )

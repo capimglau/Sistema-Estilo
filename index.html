@@ -24752,7 +24752,12 @@ function resolverDespesasDoMes(despesas, mes) {
     if (d.recorrente && (d.data||"").slice(0,7) !== mes) {
       var dia = (d.data||"").slice(8,10);
       var pagouEsteMes = d.data_pagamento && d.data_pagamento.slice(0,7) === mes;
-      resultado.push(Object.assign({}, d, { status: pagouEsteMes ? d.status : "previsto", data_pagamento: pagouEsteMes ? d.data_pagamento : null, data: mes + "-" + dia }));
+      /* A projeção conserva a identidade do template, mas traz data e baixa
+         PRÓPRIAS do mês consultado. O gráfico não deve reler datas antigas
+         do template: isso fazia novembro mostrar só uma despesa. */
+      var limite = new Date(Number(mes.slice(0,4)), Number(mes.slice(5,7)), 0).getDate();
+      var diaValido = String(Math.min(Math.max(parseInt(dia,10)||1,1), limite)).padStart(2,'0');
+      resultado.push(Object.assign({}, d, { status: pagouEsteMes ? d.status : "previsto", data_pagamento: pagouEsteMes ? d.data_pagamento : null, data: mes + "-" + diaValido, _projetado: true }));
     } else {
       resultado.push(d);
     }
@@ -30535,7 +30540,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
             onEditar:function(l){
               if (l.manId != null) { onItemNav({ type:"manutencao", id:l.manId }, "manutencao"); }
               else if (l.despId != null) { setFinDeepLink({ subTab:"despesas", itemId:l.despId, mes:dashMes }); setTab("financeiro"); }
-            }, semCurva:!desktop, rowsAll:agLinhasFluxoPorData(rdLinhasDespesaCategoria(despesas, manutencoes, null), contratos, receitas, despesas).filter(function(x){return String(x.data||'').slice(0,7)===dashMes;}), emptyMsg:"Nenhuma despesa neste m\xeas", rotuloPendente:"a pagar", rotuloPago:"pago",
+            }, semCurva:!desktop, rowsAll:agLinhasFluxoPorData(rdDespesaRowsInicio, contratos, receitas, despesas).filter(function(x){return String(x.data||'').slice(0,7)===dashMes;}), emptyMsg:"Nenhuma despesa neste m\xeas", rotuloPendente:"a pagar", rotuloPago:"pago",
             onTitleClick:function(){ setTab("financeiro"); },
             onBarClick:function(x,e){ e.stopPropagation(); setFinDeepLink({subTab:"despesas",cat:x.fullKey}); setTab("financeiro"); }
           })
@@ -30546,7 +30551,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
             onEditar:function(l){
               if (l.recId != null) { setFinDeepLink({ subTab:"receitas", itemId:l.recId, mes:dashMes, acao:"editar" }); setTab("financeiro"); }
               else if (l.ctId != null) { onItemNav({ type:"contrato", id:l.ctId }, "contratos"); }
-            }, semCurva:!desktop, rowsAll:agLinhasFluxoPorData(rdLinhasReceitaCliente(receitas, contratos, clientes, null), contratos, receitas, despesas).filter(function(x){return String(x.data||'').slice(0,7)===dashMes;}), emptyMsg:"Nenhuma receita neste m\xeas", firstNameOnly:true, rotuloPendente:"a receber", rotuloPago:"recebido",
+            }, semCurva:!desktop, rowsAll:agLinhasFluxoPorData(rdReceitaRowsInicio, contratos, receitas, despesas).filter(function(x){return String(x.data||'').slice(0,7)===dashMes;}), emptyMsg:"Nenhuma receita neste m\xeas", firstNameOnly:true, rotuloPendente:"a receber", rotuloPago:"recebido",
             onTitleClick:function(){ setTab("clientes"); }
           })
       );
@@ -44508,7 +44513,7 @@ function rdLinhasReceitaCliente(receitas, contratos, clientes, mes) {
      que falta (valor_total − valor_pago). */
   return _recs.map(function (r) {
       var _v = parseFloat(r.valor || 0);
-      var _pend = r.data_pagamento ? 0 : _v;
+      var _pend = (r.status === "recebido" || r.status === "pago" || !!r.data_pagamento) ? 0 : _v;
       if (r.status === "parcial" || r._valorPago != null || r.valor_pago != null) {
         var _vp = Math.max(0,parseFloat(r._valorPago != null ? r._valorPago : r.valor_pago)||0);
         _pend = Math.max(0, _v - _vp);
@@ -44531,7 +44536,7 @@ function rdLinhasReceitaCliente(receitas, contratos, clientes, mes) {
     .concat(_cts.map(function (c) {
       var cl = (clientes || []).find(function (x) { return String(x.id) === String(c.cliente_id); });
       var _vc = parseFloat(c.valor_total || 0);
-      var _pc = c.status_pagamento === "parcial" ? Math.max(0, _vc - parseFloat(c.valor_pago || 0)) : (c.data_pagamento ? 0 : _vc);
+      var _pc = c.status_pagamento === "parcial" ? Math.max(0, _vc - parseFloat(c.valor_pago || 0)) : ((c.status_pagamento === "pago" || c.status_pagamento === "isento" || !!c.data_pagamento) ? 0 : _vc);
       return { chave: cl && cl.nome ? cl.nome : "Avulsa / sem cliente", valor: _vc, pendente: _pc, descricao: "Contrato #" + c.id, data: c.previsao_pagamento, status: c.status_pagamento, tipo: "loc", categoria: "Locação", recId: null, ctId: c.id };
     }))
     .filter(function (r) { return r.valor > 0.005; });
@@ -44551,8 +44556,11 @@ function agLinhasFluxoPorData(rows, contratos, receitas, despesas) {
       if(mt) ct=(contratos||[]).find(function(c){return String(c.id)===mt[1];});
     }
     var desp = r.despId != null ? (despesas||[]).find(function(x){return String(x.id)===String(r.despId);}) : null;
-    var previsto = String((ct&&ct.previsao_pagamento)||(desp&&desp.data)||(rec&&rec.data)||r.data||'').slice(0,10);
-    var efetivo = String((ct&&ct.data_pagamento)||(rec&&rec.data_pagamento)||(desp&&desp.data_pagamento)||'').slice(0,10);
+    /* Fonte de datas: para recorrentes projetadas, o lançamento RESOLVIDO é
+       autoritativo. Consultar a despesa original voltava para outubro e
+       eliminava os lançamentos do gráfico de novembro. */
+    var previsto = String((r.projetado ? r.data : null)||(ct&&ct.previsao_pagamento)||(desp&&desp.data)||(rec&&rec.data)||r.data||'').slice(0,10);
+    var efetivo = r.projetado ? '' : String((ct&&ct.data_pagamento)||(rec&&rec.data_pagamento)||(desp&&desp.data_pagamento)||'').slice(0,10);
     // Jamais atribuir recebimento parcial ao vencimento: cada fração vai à sua data.
     // Se houver uma única baixa histórica, sua data está em data_pagamento.
     // Não inventar datas para pagamentos antigos sem histórico individual.
@@ -44576,11 +44584,19 @@ function rdLinhasDespesaCategoria(despesas, manutencoes, mes) {
   if (mes) _desps = resolverDespesasDoMes(_desps, mes);
   return _desps.map(function (d) {
       var _v = parseFloat(d.valor || 0);
-      return { chave: d.categoria || "Outros", valor: _v, pendente: d.data_pagamento ? 0 : _v, descricao: d.descricao || d.categoria || "Despesa", data: d.data_pagamento || d.data, status: d.status, categoria: d.categoria || "", despId: d.id != null ? d.id : null }; // [despesas-editar]
+      return { chave: d.categoria || "Outros", valor: _v, pendente: (d.status === "pago" || !!d.data_pagamento) ? 0 : _v, descricao: d.descricao || d.categoria || "Despesa", data: d.data_pagamento || d.data, status: d.status, categoria: d.categoria || "", despId: d.id != null ? d.id : null, projetado:!!d._projetado }; // [despesas-editar]
     })
     .concat(_mans.map(function (m) {
       var _vm = parseFloat(m.custo || 0);
-      return { chave: "Manutenção", valor: _vm, pendente: m.data_pagamento ? 0 : _vm, descricao: m.descricao || "Manutenção", data: m.data_previsao_pagamento || m.data_entrada, status: m.status, categoria: "Manutenção", manId: m.id }; // [despesas-editar]
+      var _dataPrev = String(m.data_previsao_pagamento || m.data_entrada || '').slice(0,10);
+      var _projetada = !!(mes && m.recorrente && _dataPrev && _dataPrev.slice(0,7) < mes && String(m.data_pagamento||'').slice(0,7) !== mes);
+      if (_projetada) {
+        var _ultimoDia = new Date(Number(mes.slice(0,4)),Number(mes.slice(5,7)),0).getDate();
+        var _dia = String(Math.min(Math.max(parseInt(_dataPrev.slice(8,10),10)||1,1),_ultimoDia)).padStart(2,'0');
+        _dataPrev = mes+'-'+_dia;
+      }
+      var _paga = !_projetada && (m.status_financeiro === "pago" || m.status === "pago" || !!m.data_pagamento);
+      return { chave: "Manutenção", valor: _vm, pendente: _paga?0:_vm, descricao: m.descricao || "Manutenção", data: _paga ? (m.data_pagamento || _dataPrev) : _dataPrev, status: _paga?'pago':'previsto', categoria: "Manutenção", manId: m.id, projetado:_projetada }; // [despesas-editar]
     }))
     .filter(function (r) { return r.valor > 0.005; });
 }
@@ -44793,6 +44809,10 @@ function CurvaAcumulada(opts){
                 });
                 var _gArr = Object.keys(_gd).sort().map(function(k){
                   var g = _gd[k];
+                  /* A própria lista/tubos é a fonte do valor pendente.
+                     Se ela indica zero, um registro legado sem data de baixa
+                     não pode fazer surgir uma faixa fantasma na curva. */
+                  if ((opts.items || []).length > 0 && _pI <= 0.005) g.p = 0;
                   g.estado = g.p <= 0.005 ? 'pago' : (g.p >= g.v - 0.005 ? 'aberto' : 'parcial');
                   return g;
                 });

@@ -3281,6 +3281,16 @@ svg text{ text-rendering:optimizeLegibility!important; }
   .agk2-board .agk2-dh-recebido { font-size:10px !important; }
 }
 /* Costura pontilhada diagonal à direita das bandeiras coloridas, em vez de linha contínua. */
+
+/* AUTOgest: Frota e evolução mensal lado a lado sem distorção do gráfico. */
+.ag-ct-overview-grid{display:grid;grid-template-columns:minmax(0,1fr);align-items:stretch;gap:16px;min-width:0}
+.ag-ct-overview-grid > *{min-width:0;max-width:100%}
+@media(min-width:1050px){
+ .ag-ct-overview-grid{grid-template-columns:minmax(370px,0.88fr) minmax(0,1.12fr)}
+ .ag-ct-overview-grid > *{height:100%}
+}
+@media(min-width:1600px){.ag-ct-overview-grid{grid-template-columns:minmax(440px,0.85fr) minmax(0,1.15fr)}}
+@media(max-width:420px){.ag-ct-overview-grid{gap:12px}}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
@@ -24428,11 +24438,11 @@ function saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, ateDt
     if(r.status==='recebido'||r.status==='pago') s+=parseFloat(r.valor||0);
   });
   (despesas||[]).forEach(function(d){
-    if(d.manutencao_id) return;
     var dt=d.data_pagamento||d.data; if(!dt||dt>=ateDt) return;
     if(d.status==='pago'||d.data_pagamento) s-=parseFloat(d.valor||0);
   });
   (manutencoes||[]).forEach(function(m){
+    if(agManutencaoTemDespesa(m,despesas,manutencoes)) return;
     var dt=m.data_pagamento; if(!dt||dt>=ateDt) return;
     s-=parseFloat(m.custo||0);
   });
@@ -24470,11 +24480,11 @@ function movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas
     if(r.status==='recebido'||r.status==='pago') itens.push({ tipo:'receita', label:r.descricao||r.categoria||'Receita', valor:parseFloat(r.valor||0) });
   });
   (despesas||[]).forEach(function(d){
-    if(d.manutencao_id) return;
     var dt=d.data_pagamento||d.data; if(dt!==diaStr) return;
     if(d.status==='pago'||d.data_pagamento) itens.push({ tipo:'despesa', label:d.descricao||d.categoria||'Despesa', valor:parseFloat(d.valor||0), ret:isRetLucro(d) });
   });
   (manutencoes||[]).forEach(function(m){
+    if(agManutencaoTemDespesa(m,despesas,manutencoes)) return;
     var dt=m.data_pagamento; if(dt!==diaStr) return;
     itens.push({ tipo:'despesa', label:'Manutenção'+(m.tipo?' · '+m.tipo:''), valor:parseFloat(m.custo||0) });
   });
@@ -27601,6 +27611,8 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   const manutProlongadas = manutencoes.filter(m => m.status === "em_andamento" && m.data_saida && m.data_saida < hoje);
   const manutPendPagto = manutencoes.filter(m => {
     if (m.status_financeiro === "pago" || !!m.data_pagamento) return false;
+    // O compromisso vinculado já está nas despesas: não contar nem alertar duas vezes.
+    if (agManutencaoTemDespesa(m, despesas, manutencoes)) return false;
     var dt = m.data_previsao_pagamento || m.data_entrada || "";
     return dt && dt < hoje;
   });
@@ -27824,7 +27836,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var despAntes = (despesas||[]).find(function(x){ return String(x.id) === String(ev.id); });
       var statusOriginalDesp = despAntes ? despAntes.status : null;
       var dataPagOriginalDesp = despAntes ? despAntes.data_pagamento : null;
-      var _rbDesp = await baixarDespesaItem(despesas, ev.id, _r.v1, ev.mes);
+      var _rbDesp = await baixarDespesaItem(despesas, ev.id, _r.v1, ev.mes, manutencoes);
       if (!_rbDesp) { toast("Não encontrei esta despesa para baixar", "error"); return; }
       setDespesas(function(p){ return _orcAplicarLocal(p, _rbDesp); });
       if (_rbDesp.manutencao && setManutencoes) setManutencoes(function(p){ return _orcAplicarLocal(p, _rbDesp.manutencao); });
@@ -27843,6 +27855,12 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         var _dpU = _alvoUndo === ev.id ? dataPagOriginalDesp : (_antesUndo ? _antesUndo.data_pagamento : null);
         await db.patch("despesas", _alvoUndo, { status: _stU, data_pagamento: _dpU });
         setDespesas(function(p){ return _orcAplicarLocal(p, { id: _alvoUndo, patch: { status: _stU, data_pagamento: _dpU } }); });
+        if (_rbDesp.manutencao) {
+          var _mUndo = (manutencoes||[]).find(function(m){return String(m.id)===String(_rbDesp.manutencao.id);});
+          var _mPatch={status_financeiro:_mUndo?_mUndo.status_financeiro:'pendente',data_pagamento:_mUndo?_mUndo.data_pagamento:null};
+          await db.patch('manutencao',_rbDesp.manutencao.id,_mPatch);
+          setManutencoes(function(p){return _orcAplicarLocal(p,{id:_rbDesp.manutencao.id,patch:_mPatch});});
+        }
       });
     } else if (ev.type === "conta") {
       _r = await window.__agPrompt({ title:"Baixar Conta", icon:"💸", label1:"Data do pagamento", type1:"date", default1:dtHoje });
@@ -30957,6 +30975,25 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                  valor_total:parseFloat(r.valor||0), cliente_id:r.cliente_id || (ct&&ct.cliente_id) || null,
                  veiculo_id:r.veiculo_id || (ct&&ct.veiculo_id) || null, emitida:!!(r.numero_fatura || r.data_emissao) };
       }).filter(function(a){ return !!a.previsao_pagamento; });
+      /* [boletos-sem-duplicidade] Uma receita vinculada ao mesmo contrato/ciclo
+         não é um segundo boleto. Alguns lançamentos antigos foram salvos sem
+         ref_fatura, por isso também conferimos cliente + vencimento + valor
+         (+ veículo, quando ambos possuem veículo). Não apagamos lançamentos:
+         apenas evitamos exibir a mesma cobrança duas vezes neste painel. */
+      var _ctBoletoBase = (contratos||[]).filter(function(c){
+        return c.status!=='cancelado' && c.status_pagamento!=='isento' && !!c.previsao_pagamento;
+      });
+      _avFat = _avFat.filter(function(a){
+        var r = a.r || {};
+        return !_ctBoletoBase.some(function(c){
+          if (r.contrato_id && String(r.contrato_id)===String(c.id) && String(a.previsao_pagamento||'').slice(0,10)===String(c.previsao_pagamento||'').slice(0,10)) return true;
+          if (!a.cliente_id || String(a.cliente_id)!==String(c.cliente_id)) return false;
+          if (String(a.previsao_pagamento||'').slice(0,10)!==String(c.previsao_pagamento||'').slice(0,10)) return false;
+          if (Math.abs(Number(a.valor_total||0)-Number(c.valor_total||0))>0.009) return false;
+          if (a.veiculo_id && c.veiculo_id && String(a.veiculo_id)!==String(c.veiculo_id)) return false;
+          return true;
+        });
+      });
       /* boleto "a emitir" só aparece no painel a partir de 20 dias antes do vencimento —
          evita poluir a lista com boletos distantes; quanto mais perto do vencimento
          (ou já vencido), mais forte o esmaecimento vermelho do item na lista.
@@ -35444,7 +35481,7 @@ function PatioFrota(props) {
     , h('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 } }
       , h('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub, letterSpacing: 0.4 } }, "FROTA")
       , h('span', { style: { fontSize: 13, fontWeight: 800, color: "var(--c-text)" } }, ocup + "% ocupada · " + frota.length + " veículos"))
-    , h('div', { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(36px,1fr))", borderTop: "2px solid var(--c-border)" }, onMouseLeave: function() { setHovId(null); } }
+    , h('div', { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(38px,48px))", justifyContent: "start", borderTop: "2px solid var(--c-border)" }, onMouseLeave: function() { setHovId(null); } }
       , frota.map(function(x) {
         var sel = String(selId) === String(x.v.id);
         var dot = x.k === "a" && x.restam != null && x.restam <= 3 ? (x.restam <= 0 ? C.red : C.orange) : null;
@@ -36726,7 +36763,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         , temFiltro && React.createElement('button', { className: bCls(Ghost(C.red)), style: bStyle(Ghost(C.red)), onClick: limparFiltros, __self: this, __source: {fileName: _jsxFileName, lineNumber: 973}}, "Limpar filtros" )
       )
     )
-    , React.createElement(PatioFrota, { veiculos: veiculos, contratos: contratos, clientes: clientes, manutencoes: manutencoes, onAbrir: function(id) { if (setCtDeepLink) setCtDeepLink({ itemId: id, acao: "editar" }); } })
+    , React.createElement('div', { className: "ag-ct-overview-grid" }
+      , React.createElement(PatioFrota, { veiculos: veiculos, contratos: contratos, clientes: clientes, manutencoes: manutencoes, onAbrir: function(id) { if (setCtDeepLink) setCtDeepLink({ itemId: id, acao: "editar" }); } })
     , fil2.length > 0 && React.createElement(React.Fragment, null
       /* ── Barra de progresso (navega por mês via swipe) ── */
       , React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" }, onTouchStart: _kpiBarTouchStart, onTouchEnd: _kpiBarTouchEnd, onWheel: _kpiBarWheel }
@@ -36744,6 +36782,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             : React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.green } }, "✓ Vencidos: ", React.createElement(BRLValue,{v:0,size:12,weight:700,color:C.green}))
         )
       )
+    )
     )
     /* Painel branco (.lg-card, fundo/borda/sombra) removido a pedido do
        usuário — os cards de contrato (já com fundo/borda próprios) ganham
@@ -40773,7 +40812,7 @@ function useOrcSync(setLista, pularNulo) {
    para sempre e setembro aparecia pago duas vezes. Quem chama passa o mês da
    linha que está na tela — as listas já entregam a recorrente projetada
    (`resolverDespesasDoMes`), então é `(d.data||"").slice(0,7)`. */
-async function baixarDespesaItem(despesas, despesaId, dataPag, mesAlvo) {
+async function baixarDespesaItem(despesas, despesaId, dataPag, mesAlvo, manutencoes) {
   var _hjD = dataPag ? String(dataPag).slice(0, 10) : _brNow().toISOString().slice(0, 10);
   var _d = (despesas || []).find(function(x){ return String(x.id) === String(despesaId); });
   if (!_d) return null;
@@ -40801,10 +40840,12 @@ async function baixarDespesaItem(despesas, despesaId, dataPag, mesAlvo) {
   }
   var _updD = await db.patch("despesas", _d.id, { status: "pago", data_pagamento: _hjD });
   var _resD = { id: _d.id, patch: _updD || { status: "pago", data_pagamento: _hjD } };
-  if (_d.manutencao_id) {
+  var _manD = agManutencaoDaDespesa(_d, manutencoes);
+  var _idManD = _d.manutencao_id || (_manD && _manD.id);
+  if (_idManD) {
     try {
-      var _umD = await db.patch("manutencao", _d.manutencao_id, { status_financeiro: "pago", data_pagamento: _hjD });
-      _resD.manutencao = { id: _d.manutencao_id, patch: _umD || { status_financeiro: "pago", data_pagamento: _hjD } };
+      var _umD = await db.patch("manutencao", _idManD, { status_financeiro: "pago", data_pagamento: _hjD });
+      _resD.manutencao = { id: _idManD, patch: _umD || { status_financeiro: "pago", data_pagamento: _hjD } };
     } catch(e) { console.warn("sincronizar manutenção da despesa", e); }
   }
   return _resD;
@@ -44718,7 +44759,7 @@ function CurvaAcumulada(opts){
                   return opts.hideTotal ? null : React.createElement('div', { style:{ margin:'0 0 14px' } }, _totalEl, _barraResumo, _rodape);
                 }
                 /* ── geometria (viewBox) ── */
-                var W = desktop ? 480 : 340, padL = 8, padR = 8, yTop = compactoPC?13:16, yBase = compactoPC?39:50, H = compactoPC?56:70;
+                var W = desktop ? 480 : 340, padL = desktop ? 28 : 24, padR = desktop ? 28 : 24, yTop = compactoPC?19:23, yBase = compactoPC?53:65, H = compactoPC?76:88;
                 var plotW = W - padL - padR, plotH = yBase - yTop;
                 var _mes = String(dashMes || _gArr[0].data.slice(0,7));
                 var _y0 = parseInt(_mes.slice(0,4),10), _m0 = parseInt(_mes.slice(5,7),10);
@@ -44785,7 +44826,7 @@ function CurvaAcumulada(opts){
                   for (var hi = 0; hi < _segs.length; hi++) { if (_hx >= _segs[hi].a.x && _hx <= _segs[hi].b.x) { _hy = _bezY(_segs[hi], _hx); break; } }
                 }
                 /* rótulos: pula os que ficariam colados no anterior (o toque no ponto mostra data + valor) */
-                var _gap = desktop ? 30 : 30, _lastX = -1e9;
+                var _gap = desktop ? 49 : 43, _lastX = -1e9;
                 _gArr.forEach(function(g){ g.mostra = (g.x - _lastX) >= _gap; if (g.mostra) _lastX = g.x; });
                 var _selK = (fnDotSel || {})[opts.title];
                 var _gSel = null; _gArr.forEach(function(g){ if (g.data === _selK) _gSel = g; });
@@ -44817,7 +44858,7 @@ function CurvaAcumulada(opts){
                 /* pontos + rótulos */
                 _gArr.forEach(function(g, i){
                   var cor = _corE(g.estado), sel = (_gSel && _gSel.data === g.data);
-                  var xl = Math.min(Math.max(g.x, 22), W - 22);
+                  var xl = Math.min(Math.max(g.x, 28), W - 28);
                   if (sel) _els.push(React.createElement('circle', { key:'h'+i, cx:_f1(g.x), cy:_f1(g.y), r:6.5, style:{ fill:cor, opacity:0.18 } }));
                   _els.push(React.createElement('circle', { key:'d'+i, cx:_f1(g.x), cy:_f1(g.y), r:(sel ? 3.8 : 2.8), style:{ fill:cor, stroke:C.card, strokeWidth:1.2 } }));
                   if (g.estado === 'parcial') {
@@ -44826,8 +44867,8 @@ function CurvaAcumulada(opts){
                     _els.push(React.createElement('path', { key:'pc'+i, d:'M'+_f1(g.x)+' '+_f1(g.y)+' L'+_f1(g.x)+' '+_f1(g.y - rr)+' A'+rr+' '+rr+' 0 '+(fr > 0.5 ? 1 : 0)+' 1 '+_f1(ex)+' '+_f1(ey)+' Z', style:{ fill:C.green } }));
                   }
                   if (g.mostra) {
-                    _els.push(React.createElement('text', { key:'v'+i, x:_f1(xl), y:_f1(g.y - 8), textAnchor:'middle', style:{ fontSize:compactoPC?9.5:10.5, fontWeight:700, fill:cor } }, _abv(g.v)));
-                    _els.push(React.createElement('text', { key:'t'+i, x:_f1(xl), y:yBase + 15, textAnchor:'middle', style:{ fontSize:compactoPC?9.5:10.5, fontWeight:500, fill:C.sub } }, _ddmm(g.data)));
+                    _els.push(React.createElement('text', { key:'v'+i, x:_f1(xl), y:_f1(g.y - 8), textAnchor:'middle', style:{ fontSize:compactoPC?9:10, fontWeight:700, fill:cor } }, _abv(g.v)));
+                    _els.push(React.createElement('text', { key:'t'+i, x:_f1(xl), y:yBase + 15, textAnchor:'middle', style:{ fontSize:compactoPC?9:10, fontWeight:500, fill:C.sub } }, _ddmm(g.data)));
                   }
                   _els.push(React.createElement('circle', { key:'hit'+i, cx:_f1(g.x), cy:_f1(g.y), r:13, style:{ fill:'transparent', cursor:'pointer', WebkitTapHighlightColor:'transparent' },
                     onClick:function(e){ e.stopPropagation(); setFnDotSel(function(m){ var n = Object.assign({}, m); n[opts.title] = (n[opts.title] === g.data) ? null : g.data; return n; }); if (opts.onPontoClick) opts.onPontoClick(g); } }));
@@ -44838,7 +44879,7 @@ function CurvaAcumulada(opts){
                       , _gSel && React.createElement('div', { style:Object.assign({ position:'absolute', top:-2, background:C.card, border:'1px solid '+C.border, borderRadius:9, padding:'3px 9px', fontSize:11, fontWeight:700, lineHeight:1.25, whiteSpace:'nowrap', color:_corE(_gSel.estado), boxShadow:'0 2px 6px rgba(0,0,0,0.08)', pointerEvents:'none', zIndex:3 }, _bubPos((_gSel.x / W) * 100)) }
                           , _ddmm(_gSel.data)+' \u00b7 ', fmtBRLsm(_gSel.v)
                           , _gSel.estado === 'parcial' && React.createElement('div', { style:{ fontSize:10.5, fontWeight:500, color:C.sub } }, _cap(opts.rotuloPago||'pago').toLowerCase()+' ', fmtBRLsm(_gSel.v - _gSel.p, true), ' \u00b7 falta ', fmtBRLsm(_gSel.p, true)))
-                      , React.createElement('svg', { viewBox:'0 0 '+W+' '+H, width:'100%', style:{ display:'block', overflow:'visible' }, role:'img', 'aria-label':opts.title+' \u2014 curva acumulada' }, _els))
+                      , React.createElement('svg', { viewBox:'0 0 '+W+' '+H, width:'100%', style:{ display:'block', overflow:'visible', maxWidth:780, margin:'0 auto' }, role:'img', 'aria-label':opts.title+' \u2014 curva acumulada' }, _els))
                   , _barraResumo
                   , _rodape
                 );
@@ -44998,8 +45039,8 @@ function _funnelInfoRows(infoItems, mx, opts) {
 }
 /* [a2-tubo] Helpers do desenho A2 (usados em Despesas por Categoria, Receitas por Cliente e Pedágios) */
 function _a2Mix(c, p) { return "color-mix(in srgb, " + c + " " + p + "%, var(--c-card))"; }
-function _a2S1(c) { return "color-mix(in srgb, " + c + " 84%, black)"; } /* listra escura da própria cor */
-function _a2S2(c) { return c; } /* listra = a cor cheia da paleta (sem lavar) */
+function _a2S1(c) { return "color-mix(in srgb, " + c + " 78%, black)"; } /* pendente ligeiramente mais claro */
+function _a2S2(c) { return "color-mix(in srgb, " + c + " 94%, var(--c-card))"; } /* clareia sutilmente só o não efetivado */
 function _a2Fill(c) { return "linear-gradient(180deg, color-mix(in srgb, " + c + " 90%, #fff) 0%, " + c + " 45%, color-mix(in srgb, " + c + " 84%, #000) 100%)"; }
 function _a2Glow(c) { return "inset 0 1px 0 rgba(255,255,255,0.5), 2px 0 0 var(--c-card), 0 0 14px color-mix(in srgb, " + c + " 45%, transparent)"; }
 function _a2Ring(c) { return "inset 0 0 0 1px color-mix(in srgb, " + c + " 32%, transparent), inset 0 1px 0 rgba(255,255,255,0.35)"; }
@@ -45238,7 +45279,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         /* d vem da lista já projetada pro mês exibido (resolverDespesasDoMes)
            ou do deep-link, que também projeta — então (d.data) é o mês da
            PARCELA, que é o que manda na baixa. */
-        var _rbD = await baixarDespesaItem(despesas, d.id, dt, (d.data || "").slice(0, 7));
+        var _rbD = await baixarDespesaItem(despesas, d.id, dt, (d.data || "").slice(0, 7), manutencoes);
         if (!_rbD) { toast("Não encontrei esta despesa para baixar"); return; }
         setDespesas(p => _orcAplicarLocal(p, _rbD));
         if (_rbD.manutencao) setManutencoes(p => _orcAplicarLocal(p, _rbD.manutencao));
@@ -52960,6 +53001,32 @@ async function agAdiaDefinir(chave, reg) {
    dashboard Início, garantindo que os dois mostrem exatamente os mesmos eventos
    (regra de cobertura de dados do CLAUDE.md: nunca duplicar essa lógica em dois
    lugares, senão os dois calendários divergem). */
+/* [AG-MAN-UNICA] A despesa é a fonte financeira; a manutenção é o histórico.
+   Reconhece vínculos explícitos e registros antigos com MESMO veículo,
+   data, valor e descrição. Não agrupa apenas pelo valor. */
+function agManutencaoDaDespesa(d, manutencoes) {
+  if (!d) return null;
+  if (d.manutencao_id != null && d.manutencao_id !== '')
+    return (manutencoes||[]).find(function(m){return String(m.id)===String(d.manutencao_id);}) || null;
+  if (String(d.categoria||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim() !== 'manutencao' || !d.veiculo_id) return null;
+  var normalizar = function(v){ return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/^manutencao:\s*/,'').replace(/\s*[-–—]\s*parcela \d+\/\d+$/,'').trim(); };
+  var nome=normalizar(d.descricao), dt=String(d.data||'').slice(0,10);
+  if (!nome || !dt) return null;
+  var possiveis=(manutencoes||[]).filter(function(m){
+    if (String(m.veiculo_id)!==String(d.veiculo_id)) return false;
+    if (Math.abs(Number(m.custo||0)-Number(d.valor||0))>=0.005) return false;
+    // A manutenção pode usar a data do serviço ou a previsão do pagamento.
+    if (dt!==String(m.data_entrada||'').slice(0,10) && dt!==String(m.data_previsao_pagamento||'').slice(0,10)) return false;
+    var tipo=normalizar(m.tipo), descricao=normalizar(m.descricao);
+    // Lançamentos antigos incluíam a placa no fim do texto da despesa.
+    return nome===tipo || nome===descricao || (tipo && nome.indexOf(tipo+' - ')===0);
+  });
+  return possiveis.length===1 ? possiveis[0] : null;
+}
+function agManutencaoTemDespesa(m, despesas, manutencoes) {
+  return !!m && (despesas||[]).some(function(d){return String(d.manutencao_id||'')===String(m.id) || (agManutencaoDaDespesa(d,manutencoes)||{}).id==m.id;});
+}
+
 function buildAgendaEventos(ctx) {
   var contratos=ctx.contratos||[], multas=ctx.multas||[], veiculos=ctx.veiculos||[], clientes=ctx.clientes||[],
       contas=ctx.contas||[], despesas=ctx.despesas||[], receitas=ctx.receitas||[], reservas=ctx.reservas||[],
@@ -53339,6 +53406,8 @@ function buildAgendaEventos(ctx) {
     var despMes = resolverDespesasDoMes(despesas, mesStr);
     despMes.forEach(function(d) {
       if (!d.data) return;
+      // A despesa (inclusive a vinculada à manutenção) é o ÚNICO compromisso
+      // financeiro na Agenda. A manutenção segue apenas no histórico do carro.
       if (d.status === "pago" || d.data_pagamento) return;
       var chave = (d.id||d.data+(d.descricao||"")) + "_" + mesStr;
       if (despesasJaAdicionadas.has(chave)) return;
@@ -53358,24 +53427,12 @@ function buildAgendaEventos(ctx) {
     });
   });
 
-  // MANUTENÇÕES — previsão de pagamento
+  // Manutenções sem despesa serão tratadas separadamente, nunca duplicadas.
   var manutIdsComDespesa = new Set();
-  despesas.filter(function(d){ return d.manutencao_id && d.data && !d.data_pagamento && d.status !== "pago"; }).forEach(function(d) {
-    manutIdsComDespesa.add(String(d.manutencao_id));
-    if (despesasJaAdicionadas.has("man_"+d.id)) return;
-    despesasJaAdicionadas.add("man_"+d.id);
-    var atrasada = d.data < hoje;
-    eventos.push({
-      data: d.data, tipo: "manutencao",
-      cor: atrasada ? "#FF3B30" : "#FF9500",
-      emoji: "🔧",
-      titulo: "Manutenção · " + (d.descricao||"--") + " · " + fmtV(d.valor),
-      sub: (d.categoria||"") + (d.observacoes ? " · " + d.observacoes : ""),
-      quem: d.descricao||"--",
-      detalhe: (d.categoria||"") + (d.observacoes ? " · " + d.observacoes : ""),
-      valor: numV(d.valor), fluxo: "out",
-      tab: "manutencao"
-    });
+  despesas.forEach(function(d){
+    var m=agManutencaoDaDespesa(d,manutencoes);
+    if(m) manutIdsComDespesa.add(String(m.id));
+    if(d.manutencao_id) manutIdsComDespesa.add(String(d.manutencao_id));
   });
 
   // MANUTENÇÕES — prazo (saída) vencido, veículo ainda em oficina
@@ -53407,7 +53464,7 @@ function buildAgendaEventos(ctx) {
      cobertura de dados e de consistência do CLAUDE.md). */
   manutencoes.filter(function(m){
     if (m.status_financeiro === "pago" || !!m.data_pagamento) return false;
-    if (manutIdsComDespesa.has(String(m.id))) return false;
+    if (manutIdsComDespesa.has(String(m.id)) || agManutencaoTemDespesa(m,despesas,manutencoes)) return false;
     var dt = m.data_previsao_pagamento || m.data_entrada || "";
     return !!dt;
   }).forEach(function(m) {

@@ -45661,6 +45661,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     if (!form.descricao || !form.valor || !form.data) return toast("Descricao, valor e data obrigatorios", "error");
     setLoading(true);
     try {
+      var _manDespSalvas = []; // despesas desta operação que precisam constar no histórico do veículo
       function addMeses(dateStr, n) {
         var d = new Date(dateStr + "T12:00:00");
         d.setDate(d.getDate() + n * 30);
@@ -45791,6 +45792,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           });
           return _criadas.concat(atualizado);
         });
+        _manDespSalvas = _patchadas.map(function(z){ return Object.assign({id:z.id}, z.dados); }).concat(_criadas);
         toast(numParcelas + "x de " + fmtBRL(_parcCent/100) + " atualizadas ✅");
       } else if (edit && _grupoAtual.length > 1) {
         /* Caiu de parcelado para à vista (6x → Pix/1x): o principal absorve o
@@ -45807,11 +45809,13 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         var _fora = {};
         _sobras.forEach(function(x){ _fora[x.id] = true; });
         setDespesas(function(p){ return (p||[]).filter(function(d){ return !_fora[d.id]; }).map(function(d){ return d.id === edit ? Object.assign({}, d, _uu) : d; }); });
+        _manDespSalvas = [Object.assign({id:edit}, _plUnico, _uu)];
         await _syncRetLucroOrc(Object.assign({}, _plUnico, _uu), edit);
         toast("Parcelamento desfeito — lançamento único atualizado!");
       } else if (edit) {
         const u = await db.patch("despesas", edit, payload);
         setDespesas(p => p.map(d => d.id === edit ? Object.assign({}, d, u) : d));
+        _manDespSalvas = [Object.assign({id:edit}, payload, u)];
         await _syncRetLucroOrc(Object.assign({}, payload, u), edit);
         toast("Atualizado!");
       } else if (numParcelas > 1) {
@@ -45833,12 +45837,52 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           novas.push(c);
         }
         setDespesas(p => novas.concat(p));
+        _manDespSalvas = novas;
         toast(numParcelas + " parcelas lançadas!");
       } else {
         const c = await db.post("despesas", payload);
         setDespesas(p => [c].concat(p));
+        _manDespSalvas = [c];
         await _syncRetLucroOrc(c, c.id);
         toast("Registrado!");
+      }
+      // FINANCEIRO -> MANUTENÇÕES: cadastra um único serviço por lançamento
+      // (mesmo quando a compra foi parcelada), sem criar nova despesa.
+      if (form.categoria === "Manutenção" && form.veiculo_id && _manDespSalvas.length) {
+        try {
+          var _manLinks = _manDespSalvas.filter(function(d){ return d && d.id != null; });
+          var _manAnterior = _manLinks.map(function(d){ return d.manutencao_id; }).find(Boolean)
+            || (edit && (despesas||[]).find(function(d){ return String(d.id)===String(edit); }) || {}).manutencao_id;
+          var _manData = form.data || _brNow().toISOString().slice(0,10);
+          var _manTipo = (form.descricao || "Manutenção").replace(/^Manutenção:\s*/i, "").replace(/\s*— Parcela \d+\/\d+$/, "");
+          var _manPayload = {
+            veiculo_id: form.veiculo_id, tipo: _manTipo,
+            descricao: form.observacoes || form.descricao || null,
+            custo: form.valor, data_entrada: _manData, data_saida: _manData,
+            data_previsao_pagamento: _manData,
+            data_pagamento: form.status === "pago" ? (form.data_pagamento || _manData) : null,
+            status: "concluida", status_financeiro: form.status === "pago" ? "pago" : "pendente",
+            forma_pagamento: form.forma_pagamento || null,
+            recorrente: !!form.recorrente,
+            prazo_recorrencia: form.recorrente ? (form.prazo_recorrencia || null) : null
+          };
+          var _manCriada;
+          if (_manAnterior) {
+            _manCriada = await db.patch("manutencao", _manAnterior, _manPayload);
+            setManutencoes(function(p){ return (p||[]).map(function(m){ return String(m.id)===String(_manAnterior) ? Object.assign({},m,_manCriada) : m; }); });
+          } else {
+            _manCriada = await db.post("manutencao", _manPayload);
+            setManutencoes(function(p){ return [_manCriada].concat(p||[]); });
+          }
+          for (var _ml of _manLinks) {
+            if (String(_ml.manutencao_id||"") === String(_manCriada.id)) continue;
+            var _mld = await db.patch("despesas", _ml.id, {manutencao_id:_manCriada.id});
+            setDespesas(function(p){ return (p||[]).map(function(d){ return String(d.id)===String(_ml.id) ? Object.assign({},d,_mld,{manutencao_id:_manCriada.id}) : d; }); });
+          }
+        } catch(_manErr) {
+          console.error("[Financeiro > Manutenção] Falha ao vincular:",_manErr);
+          toast("Despesa salva, mas não foi possível cadastrar na aba Manutenções: " + _manErr.message,"error");
+        }
       }
       setModal(false);
     } catch(e) {

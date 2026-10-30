@@ -36507,6 +36507,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     var arr = filtrarContratos(contratos).slice();
     if (sortCt === "previsao_asc") arr.sort(function(a,b){return (a.previsao_pagamento||"").localeCompare(b.previsao_pagamento||"");});
     else if (sortCt === "previsao_desc") arr.sort(function(a,b){return (b.previsao_pagamento||"").localeCompare(a.previsao_pagamento||"");});
+    else if (sortCt === "pagamento_asc") arr.sort(function(a,b){return (a.data_pagamento||"9999").localeCompare(b.data_pagamento||"9999");});
+    else if (sortCt === "pagamento_desc") arr.sort(function(a,b){return (b.data_pagamento||"").localeCompare(a.data_pagamento||"");});
     else if (sortCt === "valor_desc") arr.sort(function(a,b){return parseFloat(b.valor_total||0)-parseFloat(a.valor_total||0);});
     else if (sortCt === "inicio_asc") arr.sort(function(a,b){return (a.data_inicio||"").localeCompare(b.data_inicio||"");});
     if (filter !== "concluido") {
@@ -36516,7 +36518,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       // entre meses diferentes.
       arr.sort(function(a,b){
         var ma = (a.previsao_pagamento||"").slice(0,7), mb = (b.previsao_pagamento||"").slice(0,7);
-        if (ma !== mb) return 0;
+        if (ma !== mb || sortCt === "pagamento_asc" || sortCt === "pagamento_desc") return 0;
         var ea = (a.status === "concluido" && !renovadosMap[a.id]) ? 1 : 0;
         var eb = (b.status === "concluido" && !renovadosMap[b.id]) ? 1 : 0;
         return ea - eb;
@@ -36775,6 +36777,8 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         , React.createElement('select', { style: Object.assign({}, FI, { width: "auto", fontSize: 13, padding: "6px 8px", flexShrink: 0, cursor: "pointer" }), value: sortCt, onChange: function(e){setSortCt(e.target.value);} }
           , React.createElement('option', { value: "previsao_asc" }, "Previsão ↑")
           , React.createElement('option', { value: "previsao_desc" }, "Previsão ↓")
+          , React.createElement('option', { value: "pagamento_asc" }, "Pagamento ↑")
+          , React.createElement('option', { value: "pagamento_desc" }, "Pagamento ↓")
           , React.createElement('option', { value: "inicio_asc" }, "Início ↑")
           , React.createElement('option', { value: "valor_desc" }, "Valor ↓")
         )
@@ -36825,46 +36829,35 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       , fil2.length > fil2Limitado.length && React.createElement('div', { style:{ background:"#FF9500"+"18", border:"1px solid #FF9500"+"44", borderRadius:10, padding:"8px 12px", fontSize:12, color:"#FF9500", marginBottom:4 } }
         , "Exibindo 150 de " + fil2.length + " contratos. Use os filtros para refinar.")
       , (() => {
-        /* Separação por mês: só faz sentido quando a lista está em ordem de
-           vencimento — em "valor" ou "início" o mesmo mês voltaria a aparecer
-           várias vezes e o cabeçalho viraria ruído. Mês = o do vencimento
-           (previsao_pagamento), o mesmo critério do filtro "Mês". */
-        var _agrupaMes = sortCt === "previsao_asc" || sortCt === "previsao_desc";
-        var _mkCt = function(x){ return (x.previsao_pagamento || "").slice(0,7); };
-        var _statMes = {};
-        fil2Limitado.forEach(function(x){ var k = _mkCt(x); var o = _statMes[k] || (_statMes[k] = { n: 0, total: 0 }); o.n++; o.total += parseFloat(x.valor_total || 0); });
-        var _mesNome = function(k){ var p = k.split("-"); return p.length === 2 ? MESES_PT_CT[parseInt(p[1],10)-1] + " " + p[0] : "Sem vencimento"; };
-        var _jaBannerFuturo = false;
+        /* Agrupamento diário: contratos por vencimento ou por pagamento.
+           Um recebimento parcial não desloca o saldo do vencimento. */
+        var _porPagamento = sortCt === 'pagamento_asc' || sortCt === 'pagamento_desc';
+        var _mkCt = function(x){
+          var data = _porPagamento ? (x.data_pagamento || '') : (x.previsao_pagamento || '');
+          return String(data).slice(0,10) || 'sem-data';
+        };
+        var _statDia = {};
+        fil2Limitado.forEach(function(x){
+          var k=_mkCt(x), o=_statDia[k]||(_statDia[k]={n:0,total:0,recebido:0,pendente:0});
+          var vt=Number(x.valor_total)||0;
+          var rec=x.status_pagamento==='pago'||x.status_pagamento==='isento'?vt:Math.min(vt,Math.max(0,Number(x.valor_pago)||0));
+          o.n++;o.total+=vt;o.recebido+=rec;o.pendente+=Math.max(0,vt-rec);
+        });
+        var _diaNome=function(k){return /^\d{4}-\d{2}-\d{2}$/.test(k)?k.slice(8,10)+'/'+k.slice(5,7)+'/'+k.slice(0,4):'Sem data informada';};
         return fil2Limitado.map((c, i) => {
-        var _cabecalhoMes = null;
-        if (_agrupaMes) {
-          var _k = _mkCt(c);
-          if (i === 0 || _mkCt(fil2Limitado[i-1]) !== _k) {
-            var _atual = _k === mesAtual, _futuro = _k > mesAtual, _st = _statMes[_k];
-            var _cor = _atual ? C.blue : _futuro ? C.purple : C.gray;
-            var _banner = null;
-            if (_futuro && !_jaBannerFuturo) {
-              _jaBannerFuturo = true;
-              _banner = React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 10, margin: (i === 0 ? "0 0 12px" : "28px 0 12px") } }
-                , React.createElement('div', { style: { flex: 1, height: 0, borderTop: "2px dashed " + C.purple } })
-                , React.createElement('div', { style: { fontSize: 12, fontWeight: 800, letterSpacing: 1.2, color: C.purple, textTransform: "uppercase" } }, "Próximos meses")
-                , React.createElement('div', { style: { flex: 1, height: 0, borderTop: "2px dashed " + C.purple } })
-              );
-            }
-            _cabecalhoMes = React.createElement(React.Fragment, { key: "mes-" + _k }
-              , _banner
-              , React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, margin: (_banner || i === 0 ? "0 0 12px" : "28px 0 12px"), padding: "10px 14px", borderRadius: 14, borderLeft: "6px solid " + _cor, background: "color-mix(in srgb, " + _cor + " 12%, var(--c-card))" } }
-                , React.createElement('div', null
-                  , React.createElement('div', { style: { fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase", color: _cor } }, _atual ? "Este mês" : _futuro ? "Próximo vencimento" : "Mês anterior")
-                  , React.createElement('div', { style: { fontSize: 18, fontWeight: 800, color: "var(--c-text)" } }, _mesNome(_k))
-                )
-                , React.createElement('div', { style: { textAlign: "right", fontSize: 12, color: C.sub, fontWeight: 600 } }
-                  , _st.n + (_st.n === 1 ? " contrato" : " contratos")
-                  , React.createElement('div', { style: { fontSize: 14, fontWeight: 800, color: _cor } }, fmtBRL(_st.total))
-                )
-              )
-            );
-          }
+        var _cabecalhoMes=null;
+        var _k=_mkCt(c);
+        if (i===0 || _mkCt(fil2Limitado[i-1])!==_k) {
+          var _st=_statDia[_k], _cor=_porPagamento?C.green:C.blue;
+          _cabecalhoMes=React.createElement('div',{key:'data-'+_k,style:{margin:i===0?'0 0 12px':'24px 0 12px',padding:'12px 14px',borderRadius:14,borderLeft:'5px solid '+_cor,background:'color-mix(in srgb, '+_cor+' 10%, var(--c-card))',display:'flex',gap:10,justifyContent:'space-between',alignItems:'center',flexWrap:'wrap'}},
+            React.createElement('div',null,
+              React.createElement('div',{style:{fontSize:10,fontWeight:800,letterSpacing:'.7px',color:_cor,textTransform:'uppercase'}},_porPagamento?'Data do pagamento':'Previsão de pagamento'),
+              React.createElement('div',{style:{fontSize:17,fontWeight:800,color:'var(--c-text)'}},_diaNome(_k)),
+              React.createElement('div',{style:{fontSize:11,color:C.sub}},_st.n+(_st.n===1?' contrato':' contratos'))),
+            React.createElement('div',{style:{textAlign:'right',fontSize:11,color:C.sub}},
+              React.createElement('div',null,'Previsto: ',React.createElement('b',null,fmtBRL(_st.total))),
+              React.createElement('div',{style:{color:C.green}},'Recebido: ',React.createElement('b',null,fmtBRL(_st.recebido))),
+              React.createElement('div',{style:{color:_st.pendente>0.005?C.orange:C.green}},'Saldo: ',React.createElement('b',null,fmtBRL(_st.pendente)))));
         }
         var foiRenovado = !!renovadosMap[c.id];
         var ctFilho = renovadosMap[c.id];
@@ -44778,7 +44771,7 @@ function CurvaAcumulada(opts){
                   style:{ position:'relative', height:5, borderRadius:999, overflow:'hidden', margin:'7px 0 4px',
                     background: _pI > 0.005 ? undefined : C.green,
                     '--s1': 'color-mix(in srgb, '+_tom+' 82%, white)', '--s2': 'color-mix(in srgb, '+_tom+' 65%, white)' },
-                  className: _pI > 0.005 ? 'ag-stripes ag-mv' : undefined
+                  className: undefined
                 }, _fracReal > 0.001 ? React.createElement('div', {style:{position:'absolute',top:0,bottom:0,left:0,width:_fracReal+'%',background:'linear-gradient(90deg, color-mix(in srgb, '+C.green+' 70%, #fff), '+C.green+')'}}) : null) : null;
                 var _rodape = (!opts.hideFooter && (_showG || _showT)) ? React.createElement('div', { style:{ display:'flex', justifyContent:'space-between', gap:8, fontSize:compactoPC?12:13, fontWeight:700, marginTop:compactoPC?2:4 } }
                     , _showG ? React.createElement('span', { style:{ color:C.green } }, _cap(opts.rotuloPago||'pago')+': ', fmtBRLsm(_pago)) : React.createElement('span', null)
@@ -44865,19 +44858,24 @@ function CurvaAcumulada(opts){
                 _els.push(React.createElement('defs', { key:'df' }
                   , React.createElement('linearGradient', { id:_gidG, gradientUnits:'userSpaceOnUse', x1:0, y1:yTop, x2:0, y2:yBase }
                       , React.createElement('stop', { offset:'0%', style:{ stopColor:C.green, stopOpacity:0.30 } }), React.createElement('stop', { offset:'100%', style:{ stopColor:C.green, stopOpacity:0 } }))
+                  , React.createElement('pattern',{id:_gidAnim,patternUnits:'userSpaceOnUse',width:18,height:18,patternTransform:'rotate(40)'},
+                      React.createElement('rect',{width:18,height:18,fill:'transparent'}),
+                      React.createElement('rect',{x:0,y:0,width:5,height:18,fill:_tom,opacity:.14},
+                        React.createElement('animate',{attributeName:'x',from:0,to:18,dur:'2s',repeatCount:'indefinite'})))
                   , React.createElement('linearGradient', { id:_gidT, gradientUnits:'userSpaceOnUse', x1:0, y1:yTop, x2:0, y2:yBase }
                       , React.createElement('stop', { offset:'0%', style:{ stopColor:_tom, stopOpacity:0.24 } }), React.createElement('stop', { offset:'100%', style:{ stopColor:_tom, stopOpacity:0 } }))));
                 /* áreas (um polígono por trecho) */
                 _segs.forEach(function(sg, i){
                   var d = 'M'+_f1(sg.a.x)+' '+_f1(sg.a.y)+' '+sg.dC+' L'+_f1(sg.b.x)+' '+yBase+' L'+_f1(sg.a.x)+' '+yBase+' Z';
                   _els.push(React.createElement('path', { key:'ar'+i, d:d, style:{ fill:'url(#'+(sg.pg ? _gidG : _gidT)+')', stroke:'url(#'+(sg.pg ? _gidG : _gidT)+')', strokeWidth:0.6 } }));
+                  if(!sg.pg) _els.push(React.createElement('path',{key:'an'+i,d:d,fill:'url(#'+_gidAnim+')',stroke:'none',pointerEvents:'none'}));
                 });
                 /* eixo */
                 _els.push(React.createElement('line', { key:'ax', x1:padL, y1:yBase, x2:W-padR, y2:yBase, style:{ stroke:C.border, strokeWidth:1 } }));
                 /* linhas */
                 _segs.forEach(function(sg, i){
                   _els.push(React.createElement('path', { key:'ln'+i, d:'M'+_f1(sg.a.x)+' '+_f1(sg.a.y)+' '+sg.dC, fill:'none',
-                    style:{ stroke:(sg.pg ? C.green : _tom), strokeWidth:1.4, strokeLinecap:'round' }, strokeDasharray: sg.pg ? undefined : '3 2.5' }));
+                    style:{ stroke:(sg.pg ? C.green : _tom), strokeWidth:1.4, strokeLinecap:'round' } }));
                 });
                 /* hoje */
                 if (_temHoje) {

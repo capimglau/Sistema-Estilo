@@ -24437,13 +24437,20 @@ function _obsVisivel(obs) {
     .filter(Boolean).join("\n").trim();
 }
 
+/* [parcial-sem-status] Quanto JÁ entrou num contrato em aberto: vale o valor_pago mesmo quando o status_pagamento ainda não virou
+   "parcial" (mesma regra de ctSaldoReceber). O gráfico de saldo olhava só status==="parcial": a baixa parcial sumia do realizado e o
+   contrato inteiro voltava a ser previsto na data final. */
+function ctValorRecebidoParcial(c){
+  if(!c||c.status==='cancelado'||c.status_pagamento==='pago'||c.status_pagamento==='isento') return 0;
+  return Math.max(0,parseFloat(c.valor_pago||0)||0);
+}
 /* Saldo real do caixa desde o início dos lançamentos até (exclusive) ateDt */
 function saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, ateDt) {
   var s = 0;
   (contratos||[]).forEach(function(c){
     if(c.status==='cancelado') return;
     var _pago=c.status_pagamento==='pago';
-    var _parc=c.status_pagamento==='parcial'&&parseFloat(c.valor_pago||0)>0;
+    var _parc=ctValorRecebidoParcial(c)>0;
     if(!_pago&&!_parc) return;
     /* contrato recebido entra no caixa na data do pagamento; se vazia, usa a previsão
        (mesma regra da linha verde/_mkCtsMap) — senão recebidos sem data_pagamento somem do saldo */
@@ -24488,7 +24495,7 @@ function movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas
   (contratos||[]).forEach(function(c){
     if(c.status==='cancelado') return;
     var _pago=c.status_pagamento==='pago';
-    var _parc=c.status_pagamento==='parcial'&&parseFloat(c.valor_pago||0)>0;
+    var _parc=ctValorRecebidoParcial(c)>0;
     if(!_pago&&!_parc) return;
     var dt=c.data_pagamento||c.previsao_pagamento||c.data_fim; if(dt!==diaStr) return;
     itens.push({ tipo:'receita', label:'Contrato'+(c.placa?' · '+c.placa:''), valor:_pago?parseFloat(c.valor_total||0):parseFloat(c.valor_pago||0) });
@@ -27407,7 +27414,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
   const ctsMes = contratos.filter(c => rdMesDoContrato(c) === dashMes);
   const recAvDash = (receitas||[]).filter(function(r){ return !r.ref_fatura && receitaDoMes(r, dashMes); });
   const recMes = ctsMes.filter(c => c.status_pagamento === "pago").reduce((s,c) => s+parseFloat(c.valor_total||0),0)
-    + ctsMes.filter(c => c.status_pagamento === "parcial" && c.valor_pago).reduce((s,c) => s+parseFloat(c.valor_pago||0),0)
+    + ctsMes.filter(c => c.status_pagamento !== "pago").reduce((s,c) => s+ctValorRecebidoParcial(c),0)
     + recAvDash.filter(function(r){ return r.status==="recebido" && (!r.recorrente||(r.data_pagamento||"").slice(0,7)===dashMes); }).reduce((s,r)=>s+parseFloat(r.valor||0),0);
   const prevMes = ctsMes.reduce((s,c) => s+parseFloat(c.valor_total||0),0)
     + recAvDash.reduce((s,r)=>s+parseFloat(r.valor||0),0);
@@ -30650,7 +30657,16 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
          totais já calculados pro card "Resultado Previsto" (prevMes/recMes/
          _despTotalKpi/_despPagoKpi/_manTotalKpi/_manPagoKpi), regra de
          consistência do CLAUDE.md: nunca duplicar a fórmula. */
-      var _aReceberMes = Math.max(0, prevMes - recMes);
+      /* [parcial-resto-no-vencimento] Contrato com baixa parcial é lançado no mês em que o dinheiro entrou (rdMesDoContrato), então o
+         RESTO que vence neste mês sumia do projetado quando a baixa foi em outro mês (ex.: 5.000 pagos em 05/10, resto vence 29/11).
+         Mesma regra do Financeiro: cada fração vai à sua data — o que falta volta no mês do vencimento. */
+      var _restoParcialVenc = (contratos||[]).reduce(function(s,c){
+        if (c.status==='cancelado' || c.status_pagamento==='pago' || c.status_pagamento==='isento') return s;
+        if (!(parseFloat(c.valor_pago||0) > 0) || !c.previsao_pagamento || c.previsao_pagamento.slice(0,7) !== _mesSel) return s;
+        if (rdMesDoContrato(c) === dashMes) return s;
+        return s + ctSaldoReceber(c);
+      }, 0);
+      var _aReceberMes = Math.max(0, prevMes - recMes) + _restoParcialVenc;
       var _aPagarMesProj = Math.max(0, (_despTotalKpi + _manTotalKpi) - (_despPagoKpi + _manPagoKpi));
       var _saldoProjetado = _saldoRef + _aReceberMes - _aPagarMesProj;
       var _ultimoDiaMesHoje = _ultimoDiaMesSel;
@@ -30773,10 +30789,12 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       var _despMesTodasList = resolverDespesasDoMes((despesas||[]).filter(function(d){ return !isRetLucro(d); }), _mesSel);
       var _manMesTodasList = filtrarManParaBarras(manutencoes, despesas, _mesSel);
       var _eventosFuturos = [];
-      (ctsMes||[]).forEach(function(c){
+      /* [parcial-resto-no-vencimento] parte dos contratos pelo VENCIMENTO (não pelo mês da baixa): o resto de uma baixa parcial feita em
+         outro mês continua aparecendo na data em que vence. */
+      (contratos||[]).forEach(function(c){
         if (c.status === 'cancelado' || c.status_pagamento === 'pago' || c.status_pagamento === 'isento') return;
         if (!c.previsao_pagamento || c.previsao_pagamento <= hoje || c.previsao_pagamento.slice(0,7) !== _mesSel) return;
-        var falta = parseFloat(c.valor_total||0) - (c.status_pagamento === 'parcial' ? parseFloat(c.valor_pago||0) : 0);
+        var falta = ctSaldoReceber(c);
         if (falta <= 0) return;
         _eventosFuturos.push({ dia: parseInt(c.previsao_pagamento.slice(8,10),10), delta: falta, tipo:'receita', label:'Contrato' });
       });
@@ -44798,13 +44816,21 @@ function CurvaSaldo(p){
     , _camadas(_segProj, true, 0.014, 'sup'), _camadas(_segProj, false, 0.014, 'sdp')));
   /* O preenchimento animado acompanha os dois lados da curva futura;
      o trecho já realizado continua com sombra totalmente estática. */
+  /* [sombra-pend-sutil] mesma lógica do trecho efetivado: forte colado na linha e clareando ao se afastar (até ~18px).
+     A máscara é feita das camadas da PRÓPRIA linha do segmento (8 traços de largura crescente, bem transparentes),
+     então o desvanecer acompanha a curva — antes o degradê era vertical e global, igual pra qualquer ponto. */
   _segProj.forEach(function(seg,k){
-    var topD=dStr(seg)+' L'+f1(seg.bx)+' '+f1(seg.by-20)+
-      ' L'+f1(seg.ax)+' '+f1(seg.ay-20)+' Z';
-    var bottomD=dStr(seg)+' L'+f1(seg.bx)+' '+f1(seg.by+20)+
-      ' L'+f1(seg.ax)+' '+f1(seg.ay+20)+' Z';
-    els.push(agGraficoPendSombra(topD,_pendUpId,{key:'pstUp'+k,clipPath:'url(#'+_clipId+')'}));
-    els.push(agGraficoPendSombra(bottomD,_pendDnId,{key:'pstDn'+k,clipPath:'url(#'+_clipId+')'}));
+    var topD=dStr(seg)+' L'+f1(seg.bx)+' '+f1(seg.by-19)+
+      ' L'+f1(seg.ax)+' '+f1(seg.ay-19)+' Z';
+    var bottomD=dStr(seg)+' L'+f1(seg.bx)+' '+f1(seg.by+19)+
+      ' L'+f1(seg.ax)+' '+f1(seg.ay+19)+' Z';
+    var _mId='cvSaldoPendM'+_saldoSvgUid+'_'+k, _mj, _mLay=[];
+    for(_mj=8;_mj>=1;_mj--){
+      _mLay.push(React.createElement('path',{key:'ml'+_mj,d:dStr(seg),fill:'none',stroke:'#fff',strokeOpacity:0.12,strokeWidth:_mj*4.4,strokeLinecap:'butt'}));
+    }
+    els.push(React.createElement('mask',{key:'pstM'+k,id:_mId,maskUnits:'userSpaceOnUse',x:0,y:0,width:W,height:H},_mLay));
+    els.push(agGraficoPendSombra(topD,_pendUpId,{key:'pstUp'+k,clipPath:'url(#'+_clipId+')',mask:'url(#'+_mId+')'}));
+    els.push(agGraficoPendSombra(bottomD,_pendDnId,{key:'pstDn'+k,clipPath:'url(#'+_clipId+')',mask:'url(#'+_mId+')'}));
   });
   els.push(React.createElement('line', { key:'ax', x1:padL, y1:yBase, x2:W - padR, y2:yBase, style:{ stroke:C.border, strokeWidth:1 } }));
   segs.forEach(function(s, k){ els.push(React.createElement('path', { key:'ln'+k, d:dStr(s), fill:'none', style:{ stroke:G, strokeWidth:1.4, strokeLinecap:'round', opacity: s.real ? 1 : 0.8 }, className: s.real ? undefined : 'ag-ln-pend', strokeDasharray: s.real ? undefined : '3 2.5' })); });

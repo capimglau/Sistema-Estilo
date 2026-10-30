@@ -24283,7 +24283,9 @@ function lancamentosDoContrato(c, receitas) {
               : (r.status === "parcial" || c.status_pagamento === "parcial") ? (parseFloat(c.valor_pago || 0) || 0)
               : 0;
     return { id: r.id, mes: mesDoLancamentoCt(r), previsto: prev,
-             recebido: Math.min(receb, prev), status: r.status || "previsto", origem: "receita" };
+             recebido: Math.min(receb, prev), status: r.status || "previsto", origem: "receita",
+             vencimento: String(r.data_vencimento || r.data || c.previsao_pagamento || "").slice(0,10),
+             pagamento: (receb > 0 ? String(r.data_pagamento || c.data_pagamento || "").slice(0,10) : "") };
   });
   if (!lst.length) {
     var vt = parseFloat(c.valor_total || 0) || 0;
@@ -24291,7 +24293,9 @@ function lancamentosDoContrato(c, receitas) {
              : c.status_pagamento === "parcial" ? (parseFloat(c.valor_pago || 0) || 0) : 0;
     lst = [{ id: null, mes: String(c.previsao_pagamento || c.data_inicio || "").slice(0, 7),
              previsto: vt, recebido: Math.min(pago, vt),
-             status: c.status_pagamento || "pendente", origem: "contrato" }];
+             status: c.status_pagamento || "pendente", origem: "contrato",
+             vencimento: String(c.previsao_pagamento || "").slice(0,10),
+             pagamento: pago > 0 ? String(c.data_pagamento || "").slice(0,10) : "" }];
   }
   return lst.sort(function(a, b) { return String(a.mes).localeCompare(String(b.mes)); });
 }
@@ -24304,15 +24308,20 @@ function somaContratoBusca(c, receitas) {
 }
 /* Resumo POR MÊS da cadeia inteira — substitui o resumo geral, que somava
    tudo num número só e não dizia em que mês o dinheiro entra. */
-function resumoPorMesContratos(cadeia, receitas) {
+/* Totalizadores independentes por DATA EXATA: vencimento e pagamento.
+   Uma mesma cobrança pode aparecer nas duas visões, mas nunca é somada duas
+   vezes no mesmo total. Vencimento não é substituído por data de pagamento. */
+function resumoPorDataContratos(cadeia, receitas, campo) {
   var mapa = {};
   (cadeia || []).forEach(function(c) {
     lancamentosDoContrato(c, receitas).forEach(function(l) {
-      var k = l.mes || "—";
-      if (!mapa[k]) mapa[k] = { mes: k, previsto: 0, recebido: 0, n: 0 };
-      mapa[k].previsto += l.previsto;
-      mapa[k].recebido += l.recebido;
-      mapa[k].n += 1;
+      var chave = l[campo];
+      if (campo === "pagamento" && (!chave || !(l.recebido > 0))) return;
+      if (!chave) chave = "—";
+      if (!mapa[chave]) mapa[chave] = { data: chave, previsto: 0, recebido: 0, n: 0 };
+      mapa[chave].previsto += l.previsto;
+      mapa[chave].recebido += l.recebido;
+      mapa[chave].n++;
     });
   });
   return Object.keys(mapa).sort().map(function(k) {
@@ -24321,6 +24330,7 @@ function resumoPorMesContratos(cadeia, receitas) {
     return m;
   });
 }
+
 function formPrincipalCC(d, lista) {
   var g = grupoParcelasCC(d, lista);
   if (g.length <= 1) return Object.assign({}, d);
@@ -25027,8 +25037,13 @@ function despesasPendentesAteHoje(despesas, hoje, oculta) {
 /* [saldo-a-receber] Quanto AINDA falta entrar num contrato: valor_total menos o já recebido quando o pagamento é parcial.
    Todo painel de "a receber" deve usar isto, não valor_total direto. */
 function ctSaldoReceber(c) {
-  var t = parseFloat(c && c.valor_total || 0) || 0;
-  return (c && c.status_pagamento === "parcial") ? Math.max(0, t - (parseFloat(c.valor_pago || 0) || 0)) : t;
+  var t = Math.max(0, parseFloat(c && c.valor_total || 0) || 0);
+  if (!c) return t;
+  if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return 0;
+  // Uma baixa parcial deve abater o que efetivamente entrou mesmo quando
+  // o status ainda não foi atualizado para "parcial".
+  var jaRecebido = Math.max(0, parseFloat(c.valor_pago || 0) || 0);
+  return Math.max(0, t - jaRecebido);
 }
 
 var STATUS = {
@@ -28462,29 +28477,27 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         var _dow = new Date(_d+"T12:00:00").getDay();
         return (_dow===0 || _dow===6) ? _diaUtilDepois(_d) : _d;
       }
+      /* [contrato-parcial-datas] Entrada realizada no dia da baixa; saldo em aberto
+         permanece exclusivamente no vencimento. Nunca deslocar o saldo para
+         data_pagamento nem somar valor_total de novo. */
       var _ctsChartMap = {};
-      ctsMes.forEach(function(c) {
-        var isPago = c.status_pagamento==="pago"||c.status_pagamento==="isento";
-        var isParcial = c.status_pagamento==="parcial" && c.valor_pago;
-        var dt = (isPago||isParcial) ? (c.data_pagamento || c.previsao_pagamento) : (c.previsao_pagamento || c.data_fim);
-        if (!dt) return;
-        dt = _semFimDeSemana(dt);
-        if (dt.slice(0,7) !== dashMes) return;
-        var day = parseInt(dt.slice(8,10), 10);
-        if (!_ctsChartMap[day]) _ctsChartMap[day] = { pago:0, pendente:0 };
-        if (isPago) { _ctsChartMap[day].pago += parseFloat(c.valor_total||0); }
-        else if (isParcial) {
-          /* parcial: gráfico mostra só o que entrou no caixa (valor_pago), igual ao sheet do dia */
-          _ctsChartMap[day].pago += parseFloat(c.valor_pago||0);
-          /* [parcial] o que ainda falta entrar fica como pendente, no dia da previsão (igual à lista/sheet do dia) */
-          var _restP = Math.max(0, parseFloat(c.valor_total||0) - parseFloat(c.valor_pago||0));
-          if (_restP > 0.005) {
-            var _dpP = _semFimDeSemana(c.previsao_pagamento || dt);
-            var _diaP = (_dpP && _dpP.slice(0,7) === dashMes) ? parseInt(_dpP.slice(8,10), 10) : day;
-            if (!_ctsChartMap[_diaP]) _ctsChartMap[_diaP] = { pago:0, pendente:0 };
-            _ctsChartMap[_diaP].pendente += _restP;
-          }
-        } else { _ctsChartMap[day].pendente += parseFloat(c.valor_total||0); }
+      (contratos||[]).forEach(function(c) {
+        if(c.status==='cancelado'||c.status_pagamento==='cancelado')return;
+        var total=Math.max(0,Number(c.valor_total)||0);
+        var pago=c.status_pagamento==='pago'||c.status_pagamento==='isento';
+        var parcial=c.status_pagamento==='parcial';
+        var recebido=pago?total:(parcial?Math.min(total,Math.max(0,Number(c.valor_pago)||0)):0);
+        var restante=Math.max(0,total-recebido);
+        function incluir(data,campo,valor){
+          if(valor<=0.005||!data)return;
+          var dt=_semFimDeSemana(String(data).slice(0,10));
+          if(dt.slice(0,7)!==dashMes)return;
+          var dia=Number(dt.slice(8,10));
+          if(!_ctsChartMap[dia])_ctsChartMap[dia]={pago:0,pendente:0};
+          _ctsChartMap[dia][campo]+=valor;
+        }
+        incluir(c.data_pagamento||c.previsao_pagamento,'pago',recebido);
+        incluir(c.previsao_pagamento||c.data_fim,'pendente',restante);
       });
       var _ctsDays = Object.keys(_ctsChartMap).map(Number).sort(function(a,b){return a-b;});
       /* ── Chart data: expenses by day ── */
@@ -28779,13 +28792,19 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 function _mkCtsMap(mes){
                   var map={};
                   (contratos||[]).forEach(function(c){
-                    var dt=(c.status_pagamento==="pago")?(c.data_pagamento||c.previsao_pagamento):(c.previsao_pagamento||c.data_fim);
-                    if(!dt||dt.slice(0,7)!==mes)return;
-                    var day=parseInt(dt.slice(8,10),10);
-                    if(!map[day])map[day]={pago:0,pendente:0};
-                    var val=parseFloat(c.valor_total||0);
-                    if(c.status_pagamento==="pago"||c.status_pagamento==="isento")map[day].pago+=val;
-                    else map[day].pendente+=val;
+                    if(c.status==='cancelado'||c.status_pagamento==='cancelado')return;
+                    var total=Math.max(0,Number(c.valor_total)||0);
+                    var pago=c.status_pagamento==='pago'||c.status_pagamento==='isento';
+                    var parcial=c.status_pagamento==='parcial';
+                    var recebido=pago?total:(parcial?Math.min(total,Math.max(0,Number(c.valor_pago)||0)):0);
+                    function add(data,tipo,valor){
+                      if(!data||valor<=0.005||String(data).slice(0,7)!==mes)return;
+                      var day=Number(String(data).slice(8,10));
+                      if(!map[day])map[day]={pago:0,pendente:0};
+                      map[day][tipo]+=valor;
+                    }
+                    add(c.data_pagamento||c.previsao_pagamento,'pago',recebido);
+                    add(c.previsao_pagamento||c.data_fim,'pendente',Math.max(0,total-recebido));
                   });
                   return map;
                 }
@@ -28989,18 +29008,21 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                   var ds=mes+"-"+(day<10?"0":"")+day, fut=ds>hoje, ent=0, sai=0;
                   (contratos||[]).forEach(function(c){
                     if(c.status_pagamento==="cancelado")return;
-                    var isPg=c.status_pagamento==="pago"||c.status_pagamento==="isento"||c.status_pagamento==="parcial";
-                    var dt=isPg?(c.data_pagamento||c.previsao_pagamento):c.previsao_pagamento;
-                    if(dt&&dt.slice(0,10)===ds&&(isPg||fut))ent+=parseFloat(c.status_pagamento==="parcial"?(c.valor_pago||0):(c.valor_total||0));
+                    var isPg=c.status_pagamento==="pago"||c.status_pagamento==="isento";
+                    var total=Math.max(0,Number(c.valor_total)||0);
+                    var received=isPg?total:(c.status_pagamento==="parcial"?Math.min(total,Math.max(0,Number(c.valor_pago)||0)):0);
+                    if(received>0&&(c.data_pagamento||c.previsao_pagamento||'').slice(0,10)===ds)ent+=received;
+                    var restante=Math.max(0,total-received);
+                    if(fut&&restante>0&&(c.previsao_pagamento||'').slice(0,10)===ds)ent+=restante;
                   });
-                  (receitas||[]).forEach(function(r){if(r.ref_fatura)return;var rec=r.status==='recebido'||r.status==='pago';var dt=r.data_pagamento||r.data;if(dt&&dt.slice(0,10)===ds&&(rec||fut))ent+=parseFloat(r.valor||0);});
+                  (receitas||[]).forEach(function(r){if(r.ref_fatura)return;var rec=r.status==='recebido'||r.status==='pago';var dt=r.data_pagamento||r.data;var vl=rec?parseFloat(r.valor||0):(r.status==='parcial'?Math.min(parseFloat(r.valor||0),Math.max(0,parseFloat(r._valorPago||0))):parseFloat(r.valor||0));if(dt&&dt.slice(0,10)===ds&&(rec||r.status==='parcial'||fut))ent+=vl;});
                   (multas||[]).forEach(function(mu){
                     if(mu.status==='cancelada'||mu.status==='cancelado')return;
                     if(mu.cobrado_cliente==='pago'){var dc=mu.data_cobranca_cliente||mu.data_pagamento;if(dc&&dc.slice(0,10)===ds)ent+=parseFloat(mu.valor_cobrado||mu.valor||0);}
                     if(mu.status==='pago'&&mu.data_pagamento&&mu.data_pagamento.slice(0,10)===ds)sai+=parseFloat(mu.valor||0);
                   });
                   resolverDespesasDoMes(despesas||[],mes).forEach(function(d){var pago=d.status==="pago"||!!d.data_pagamento;var dt=pago?(d.data_pagamento||d.data):d.data;if(dt&&dt.slice(0,10)===ds&&(pago||fut))sai+=parseFloat(d.valor||0);});
-                  (manutencoes||[]).forEach(function(mm){if(mm.data_pagamento&&mm.data_pagamento.slice(0,10)===ds)sai+=parseFloat(mm.custo||0);});
+                  (manutencoes||[]).forEach(function(mm){if(agManutencaoTemDespesa(mm,despesas,manutencoes))return; if(mm.data_pagamento&&mm.data_pagamento.slice(0,10)===ds)sai+=parseFloat(mm.custo||0);});
                   return {ent:ent,sai:sai};
                 }
                 var _todayDay=parseInt(hoje.slice(8,10),10);
@@ -30111,11 +30133,17 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 var _inDay = function(dt){ return dt && dt.slice(0,7)===_mesSheet && parseInt(dt.slice(8,10),10)===_day; };
                 /* ── ENTRADAS do caixa ── (fonte: arrays brutos, p/ funcionar em qualquer mês do gráfico) */
                 // [previsto-liquidado] rdMesDoContrato cobre pago E parcial.
-                var _ctsSheet = (contratos||[]).filter(function(c){ return rdMesDoContrato(c)===_mesSheet; });
-                var _ctsDay = _ctsSheet.filter(function(c){
-                  var isPgoParcial=c.status_pagamento==="pago"||c.status_pagamento==="isento"||c.status_pagamento==="parcial";
-                  var dt = isPgoParcial ? (c.data_pagamento||c.previsao_pagamento) : c.previsao_pagamento;
-                  return _inDay(dt);
+                var _ctsDay = [];
+                (contratos||[]).forEach(function(c){
+                  if(c.status==='cancelado'||c.status_pagamento==='cancelado')return;
+                  var total=Math.max(0,Number(c.valor_total)||0);
+                  var full=c.status_pagamento==='pago'||c.status_pagamento==='isento';
+                  var received=full?total:(c.status_pagamento==='parcial'?Math.min(total,Math.max(0,Number(c.valor_pago)||0)):0);
+                  var saldo=Math.max(0,total-received);
+                  if(received>0.005&&_inDay(c.data_pagamento||c.previsao_pagamento))
+                    _ctsDay.push(Object.assign({},c,{_chartValor:received,_chartRecebido:true,_chartPendente:false}));
+                  if(saldo>0.005&&_inDay(c.previsao_pagamento||c.data_fim))
+                    _ctsDay.push(Object.assign({},c,{_chartValor:saldo,_chartRecebido:false,_chartPendente:true}));
                 });
                 var _recDay = (receitas||[]).filter(function(r){
                   if(r.ref_fatura) return false;
@@ -30137,7 +30165,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                   var dt = pago ? (d.data_pagamento||d.data) : d.data;
                   return _inDay(dt);
                 });
-                var _manDay = (manutencoes||[]).filter(function(m){ return _inDay(m.data_pagamento); });
+                var _manDay = (manutencoes||[]).filter(function(m){ return !agManutencaoTemDespesa(m,despesas,manutencoes) && _inDay(m.data_pagamento); });
                 var _multaPagaDay = (multas||[]).filter(function(mu){
                   if(mu.status==='cancelada'||mu.status==='cancelado') return false;
                   return mu.status==='pago' && _inDay(mu.data_pagamento);
@@ -30150,14 +30178,15 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 var _contasVencDay = _isHojeSheet ? _contasHoje : [];
                 var _multasVencDay = _isHojeSheet ? _multasHoje : [];
                 var _manutAtrasoDay = _isHojeSheet ? _manutVencHoje : [];
-                function _cVal(c){return parseFloat(c.status_pagamento==="parcial"?(c.valor_pago||0):(c.valor_total||0));}
-                function _ctRecebido(c){return c.status_pagamento==="pago"||c.status_pagamento==="isento"||c.status_pagamento==="parcial";}
+                function _cVal(c){return c._chartValor!=null ? c._chartValor : parseFloat(c.valor_total||0);}
+                function _ctRecebido(c){return c._chartRecebido===true;}
                 function _recRecebido(r){return r.status==='recebido'||r.status==='pago';}
+                function _recValorRealizado(r){return _recRecebido(r)?Math.max(0,parseFloat(r.valor||0)):(r.status==='parcial'?Math.min(Math.max(0,parseFloat(r.valor||0)),Math.max(0,parseFloat(r._valorPago||0))):0);}
                 function _despPago(d){return d.status==="pago"||!!d.data_pagamento;}
                 /* totais que entram no SALDO: passado = só efetivado; futuro = projeção (pendente/previsto) */
                 var _futDia = (_mesSheet+"-"+(_day<10?"0":"")+_day) > hoje;
                 var _totEnt = _ctsDay.filter(function(c){return _ctRecebido(c)||_futDia;}).reduce(function(s,c){return s+_cVal(c);},0)
-                  + _recDay.filter(function(r){return _recRecebido(r)||_futDia;}).reduce(function(s,r){return s+parseFloat(r.valor||0);},0)
+                  + _recDay.filter(function(r){return _recRecebido(r)||r.status==='parcial'||_futDia;}).reduce(function(s,r){return s+(_futDia&&!_recRecebido(r)&&r.status!=='parcial'?Math.max(0,parseFloat(r.valor||0)):_recValorRealizado(r));},0)
                   + _multaRecDay.reduce(function(s,m){return s+parseFloat(m.valor_cobrado||m.valor||0);},0);
                 var _totSai = _despDay.filter(function(d){return _despPago(d)||_futDia;}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0)
                   + _retDay.filter(function(d){return _despPago(d)||_futDia;}).reduce(function(s,d){return s+parseFloat(d.valor||0);},0)
@@ -30203,11 +30232,11 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                     , _ctsDay.map(function(c,i){
                         var cl=(clientes||[]).find(function(x){return x.id==c.cliente_id;});
                         var ve=(veiculos||[]).find(function(x){return x.id==c.veiculo_id;});
-                        var isPago=c.status_pagamento==="pago"||c.status_pagamento==="isento";
-                        var isParcial=c.status_pagamento==="parcial";
+                        var isPago=c._chartRecebido===true;
+                        var isParcial=c.status_pagamento==="parcial" && !isPago;
                         var cor=(isPago||isParcial)?C.green:C.orange;
                         var _cId=c.id;
-                        return _row("ct"+_cId, isPago?"✅":isParcial?"🔶":"⏳", (cl&&cl.nome)||"Contrato #"+_cId,
+                        return _row("ct"+_cId+(isPago?"-recebido":"-saldo"), isPago?"✅":isParcial?"🔶":"⏳", (cl&&cl.nome)||"Contrato #"+_cId,
                           (ve&&ve.placa||"--")+" \xb7 "+(isPago?"recebido":isParcial?"parcial":"a receber"),
                           _cVal(c), cor,
                           function(){onItemNav({type:"contrato",id:_cId},"contratos");setChartDaySheet(null);},
@@ -53153,9 +53182,7 @@ function buildAgendaEventos(ctx) {
          parcial. O que ainda falta entrar vai em `pendente`, que é o que os
          totais por dia somam: previsto − parcela já recebida. */
       valor: numV(c.valor_total), fluxo: "in",
-      pendente: c.status_pagamento === "parcial"
-        ? Math.max(0, (numV(c.valor_total)||0) - (numV(c.valor_pago)||0))
-        : numV(c.valor_total),
+      pendente: ctSaldoReceber(c),
       tab: "contratos", id: c.id, acao: "baixar"
     });
   });
@@ -59032,7 +59059,8 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, rec
         label: cadeia.length > 1 ? "Contrato #"+numCt(first.id)+" → #"+numCt(last.id) : "Contrato #"+numCt(first.id),
         sub: nm+(pl?" · "+pl:""),
         cadeia: cadeia,
-        porMes: resumoPorMesContratos(cadeia, receitas),
+        porVencimento: resumoPorDataContratos(cadeia, receitas, "vencimento"),
+        porPagamento: resumoPorDataContratos(cadeia, receitas, "pagamento"),
         tab:"operacional", subtab:"contratos"
       });
     });
@@ -59119,7 +59147,7 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, rec
                             : C.red;
                     return React.createElement('div', { key:k, style:{ display:"flex",justifyContent:"space-between",gap:8,padding:"3px 0 3px 10px",fontSize:12 } },
                       React.createElement('span', { style:{color:"var(--c-sub)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"} },
-                        (l.mes ? fmtComp(l.mes) : "sem mês") + (l.origem==="contrato" ? " · previsto" : "")),
+                        (l.mes ? fmtComp(l.mes) : "sem mês") + " · vence " + (l.vencimento ? fmtDateShort(l.vencimento) : "sem data") + (l.pagamento ? " · pago " + fmtDateShort(l.pagamento) : "") + (l.origem==="contrato" ? " · previsto" : "")),
                       React.createElement(BRLValue,{v:l.previsto,size:12,weight:600,color:cor,style:{flexShrink:0}})
                     );
                   }),
@@ -59133,21 +59161,25 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, rec
                   )
                 );
               }),
-              /* Resumo POR MÊS no lugar do resumo geral: um número só não dizia
-                 em que mês o dinheiro entra. */
-              (r.porMes||[]).length > 0 && React.createElement('div', { style:{ marginTop:10,paddingTop:8,borderTop:"2px solid var(--c-border)" } },
-                React.createElement('div', { style:{ fontSize:11,fontWeight:700,color:"var(--c-sub)",textTransform:"uppercase",letterSpacing:0.5,marginBottom:4 } }, "Resumo por mês"),
-                r.porMes.map(function(m,k){
-                  return React.createElement('div', { key:k, style:{ display:"flex",justifyContent:"space-between",gap:8,padding:"3px 0",fontSize:12 } },
-                    React.createElement('span', { style:{color:"var(--c-text)",fontWeight:600,flexShrink:0} }, m.mes==="—" ? "Sem mês" : fmtComp(m.mes)),
-                    React.createElement('span', { style:{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"flex-end"} },
-                      React.createElement(BRLValue,{v:m.previsto,size:12,weight:400,color:"var(--c-sub)"}),
-                      React.createElement('span', { style:{color:C.green,fontWeight:600} }, "receb. ",React.createElement(BRLValue,{v:m.recebido,size:12,weight:600,color:C.green})),
-                      m.aReceber > 0 && React.createElement('span', { style:{color:C.red,fontWeight:600} }, "falta ",React.createElement(BRLValue,{v:m.aReceber,size:12,weight:600,color:C.red}))
-                    )
-                  );
-                })
-              )
+              /* Dois agrupamentos distintos para evitar confusão entre
+                 data prevista de vencimento e data efetiva de pagamento. */
+              [{titulo:"Totalizadores por data de vencimento", lista:r.porVencimento||[], tipo:"vencimento"},
+               {titulo:"Totalizadores por data de pagamento", lista:r.porPagamento||[], tipo:"pagamento"}].map(function(grupo,gi){
+                return React.createElement('div',{key:gi,style:{marginTop:12,paddingTop:9,borderTop:"2px solid var(--c-border)"}},
+                  React.createElement('div',{style:{fontSize:11,fontWeight:700,color:"var(--c-sub)",textTransform:"uppercase",letterSpacing:0.4,marginBottom:6}},grupo.titulo),
+                  grupo.lista.length===0 && React.createElement('div',{style:{fontSize:12,color:"var(--c-sub)",padding:"5px 0"}},"Nenhum pagamento com data registrada"),
+                  grupo.lista.map(function(m,k){
+                    return React.createElement('div',{key:k,style:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap",padding:"6px 0",borderBottom:"1px solid var(--c-border)",fontSize:12}},
+                      React.createElement('span',{style:{fontWeight:700,color:"var(--c-text)"}},m.data==="—"?"Sem data":fmtDateShort(m.data)," · ",m.n," lançamento",m.n===1?"":"s"),
+                      React.createElement('span',{style:{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"flex-end"}},
+                        grupo.tipo==="vencimento" && React.createElement('span',null,"Vence: ",React.createElement(BRLValue,{v:m.previsto,size:12,weight:700,color:"var(--c-text)"})),
+                        React.createElement('span',{style:{color:C.green}},"Pago: ",React.createElement(BRLValue,{v:m.recebido,size:12,weight:700,color:C.green})),
+                        grupo.tipo==="vencimento" && m.aReceber>0 && React.createElement('span',{style:{color:C.red}},"Pendente: ",React.createElement(BRLValue,{v:m.aReceber,size:12,weight:700,color:C.red}))
+                      )
+                    );
+                  })
+                );
+              })
             )
           );
         }

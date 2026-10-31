@@ -24435,7 +24435,7 @@ function _stripSnapEnc(str) { return (str || "").replace(/\n?\[\[snap_enc:[A-Za-
    Renovação contrato #51. …" no documento. */
 function _obsVisivel(obs) {
   return _stripSnapEnc(obs || "")
-    .replace(/(?:Renova(?:ç|c)(?:ã|a)o(?: autom(?:á|a)tica)? contrato #?\d+|Recebido em \d{4}-\d{2}-\d{2}|Pagamento completo em \d{4}-\d{2}-\d{2})\.?/gi, " ")
+    .replace(/(?:Renova(?:ç|c)(?:ã|a)o(?: autom(?:á|a)tica)? contrato #?\d+|Recebido em \d{4}-\d{2}-\d{2}|\[\[parcial:[^\]]*\]\]|Pagamento completo em \d{4}-\d{2}-\d{2})\.?/gi, " ")
     .split("\n").map(function(l) { return l.replace(/\s+/g, " ").trim(); })
     .filter(Boolean).join("\n").trim();
 }
@@ -24447,6 +24447,27 @@ function ctValorRecebidoParcial(c){
   if(!c||c.status==='cancelado'||c.status_pagamento==='pago'||c.status_pagamento==='isento') return 0;
   return Math.max(0,parseFloat(c.valor_pago||0)||0);
 }
+/* [parcial-data-preservada] Ao COMPLETAR o pagamento de um contrato que já tinha baixa parcial, data_pagamento é sobrescrita pela data
+   final e o caixa passava a contar o valor_total INTEIRO nesse dia (a parcial recebida antes "andava" pra data final). Agora, na hora
+   de quitar, a data e o valor da parcial ficam guardados em observacoes como [[parcial:AAAA-MM-DD:valor]] e o caixa separa as duas partes. */
+function ctParcialMarca(c){
+  var m = String((c && c.observacoes) || '').match(/\[\[parcial:(\d{4}-\d{2}-\d{2}):([0-9.]+)\]\]/);
+  if (!m) return null;
+  var v = parseFloat(m[2]);
+  return (v > 0) ? { dt:m[1], v:v } : null;
+}
+function ctObsComParcial(c){
+  if (!c || c.status_pagamento !== 'parcial') return null;
+  var vp = parseFloat(c.valor_pago || 0);
+  if (!(vp > 0) || !c.data_pagamento || ctParcialMarca(c)) return null;
+  return (String(c.observacoes || '').trim() + '\n[[parcial:' + c.data_pagamento + ':' + vp + ']]').trim();
+}
+function ctPatchQuitar(c, dtPag){
+  var p = { status_pagamento:'pago', data_pagamento:dtPag };
+  var o = ctObsComParcial(c);
+  if (o !== null) p.observacoes = o;
+  return p;
+}
 /* Saldo real do caixa desde o início dos lançamentos até (exclusive) ateDt */
 function saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, ateDt) {
   var s = 0;
@@ -24457,7 +24478,14 @@ function saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, ateDt
     if(!_pago&&!_parc) return;
     /* contrato recebido entra no caixa na data do pagamento; se vazia, usa a previsão
        (mesma regra da linha verde/_mkCtsMap) — senão recebidos sem data_pagamento somem do saldo */
-    var dt=c.data_pagamento||c.previsao_pagamento||c.data_fim; if(!dt||dt>=ateDt) return;
+    var dt=c.data_pagamento||c.previsao_pagamento||c.data_fim;
+    var _mk=_pago?ctParcialMarca(c):null;
+    if(_mk && _mk.v < parseFloat(c.valor_total||0)){
+      if(_mk.dt<ateDt) s+=_mk.v;
+      if(dt && dt<ateDt) s+=parseFloat(c.valor_total||0)-_mk.v;
+      return;
+    }
+    if(!dt||dt>=ateDt) return;
     if(_pago) s+=parseFloat(c.valor_total||0);
     else s+=parseFloat(c.valor_pago||0);
   });
@@ -24500,7 +24528,14 @@ function movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas
     var _pago=c.status_pagamento==='pago';
     var _parc=ctValorRecebidoParcial(c)>0;
     if(!_pago&&!_parc) return;
-    var dt=c.data_pagamento||c.previsao_pagamento||c.data_fim; if(dt!==diaStr) return;
+    var dt=c.data_pagamento||c.previsao_pagamento||c.data_fim;
+    var _mk=_pago?ctParcialMarca(c):null;
+    if(_mk && _mk.v < parseFloat(c.valor_total||0)){
+      if(_mk.dt===diaStr) itens.push({ tipo:'receita', label:'Contrato'+(c.placa?' · '+c.placa:'')+' (parcial)', valor:_mk.v });
+      if(dt===diaStr) itens.push({ tipo:'receita', label:'Contrato'+(c.placa?' · '+c.placa:'')+' (restante)', valor:parseFloat(c.valor_total||0)-_mk.v });
+      return;
+    }
+    if(dt!==diaStr) return;
     itens.push({ tipo:'receita', label:'Contrato'+(c.placa?' · '+c.placa:''), valor:_pago?parseFloat(c.valor_total||0):parseFloat(c.valor_pago||0) });
   });
   (receitas||[]).forEach(function(r){
@@ -30934,15 +30969,15 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         var pts = [], _movReal = [];
         for (var d=1; d<=_diaRef; d++) {
           var its = movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _mesSel+'-'+_pad2(d)) || [];
-          var rec=0, dep=0, ret=0;
-          its.forEach(function(it){ var v=Math.abs(parseFloat(it.valor||0)); if (it.tipo==='receita') rec+=v; else if (it.ret) ret+=v; else dep+=v; });
-          if (rec>0.005 || dep>0.005 || ret>0.005) _movReal.push({ dia:d, rec:rec, dep:dep, ret:ret });
+          var rec=0, dep=0, ret=0, _itR=[];
+          its.forEach(function(it){ var v=Math.abs(parseFloat(it.valor||0)); if (it.tipo==='receita') { rec+=v; _itR.push((it.label||'Receita') + ' · ' + fmtBRLsm(v)); } else if (it.ret) ret+=v; else dep+=v; });
+          if (rec>0.005 || dep>0.005 || ret>0.005) _movReal.push({ dia:d, rec:rec, dep:dep, ret:ret, itens:_itR });
         }
         if (!_movReal.length || _movReal[0].dia > 1) {
           pts.push({ dia:1, saldo: saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _mesSel+'-01'), rec:0, dep:0, real:true, sem:true });
         }
         _movReal.forEach(function(m){
-          pts.push({ dia:m.dia, saldo: (m.dia===_diaRef ? _saldoRef : saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _proxD(m.dia))), rec:m.rec, dep:m.dep, ret:(m.ret||0), real:true });
+          pts.push({ dia:m.dia, saldo: (m.dia===_diaRef ? _saldoRef : saldoCaixaAte(contratos, receitas, despesas, manutencoes, multas, _proxD(m.dia))), rec:m.rec, dep:m.dep, ret:(m.ret||0), itens:(m.itens||[]), real:true });
         });
         if (pts[pts.length-1].dia < _diaRef) pts.push({ dia:_diaRef, saldo:_saldoRef, rec:0, dep:0, real:true, sem:true });
         _projSerie.forEach(function(p){
@@ -36418,8 +36453,9 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     var dataPagOriginal = c.data_pagamento;
     var recSnapshot = (receitas||[]).filter(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_"+c.id+"_"); }).map(function(r){ return Object.assign({}, r); });
     try {
-      await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtBaixa });
-      setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,{status_pagamento:"pago",data_pagamento:dtBaixa}) : x; }); });
+      var _pdQ = ctPatchQuitar(c, dtBaixa);
+      await db.patch("contratos", c.id, _pdQ);
+      setContratos(function(p){ return p.map(function(x){ return x.id===c.id ? Object.assign({},x,_pdQ) : x; }); });
       await sincronizarRefFatura(c, dtBaixa);
       setBaixarCtModal(null);
       _talvezVoltarInicio();
@@ -36639,8 +36675,9 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         var _r = await window.__agPrompt({ title: "Receber Pagamento", icon: "💰", label1: "Data do pagamento", type1: "date", default1: _brNow().toISOString().split("T")[0] });
         if (!_r.ok) return;
         var dtPag = _r.v1;
-        await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtPag });
-        setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dtPag }) : x));
+        var _pdQ = ctPatchQuitar(c, dtPag);
+        await db.patch("contratos", c.id, _pdQ);
+        setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, _pdQ) : x));
         await sincronizarRefFatura(c, dtPag);
         toast("✅ Pagamento registrado!");
       })();
@@ -36667,8 +36704,9 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         var _r = await window.__agPrompt({ title: "Completar Pagamento", icon: "✅", label1: "Data do pagamento", type1: "date", default1: _brNow().toISOString().split("T")[0] });
         if (!_r.ok) return;
         var dtPag = _r.v1;
-        await db.patch("contratos", c.id, { status_pagamento: "pago", data_pagamento: dtPag });
-        setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, { status_pagamento: "pago", data_pagamento: dtPag }) : x));
+        var _pdQ = ctPatchQuitar(c, dtPag);
+        await db.patch("contratos", c.id, _pdQ);
+        setContratos(p => p.map(x => x.id === c.id ? Object.assign({}, x, _pdQ) : x));
         await sincronizarRefFatura(c, dtPag);
         toast("✅ Pagamento completo!");
       })();
@@ -45307,7 +45345,7 @@ function _a2Mix(c, p) { return "color-mix(in srgb, " + c + " " + p + "%, var(--c
 function _a2S1(c) { return "color-mix(in srgb, " + c + " 80%, white)"; } /* [tubo-pend-claro] pendente mais claro que o efetivado (cor cheia) */
 function _a2S2(c) { return "color-mix(in srgb, " + c + " 52%, white)"; } /* clareia sutilmente só o não efetivado */
 function _a2Fill(c) { return "linear-gradient(180deg, color-mix(in srgb, " + c + " 90%, #fff) 0%, " + c + " 45%, color-mix(in srgb, " + c + " 84%, #000) 100%)"; }
-function _a2Glow(c) { return "inset 0 1px 0 rgba(255,255,255,0.5), 2px 0 0 var(--c-card), 0 0 14px color-mix(in srgb, " + c + " 45%, transparent)"; }
+function _a2Glow(c) { return "inset 0 1px 0 rgba(255,255,255,0.5), 1px 0 0 var(--c-card), 0 0 6px color-mix(in srgb, " + c + " 28%, transparent)"; /* [divisoria-fina] fio de 1px e brilho curto */ }
 function _a2Ring(c) { return "inset 0 0 0 1px color-mix(in srgb, " + c + " 32%, transparent), inset 0 1px 0 rgba(255,255,255,0.35)"; }
 function _a2Txt(c) { return "color-mix(in srgb, " + c + " 78%, var(--c-text))"; }
 function FunnelBars(items, opts) {

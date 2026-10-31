@@ -30799,7 +30799,10 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         if (!c.previsao_pagamento || c.previsao_pagamento <= hoje || c.previsao_pagamento.slice(0,7) !== _mesSel) return;
         var falta = ctSaldoReceber(c);
         if (falta <= 0) return;
-        _eventosFuturos.push({ dia: parseInt(c.previsao_pagamento.slice(8,10),10), delta: falta, tipo:'receita', label:'Contrato' });
+        var _cliEv = (clientes||[]).find(function(x){ return x.id == c.cliente_id; });
+        var _totEv = parseFloat(c.valor_total||0) || 0;
+        _eventosFuturos.push({ dia: parseInt(c.previsao_pagamento.slice(8,10),10), delta: falta, tipo:'receita', label:'Contrato',
+          det: ((_cliEv && _cliEv.nome) || 'Contrato') + ' · ' + (falta < _totEv - 0.005 ? 'falta ' + fmtBRLsm(falta) + ' de ' + fmtBRLsm(_totEv) : fmtBRLsm(falta)) });
       });
       _despMesTodasList.forEach(function(d){
         if (d.status === 'pago' || d.data_pagamento) return;
@@ -30897,12 +30900,12 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       /* [grafico-saldo-movimentos] Receitas e despesas de cada dia exibidas junto ao saldo no gráfico:
          realizado (dias da janela até hoje, via movimentosCaixaDoDia) + previsto (eventos futuros). */
       var _movsGraf = [];
-      var _movDiaGet = function(d){ for (var _q=0; _q<_movsGraf.length; _q++){ if (_movsGraf[_q].dia===d) return _movsGraf[_q]; } var _n={ dia:d, rec:0, dep:0, ret:0 }; _movsGraf.push(_n); return _n; };
+      var _movDiaGet = function(d){ for (var _q=0; _q<_movsGraf.length; _q++){ if (_movsGraf[_q].dia===d) return _movsGraf[_q]; } var _n={ dia:d, rec:0, dep:0, ret:0, itens:[] }; _movsGraf.push(_n); return _n; };
       for (var _dm = _diaInicioRecente; _cmpMes===0 && _dm <= _diaHojeNum; _dm++) {
         var _itsM = movimentosCaixaDoDia(contratos, receitas, despesas, manutencoes, multas, _mesHoje + '-' + String(_dm).padStart(2,'0')) || [];
         _itsM.forEach(function(it){ var _mv=_movDiaGet(_dm); var _vv=Math.abs(parseFloat(it.valor||0)); if (it.tipo==='receita') _mv.rec+=_vv; else if (it.ret) _mv.ret+=_vv; else _mv.dep+=_vv; });
       }
-      _eventosFuturos.forEach(function(ev){ if (ev.dia <= _diaRef) return; var _mv=_movDiaGet(ev.dia); if (ev.delta>0) _mv.rec+=ev.delta; else _mv.dep+=Math.abs(ev.delta); });
+      _eventosFuturos.forEach(function(ev){ if (ev.dia <= _diaRef) return; var _mv=_movDiaGet(ev.dia); if (ev.delta>0) { _mv.rec+=ev.delta; if (ev.det) _mv.itens.push(ev.det); } else _mv.dep+=Math.abs(ev.delta); });
       _movsGraf = _movsGraf.filter(function(m){ return m.rec>0.005 || m.dep>0.005 || m.ret>0.005; }).sort(function(a,b){ return a.dia-b.dia; });
       var _minPtProj = { saldo:_saldoProjetado, dia:_ultimoDiaMesHoje };
       _projDias.forEach(function(p){ if (p.saldo < _minPtProj.saldo) _minPtProj = { saldo:p.saldo, dia:p.dia }; });
@@ -30945,7 +30948,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
         _projSerie.forEach(function(p){
           if (p.dia <= _diaRef) return;
           var mv = null; _movsGraf.forEach(function(m){ if (m.dia===p.dia) mv = m; });
-          pts.push({ dia:p.dia, saldo:p.saldo, rec:(mv?mv.rec:0), dep:(mv?mv.dep:0), ret:(mv?(mv.ret||0):0), real:false, sem:!mv });
+          pts.push({ dia:p.dia, saldo:p.saldo, rec:(mv?mv.rec:0), dep:(mv?mv.dep:0), ret:(mv?(mv.ret||0):0), itens:(mv?(mv.itens||[]):[]), real:false, sem:!mv });
         });
         return pts;
       })();
@@ -44907,6 +44910,7 @@ function CurvaSaldo(p){
     , selPt && React.createElement('div', { style:Object.assign({ position:'absolute', top:0, background:C.card, border:'1px solid ' + C.border, borderRadius:9, padding:'3px 9px', fontSize:11, fontWeight:700, lineHeight:1.3, whiteSpace:'nowrap', color:C.text, boxShadow:'0 2px 6px rgba(0,0,0,0.08)', pointerEvents:'none', zIndex:3 }, pos) }
         , ddFull(selPt.q.dia) + ' · ', fmtBRLsm(selPt.q.saldo)
         , selPt.q.rec > 0.005 && React.createElement('div', { style:{ color:G, fontWeight:600 } }, 'receitas ', fmtBRLsm(selPt.q.rec))
+        , (selPt.q.itens || []).slice(0, 6).map(function(t, ti){ return React.createElement('div', { key:'it'+ti, style:{ color:C.sub, fontWeight:500, fontSize:10 } }, t); })
         , selPt.q.dep > 0.005 && React.createElement('div', { style:{ color:R, fontWeight:600 } }, 'despesas ', fmtBRLsm(selPt.q.dep))
         , selPt.q.ret > 0.005 && React.createElement('div', { style:{ color:C.orange, fontWeight:600 } }, 'retiradas/ajustes/multas ', fmtBRLsm(selPt.q.ret)))
     , React.createElement('svg', { viewBox:'0 0 ' + W + ' ' + H, width:'100%', style:{ display:'block', overflow:'visible' }, role:'img', 'aria-label':'Saldo do mês — receitas e despesas' }, els));
@@ -44916,7 +44920,7 @@ function CurvaSaldo(p){
    Usado em Início › Despesas por Categoria / Receitas por Cliente e em Orçamento Pessoal › Receitas / Despesas por Categoria.
    props: title, total, color, items (value|val, pendente|pend), rowsAll [{data,valor,pendente}], rotuloPendente, rotuloPago, mes ("YYYY-MM"), C, desktop. */
 function CurvaAcumulada(opts){
-  var C = opts.C, desktop = !!opts.desktop, compactoPC = !!opts.compactDesktop, dashMes = opts.mes;
+  var C = opts.C, desktop = !!opts.desktop, compactoPC = !!opts.compactDesktop || !!opts.desktop, dashMes = opts.mes;
   var _stSel = React.useState(null);
   var fnDotSel = {}; fnDotSel[opts.title] = _stSel[0];
   var setFnDotSel = function(fn){ _stSel[1](function(cur){ var m = {}; m[opts.title] = cur; var r = fn(m); return r[opts.title]; }); };
@@ -45141,7 +45145,7 @@ function CurvaAcumulada(opts){
                       , _gSel && React.createElement('div', { style:Object.assign({ position:'absolute', top:-2, background:C.card, border:'1px solid '+C.border, borderRadius:9, padding:'3px 9px', fontSize:11, fontWeight:700, lineHeight:1.25, whiteSpace:'nowrap', color:_corE(_gSel.estado), boxShadow:'0 2px 6px rgba(0,0,0,0.08)', pointerEvents:'none', zIndex:3 }, _bubPos((_gSel.x / W) * 100)) }
                           , _ddmm(_gSel.data)+' \u00b7 ', fmtBRLsm(_gSel.v)
                           , _gSel.estado === 'parcial' && React.createElement('div', { style:{ fontSize:10.5, fontWeight:500, color:C.sub } }, _cap(opts.rotuloPago||'pago').toLowerCase()+' ', fmtBRLsm(_gSel.v - _gSel.p, true), ' \u00b7 falta ', fmtBRLsm(_gSel.p, true)))
-                      , React.createElement('svg', { viewBox:'0 0 '+W+' '+H, width:'100%', style:{ display:'block', overflow:'visible', maxWidth:780, margin:'0 auto' }, role:'img', 'aria-label':opts.title+' \u2014 curva acumulada' }, _els))
+                      , React.createElement('svg', { viewBox:'0 0 '+W+' '+H, width:'100%', style:{ display:'block', overflow:'visible', maxWidth:(desktop ? 500 : 780), margin:'0 auto' }, role:'img', 'aria-label':opts.title+' \u2014 curva acumulada' }, _els))
                   , _rodape
                 );
 }
@@ -45300,8 +45304,8 @@ function _funnelInfoRows(infoItems, mx, opts) {
 }
 /* [a2-tubo] Helpers do desenho A2 (usados em Despesas por Categoria, Receitas por Cliente e Pedágios) */
 function _a2Mix(c, p) { return "color-mix(in srgb, " + c + " " + p + "%, var(--c-card))"; }
-function _a2S1(c) { return "color-mix(in srgb, " + c + " 78%, black)"; } /* pendente ligeiramente mais claro */
-function _a2S2(c) { return "color-mix(in srgb, " + c + " 94%, var(--c-card))"; } /* clareia sutilmente só o não efetivado */
+function _a2S1(c) { return "color-mix(in srgb, " + c + " 80%, white)"; } /* [tubo-pend-claro] pendente mais claro que o efetivado (cor cheia) */
+function _a2S2(c) { return "color-mix(in srgb, " + c + " 52%, white)"; } /* clareia sutilmente só o não efetivado */
 function _a2Fill(c) { return "linear-gradient(180deg, color-mix(in srgb, " + c + " 90%, #fff) 0%, " + c + " 45%, color-mix(in srgb, " + c + " 84%, #000) 100%)"; }
 function _a2Glow(c) { return "inset 0 1px 0 rgba(255,255,255,0.5), 2px 0 0 var(--c-card), 0 0 14px color-mix(in srgb, " + c + " 45%, transparent)"; }
 function _a2Ring(c) { return "inset 0 0 0 1px color-mix(in srgb, " + c + " 32%, transparent), inset 0 1px 0 rgba(255,255,255,0.35)"; }
@@ -45391,7 +45395,7 @@ function _funnelBarsLista(items, opts) {
           var _nomeBranco = true, _pilulaSobreListra = false;
           var _rowC = React.createElement('div', { onClick:function(e){ opts.onBarClick && opts.onBarClick(x, e); }, style:{ display:"flex", alignItems:"center", gap:8, cursor:opts.onBarClick ? "pointer" : "default" } }
             , React.createElement('div', { className:(_lista ? "ag-stripes ag-a2 ag-mv" : undefined), style:_tubeC }
-              , (_lista && _stop !== "0.0%") && React.createElement('div', { style:{ position:"absolute", left:0, top:0, bottom:0, width:_stop, borderRadius:999, background:_a2Fill(x.color), boxShadow:_a2Glow(x.color) } })
+              , (_lista && _stop !== "0.0%") && React.createElement('div', { style:{ position:"absolute", left:0, top:0, bottom:0, width:_stop, borderRadius:"999px 0 0 999px", background:_a2Fill(x.color), boxShadow:_a2Glow(x.color) } })
               , React.createElement('span', { style:{ position:"relative", zIndex:2, fontSize:opts.compactDesktop?11:12.5, fontWeight:600, letterSpacing:0.2, color:(_nomeBranco ? "#fff" : _a2Txt(x.color)), whiteSpace:"nowrap", textShadow:(_nomeBranco ? "0 1px 2px rgba(0,0,0,0.28)" : "none") } }, x.label || "")
               , React.createElement('span', { style:{ position:"relative", zIndex:2, fontSize:10, fontWeight:700, color:(_pilulaSobreListra ? _a2Txt(x.color) : "#fff"), background:(_pilulaSobreListra ? "color-mix(in srgb, " + x.color + " 16%, transparent)" : "rgba(255,255,255,0.24)"), borderRadius:999, padding:"1px 6px", lineHeight:1.3 } }, _pcC + "%")
               , _pisC && React.createElement('div', { key:'pv'+opts.piscaTick, className:'ag-pisca-ov' }))

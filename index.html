@@ -54112,6 +54112,7 @@ function buildAgendaEventos(ctx) {
       titulo: "Lembrete · " + (l.texto||"--") + (l.hora ? " · " + l.hora : ""),
       sub: [l.hora ? ("⏰ " + l.hora) : "", lembreteRecTexto(l)].filter(Boolean).join(" · "),
       chave: "lembrete|" + l.id,
+      recorrente: !!l.recorrencia,
       quem: l.texto||"--",
       detalhe: [l.hora ? ("⏰ " + l.hora) : "", lembreteRecTexto(l)].filter(Boolean).join(" · "),
       valor: null, fluxo: null,
@@ -54202,6 +54203,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
   /* [AGK2-V2 · acao-no-cartao] Evento cujo cartão foi tocado e está com a
      janela de ação aberta, e a data escolhida nela. */
   var _acArr = React.useState(null); var acaoModal = _acArr[0], setAcaoModal = _acArr[1];
+  var _leArr = React.useState(null); var lembEdit = _leArr[0], setLembEdit = _leArr[1]; // [lembrete-editar-excluir]
   var _adArr = React.useState(""); var acaoData = _adArr[0], setAcaoData = _adArr[1];
   /* [AGK2-V2 · adiar-resolver] Sobe da tabela/localStorage o que já foi adiado
      ou dado por resolvido, e reconta sempre que muda — `adiaVersao` só existe
@@ -54404,8 +54406,28 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
       if (iso < isoHoje) atrasados = atrasados.concat(doDia);
       else futuros.push({ isoD:iso, dt:new Date(iso+"T12:00:00"), evsDia:doDia });
     });
+    /* [agenda-atraso-hoje] Atrasado não tem mais coluna própria: tudo que já
+       venceu cai em "Hoje" (o cartão continua mostrando "há N dias" pela data
+       original). Ordem dentro de Hoje, pedida pelo usuário:
+         1º contas a pagar de hoje  →  2º contas a pagar atrasadas  →  3º o resto
+       (o resto = o que não é saída de dinheiro: receber, documentos, lembretes…,
+       os de hoje antes, depois os atrasados). "Conta a pagar" = evento com
+       fluxo "out" (despesa, conta, multa, manutenção, orçamento pessoal…).
+       Sem evento hoje mas com atraso, a coluna de hoje nasce só com os atrasados. */
     var resultado = [];
-    if (atrasados.length) resultado.push({ isoD:"atrasados", dt:null, evsDia:atrasados, atrasados:true });
+    var _colHoje = null;
+    for (var _ih = 0; _ih < futuros.length; _ih++) { if (futuros[_ih].isoD === isoHoje) { _colHoje = futuros[_ih]; break; } }
+    if (atrasados.length) {
+      if (!_colHoje) { _colHoje = { isoD:isoHoje, dt:new Date(isoHoje+"T12:00:00"), evsDia:[] }; futuros.unshift(_colHoje); }
+    }
+    if (_colHoje) {
+      var _ehPagar = function(ev){ return ev.fluxo === "out"; };
+      var _hojeEvs = _colHoje.evsDia;
+      _colHoje.evsDia = _hojeEvs.filter(_ehPagar)
+        .concat(atrasados.filter(_ehPagar))
+        .concat(_hojeEvs.filter(function(ev){ return !_ehPagar(ev); }))
+        .concat(atrasados.filter(function(ev){ return !_ehPagar(ev); }));
+    }
     resultado = resultado.concat(futuros);
     /* [AGK2-V2 · hoje-vs-atrasados] Onde o board abre (a coluna que a rolagem
        centraliza — ver _hojeColRef). Regra pedida: "Hoje" quando o dia de
@@ -55142,9 +55164,20 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
           adiarQuando: adiarQuando, setAdiarQuando: setAdiarQuando,
           onFechar: function(){ setAcaoModal(null); setAdiarAberto(false); },
           onConfirmar: function(){ var _e = acaoModal; setAcaoModal(null); _agk2Executar(_e, acaoData, true); },
-          onIrPara:    function(){ var _e = acaoModal; setAcaoModal(null); _agk2Executar(_e, null, false); },
+          onIrPara:    function(){
+            var _e = acaoModal; setAcaoModal(null);
+            if (_e && _e.tipo === "lembrete") { setLembEdit((lembretes||[]).find(function(l){ return l.id === _e.id; }) || null); return; } // [lembrete-editar-excluir]
+            _agk2Executar(_e, null, false);
+          },
+          onExcluir:   function(){ var _e = acaoModal; setAcaoModal(null); lembreteExcluir((lembretes||[]).find(function(l){ return l.id === _e.id; }), _e.id, setLembretes); },
           onAdiar:     function(){ var _e = acaoModal; setAcaoModal(null); setAdiarAberto(false); _agk2Marcar(_e, { ate: adiarQuando }); },
           onResolver:  function(){ var _e = acaoModal; setAcaoModal(null); _agk2Marcar(_e, { resolvido: true }); }
+        })
+      /* [lembrete-editar-excluir] mesmo formulário do "+ Lembrete", já preenchido */
+      , lembEdit && React.createElement(LembreteModal, {
+          open: true, lembrete: lembEdit,
+          onClose: function(){ setLembEdit(null); },
+          onSalvar: function(payload){ return lembreteSalvarEdicao(lembEdit.id, payload, setLembretes); }
         })
   );
 
@@ -55308,6 +55341,7 @@ function _agk2ModalAcao(o) {
      pneus, reserva…): não há baixa a fazer, então a ação principal vira
      "dar por resolvido". */
   var semAcao = !ev.acao;
+  var ehLembrete = ev.tipo === "lembrete"; // [lembrete-editar-excluir] Editar / Excluir / Concluir
   /* Cartão sem dinheiro a quitar por trás — o "resolvido" só cala o
      lembrete, não some com nenhuma pendência financeira. Nos cartões de
      baixa/renovação esse botão não existe, de propósito. */
@@ -55322,7 +55356,7 @@ function _agk2ModalAcao(o) {
              : ehEmitir ? "Emitir fatura"
              : ev.tipo === "pagamento" ? "Receber contrato"
              : ehReceitaFin ? "Baixar receita" : "Baixar despesa";
-  var rotuloOk = semAcao ? "Marcar como resolvido"
+  var rotuloOk = ehLembrete ? "Concluir" : semAcao ? "Marcar como resolvido"
                : ehRenovar ? "Renovar"
                : ehEmitir ? "Emitir"
                : ev.tipo === "pagamento" ? "Receber" : "Baixar";
@@ -55334,7 +55368,7 @@ function _agk2ModalAcao(o) {
      como lançamento pra editar), então o secundário continua sendo "abrir
      em", não "editar". */
   var temLancamento = !semAcao && !ehEmitir && ev.id != null;
-  var rotuloIr = temLancamento ? "✏️ Editar" : "Abrir em " + (AGK2_TAB_NOME[ev.tab] || (ehContrato ? "Contratos" : "Financeiro"));
+  var rotuloIr = (temLancamento || ehLembrete) ? "✏️ Editar" : "Abrir em " + (AGK2_TAB_NOME[ev.tab] || (ehContrato ? "Contratos" : "Financeiro"));
   var tone = _agk2Tone(ev.tipo);
   var atraso = _agk2Atraso(ev.data, _brNow().toISOString().split("T")[0]);
   function fmtD(d){ if(!d) return "--"; var p=String(d).split("-"); return p[2]+"/"+p[1]+"/"+p[0].slice(2); }
@@ -55377,8 +55411,11 @@ function _agk2ModalAcao(o) {
         , React.createElement('br')
         , "Não emite fatura para este cliente? Toque em \"Não emitir\": o aviso sai da Agenda, dos alertas, do painel de boletos e do card do contrato até o próximo vencimento. O recebimento continua sendo cobrado normalmente."
       )
-      , (semAcao && !o.adiarAberto) && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
+      , (semAcao && !ehLembrete && !o.adiarAberto) && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
         , "Esta pendência se resolve fora do sistema. Marque como resolvida para tirá-la da Agenda — ela volta sozinha no próximo vencimento."
+      )
+      , (ehLembrete && !o.adiarAberto) && React.createElement('div', { style:{ fontSize:12.5, color:"var(--c-sub)", lineHeight:1.45 } }
+        , ev.recorrente ? "Concluir leva o lembrete para a próxima data da repetição. Excluir apaga o lembrete e toda a repetição." : "Concluir tira o lembrete da Agenda. Excluir apaga o lembrete."
       )
       /* [AGK2-V2 · adiar-resolver] Passo do adiamento: data e hora, com
          atalhos pros prazos que a gente usa na prática. */
@@ -55425,6 +55462,11 @@ function _agk2ModalAcao(o) {
              ação principal ali é emitir, então "não emitir" não pode roubar o
              lugar dela — mas precisa caber na janela sem virar um quarto botão
              espremido na mesma linha (390px não comporta três). */
+          , (ehLembrete && o.onExcluir) && React.createElement('button', {
+              className:bCls(Ghost(C.red)),
+              style:Object.assign({}, bStyle(Ghost(C.red)), { width:"100%", textAlign:"center" }),
+              onClick:o.onExcluir
+            }, "🗑️ Excluir lembrete")
           , (podeResolver && !semAcao) && React.createElement('button', {
               className:bCls(Ghost(C.sub)),
               style:Object.assign({}, bStyle(Ghost(C.sub)), { width:"100%", textAlign:"center" }),
@@ -55473,6 +55515,7 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
      sincronização mais lento nem do id temporário de uma criação otimista
      ainda em voo. */
   var _alm = React.useState(null); var acaoLembrete = _alm[0], setAcaoLembrete = _alm[1];
+  var _lemB = React.useState(null); var lembEditB = _lemB[0], setLembEditB = _lemB[1]; // [lembrete-editar-excluir]
   function concluirLembrete(ev) {
     var atual = (lembretes||[]).find(function(l){ return l.id === ev.id; });
     setAcaoLembrete(null);
@@ -55730,8 +55773,23 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
             className: bCls(Btn(C.green)), style: Object.assign({}, bStyle(Btn(C.green)), { width: "100%", textAlign: "center" }),
             onClick: function(){ concluirLembrete(acaoLembrete); }
           }, "Concluir")
+        , React.createElement('div', { style: { display: "flex", gap: 8 } }
+          , React.createElement('button', {
+              className: bCls(Ghost(C.blue)), style: Object.assign({}, bStyle(Ghost(C.blue)), { flex: 1, textAlign: "center" }),
+              onClick: function(){ var _ev = acaoLembrete; setAcaoLembrete(null); setLembEditB((lembretes||[]).find(function(l){ return l.id === _ev.id; }) || null); }
+            }, "✏️ Editar")
+          , React.createElement('button', {
+              className: bCls(Ghost(C.red)), style: Object.assign({}, bStyle(Ghost(C.red)), { flex: 1, textAlign: "center" }),
+              onClick: function(){ var _ev = acaoLembrete; setAcaoLembrete(null); lembreteExcluir((lembretes||[]).find(function(l){ return l.id === _ev.id; }), _ev.id, setLembretes); }
+            }, "🗑️ Excluir")
+        )
       )
-    )
+    ),
+    lembEditB && React.createElement(LembreteModal, {
+      open: true, lembrete: lembEditB,
+      onClose: function(){ setLembEditB(null); },
+      onSalvar: function(payload){ return lembreteSalvarEdicao(lembEditB.id, payload, setLembretes); }
+    })
   );
 }
 
@@ -59711,10 +59769,14 @@ function lembreteConcluirOuAvancar(atual, id, setLembretes) {
     }
     return;
   }
+  _lembreteApagar(atual, id, setLembretes, "Lembrete concluído");
+}
+// Apaga a linha (a série inteira, se for recorrente) — sempre com "Desfazer".
+function _lembreteApagar(atual, id, setLembretes, msg) {
   setLembretes(function(p){ return p.filter(function(l){ return l.id !== id; }); });
-  db.del("lembretes", id).catch(function(e){ console.warn("concluir lembrete", e); });
+  db.del("lembretes", id).catch(function(e){ console.warn("apagar lembrete", e); });
   if (window._agUndo && atual) {
-    window._agUndo("Lembrete concluído", function(){
+    window._agUndo(msg, function(){
       var back = { texto: atual.texto, data: atual.data };
       if (atual.hora) back.hora = atual.hora;
       if (atual.recorrencia) { back.recorrencia = atual.recorrencia; back.recorrencia_ate = atual.recorrencia_ate || null; }
@@ -59725,25 +59787,49 @@ function lembreteConcluirOuAvancar(atual, id, setLembretes) {
     });
   }
 }
+// [lembrete-editar-excluir] Excluir pelo cartão da Agenda.
+function lembreteExcluir(atual, id, setLembretes) {
+  _lembreteApagar(atual, id, setLembretes, "Lembrete excluído");
+}
+// [lembrete-editar-excluir] Grava a edição (texto, data, hora, repetição). notificado_em zera
+// pro push da hora disparar de novo se data/hora mudaram.
+function lembreteSalvarEdicao(id, payload, setLembretes) {
+  var patch = Object.assign({}, payload, { notificado_em: null });
+  setLembretes(function(p){ return p.map(function(l){ return l.id === id ? Object.assign({}, l, patch) : l; }); });
+  return db.patch("lembretes", id, patch).then(function(){ toast("✅ Lembrete atualizado"); })
+    .catch(function(e){ console.warn("editar lembrete", e); toast("Não foi possível salvar a edição do lembrete", "error"); });
+}
 
 /* Atalho "+ Lembrete": anotação manual sem tela própria — vira um cartão na
    Agenda (tipo "lembrete", ver buildAgendaEventos) igual a CNH/documento de
    veículo, e some de lá com "Marcar como resolvido" (ou "Adiar"), reusando o
    mesmo mecanismo genérico (agAdiaDefinir) que já existe pra esses cartões. */
-function LembreteModal({ open, onClose, onSalvar }) {
-  var [texto, setTexto] = React.useState("");
-  var [data, setData] = React.useState("");
-  var [hora, setHora] = React.useState("");
-  var [rec, setRec] = React.useState("");
+function LembreteModal({ open, onClose, onSalvar, lembrete }) {
+  /* [lembrete-editar-excluir] `lembrete` presente = edição (mesmo formulário da criação). */
+  var _ed = lembrete || null;
+  var [texto, setTexto] = React.useState(_ed ? (_ed.texto || "") : "");
+  var [data, setData] = React.useState(_ed ? String(_ed.data || "").slice(0, 10) : "");
+  var [hora, setHora] = React.useState(_ed && _ed.hora ? String(_ed.hora).slice(0, 5) : "");
+  var [rec, setRec] = React.useState(_ed && _ed.recorrencia ? _ed.recorrencia : "");
   var [prazo, setPrazo] = React.useState("");
+  var [prazoMexido, setPrazoMexido] = React.useState(false);
   var [salvando, setSalvando] = React.useState(false);
 
   React.useEffect(function() {
-    if (open) { setTexto(""); setData(_brNow().toISOString().split("T")[0]); setHora(""); setRec(""); setPrazo(""); setSalvando(false); }
+    if (open) {
+      setTexto(_ed ? (_ed.texto || "") : "");
+      setData(_ed ? String(_ed.data || "").slice(0, 10) : _brNow().toISOString().split("T")[0]);
+      setHora(_ed && _ed.hora ? String(_ed.hora).slice(0, 5) : "");
+      setRec(_ed && _ed.recorrencia ? _ed.recorrencia : "");
+      setPrazo(""); setPrazoMexido(false); setSalvando(false);
+    }
   }, [open]);
-  /* [lembrete-recorrente] prazo em meses a partir da data escolhida; vazio = sem prazo */
+  /* [lembrete-recorrente] prazo em meses a partir da data escolhida; vazio = sem prazo.
+     Na edição, enquanto o prazo não for mexido, vale o `recorrencia_ate` que já estava gravado. */
   var _prazoN = parseInt(prazo, 10);
-  var _ateRec = (rec && data && _prazoN > 0) ? lembreteSomaPeriodo(data, "mensal", _prazoN) : null;
+  var _ateRec = !rec ? null
+    : (_ed && !prazoMexido) ? (_ed.recorrencia_ate ? String(_ed.recorrencia_ate).slice(0, 10) : null)
+    : ((data && _prazoN > 0) ? lembreteSomaPeriodo(data, "mensal", _prazoN) : null);
 
   if (!open) return null;
 
@@ -59758,11 +59844,12 @@ function LembreteModal({ open, onClose, onSalvar }) {
        própria função depois de disparar, nunca o cliente. */
     var _payL = { texto: texto.trim(), data: data, hora: hora || null };
     if (rec) { _payL.recorrencia = rec; _payL.recorrencia_ate = _ateRec; } // só vai pro banco quando repete
+    else if (_ed && _ed.recorrencia) { _payL.recorrencia = null; _payL.recorrencia_ate = null; } // edição: deixou de repetir
     try { await onSalvar(_payL); onClose(); }
     finally { setSalvando(false); }
   }
 
-  return React.createElement(Modal, { open: true, onClose: onClose, title: "🔔 Novo Lembrete" }
+  return React.createElement(Modal, { open: true, onClose: onClose, title: _ed ? "🔔 Editar Lembrete" : "🔔 Novo Lembrete" }
     , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 14 } }
       , React.createElement(Lbl, { label: "📝 Lembrete" }
         , React.createElement('textarea', {
@@ -59784,13 +59871,13 @@ function LembreteModal({ open, onClose, onSalvar }) {
       )
       , React.createElement('div', { style: { display: "flex", gap: 10 } }
         , React.createElement(Lbl, { label: "🔁 Repetir", flex: 1 }
-          , React.createElement('select', { style: FI, value: rec, onChange: function(e){ setRec(e.target.value); if (!e.target.value) setPrazo(""); } }
+          , React.createElement('select', { style: FI, value: rec, onChange: function(e){ setRec(e.target.value); if (!e.target.value) { setPrazo(""); setPrazoMexido(false); } } }
             , React.createElement('option', { value: "" }, "Não repetir")
             , Object.keys(LEMB_FREQ).map(function(k){ return React.createElement('option', { key: k, value: k }, LEMB_FREQ[k]); })
           )
         )
         , rec && React.createElement(Lbl, { label: "Prazo (meses)", flex: 1 }
-          , React.createElement('input', { style: FI, type: "number", min: "1", max: "120", inputMode: "numeric", value: prazo, onChange: function(e){ setPrazo(e.target.value); }, placeholder: "Sem prazo" })
+          , React.createElement('input', { style: FI, type: "number", min: "1", max: "120", inputMode: "numeric", value: prazo, onChange: function(e){ setPrazo(e.target.value); setPrazoMexido(true); }, placeholder: (_ed && !prazoMexido && _ed.recorrencia_ate) ? "Mantém o atual" : "Sem prazo" })
         )
       )
       , rec && React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)", lineHeight: 1.4 } }
@@ -59801,7 +59888,7 @@ function LembreteModal({ open, onClose, onSalvar }) {
           className: bCls(Btn(C.blue)), disabled: !texto.trim() || !data || salvando,
           style: Object.assign({}, bStyle(Btn(C.blue)), { width: "100%", textAlign: "center", opacity: (!texto.trim() || !data || salvando) ? 0.5 : 1 }),
           onClick: salvar
-        }, salvando ? "Salvando..." : "Salvar Lembrete")
+        }, salvando ? "Salvando..." : (_ed ? "Salvar alterações" : "Salvar Lembrete"))
     )
   );
 }

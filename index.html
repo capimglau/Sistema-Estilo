@@ -24406,6 +24406,62 @@ function faturaEmissaoDispensada(c, agora) {
   var k = faturaEmissaoChave(c);
   return !!k && agAdiaOculto(k, agora);
 }
+/* ── Emissão de fatura de RECEITA AVULSA — `[emissao-avulsa]` ─────────────
+   O painel Boletos ([boletos-avulsas]) cobra a emissão de contratos E de
+   receitas avulsas (sem ref_fatura). Só que a Agenda, o calendário de
+   Alertas e o .ics montavam o aviso "Emitir Fatura" apenas a partir de
+   `contratos` — a avulsa aparecia em Boletos e nunca na Agenda.
+
+   Aqui fica a MESMA regra de Boletos (`_avFat`), num lugar só: quem monta
+   aviso de emissão de avulsa pergunta a `faturasAvulsasAEmitir`. A chave do
+   "resolvido" é própria (`emissao|av<id>|<data>`) e segue o mesmo mapa de
+   adiados de `faturaEmissaoDispensada`, então resolver num lugar tira dos
+   outros. A data do aviso é 20 dias antes do vencimento, como nos contratos. */
+function faturaAvulsaVencISO(r) {
+  return r ? String(r.data_vencimento || r.data || "").slice(0, 10) : "";
+}
+function faturaAvulsaEmissaoDataISO(r) {
+  var v = faturaAvulsaVencISO(r);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return "";
+  var d = new Date(v + "T12:00:00");
+  d.setDate(d.getDate() - 20);
+  return d.toISOString().split("T")[0];
+}
+function faturaAvulsaEmissaoChave(r) {
+  var dt = faturaAvulsaEmissaoDataISO(r);
+  return (r && r.id != null && dt) ? ("emissao|av" + r.id + "|" + dt) : "";
+}
+function faturaAvulsaEmissaoDispensada(r, agora) {
+  var k = faturaAvulsaEmissaoChave(r);
+  return !!k && agAdiaOculto(k, agora);
+}
+// Receitas avulsas com fatura AINDA por emitir — espelho do filtro `_avFat` de Boletos.
+function faturasAvulsasAEmitir(receitas, contratos) {
+  var base = (contratos || []).filter(function(c) {
+    return c.status !== "cancelado" && c.status_pagamento !== "isento" && !!c.previsao_pagamento;
+  });
+  return (receitas || []).filter(function(r) {
+    if (r.ref_fatura) return false;
+    if (r.status === "cancelado" || r.status === "cancelada") return false;
+    if (!(parseFloat(r.valor || 0) > 0.005)) return false;
+    if (r.numero_fatura || r.data_emissao) return false; // já emitida
+    if (r.recorrente) return false;                      // modelo de recorrente é régua, não lançamento
+    if (r.status === "recebido" || r.status === "pago" || r.status === "isento") return false;
+    var venc = faturaAvulsaVencISO(r);
+    if (!venc) return false;
+    // mesma cobrança de um contrato/ciclo não é um segundo boleto ([boletos-sem-duplicidade])
+    var cliId = r.cliente_id || null;
+    return !base.some(function(c) {
+      var cv = String(c.previsao_pagamento || "").slice(0, 10);
+      if (r.contrato_id && String(r.contrato_id) === String(c.id) && venc === cv) return true;
+      if (!cliId || String(cliId) !== String(c.cliente_id)) return false;
+      if (venc !== cv) return false;
+      if (Math.abs(Number(r.valor || 0) - Number(c.valor_total || 0)) > 0.009) return false;
+      if (r.veiculo_id && c.veiculo_id && String(r.veiculo_id) !== String(c.veiculo_id)) return false;
+      return true;
+    });
+  });
+}
 // Próximo número sequencial de fatura (FAT-00001, FAT-00002, ...) — usado em TODOS os locais de
 // emissão (tela de Faturas, card de Contratos) para manter a numeração consistente.
 function proximoNumeroFatura(receitas) {
@@ -28661,6 +28717,22 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
           sub:(ve&&ve.placa||"--")+" · pagamento previsto "+_fmtDc(c.previsao_pagamento)+(_venc?" · emissão atrasada":"")+_antecipadoTxt(_ant),
           onClick:function(){ onItemNav({type:"contrato",id:c.id},"contratos"); setAlertaDaySheet(null); }
         }; }, faturaEmissaoChave(c));
+      });
+      /* [emissao-avulsa] mesma cobrança de Boletos: receita avulsa sem fatura emitida */
+      faturasAvulsasAEmitir(receitas, contratos).forEach(function(r){
+        var _dtEAv=faturaAvulsaEmissaoDataISO(r);
+        if(!_dtEAv) return;
+        var _ctAv=r.contrato_id?(contratos||[]).find(function(x){return String(x.id)===String(r.contrato_id);}):null;
+        var _cliAvId=r.cliente_id||(_ctAv&&_ctAv.cliente_id)||null;
+        var clAv=_cliAvId?(clientes||[]).find(function(x){return String(x.id)===String(_cliAvId);}):null;
+        var _vencAv=faturaAvulsaVencISO(r);
+        _alertaAdd(_dtEAv, function(_venc,_ant){ return {
+          emoji:"🧾", cor:_venc?C.red:C.blue,
+          titulo:"Emitir fatura/boleto — "+((clAv&&clAv.nome)||r.descricao||r.categoria||"Receita"),
+          resumo:"Emitir fatura/boleto",
+          sub:(r.descricao||r.categoria||"Receita")+" · pagamento previsto "+_fmtDc(_vencAv)+(_venc?" · emissão atrasada":"")+_antecipadoTxt(_ant),
+          onClick:function(){ onItemNav({type:"receita",id:r.id},"financeiro"); setAlertaDaySheet(null); }
+        }; }, faturaAvulsaEmissaoChave(r));
       });
       (multas||[]).forEach(function(m){
         if (!m.vencimento || m.status==="pago") return;
@@ -45655,6 +45727,34 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   async function _emitirFaturaFluxo(c) {
     try { await _emitirFaturaFluxoInner(c); } finally { _talvezVoltarInicio(); }
   }
+  /* [emissao-avulsa] Emissão a partir do cartão da Agenda para receita avulsa — mesmo patch do
+     painel Boletos (número + data de emissão na própria receita). O PDF abre na aba Faturas. */
+  async function _emitirFaturaAvulsaFluxo(r) {
+    try {
+      if (!r || r.numero_fatura || r.data_emissao) return;
+      var _ctAv = r.contrato_id ? (contratos||[]).find(function(x){ return String(x.id) === String(r.contrato_id); }) : null;
+      var _cliAvId = r.cliente_id || (_ctAv && _ctAv.cliente_id) || null;
+      var clAv = _cliAvId ? (clientes||[]).find(function(x){ return String(x.id) === String(_cliAvId); }) : null;
+      var _confAv = await window.__agConfirm({ title: "Emitir Fatura", icon: "📤", message: "Emitir fatura de \"" + ((clAv && clAv.nome) || r.descricao || r.categoria || "Receita") + "\" (venc. " + fmtD(faturaAvulsaVencISO(r)) + ")?", okLabel: "Emitir" });
+      if (!_confAv.ok) return;
+      var hojeAv = _brNow().toISOString().split("T")[0];
+      var numAv = proximoNumeroFatura(receitas);
+      try {
+        await db.patch("receitas", r.id, { status: "emitida", data_emissao: hojeAv, numero_fatura: numAv });
+        setReceitas(function(p){ return p.map(function(x){ return x.id === r.id ? Object.assign({}, x, { status: "emitida", data_emissao: hojeAv, numero_fatura: numAv }) : x; }); });
+        toast(numAv + " emitida!");
+      } catch(e) {
+        if (e && e.conflito && e.registroAtual) {
+          var _raAv = e.registroAtual;
+          setReceitas(function(p){ return p.map(function(x){ return x.id === _raAv.id ? _raAv : x; }); });
+          toast("Essa fatura já tinha sido emitida em outro dispositivo — tela atualizada.");
+        } else {
+          console.error("Erro ao emitir fatura avulsa:", e);
+          toast("Erro ao emitir: " + (e && e.message || "falha desconhecida"));
+        }
+      }
+    } finally { _talvezVoltarInicio(); }
+  }
   async function _emitirFaturaFluxoInner(c) {
     if (!c || !c.previsao_pagamento) return;
     var _mesFatEv = c.previsao_pagamento.slice(0,7);
@@ -45704,6 +45804,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     if (finDeepLink.acao === "emitir" && finDeepLink.itemId != null) {
       var _ctDL = (contratos||[]).find(function(x){ return x.id == finDeepLink.itemId; });
       if (_ctDL) _emitirFaturaFluxo(_ctDL);
+      else if (String(finDeepLink.itemId).indexOf("av") === 0) { // [emissao-avulsa] id = "av"+id da receita
+        var _rDL = (receitas||[]).find(function(x){ return String(x.id) === String(finDeepLink.itemId).slice(2); });
+        if (_rDL) _emitirFaturaAvulsaFluxo(_rDL);
+      }
     }
     if (setFinDeepLink) setFinDeepLink(null);
   }, [finDeepLink]);
@@ -53494,6 +53598,30 @@ function buildAgendaEventos(ctx) {
     });
   });
 
+  // RECEITAS AVULSAS — emissão de fatura ([emissao-avulsa]): mesmo aviso de Boletos, 20 dias antes do vencimento
+  faturasAvulsasAEmitir(receitas, contratos).forEach(function(r) {
+    var dtEmAv = faturaAvulsaEmissaoDataISO(r);
+    if (!dtEmAv) return;
+    var ctAv = r.contrato_id ? contratos.find(function(x){ return String(x.id) === String(r.contrato_id); }) : null;
+    var cliIdAv = r.cliente_id || (ctAv && ctAv.cliente_id) || null;
+    var veiIdAv = r.veiculo_id || (ctAv && ctAv.veiculo_id) || null;
+    var clAv = cliIdAv ? clientes.find(function(x){ return String(x.id) === String(cliIdAv); }) : null;
+    var veAv = veiIdAv ? veiculos.find(function(x){ return String(x.id) === String(veiIdAv); }) : null;
+    var vencAv = faturaAvulsaVencISO(r);
+    eventos.push({
+      data: dtEmAv, tipo: "emissao",
+      cor: "#5856D6", emoji: "🧾",
+      titulo: "Emitir Fatura · " + (r.descricao || r.categoria || "Receita"),
+      sub: ((clAv && clAv.nome) || "--") + " · " + ((veAv && veAv.placa) || "--") + " · venc. " + fmtD(vencAv),
+      quem: (clAv && clAv.nome) || "--",
+      detalhe: (r.descricao || r.categoria || "Receita") + " · venc. " + fmtD(vencAv),
+      /* valor sim, fluxo NÃO: o mesmo dinheiro já conta como receita no vencimento */
+      valor: numV(r.valor), fluxo: null,
+      chave: faturaAvulsaEmissaoChave(r),
+      tab: "financeiro", id: "av" + r.id, acao: "emitir", avulsa: true, mesFat: vencAv.slice(0,7)
+    });
+  });
+
   // CONTRATOS — previsão de pagamento
   contratos.forEach(function(c) {
     if (!c.previsao_pagamento || c.status_pagamento === "pago" || c.status_pagamento === "isento") return;
@@ -53982,10 +54110,10 @@ function buildAgendaEventos(ctx) {
       cor: l.data < hoje ? "#FF3B30" : "#FFCC00",
       emoji: "🔔",
       titulo: "Lembrete · " + (l.texto||"--") + (l.hora ? " · " + l.hora : ""),
-      sub: l.hora ? ("⏰ " + l.hora) : "",
+      sub: [l.hora ? ("⏰ " + l.hora) : "", lembreteRecTexto(l)].filter(Boolean).join(" · "),
       chave: "lembrete|" + l.id,
       quem: l.texto||"--",
-      detalhe: l.hora ? ("⏰ " + l.hora) : "",
+      detalhe: [l.hora ? ("⏰ " + l.hora) : "", lembreteRecTexto(l)].filter(Boolean).join(" · "),
       valor: null, fluxo: null,
       tab: null, id: l.id
     });
@@ -55034,16 +55162,7 @@ function CalendarioKanban2({ contratos, multas, veiculos, setVeiculos, clientes,
     if (ev.tipo === "lembrete") {
       var _atual = (lembretes||[]).find(function(l){ return l.id === ev.id; });
       if (reg.resolvido) {
-        setLembretes(function(p){ return p.filter(function(l){ return l.id !== ev.id; }); });
-        db.del("lembretes", ev.id).catch(function(e){ console.warn("resolver lembrete", e); });
-        if (window._agUndo && _atual) {
-          window._agUndo("Lembrete concluído", function(){
-            setLembretes(function(p){ return [_atual].concat(p); });
-            db.post("lembretes", { texto: _atual.texto, data: _atual.data }).then(function(nova){
-              if (nova && nova.id) setLembretes(function(p){ return p.map(function(l){ return l.id === _atual.id ? nova : l; }); });
-            }).catch(function(e){ console.warn(e); });
-          });
-        }
+        lembreteConcluirOuAvancar(_atual, ev.id, setLembretes); // [lembrete-recorrente]
       } else if (reg.ate) {
         var novaData = String(reg.ate).slice(0,10);
         setLembretes(function(p){ return p.map(function(l){ return l.id===ev.id ? Object.assign({},l,{data:novaData}) : l; }); });
@@ -55356,17 +55475,8 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
   var _alm = React.useState(null); var acaoLembrete = _alm[0], setAcaoLembrete = _alm[1];
   function concluirLembrete(ev) {
     var atual = (lembretes||[]).find(function(l){ return l.id === ev.id; });
-    setLembretes(function(p){ return p.filter(function(l){ return l.id !== ev.id; }); });
     setAcaoLembrete(null);
-    db.del("lembretes", ev.id).catch(function(e){ console.warn("concluirLembrete", e); });
-    if (window._agUndo && atual) {
-      window._agUndo("Lembrete concluído", function(){
-        setLembretes(function(p){ return [atual].concat(p); });
-        db.post("lembretes", { texto: atual.texto, data: atual.data }).then(function(nova){
-          if (nova && nova.id) setLembretes(function(p){ return p.map(function(l){ return l.id === atual.id ? nova : l; }); });
-        }).catch(function(e){ console.warn(e); });
-      });
-    }
+    lembreteConcluirOuAvancar(atual, ev.id, setLembretes); // [lembrete-recorrente]
   }
   function abrirEvento(ev) {
     if (ev.tipo === "lembrete") setAcaoLembrete(ev);
@@ -55425,6 +55535,18 @@ function Calendario({ contratos, multas, veiculos, clientes, contas, despesas, r
         data: dtEStr, tipo: "emissao", emoji: "🧾",
         titulo: "Emitir Fatura " + calRenLabel(c) + " · " + fmtComp(c.previsao_pagamento),
         sub: (cl&&cl.nome||"--") + " · " + (ve&&ve.placa||"--") + " · venc. " + fmtD(c.previsao_pagamento)
+      });
+    });
+    /* [emissao-avulsa] receitas avulsas com fatura por emitir também vão pro .ics */
+    faturasAvulsasAEmitir(receitas, contratos).forEach(function(r) {
+      if (faturaAvulsaEmissaoDispensada(r)) return;
+      var dtEAv = faturaAvulsaEmissaoDataISO(r);
+      if (!dtEAv) return;
+      var clAv = r.cliente_id ? (clientes||[]).find(function(x){ return String(x.id) === String(r.cliente_id); }) : null;
+      eventosEmissao.push({
+        data: dtEAv, tipo: "emissao", emoji: "🧾",
+        titulo: "Emitir Fatura · " + (r.descricao || r.categoria || "Receita"),
+        sub: ((clAv && clAv.nome) || "--") + " · venc. " + fmtD(faturaAvulsaVencISO(r))
       });
     });
     var todosEventos = eventos.filter(function(ev){ return ev.tipo !== "emissao"; }).concat(eventosEmissao);
@@ -59537,6 +59659,73 @@ function BuscaGlobal({ open, onClose, contratos, clientes, veiculos, multas, rec
   );
 }
 
+/* ── Lembrete recorrente — `[lembrete-recorrente]` ────────────────────────
+   Uma linha só em `lembretes` (colunas `recorrencia` e `recorrencia_ate`,
+   ver SQL de recorrência dos lembretes). A linha guarda SEMPRE a próxima
+   ocorrência em `data`: ao concluir, em vez de apagar, `data` anda pro
+   próximo período (e `notificado_em` zera, pro push da hora disparar de
+   novo). Passou de `recorrencia_ate` (ou sem repetição) → apaga, como antes.
+   `recorrencia_ate` vem do "Prazo" (meses a partir da primeira data);
+   vazio = sem prazo. */
+var LEMB_FREQ = { diaria: "Diariamente", semanal: "Semanalmente", mensal: "Mensalmente", anual: "Anualmente" };
+function _lembIso(a, m, d) { return a + "-" + (m + 1 < 10 ? "0" : "") + (m + 1) + "-" + (d < 10 ? "0" : "") + d; }
+function lembreteSomaPeriodo(iso, freq, n) {
+  var p = String(iso).slice(0, 10).split("-");
+  var a = parseInt(p[0], 10), m = parseInt(p[1], 10) - 1, d = parseInt(p[2], 10);
+  var dt;
+  if (freq === "diaria") dt = new Date(a, m, d + n);
+  else if (freq === "semanal") dt = new Date(a, m, d + 7 * n);
+  else {
+    var alvo = new Date(a, m + (freq === "anual" ? 12 * n : n), 1);
+    var ult = new Date(alvo.getFullYear(), alvo.getMonth() + 1, 0).getDate();
+    dt = new Date(alvo.getFullYear(), alvo.getMonth(), Math.min(d, ult));
+  }
+  return _lembIso(dt.getFullYear(), dt.getMonth(), dt.getDate());
+}
+// Próxima ocorrência DEPOIS de hoje (nunca cai no passado); null = acabou o prazo / não repete.
+function lembreteProximaData(l, hojeISO) {
+  if (!l || !l.recorrencia || !LEMB_FREQ[l.recorrencia] || !l.data) return null;
+  var n = 1, prox = lembreteSomaPeriodo(l.data, l.recorrencia, n);
+  while (prox <= hojeISO && n < 2000) { n++; prox = lembreteSomaPeriodo(l.data, l.recorrencia, n); }
+  if (l.recorrencia_ate && prox > String(l.recorrencia_ate).slice(0, 10)) return null;
+  return prox;
+}
+function lembreteDataBR(iso) { var p = String(iso || "").slice(0, 10).split("-"); return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : "--"; }
+function lembreteRecTexto(l) {
+  if (!l || !l.recorrencia || !LEMB_FREQ[l.recorrencia]) return "";
+  return "🔁 " + LEMB_FREQ[l.recorrencia] + (l.recorrencia_ate ? " até " + lembreteDataBR(l.recorrencia_ate) : "");
+}
+// Concluir: recorrente com próxima ocorrência avança a data; senão apaga a linha. Sempre com "Desfazer".
+function lembreteConcluirOuAvancar(atual, id, setLembretes) {
+  var hj = _brNow().toISOString().split("T")[0];
+  var prox = lembreteProximaData(atual, hj);
+  if (atual && prox) {
+    var antes = { data: atual.data, notificado_em: atual.notificado_em || null };
+    setLembretes(function(p){ return p.map(function(l){ return l.id === id ? Object.assign({}, l, { data: prox, notificado_em: null }) : l; }); });
+    db.patch("lembretes", id, { data: prox, notificado_em: null }).catch(function(e){ console.warn("avançar lembrete", e); });
+    if (window._agUndo) {
+      window._agUndo("Lembrete concluído · próximo em " + lembreteDataBR(prox), function(){
+        setLembretes(function(p){ return p.map(function(l){ return l.id === id ? Object.assign({}, l, antes) : l; }); });
+        db.patch("lembretes", id, antes).catch(function(e){ console.warn(e); });
+      });
+    }
+    return;
+  }
+  setLembretes(function(p){ return p.filter(function(l){ return l.id !== id; }); });
+  db.del("lembretes", id).catch(function(e){ console.warn("concluir lembrete", e); });
+  if (window._agUndo && atual) {
+    window._agUndo("Lembrete concluído", function(){
+      var back = { texto: atual.texto, data: atual.data };
+      if (atual.hora) back.hora = atual.hora;
+      if (atual.recorrencia) { back.recorrencia = atual.recorrencia; back.recorrencia_ate = atual.recorrencia_ate || null; }
+      setLembretes(function(p){ return [atual].concat(p); });
+      db.post("lembretes", back).then(function(nova){
+        if (nova && nova.id) setLembretes(function(p){ return p.map(function(l){ return l.id === atual.id ? nova : l; }); });
+      }).catch(function(e){ console.warn(e); });
+    });
+  }
+}
+
 /* Atalho "+ Lembrete": anotação manual sem tela própria — vira um cartão na
    Agenda (tipo "lembrete", ver buildAgendaEventos) igual a CNH/documento de
    veículo, e some de lá com "Marcar como resolvido" (ou "Adiar"), reusando o
@@ -59545,11 +59734,16 @@ function LembreteModal({ open, onClose, onSalvar }) {
   var [texto, setTexto] = React.useState("");
   var [data, setData] = React.useState("");
   var [hora, setHora] = React.useState("");
+  var [rec, setRec] = React.useState("");
+  var [prazo, setPrazo] = React.useState("");
   var [salvando, setSalvando] = React.useState(false);
 
   React.useEffect(function() {
-    if (open) { setTexto(""); setData(_brNow().toISOString().split("T")[0]); setHora(""); setSalvando(false); }
+    if (open) { setTexto(""); setData(_brNow().toISOString().split("T")[0]); setHora(""); setRec(""); setPrazo(""); setSalvando(false); }
   }, [open]);
+  /* [lembrete-recorrente] prazo em meses a partir da data escolhida; vazio = sem prazo */
+  var _prazoN = parseInt(prazo, 10);
+  var _ateRec = (rec && data && _prazoN > 0) ? lembreteSomaPeriodo(data, "mensal", _prazoN) : null;
 
   if (!open) return null;
 
@@ -59562,7 +59756,9 @@ function LembreteModal({ open, onClose, onSalvar }) {
        lembretes de verdade. notificado_em fica de fora do payload de
        propósito: começa null no banco (default), e só quem marca é a
        própria função depois de disparar, nunca o cliente. */
-    try { await onSalvar({ texto: texto.trim(), data: data, hora: hora || null }); onClose(); }
+    var _payL = { texto: texto.trim(), data: data, hora: hora || null };
+    if (rec) { _payL.recorrencia = rec; _payL.recorrencia_ate = _ateRec; } // só vai pro banco quando repete
+    try { await onSalvar(_payL); onClose(); }
     finally { setSalvando(false); }
   }
 
@@ -59585,6 +59781,21 @@ function LembreteModal({ open, onClose, onSalvar }) {
       )
       , hora && React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)", lineHeight: 1.4 } }
         , "Com hora marcada, você recebe uma notificação push nesse horário — mesmo com o app fechado, se as notificações estiverem ativadas em Configurações."
+      )
+      , React.createElement('div', { style: { display: "flex", gap: 10 } }
+        , React.createElement(Lbl, { label: "🔁 Repetir", flex: 1 }
+          , React.createElement('select', { style: FI, value: rec, onChange: function(e){ setRec(e.target.value); if (!e.target.value) setPrazo(""); } }
+            , React.createElement('option', { value: "" }, "Não repetir")
+            , Object.keys(LEMB_FREQ).map(function(k){ return React.createElement('option', { key: k, value: k }, LEMB_FREQ[k]); })
+          )
+        )
+        , rec && React.createElement(Lbl, { label: "Prazo (meses)", flex: 1 }
+          , React.createElement('input', { style: FI, type: "number", min: "1", max: "120", inputMode: "numeric", value: prazo, onChange: function(e){ setPrazo(e.target.value); }, placeholder: "Sem prazo" })
+        )
+      )
+      , rec && React.createElement('div', { style: { fontSize: 12, color: "var(--c-sub)", lineHeight: 1.4 } }
+        , _ateRec ? ("Repete " + LEMB_FREQ[rec].toLowerCase() + " até " + lembreteDataBR(_ateRec) + ".") : ("Repete " + LEMB_FREQ[rec].toLowerCase() + ", sem prazo para acabar.")
+        , " Ao concluir, o lembrete volta na próxima data."
       )
       , React.createElement('button', {
           className: bCls(Btn(C.blue)), disabled: !texto.trim() || !data || salvando,
@@ -60882,7 +61093,18 @@ function App() {
     setLembretes(function(p){ return [otimista].concat(p); });
     return db.post("lembretes", payload).then(function(nova) {
       if (nova && nova.id) setLembretes(function(p){ return p.map(function(l){ return l.id === otimista.id ? nova : l; }); });
-    }).catch(function(e) { console.warn("abrirNovoLembrete", e); });
+    }).catch(function(e) {
+      console.warn("abrirNovoLembrete", e);
+      /* [lembrete-recorrente] banco ainda sem as colunas de repetição: grava o lembrete
+         sem repetir (não perde o lembrete) e avisa, em vez de falhar em silêncio. */
+      if (payload && payload.recorrencia) {
+        var _semRec = Object.assign({}, payload); delete _semRec.recorrencia; delete _semRec.recorrencia_ate;
+        toast("Repetição não gravada: rode o SQL de recorrência dos lembretes no Supabase. O lembrete foi salvo sem repetir.", "error");
+        return db.post("lembretes", _semRec).then(function(nova) {
+          if (nova && nova.id) setLembretes(function(p){ return p.map(function(l){ return l.id === otimista.id ? Object.assign({}, nova) : l; }); });
+        }).catch(function(e2) { console.warn("abrirNovoLembrete (sem repetição)", e2); });
+      }
+    });
   }
   // Captura de erros em tela (útil em iPhone sem Mac para ver console)
   const [erroTela, setErroTela] = useState("");

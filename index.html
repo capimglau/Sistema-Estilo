@@ -27508,7 +27508,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
 
   // [previsto-liquidado] rdMesDoContrato: liquidado (pago OU parcial) conta no
   // mês em que o dinheiro entrou; em aberto, no mês da previsão.
-  const ctsMes = contratos.filter(c => rdMesDoContrato(c) === dashMes);
+  const ctsMes = contratos.filter(c => c.status !== "cancelado" && rdMesDoContrato(c) === dashMes); // cancelado nunca entra no faturamento
   const recAvDash = (receitas||[]).filter(function(r){ return !r.ref_fatura && receitaDoMes(r, dashMes); });
   const recMes = ctsMes.filter(c => c.status_pagamento === "pago").reduce((s,c) => s+parseFloat(c.valor_total||0),0)
     + ctsMes.filter(c => c.status_pagamento !== "pago").reduce((s,c) => s+ctValorRecebidoParcial(c),0)
@@ -33843,6 +33843,8 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
       try {
         await db.patch('contratos', c.id, { status:'cancelado' });
         setContratos(function(p){ return p.map(function(x){ return x.id===c.id?Object.assign({},x,{status:'cancelado'}):x; }); });
+        var _recPend = (receitas||[]).filter(function(r){ return r.ref_fatura && String(r.ref_fatura).indexOf('fat_'+c.id+'_')===0 && r.status!=='cancelada' && r.status!=='recebido'; });
+        for (var _rp=0; _rp<_recPend.length; _rp++) { try { await db.patch('receitas', _recPend[_rp].id, { status:'cancelada' }); } catch(e){ console.warn(e); } }
         toast('Contrato cancelado.');
       } catch(e){ toast('Erro: '+e.message,'error'); }
       setModalExcluirContrato(null); setExcluirTexto('');
@@ -44738,7 +44740,16 @@ function rdLinhasReceitaCliente(receitas, contratos, clientes, mes) {
      pendente conta no mês da previsão. */
   // [previsto-liquidado] lê a baixa do contrato antes de decidir o mês.
   var _recs = (receitas || []).map(function (r) { return rdReceitaComContrato(r, contratos); })
-    .filter(function (r) { return mes ? receitaDoMes(r, mes) : true; });
+    .filter(function (r) { return mes ? receitaDoMes(r, mes) : true; })
+    .filter(function (r) {
+      if (r.status === "cancelada" || r.status === "cancelado") return false;
+      var _mc = r.ref_fatura ? String(r.ref_fatura).match(/^fat_(\d+)_/) : null;
+      if (_mc && r.status !== "recebido" && !r.data_pagamento) {
+        var _cc = (contratos || []).find(function (c) { return String(c.id) === _mc[1]; });
+        if (_cc && _cc.status === "cancelado") return false;
+      }
+      return true;
+    });
   /* Contrato entra só quando NÃO tem receita vinculada — é a mesma trava que o
      Financeiro usa pra não contar a locação duas vezes (uma pelo contrato,
      outra pela fatura dele). */
@@ -46468,6 +46479,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   var despFiltradas = resolverDespesasDoMes(despesas, filtroMes).filter(function(d){ return filtroCatDesp === "Retirada de Lucro" || filtroCatDesp === "Ajuste de Saldo" ? true : !isRetLucro(d); });
   // IDs dos contratos existentes — usado para filtrar receitas órfãs
   var _ctIdsExistentes = new Set((contratos||[]).map(function(c){ return String(c.id); }));
+  var _ctIdsCancelados = new Set((contratos||[]).filter(function(c){ return c.status === "cancelado"; }).map(function(c){ return String(c.id); }));
   /* [previsto-liquidado] O `.map` logo abaixo já buscava a baixa no CONTRATO
      (`ct.data_pagamento`) — mas só DEPOIS de filtrar. Com a receita sem
      `data_pagamento` no banco (caso de quem recebeu pela tela de Contratos),
@@ -46504,6 +46516,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     if (!r.ref_fatura) return true;
     var _mfO = r.ref_fatura.match(/^fat_(\d+)_/);
     if (_mfO && !_ctIdsExistentes.has(_mfO[1])) return false;
+    // Contrato cancelado: a fatura não recebida some (a já recebida é dinheiro que entrou e fica)
+    if (_mfO && _ctIdsCancelados.has(_mfO[1]) && r.status !== "recebido" && !r.data_pagamento) return false;
     return true;
   });
   // Deduplica ref_fatura — mantém o de status mais avançado

@@ -31119,7 +31119,7 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
               , [React.createElement(BRLValue,{key:'a',v:_despHojeAPagar,size:_supFs,weight:700,color:C.red}), ' a pagar']) : null
       );
       var _colFat = React.createElement('div', { style:Object.assign({},_cardBase,{flex:1},(desktop ? {textAlign:'left',display:'flex',flexDirection:'column',justifyContent:'center',alignItems:'flex-start'} : {})) }
-            , React.createElement('div', { style:_lbl }, 'Faturas em atraso')
+            , React.createElement('div', { style:_lbl }, 'Recebimentos em atraso')
             , _big(_faturasAtraso, C.red)
       );
       return React.createElement('div', { className:"ag-kpi-card ag-apple-card", style:Object.assign({},_cardBase,{cursor:'pointer',padding:0,overflow:'hidden',position:'relative'},(desktop ? {display:'flex',flexDirection:'column'} : {})), onClick:function(){ _setSaldoPontoSel(null); setSaldoHojeTick(function(v){ return v+1; }); } }
@@ -36611,13 +36611,18 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   var proxMesDate = _brNow(); proxMesDate.setUTCDate(1); proxMesDate.setUTCMonth(proxMesDate.getUTCMonth() + 1);
   var proxMes = proxMesDate.toISOString().slice(0, 7);
 
+  /* [carrega-atrasados] Contrato não pago de mês anterior segue para o mês seguinte: aparece primeiro, como atrasado, até ser baixado. */
+  function _ctCarry(c) {
+    return !!c.previsao_pagamento && c.status !== "cancelado" && c.status_pagamento !== "pago" && c.status_pagamento !== "isento"
+      && c.previsao_pagamento.slice(0,7) < filtroMesCt && filtroMesCt <= mesAtual;
+  }
   function filtrarContratos(lista) {
     return lista.filter(c => {
       if (filter === "todos") {}
       else if (filter === "proximos_vencimentos") { if (!c.previsao_pagamento || c.previsao_pagamento.slice(0,7) < kpiMesBar) return false; }
       else if (filter === "ativo" || filter === "concluido" || filter === "cancelado") { if (c.status !== filter) return false; }
-      else if (filter === "mes") { if (!c.previsao_pagamento || c.previsao_pagamento.slice(0,7) !== filtroMesCt) return false; }
-      else if (filter === "a_receber") { if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false; if (!c.previsao_pagamento || c.previsao_pagamento.slice(0,7) !== filtroMesCt) return false; }
+      else if (filter === "mes") { if (!c.previsao_pagamento || (c.previsao_pagamento.slice(0,7) !== filtroMesCt && !_ctCarry(c))) return false; }
+      else if (filter === "a_receber") { if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false; if (!c.previsao_pagamento || (c.previsao_pagamento.slice(0,7) !== filtroMesCt && !_ctCarry(c))) return false; }
       else if (filter === "parcial") { if (c.status_pagamento !== "parcial") return false; }
       else if (filter === "atrasados") { if (c.status !== "ativo") return false; if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false; if (!c.previsao_pagamento || c.previsao_pagamento >= hoje) return false; }
       else if (filter === "atrasados_mes") { if (c.status === "cancelado") return false; if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return false; if (!c.previsao_pagamento || c.previsao_pagamento >= hoje) return false; if (c.previsao_pagamento.slice(0,7) !== filtroMesCt) return false; }
@@ -36722,6 +36727,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
     var porPag = sortCt === "pagamento_asc" || sortCt === "pagamento_desc";
     var descDia = sortCt === "pagamento_desc" || sortCt === "previsao_desc";
     arr.sort(function(a,b){
+      if (filter === "mes" || filter === "a_receber") { var _ca=_ctCarry(a)?0:1, _cb=_ctCarry(b)?0:1; if (_ca!==_cb) return _ca-_cb; }
       var da=String((porPag?a.data_pagamento:a.previsao_pagamento)||"9999-99-99").slice(0,10);
       var db=String((porPag?b.data_pagamento:b.previsao_pagamento)||"9999-99-99").slice(0,10);
       if (da!==db) return da==="9999-99-99" ? 1 : db==="9999-99-99" ? -1 : (descDia?db.localeCompare(da):da.localeCompare(db));
@@ -37049,14 +37055,23 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           o.n++;o.total+=vt;o.recebido+=rec;o.pendente+=Math.max(0,vt-rec);
         });
         var _diaNome=function(k){return /^\d{4}-\d{2}-\d{2}$/.test(k)?k.slice(8,10)+'/'+k.slice(5,7)+'/'+k.slice(0,4):'Sem data informada';};
+        var _atrBannerCt=false, _bannerAt=null;
         return fil2Limitado.map((c, i) => {
-        var _cabecalhoMes=null;
+        var _cabecalhoMes=null; _bannerAt=null;
         var _k=_mkCt(c);
         if (i===0 || _mkCt(fil2Limitado[i-1])!==_k) {
           var _st=_statDia[_k], _cor=_porPagamento?C.green:C.blue;
+          /* [divisoria-outro-mes] Dia de mês diferente do mês em vista: cor própria (vermelho = atrasado de mês anterior, roxo = mês seguinte). */
+          var _mesDia=/^\d{4}-\d{2}/.test(_k)?_k.slice(0,7):'', _rotMes='';
+          if (_mesDia && _mesDia!==filtroMesCt) { _cor=_mesDia<filtroMesCt?C.red:C.purple; _rotMes=' · '+(MESES_PT_CT[parseInt(_mesDia.slice(5,7),10)-1]||'').toLowerCase()+(_mesDia.slice(0,4)!==filtroMesCt.slice(0,4)?' '+_mesDia.slice(0,4):''); }
+          var _atrasadoCt=(filter==='mes'||filter==='a_receber')&&!_porPagamento&&_mesDia&&_mesDia<filtroMesCt&&filtroMesCt<=mesAtual;
+          if (_atrasadoCt && !_atrBannerCt) { _atrBannerCt=true; var _lstAt=fil2Limitado.filter(_ctCarry), _totAt=_lstAt.reduce(function(a,x){var vt=Number(x.valor_total)||0;var pg=x.status_pagamento==='parcial'?Math.min(vt,Math.max(0,Number(x.valor_pago)||0)):0;return a+Math.max(0,vt-pg);},0);
+            _bannerAt=React.createElement('div',{key:'atr-banner',style:{margin:'0 0 12px',padding:'10px 14px',borderRadius:14,background:'color-mix(in srgb, '+C.red+' 14%, var(--c-card))',display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}},
+              React.createElement('div',{style:{fontSize:12,fontWeight:800,color:C.red,letterSpacing:'.5px',textTransform:'uppercase'}},'Atrasados · '+_lstAt.length+(_lstAt.length===1?' contrato':' contratos')),
+              React.createElement('div',{style:{fontSize:14,fontWeight:800,color:C.red}},fmtBRL(_totAt))); }
           _cabecalhoMes=React.createElement('div',{key:'data-'+_k,style:{margin:i===0?'0 0 12px':'24px 0 12px',padding:'12px 14px',borderRadius:14,borderLeft:'5px solid '+_cor,background:'color-mix(in srgb, '+_cor+' 10%, var(--c-card))',display:'flex',gap:10,justifyContent:'space-between',alignItems:'center',flexWrap:'wrap'}},
             React.createElement('div',null,
-              React.createElement('div',{style:{fontSize:10,fontWeight:800,letterSpacing:'.7px',color:_cor,textTransform:'uppercase'}},_porPagamento?'Data do pagamento':'Previsão de pagamento'),
+              React.createElement('div',{style:{fontSize:10,fontWeight:800,letterSpacing:'.7px',color:_cor,textTransform:'uppercase'}},(_atrasadoCt?'Atrasado · ':'')+(_porPagamento?'Data do pagamento':'Previsão de pagamento')+_rotMes),
               React.createElement('div',{style:{fontSize:17,fontWeight:800,color:'var(--c-text)'}},_diaNome(_k)),
               React.createElement('div',{style:{fontSize:11,color:C.sub}},_st.n+(_st.n===1?' contrato':' contratos'))),
             React.createElement('div',{style:{textAlign:'right',fontSize:11,color:C.sub}},
@@ -37109,6 +37124,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         var mostraAlternarEmitir = !faturaEmitidaCard && !_emissaoDispensada && c.status !== "cancelado";
 
         return React.createElement(React.Fragment, { key: c.id }
+        , _bannerAt
         , _cabecalhoMes
         , React.createElement(SwipeRow, {
           wrapStyle: { marginBottom: 10, borderRadius: 16, boxShadow:_flagCardShadow() },
@@ -46699,6 +46715,129 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     : manSemDesp.filter(function(x){ return !filtroCatDesp || filtroCatDesp === "Manutenção"; })
   );
   var despExibidas = despExibidasBase;
+  /* [carrega-atrasados] Receita/despesa que venceu em mês anterior e não foi recebida/paga segue para o mês seguinte
+     (até o mês atual): aparece PRIMEIRO, na seção "Atrasados". Janela de 12 meses. Despesa recorrente fica de fora
+     (a baixa dela é por mês) e o que já aparece no mês não duplica. */
+  var _atrMesAtual = _brNow().toISOString().slice(0,7);
+  var _atrOk = /^\d{4}-\d{2}$/.test(filtroMes) && filtroMes <= _atrMesAtual;
+  var _atrIni = filtroMes + "-01";
+  var _atrLim = (function(){ try { var d0 = new Date(filtroMes + "-15"); d0.setMonth(d0.getMonth() - 12); return d0.toISOString().slice(0,7) + "-01"; } catch(e){ return "0000-00-00"; } })();
+  var recAtrasadas = [], despAtrasadas = [];
+  if (_atrOk) {
+    var _atrRefs = {};
+    receitas.forEach(function(r0){
+      var r = rdReceitaComContrato(r0, contratos);
+      if (!r || (r.recorrente && !r.ref_fatura)) return;
+      if (r.status === "recebido" || r.status === "isento" || r.status === "cancelada" || r.status === "cancelado") return;
+      var dt = String(r.data || "").slice(0,10);
+      if (!dt || dt >= _atrIni || dt < _atrLim) return;
+      if (r.ref_fatura) {
+        var m1 = r.ref_fatura.match(/^fat_(\d+)_/);
+        if (m1) {
+          var ct1 = (contratos || []).find(function(c){ return String(c.id) === m1[1]; });
+          if (!ct1 || ct1.status === "cancelado") return;
+          if (ct1.status_pagamento === "pago" || ct1.status_pagamento === "isento") return;
+          var mf1 = r.ref_fatura.match(/^fat_\d+_(\d{4}-\d{2})$/);
+          if (mf1 && mf1[1] >= filtroMes) return;
+          if (ct1.status_pagamento === "parcial" && ct1.valor_pago) r = Object.assign({}, r, { status: "parcial", valor: parseFloat(ct1.valor_total || r.valor || 0).toFixed(2), _valorPago: parseFloat(ct1.valor_pago) });
+        }
+        if (_atrRefs[r.ref_fatura]) return; _atrRefs[r.ref_fatura] = 1;
+      } else if (r.data_pagamento) return;
+      if (recFiltradas.some(function(x){ return x.id === r.id || (r.ref_fatura && x.ref_fatura === r.ref_fatura); })) return;
+      recAtrasadas.push(Object.assign({}, r, { _atrasada: true }));
+    });
+    (contratos || []).forEach(function(c){
+      if (!c.previsao_pagamento || c.status === "cancelado" || c.status === "concluido" || c.renovado_para) return;
+      if (c.status_pagamento === "pago" || c.status_pagamento === "isento") return;
+      var dtc = String(c.previsao_pagamento).slice(0,10);
+      if (dtc >= _atrIni || dtc < _atrLim) return;
+      if (receitas.some(function(r){ return r.ref_fatura && r.ref_fatura.startsWith("fat_" + c.id + "_"); })) return;
+      var isParc = c.status_pagamento === "parcial";
+      recAtrasadas.push({
+        _fromContrato: true, _atrasada: true, id: "ct_" + c.id,
+        descricao: (function(){ var cl = (clientes||[]).find(function(x){ return x.id == c.cliente_id; }); var ve = (veiculos||[]).find(function(x){ return x.id == c.veiculo_id; }); return (cl ? cl.nome : c.cliente_nome || "Cliente") + " — " + (ve ? ve.placa : c.veiculo_placa || "#" + c.id); })(),
+        categoria: "Locação", valor: parseFloat(c.valor_total || 0), _valorPago: isParc && c.valor_pago ? parseFloat(c.valor_pago) : null,
+        status: isParc ? "parcial" : "pendente", data: c.previsao_pagamento, data_pagamento: c.data_pagamento || "", contrato_id: c.id });
+    });
+    if (filtroCatRec) recAtrasadas = recAtrasadas.filter(function(r){ return (r.categoria || "") === filtroCatRec; });
+    recAtrasadas.sort(function(a,b){ return String(a.data||"").localeCompare(String(b.data||"")); });
+    if (filtroCatDesp !== "Retirada de Lucro" && filtroCatDesp !== "Ajuste de Saldo") {
+      despAtrasadas = (despesas || []).filter(function(d){
+        if (d.recorrente || isRetLucro(d) || d.manutencao_id) return false;
+        if (d.status === "pago" || d.data_pagamento || d.status === "cancelada" || d.status === "cancelado") return false;
+        var dd = String(d.data || "").slice(0,10);
+        if (!dd || dd >= _atrIni || dd < _atrLim) return false;
+        if (filtroCatDesp && (d.categoria || "") !== filtroCatDesp) return false;
+        return true;
+      }).map(function(d){ return Object.assign({}, d, { _atrasada: true }); })
+        .sort(function(a,b){ return String(a.data||"").localeCompare(String(b.data||"")); });
+    }
+  }
+  /* [divisores-por-dia] Receitas e despesas agrupadas por dia, com totais no divisor. */
+  function _recDia(r){ return String((r.status === "recebido" && r.data_pagamento) ? r.data_pagamento : (r.data || "")).slice(0,10) || "sem-data"; }
+  function _despDia(d){ var pg = d.status === "pago" || (!!d.data_pagamento && String(d.data_pagamento).slice(0,7) === filtroMes); return String((pg && d.data_pagamento) ? d.data_pagamento : (d.data || "")).slice(0,10) || "sem-data"; }
+  function _ordenaDia(arr, keyFn, desc){
+    return arr.map(function(x,i){ return { x: x, i: i, k: keyFn(x) }; }).sort(function(a,b){
+      if (a.k !== b.k) return a.k === "sem-data" ? 1 : b.k === "sem-data" ? -1 : (desc ? b.k.localeCompare(a.k) : a.k.localeCompare(b.k));
+      return a.i - b.i;
+    }).map(function(o){ return o.x; });
+  }
+  var recLista = recAtrasadas.concat(_ordenaDia(recExibidas, _recDia, sortRec === "data_desc"));
+  var _despBase = filtroStatusDesp === "pagas" ? despExibidas.filter(function(d){ return d.status === "pago"; }) : filtroStatusDesp === "previstas" ? despExibidas.filter(function(d){ return d.status !== "pago"; }) : despExibidas;
+  var despLista = (filtroStatusDesp === "pagas" ? [] : despAtrasadas).concat(_ordenaDia(_despBase, _despDia, sortDesp === "data_desc"));
+  function _fmtDiaDiv(k){ return /^\d{4}-\d{2}-\d{2}$/.test(k) ? k.slice(8,10) + "/" + k.slice(5,7) + "/" + k.slice(0,4) : "Sem data"; }
+  function _semanaDiv(k){ try { return /^\d{4}-\d{2}-\d{2}$/.test(k) ? ["dom","seg","ter","qua","qui","sex","sáb"][new Date(k + "T12:00:00").getDay()] : ""; } catch(e){ return ""; } }
+  function _divisorDia(o){
+    var cor = o.atr ? C.red : C.blue, saldo = Math.max(0, o.total - o.feito);
+    return React.createElement('div', { key: 'dia-' + o.k, style: { margin: o.primeiro ? '0 0 10px' : '18px 0 10px', padding: '10px 14px', borderRadius: 14, borderLeft: '4px solid ' + cor, background: 'color-mix(in srgb, ' + cor + ' 9%, var(--c-card))', display: 'flex', gap: 10, justifyContent: 'space-between', alignItems: 'center' } }
+      , React.createElement('div', null
+        , React.createElement('div', { style: { fontSize: 10, fontWeight: 800, letterSpacing: '.7px', color: cor, textTransform: 'uppercase' } }, o.atr ? 'Atrasado' : 'Dia')
+        , React.createElement('div', { style: { fontSize: 16, fontWeight: 800, color: 'var(--c-text)' } }, _fmtDiaDiv(o.dia) + (_semanaDiv(o.dia) ? ' · ' + _semanaDiv(o.dia) : ''))
+        , React.createElement('div', { style: { fontSize: 11, color: C.sub } }, o.n + (o.n === 1 ? ' lançamento' : ' lançamentos')))
+      , React.createElement('div', { style: { textAlign: 'right', fontSize: 11, color: C.sub } }
+        , React.createElement('div', null, 'Total: ', React.createElement('b', null, fmtBRL(o.total)))
+        , o.feito > 0.005 ? React.createElement('div', { style: { color: C.green } }, o.rotulo + ': ', React.createElement('b', null, fmtBRL(o.feito))) : null
+        , saldo > 0.005 ? React.createElement('div', { style: { color: o.atr ? C.red : C.orange } }, 'Saldo: ', React.createElement('b', null, fmtBRL(saldo))) : null));
+  }
+  function _bannerAtrasados(lista, rotulo){
+    var tot = lista.reduce(function(a,x){ return a + parseFloat(x.valor || 0); }, 0);
+    return React.createElement('div', { key: 'atr-banner', style: { margin: '0 0 12px', padding: '10px 14px', borderRadius: 14, background: 'color-mix(in srgb, ' + C.red + ' 14%, var(--c-card))', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 } }
+      , React.createElement('div', { style: { fontSize: 12, fontWeight: 800, color: C.red, letterSpacing: '.5px', textTransform: 'uppercase' } }, 'Atrasados · ' + lista.length + ' ' + (lista.length === 1 ? rotulo : rotulo + 's'))
+      , React.createElement('div', { style: { fontSize: 14, fontWeight: 800, color: C.red } }, fmtBRL(tot)));
+  }
+  function _recFeito(r){
+    var v = parseFloat(r.valor || 0);
+    if (r.status === "recebido" || r.status === "isento") return v;
+    if (r.status === "parcial") {
+      if (r._valorPago != null) return parseFloat(r._valorPago);
+      if (r._fromContrato) return v;
+      if (r.ref_fatura) { var mm = r.ref_fatura.match(/^fat_(\d+)_/); if (mm) { var cc = (contratos||[]).find(function(c){ return String(c.id) === mm[1]; }); if (cc && cc.valor_pago) return parseFloat(cc.valor_pago); } }
+    }
+    return 0;
+  }
+  function _despFeito(d){ return (d.status === "pago" || (!!d.data_pagamento && String(d.data_pagamento).slice(0,7) === filtroMes)) ? parseFloat(d.valor || 0) : 0; }
+  function _recKey(r){ return (r._atrasada ? "A:" : "") + _recDia(r); }
+  function _despKey(d){ return (d._atrasada ? "A:" : "") + _despDia(d); }
+  function _mkHdr(feitoFn, rotuloFeito, rotuloItem, listaAtr){
+    return function(k, itens, primeiro){
+      var atr = k.charAt(0) === "A" && k.charAt(1) === ":", dia = atr ? k.slice(2) : k;
+      var tot = 0, fe = 0; itens.forEach(function(x){ tot += parseFloat(x.valor || 0); fe += feitoFn(x); });
+      var h1 = _divisorDia({ k: k, dia: dia, atr: atr, n: itens.length, total: tot, feito: fe, rotulo: rotuloFeito, primeiro: primeiro || (atr && listaAtr.length && itens[0] === listaAtr[0] ? true : false) });
+      return (atr && listaAtr.length && itens[0] === listaAtr[0]) ? React.createElement(React.Fragment, { key: 'hdr-' + k }, _bannerAtrasados(listaAtr, rotuloItem), h1) : h1;
+    };
+  }
+  var _recHdr = _mkHdr(_recFeito, 'Recebido', 'receita', recAtrasadas);
+  var _despHdr = _mkHdr(_despFeito, 'Pago', 'despesa', despAtrasadas);
+  function _intercalaDias(lista, keyFn, mkHdr, cb){
+    var out = [], grupos = {};
+    lista.forEach(function(it){ var k = keyFn(it); (grupos[k] = grupos[k] || []).push(it); });
+    lista.forEach(function(it, i){
+      var k = keyFn(it);
+      if (i === 0 || k !== keyFn(lista[i-1])) out.push(mkHdr(k, grupos[k], i === 0));
+      out.push(cb(it, i));
+    });
+    return out;
+  }
   // Multas do mês
   var multasMes = multas.filter(m => (m.data||"").slice(0,7) === filtroMes);
   var multasMesPago = multasMes.filter(m => m.status === "pago").reduce((s,m) => s+parseFloat(m.valor||0),0);
@@ -46863,8 +47002,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           );
         })()
       , React.createElement('div', { className: "ag-nm-list", style: { padding: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2213}}
-        , recExibidas.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2214}}, "Nenhuma receita neste período"   )
-        , recExibidas.map((r, i) => {
+        , recLista.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2214}}, "Nenhuma receita neste período"   )
+        , _intercalaDias(recLista, _recKey, _recHdr, (r, i) => {
           var isRec = !r.ref_fatura && (r.data||"").slice(0,7) !== filtroMes && r.recorrente;
           var _hojeRec = _brNow().toISOString().slice(0,10);
           var _dataRec = r.data || "";
@@ -47023,8 +47162,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           );
         })()
       , React.createElement('div', { className: "ag-nm-list", style: { padding: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2280}}
-        , (filtroStatusDesp === "pagas" ? despExibidas.filter(d=>d.status==="pago") : filtroStatusDesp === "previstas" ? despExibidas.filter(d=>d.status!=="pago") : despExibidas).length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2281}}, "Nenhuma despesa neste período"   )
-        , (filtroStatusDesp === "pagas" ? despExibidas.filter(d=>d.status==="pago") : filtroStatusDesp === "previstas" ? despExibidas.filter(d=>d.status!=="pago") : despExibidas).map((d, i) => {
+        , despLista.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2281}}, "Nenhuma despesa neste período"   )
+        , _intercalaDias(despLista, _despKey, _despHdr, (d, i) => {
           var isRec = (d.data||"").slice(0,7) !== filtroMes && d.recorrente;
           var isHighlight = d.id === highlightDespId || (highlightDespId && d.recorrencia_origem_id == highlightDespId);
           var _pagoMes = d.status === "pago" || (!!d.data_pagamento && d.data_pagamento.slice(0,7) === filtroMes);

@@ -31233,10 +31233,19 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
          cobertas pelo cálculo de contratos acima; recebidas/baixadas não
          entram novamente no futuro. */
       var _receitasAvulsasPendMes = (receitas || []).filter(function(r){
-        if (!r || r.ref_fatura || r.contrato_id) return false;
+        if (!r || r.ref_fatura) return false;
         if (r.status === 'recebido' || r.status === 'pago' || r.status === 'isento' ||
             r.status === 'cancelado' || r.status === 'cancelada' || r.data_pagamento) return false;
-        return !!(r.data && String(r.data).slice(0,7) === _mesSel);
+        var _dtRec = String(r.data_vencimento || r.previsao_pagamento || r.data || '').slice(0,10);
+        if (!_dtRec || _dtRec.slice(0,7) !== _mesSel) return false;
+        /* Se estiver vinculada a contrato, só não soma quando o contrato já
+           representa exatamente esta mesma cobrança no mesmo vencimento. */
+        if (r.contrato_id) {
+          var _ctDup = (contratos || []).find(function(c){ return String(c.id) === String(r.contrato_id); });
+          if (_ctDup && String(_ctDup.previsao_pagamento || '').slice(0,10) === _dtRec &&
+              Math.abs((ctSaldoReceber(_ctDup) || 0) - (parseFloat(r.valor || 0) || 0)) < 0.01) return false;
+        }
+        return true;
       }).reduce(function(total, r){ return total + Math.max(0, parseFloat(r.valor || 0)); }, 0);
       var _aReceberMes = Math.max(0, prevMes - recMes) + _restoParcialVenc + _receitasAvulsasPendMes;
       var _aPagarMesProj = Math.max(0, (_despTotalKpi + _manTotalKpi) - (_despPagoKpi + _manPagoKpi));
@@ -31376,14 +31385,20 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
       /* Receitas avulsas a receber: entram na mesma linha pontilhada que
          contratos, despesas e manutenções. Não duplicar faturas/contratos. */
       (receitas || []).forEach(function(r){
-        if (!r || r.ref_fatura || r.contrato_id) return;
+        if (!r || r.ref_fatura) return;
         if (r.status === 'recebido' || r.status === 'pago' || r.status === 'isento' ||
             r.status === 'cancelado' || r.status === 'cancelada' || r.data_pagamento) return;
-        if (!r.data || r.data <= hoje || String(r.data).slice(0,7) !== _mesSel) return;
+        var _dtRec = String(r.data_vencimento || r.previsao_pagamento || r.data || '').slice(0,10);
+        if (!_dtRec || _dtRec <= hoje || _dtRec.slice(0,7) !== _mesSel) return;
         var _vr = Math.max(0, parseFloat(r.valor || 0));
         if (_vr <= 0.005) return;
+        if (r.contrato_id) {
+          var _ctDupEv = (contratos || []).find(function(c){ return String(c.id) === String(r.contrato_id); });
+          if (_ctDupEv && String(_ctDupEv.previsao_pagamento || '').slice(0,10) === _dtRec &&
+              Math.abs((ctSaldoReceber(_ctDupEv) || 0) - _vr) < 0.01) return;
+        }
         _eventosFuturos.push({
-          dia: parseInt(String(r.data).slice(8,10),10),
+          dia: parseInt(_dtRec.slice(8,10),10),
           delta: _vr,
           tipo:'receita',
           label:r.descricao || r.categoria || 'Receita',

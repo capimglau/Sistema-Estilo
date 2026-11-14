@@ -31608,10 +31608,12 @@ function Inicio({ veiculos, setVeiculos, clientes, contratos, setContratos, rese
                 : React.createElement('div', { className:(_pulsaDespEstilo ? 'ag-val-pulse' : undefined) }, _big(_despHojePrevisto, _despHojePrevisto>0.005 ? C.red : 'var(--c-sub)')))
             , _despHojeAPagar>0 ? React.createElement('div', { className:(_pulsaDespEstilo ? 'ag-val-pulse' : undefined), style:{ fontSize: _supFs, color:C.red, fontWeight:700, marginTop:3 } }
               , [React.createElement(BRLValue,{key:'a',v:_despHojeAPagar,size:_supFs,weight:700,color:C.red}), ' a pagar']) : null
+            , null /* legenda redundante removida; valor numérico preservado */
       );
       var _colFat = React.createElement('div', { style:Object.assign({},_cardBase,{flex:1},(desktop ? {textAlign:'left',display:'flex',flexDirection:'column',justifyContent:'center',alignItems:'flex-start'} : {})) }
             , React.createElement('div', { style:_lbl }, 'Recebimentos em atraso')
             , _big(_faturasAtraso, _faturasAtraso>0.005 ? C.red : 'var(--c-sub)')
+            , null /* legenda redundante removida; valor numérico preservado */
       );
       return React.createElement('div', { className:"ag-kpi-card ag-apple-card", style:Object.assign({},_cardBase,{cursor:'pointer',padding:0,overflow:'hidden',position:'relative'},(desktop ? {display:'flex',flexDirection:'column'} : {})), onClick:function(){ _setSaldoPontoSel(null); setSaldoHojeTick(function(v){ return v+1; }); } }
         , React.createElement('div', { key:'face'+saldoHojeFace, className:'ag-kpi-flip', style:{ display:'flex', flex:(desktop ? '1 1 auto' : undefined) } }
@@ -41163,14 +41165,21 @@ function AgSaldoLinhaChartBox(props) {
     return function(){ if (ro) ro.disconnect(); window.removeEventListener('resize', m); };
   }, []);
   var o = props.o || {};
-  /* [grafico-saldo-movimentos] Se os rótulos de receita/despesa dos dias ficariam apertados (< 62px entre
-     dois dias com movimento), o gráfico fica mais largo que o card e ROLA na horizontal. */
+  /* [grafico-saldo-espacamento-inteligente]
+     A largura é calculada pela quantidade de datas efetivamente plotadas,
+     não pela diferença em dias do calendário. Assim, datas próximas ganham
+     respiro e os intervalos longos deixam de consumir espaço desnecessário. */
   var movs = o.movs || [];
-  var span = Math.max(1, (o.diaFim || 1) - (o.diaIni || 0));
-  var minGap = Infinity;
-  for (var i = 1; i < movs.length; i++) { minGap = Math.min(minGap, movs[i].dia - movs[i-1].dia); }
-  var pxDia = (movs.length > 1 && isFinite(minGap) && minGap > 0) ? Math.ceil(62 / minGap) : 0;
-  var contentW = cw ? Math.min(2600, Math.max(cw, pxDia ? pxDia * span + 10 : 0)) : 0;
+  var _diasPlot = [];
+  (o.solid || []).concat(o.proj || []).forEach(function(p){
+    if (p && p.dia !== undefined && _diasPlot.indexOf(Number(p.dia)) < 0) _diasPlot.push(Number(p.dia));
+  });
+  movs.forEach(function(p){
+    if (p && p.dia !== undefined && _diasPlot.indexOf(Number(p.dia)) < 0) _diasPlot.push(Number(p.dia));
+  });
+  _diasPlot.sort(function(a,b){ return a-b; });
+  var _gapVisual = 48;
+  var contentW = cw ? Math.min(2600, Math.max(cw, _diasPlot.length > 1 ? (_diasPlot.length - 1) * _gapVisual + 10 : 0)) : 0;
   var rolavel = cw > 0 && contentW > cw + 1;
   var solid = o.solid || [], proj = o.proj || [];
   var hojeDia = solid.length ? solid[solid.length - 1].dia : (proj.length ? proj[0].dia : null);
@@ -41199,7 +41208,25 @@ function _agSaldoLinhaChartImpl(o) {
   var esc = pisoNoGraf ? vals.concat([piso]) : vals;
   var mn = Math.min.apply(null, esc), mx = Math.max.apply(null, esc), sp = (mx - mn) || 1;
   var diaIni = o.diaIni, diaFim = o.diaFim;
-  var sx = function(d){ return 5 + (d - diaIni) / Math.max(1, diaFim - diaIni) * (W - 10); };
+  /* Distribuição ordinal das datas presentes no gráfico: cada data real
+     recebe uma posição visual própria, mantendo a ordem cronológica.
+     O calendário continua mostrando o dia verdadeiro; só a distância X
+     deixa de ser proporcional ao número de dias entre os lançamentos. */
+  var _datasX = [];
+  solid.concat(proj).forEach(function(p){
+    if (p && p.dia !== undefined && _datasX.indexOf(Number(p.dia)) < 0) _datasX.push(Number(p.dia));
+  });
+  _datasX.sort(function(a,b){ return a-b; });
+  var _mapaX = {};
+  _datasX.forEach(function(d,i){
+    _mapaX[d] = 5 + (_datasX.length > 1 ? i / (_datasX.length - 1) : 0.5) * (W - 10);
+  });
+  var sx = function(d){
+    var k = Number(d);
+    if (_mapaX[k] !== undefined) return _mapaX[k];
+    /* fallback para pontos auxiliares não incluídos nas séries */
+    return 5 + (k - diaIni) / Math.max(1, diaFim - diaIni) * (W - 10);
+  };
   var sy = function(v){ return padT + (1 - (v - mn) / sp) * (H - padT - padB); };
   var y0 = padT + (1 - (0 - mn) / sp) * (H - padT - padB);
   var frac = Math.max(0, Math.min(1, y0 / H));
@@ -45614,21 +45641,7 @@ function CurvaSaldo(p){
   var _totNeed = padL + padR + _gapMin.reduce(function(s0, g){ return s0 + g; }, 0);
   var W = Math.max(_W0, Math.min(2600, Math.ceil(_totNeed))), pw = W - padL - padR;
   var _rol = W > _W0 + 1;
-  /* [saldo-eixo-por-lancamento] O eixo horizontal distribui igualmente os
-     dias que realmente têm movimento, em vez de reservar espaço proporcional
-     ao número do dia no mês. Assim, datas próximas não se amontoam e os espaços
-     vazios entre períodos sem lançamentos deixam de dominar o gráfico. A data
-     continua correta nos rótulos; só a distância visual deixa de ser calendário. */
-  var X = function(d){
-    var ix = -1, best = 0, dist = Infinity;
-    for (var xi = 0; xi < pts.length; xi++) {
-      var dif = Math.abs(pts[xi].dia - d);
-      if (dif < dist) { dist = dif; best = xi; }
-      if (pts[xi].dia === d) { ix = xi; break; }
-    }
-    if (ix < 0) ix = best;
-    return padL + (ix / Math.max(1, pts.length - 1)) * pw;
-  };
+  var X = function(d){ return padL + ((d - 1) / (nd - 1)) * pw; };
   var vals = pts.map(function(q){ return q.saldo; });
   var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals), sp = Math.max(mx - mn, Math.abs(mx) * 0.02, 1);
   var vmin = mn - sp * 0.52, vmax = mx + sp * 0.12; /* folga embaixo: as despesas ficam ABAIXO da linha, antes das datas */
@@ -66050,6 +66063,158 @@ body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
     padding: 9px 9px 10px !important;
   }
 }
+</style>
+
+
+<style id="agenda-cards-largura-painel-corpo-translucido">
+/* Ajuste solicitado: os cartões ocupam toda a largura interna do painel.
+   O cabeçalho permanece sólido; somente a área abaixo dele fica translúcida. */
+body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+.agk2-timeline .agk2-day-col {
+  background: transparent !important;
+  overflow: hidden !important;
+}
+body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+.agk2-timeline .agk2-day-col > .agk2-day-col-head {
+  background: linear-gradient(180deg,#fffefa 0%,#f8f5ed 100%) !important;
+  border-bottom: 1px solid rgba(157,148,128,.27) !important;
+}
+body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+.agk2-timeline .agk2-day-col > .agk2-day-col-body {
+  padding: 9px 0 10px !important;
+  background: rgba(255,255,255,.48) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(115%) !important;
+  backdrop-filter: blur(10px) saturate(115%) !important;
+}
+body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+.agk2-timeline .agk2-day-col-body > .agk2-ev-card {
+  width: 100% !important;
+  max-width: none !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  box-sizing: border-box !important;
+}
+/* Mesma correção caso a Agenda esteja no formato de colunas mobile. */
+@media (max-width:767px) {
+  body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+  .agk2-board-mobile .agk2-day-col {
+    background: transparent !important;
+    overflow: hidden !important;
+  }
+  body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+  .agk2-board-mobile .agk2-day-col > .agk2-day-col-body {
+    padding: 9px 0 10px !important;
+    background: rgba(255,255,255,.48) !important;
+    -webkit-backdrop-filter: blur(10px) saturate(115%) !important;
+    backdrop-filter: blur(10px) saturate(115%) !important;
+  }
+  body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+  .agk2-board-mobile .agk2-day-col-body > .agk2-ev-card {
+    width: 100% !important;
+    max-width: none !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    box-sizing: border-box !important;
+  }
+}
+</style>
+
+
+<style id="agenda-painel-transparencia-refinada">
+/* Painel da Agenda: borda quase imperceptível e corpo mais translúcido.
+   Mantém o tom champanhe atual do cabeçalho e os cards em largura total. */
+body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+.agk2-timeline .agk2-day-col {
+  background: rgba(255,255,255,.16) !important;
+  border: 1px solid rgba(157,148,128,.10) !important;
+  box-shadow:
+    0 2px 6px rgba(50,48,42,.025),
+    0 7px 16px -14px rgba(50,48,42,.10),
+    inset 0 1px 0 rgba(255,255,255,.32) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(118%) !important;
+  backdrop-filter: blur(14px) saturate(118%) !important;
+}
+body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+.agk2-timeline .agk2-day-col > .agk2-day-col-head {
+  border-bottom: 1px solid rgba(157,148,128,.14) !important;
+}
+body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+.agk2-timeline .agk2-day-col > .agk2-day-col-body {
+  background: rgba(255,255,255,.24) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(118%) !important;
+  backdrop-filter: blur(14px) saturate(118%) !important;
+}
+@media (max-width:767px) {
+  body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+  .agk2-board-mobile .agk2-day-col {
+    background: rgba(255,255,255,.16) !important;
+    border: 1px solid rgba(157,148,128,.10) !important;
+    box-shadow: 0 2px 6px rgba(50,48,42,.025),0 7px 16px -14px rgba(50,48,42,.10),inset 0 1px 0 rgba(255,255,255,.32) !important;
+    -webkit-backdrop-filter: blur(14px) saturate(118%) !important;
+    backdrop-filter: blur(14px) saturate(118%) !important;
+  }
+  body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+  .agk2-board-mobile .agk2-day-col > .agk2-day-col-head {
+    border-bottom: 1px solid rgba(157,148,128,.14) !important;
+  }
+  body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+  .agk2-board-mobile .agk2-day-col > .agk2-day-col-body {
+    background: rgba(255,255,255,.24) !important;
+    -webkit-backdrop-filter: blur(14px) saturate(118%) !important;
+    backdrop-filter: blur(14px) saturate(118%) !important;
+  }
+}
+</style>
+
+
+<style id="agenda-transparencia-maxima-bordas-ultrasuaves">
+/* Refinamento final: laterais e base quase sem contorno; fundo mais leve.
+   Cabeçalho conserva o champanhe já aprovado. */
+body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+.agk2-timeline .agk2-day-col {
+  background: rgba(255,255,255,.075) !important;
+  border: 1px solid rgba(157,148,128,.035) !important;
+  box-shadow:
+    0 2px 8px rgba(50,48,42,.018),
+    inset 0 1px 0 rgba(255,255,255,.20) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(120%) !important;
+  backdrop-filter: blur(18px) saturate(120%) !important;
+}
+body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+.agk2-timeline .agk2-day-col > .agk2-day-col-head {
+  border-bottom: 1px solid rgba(157,148,128,.075) !important;
+}
+body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+.agk2-timeline .agk2-day-col > .agk2-day-col-body {
+  background: rgba(255,255,255,.12) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(120%) !important;
+  backdrop-filter: blur(18px) saturate(120%) !important;
+}
+@media (max-width:767px) {
+  body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+  .agk2-board-mobile .agk2-day-col {
+    background: rgba(255,255,255,.075) !important;
+    border: 1px solid rgba(157,148,128,.035) !important;
+    box-shadow: 0 2px 8px rgba(50,48,42,.018),inset 0 1px 0 rgba(255,255,255,.20) !important;
+    -webkit-backdrop-filter: blur(18px) saturate(120%) !important;
+    backdrop-filter: blur(18px) saturate(120%) !important;
+  }
+  body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+  .agk2-board-mobile .agk2-day-col > .agk2-day-col-head {
+    border-bottom: 1px solid rgba(157,148,128,.075) !important;
+  }
+  body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix)
+  .agk2-board-mobile .agk2-day-col > .agk2-day-col-body {
+    background: rgba(255,255,255,.12) !important;
+    -webkit-backdrop-filter: blur(18px) saturate(120%) !important;
+    backdrop-filter: blur(18px) saturate(120%) !important;
+  }
+}
+</style>
+
+
+<style id="grafico-saldo-espacamento-sem-alterar-layout">
+/* O eixo X é distribuído pela ordem das datas plotadas no JavaScript. */
 </style>
 
 </html>

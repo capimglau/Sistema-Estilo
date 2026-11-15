@@ -45680,7 +45680,7 @@ function CurvaSaldo(p){
   for (i = 0; i < n - 1; i++) { if (Math.abs(d[i]) < 1e-9) { m[i] = 0; m[i+1] = 0; continue; } var a = m[i] / d[i], b = m[i+1] / d[i], h = a*a + b*b; if (h > 9) { var t = 3 / Math.sqrt(h); m[i] = t * a * d[i]; m[i+1] = t * b * d[i]; } }
   var f1 = function(v){ return Math.round(v * 10) / 10; };
   var segs = [];
-  for (i = 0; i < n - 1; i++) { var dx = px[i+1] - px[i]; segs.push({ ax:px[i], ay:py[i], c1x:px[i] + dx/3, c1y:py[i] + m[i]*dx/3, c2x:px[i+1] - dx/3, c2y:py[i+1] - m[i+1]*dx/3, bx:px[i+1], by:py[i+1], real: !!pts[i+1].real }); }
+  for (i = 0; i < n - 1; i++) { var dx = px[i+1] - px[i]; segs.push({ ax:px[i], ay:py[i], c1x:px[i] + dx/3, c1y:py[i] + m[i]*dx/3, c2x:px[i+1] - dx/3, c2y:py[i+1] - m[i+1]*dx/3, bx:px[i+1], by:py[i+1], real: !!pts[i+1].real, rec:pts[i+1].rec||0, dep:pts[i+1].dep||0 }); }
   var _bez = function(s, t){ var u = 1 - t; return [u*u*u*s.ax + 3*u*u*t*s.c1x + 3*u*t*t*s.c2x + t*t*t*s.bx, u*u*u*s.ay + 3*u*u*t*s.c1y + 3*u*t*t*s.c2y + t*t*t*s.by]; };
   var dStr = function(s){ return 'M'+f1(s.ax)+' '+f1(s.ay)+' C'+f1(s.c1x)+' '+f1(s.c1y)+' '+f1(s.c2x)+' '+f1(s.c2y)+' '+f1(s.bx)+' '+f1(s.by); };
   var G = C.green, R = C.red;
@@ -45704,13 +45704,25 @@ function CurvaSaldo(p){
   var _segReal = segs.filter(function(s){ return s.real; }), _segProj = segs.filter(function(s){ return !s.real; });
   var _pendUpId='cvSaldoPendUp'+_saldoSvgUid, _pendDnId='cvSaldoPendDn'+_saldoSvgUid;
   var _clipId='cvSaldoClip'+_saldoSvgUid;
+  /* Gradientes móveis discretos somente no trecho futuro: verde para receitas
+     (acima da curva) e vermelho para despesas (abaixo). O passado permanece suave. */
+  var _flowUpId = _pendUpId + 'Flow', _flowDnId = _pendDnId + 'Flow';
+  var _flowGrad = function(id, cor){
+    return React.createElement('linearGradient', { id:id, gradientUnits:'userSpaceOnUse', x1:-W, y1:0, x2:0, y2:0 },
+      React.createElement('stop', { offset:'0%', stopColor:cor, stopOpacity:0.008 }),
+      React.createElement('stop', { offset:'38%', stopColor:cor, stopOpacity:0.045 }),
+      React.createElement('stop', { offset:'56%', stopColor:cor, stopOpacity:0.085 }),
+      React.createElement('stop', { offset:'72%', stopColor:cor, stopOpacity:0.042 }),
+      React.createElement('stop', { offset:'100%', stopColor:cor, stopOpacity:0.006 }),
+      React.createElement('animate', { attributeName:'x1', values:(-W)+';'+W, dur:'8s', repeatCount:'indefinite' }),
+      React.createElement('animate', { attributeName:'x2', values:'0;'+(2*W), dur:'8s', repeatCount:'indefinite' }));
+  };
   els.push(React.createElement('defs', { key:'dfc' },
     React.createElement('clipPath', { id:_clipId }, React.createElement('rect', { x:padL, y:8, width:pw, height:yBase - 8 })),
-    agGraficoPendDefs(_pendUpId,G,yTop,8,W,H),
-    agGraficoPendDefs(_pendDnId,R,yTop,yBase,W,H)));
+    _flowGrad(_flowUpId,G), _flowGrad(_flowDnId,R)));
   els.push(React.createElement('g', { key:'sombra', clipPath:'url(#'+_clipId+')' }
     , _camadas(_segReal, true, 0.022, 'sur'), _camadas(_segReal, false, 0.022, 'sdr')
-    , _camadas(_segProj, true, 0.014, 'sup'), _camadas(_segProj, false, 0.014, 'sdp')));
+    , _camadas(_segProj, true, 0.026, 'sup'), _camadas(_segProj, false, 0.026, 'sdp')));
   /* O preenchimento animado acompanha os dois lados da curva futura;
      o trecho já realizado continua com sombra totalmente estática. */
   /* [sombra-pend-sutil] mesma lógica do trecho efetivado: forte colado na linha e clareando ao se afastar (até ~18px).
@@ -45733,8 +45745,14 @@ function CurvaSaldo(p){
       _mLay.push(React.createElement('path',{key:'ml'+_mj,d:dStr(seg),fill:'none',stroke:'#fff',strokeOpacity:_aj,strokeWidth:_mj*2*_D/_N,strokeLinecap:'butt'}));
     }
     els.push(React.createElement('mask',{key:'pstM'+k,id:_mId,maskUnits:'userSpaceOnUse',x:0,y:0,width:W,height:H},_mLay));
-    els.push(agGraficoPendSombra(topD,_pendUpId,{key:'pstUp'+k,clipPath:'url(#'+_clipId+')',mask:'url(#'+_mId+')'}));
-    els.push(agGraficoPendSombra(bottomD,_pendDnId,{key:'pstDn'+k,clipPath:'url(#'+_clipId+')',mask:'url(#'+_mId+')'}));
+    /* Faixa móvel somente no futuro e apenas na categoria que existe naquele dia:
+       receita = verde acima da curva; despesa = vermelho abaixo. Intensidade suave. */
+    if (seg.rec > 0.005) {
+      els.push(React.createElement('path',{key:'flowUp'+k,d:topD,fill:'url(#'+_flowUpId+')',clipPath:'url(#'+_clipId+')',mask:'url(#'+_mId+')',pointerEvents:'none'}));
+    }
+    if (seg.dep > 0.005) {
+      els.push(React.createElement('path',{key:'flowDn'+k,d:bottomD,fill:'url(#'+_flowDnId+')',clipPath:'url(#'+_clipId+')',mask:'url(#'+_mId+')',pointerEvents:'none'}));
+    }
   });
   els.push(React.createElement('line', { key:'ax', x1:padL, y1:yBase, x2:W - padR, y2:yBase, style:{ stroke:C.border, strokeWidth:1 } }));
   segs.forEach(function(s, k){ els.push(React.createElement('path', { key:'ln'+k, d:dStr(s), fill:'none', style:{ stroke:G, strokeWidth:1.4, strokeLinecap:'round', opacity: s.real ? 1 : 0.8 }, className: s.real ? undefined : 'ag-ln-pend', strokeDasharray: s.real ? undefined : '3 2.5' })); });

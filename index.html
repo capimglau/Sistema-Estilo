@@ -36746,9 +36746,11 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           return r;
         }
       }
+      var _contratoSalvoParaImprimir = null;
       if (edit) {
         const ctAntes = contratos.find(function(x){ return x.id === edit; });
         const u = await _salvarContrato(true, edit, payload);
+        _contratoSalvoParaImprimir = Object.assign({}, ctAntes || {}, payload, u && typeof u === "object" ? u : {}, { id: edit });
         setContratos(p => p.map(c => c.id === edit ? Object.assign({}, c, payload, u && typeof u === "object" ? u : {}) : c));
         // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
         // Se previsao_pagamento mudou, garantir que existe fatura prevista para o novo mês
@@ -36861,12 +36863,18 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         toast("Atualizado!");
       } else {
         const c = await _salvarContrato(false, null, payload);
+        _contratoSalvoParaImprimir = c;
         setContratos(p => [c].concat(p));
         // Não grava status no veículo — statusEfetivoVeiculo() calcula dinamicamente
         await criarFaturaPrevista(c);
         toast("Contrato nº " + numCt(c.id) + " criado!");
       }
       setModal(false);
+      if (_contratoSalvoParaImprimir && confirm("Contrato salvo com sucesso. Deseja imprimir agora?")) {
+        var _clPrintCt = getCl(_contratoSalvoParaImprimir.cliente_id);
+        var _vePrintCt = getVe(_contratoSalvoParaImprimir.veiculo_id);
+        await printContrato(_contratoSalvoParaImprimir, _clPrintCt, _vePrintCt, empresa);
+      }
     } catch(e) {
       console.error("ERRO AO SALVAR CONTRATO:", e);
       var msg = e && e.message ? e.message : (e && e.error ? e.error : JSON.stringify(e));
@@ -36919,6 +36927,11 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       setContratos(p => p.map(c => c.id === ct.id ? Object.assign({}, c, { status: "concluido", renovado_para: novo.id }) : c).concat([novo]));
       await criarFaturaPrevista(novo);
       toast("Renovado! Novo contrato nº " + numCt(novo.id));
+      if (confirm("Contrato renovado com sucesso. Deseja imprimir o novo contrato agora?")) {
+        var _clRenPrint = getCl(novo.cliente_id);
+        var _veRenPrint = getVe(novo.veiculo_id);
+        await printContrato(novo, _clRenPrint, _veRenPrint, empresa);
+      }
     } catch(e) { toast("Erro ao renovar: " + e.message, "error"); }
     _talvezVoltarInicio();
   }
@@ -46602,6 +46615,9 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         await db.patch("receitas", r.id, { status: "emitida", data_emissao: hojeAv, numero_fatura: numAv });
         setReceitas(function(p){ return p.map(function(x){ return x.id === r.id ? Object.assign({}, x, { status: "emitida", data_emissao: hojeAv, numero_fatura: numAv }) : x; }); });
         toast(numAv + " emitida!");
+        if (confirm("Fatura " + numAv + " emitida com sucesso. Deseja imprimir agora?")) {
+          await printFaturaAvulsa(Object.assign({}, r, { status:"emitida", data_emissao:hojeAv, numero_fatura:numAv }), clAv, veAv, empresa);
+        }
       } catch(e) {
         if (e && e.conflito && e.registroAtual) {
           var _raAv = e.registroAtual;
@@ -46644,6 +46660,9 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
         setReceitas(p => [novaFat].concat(p));
       }
       toast(num + " emitida!");
+      if (confirm("Fatura " + num + " emitida com sucesso. Deseja imprimir agora?")) {
+        await printFatura(c, cl, ve, empresa);
+      }
     } catch(e) {
       if (e && e.conflito && e.registroAtual) {
         var _ra = e.registroAtual;
@@ -49739,6 +49758,19 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
             setReceitas(function(p){ return [nova, ...p]; });
           }
           toast(num + " emitida!");
+          if (confirm("Fatura " + num + " emitida com sucesso. Deseja imprimir agora?")) {
+            if (fat.c) {
+              var _clImpFat = (clientes||[]).find(function(x){ return String(x.id) === String(fat.c.cliente_id); }) || {};
+              var _veImpFat = (veiculos||[]).find(function(x){ return String(x.id) === String(fat.c.veiculo_id); }) || {};
+              await printFatura(fat.c, _clImpFat, _veImpFat, empresa);
+            } else if (fat.recId) {
+              var _recImpFat = (receitas||[]).find(function(x){ return String(x.id) === String(fat.recId); }) || {};
+              _recImpFat = Object.assign({}, _recImpFat, { status:"emitida", data_emissao:dtEmissao, numero_fatura:num });
+              var _clAvImp = _recImpFat.cliente_id ? (clientes||[]).find(function(x){ return String(x.id)===String(_recImpFat.cliente_id); }) : null;
+              var _veAvImp = _recImpFat.veiculo_id ? (veiculos||[]).find(function(x){ return String(x.id)===String(_recImpFat.veiculo_id); }) : null;
+              await printFaturaAvulsa(_recImpFat, _clAvImp, _veAvImp, empresa);
+            }
+          }
         } catch(e) {
           if (e && e.conflito && e.registroAtual) {
             var _ra = e.registroAtual;

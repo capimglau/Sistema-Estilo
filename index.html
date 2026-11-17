@@ -19044,6 +19044,7 @@ async function hidratarContrato(ct) {
   var j = await r.json().catch(function(){ return []; });
   if (!Array.isArray(j) || !j.length) throw new Error("Contrato #" + ct.id + " não encontrado.");
   var full = Object.assign({}, ct, j[0], { __completo: true });
+  _AG_LOC_KEYS.forEach(function (k) { if (_agBlank(full[k]) && !_agBlank(ct[k])) full[k] = ct[k]; });
   _agVerSet("contratos", full);
   return full;
 }
@@ -34370,6 +34371,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
     setLoading(true);
     try {
       var payload = Object.assign({}, form);
+      try { _agAplicarVeicNoContrato(payload, veiculos); } catch (_eV) {}
       if (edit) {
         var upd = await db.patch("contratos", edit, payload);
         setContratos(function(p){ return p.map(function(x){ return x.id === edit ? Object.assign({}, x, upd || payload) : x; }); });
@@ -34672,10 +34674,7 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
           , React.createElement(Lbl, { label: "KM Saida" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1140}}, React.createElement('input', { style: FI, type: "number", value: form.km_inicial || "", onChange: e => F("km_inicial", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1140}} ))
           , React.createElement(Lbl, { label: "KM Retorno" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1141}}, React.createElement('input', { style: FI, type: "number", value: form.km_final || "", onChange: e => F("km_final", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1141}} ))
         )
-        , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1143}}
-          , React.createElement(Lbl, { label: "Franquia KM" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1144}}, React.createElement('input', { style: FI, type: "number", value: form.km_franquia || "", onChange: e => F("km_franquia", e.target.value), placeholder: "Ex: 300" , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1144}} ))
-          , React.createElement(Lbl, { label: "R$/KM excedente" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1145}}, React.createElement('input', { style: FI, type: "text", inputMode: "decimal", step: "0.01", value: form.valor_km_excedente || "", onChange: e => F("valor_km_excedente", _mv(e.target.value)), placeholder: "Ex: 1.50", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1145}} ))
-        )
+        , _agInfoCondVeic(form, veiculos)
         , React.createElement('div', { style: { display: "flex", gap: 10 } }
           , React.createElement(Lbl, { label: "Combustível — Saída", flex: 1 }
             , React.createElement('select', { style: FI, value: form.combustivel_saida || "", onChange: function(e){ F("combustivel_saida", e.target.value); } }
@@ -34707,9 +34706,6 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
             , React.createElement(Lbl, { label: "Valor Seguro/dia (R$)", flex: 1 }
               , React.createElement('input', { style: FI, type: "text", inputMode: "decimal", step: "0.01", min: "0", value: form.seguro_valor_dia || "", onChange: function(e){ F("seguro_valor_dia", _mv(e.target.value)); }, placeholder: "0,00" })
             )
-          )
-          , React.createElement(Lbl, { label: "Franquia em caso de sinistro (% da FIPE)" }
-            , React.createElement('input', { style: FI, type: "number", step: "0.1", min: "0", max: "100", value: form.seguro_franquia_valor || "", onChange: function(e){ F("seguro_franquia_valor", e.target.value); }, placeholder: "Ex: 10" })
           )
         )
         , React.createElement('div', { style: { display: "flex", gap: 10 } }
@@ -34785,9 +34781,6 @@ function RentabilidadeWidget({ veiculos, contratos, despesas, receitas, manutenc
                 , React.createElement('option', { value: "transferencia" }, "Transferência / PIX")
                 , React.createElement('option', { value: "outro" }, "Outro")
               )
-            )
-            , React.createElement(Lbl, { label: "Valor (R$)", flex: 1 }
-              , React.createElement('input', { style: FI, type: "text", inputMode: "decimal", step: "0.01", min: "0", value: form.caucao_valor || "", onChange: function(e){ F("caucao_valor", _mv(e.target.value)); }, placeholder: "0,00" })
             )
           )
           , form.caucao_tipo && React.createElement('div', { style: { display: "flex", gap: 10 } }
@@ -35023,8 +35016,26 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast, despesas }) 
       // Placa sem pontuação e em maiúsculas — é a chave que liga veículo a
       // contrato, multa e manutenção; "ABC-1234" e "abc1234" têm que ser a mesma.
       if (payload.placa) payload.placa = fmtPlaca(payload.placa);
-      if (edit) { const u = await db.patch("veiculos", edit, payload); setVeiculos(p => p.map(v => v.id === edit ? Object.assign({}, v, u) : v)); toast("Atualizado!"); }
-      else { const c = await db.post("veiculos", payload); setVeiculos(p => [c].concat(p)); toast("Cadastrado!"); }
+      // Condições de locação: vazio → null; chave ausente (coluna ainda não criada) não é enviada.
+      var _LOCK = ["km_franquia", "valor_km_excedente", "seguro_franquia_valor", "participacao_danos", "participacao_roubo_furto", "participacao_perda_total", "caucao_valor"];
+      _LOCK.forEach(function(k) {
+        if (payload[k] === undefined) { delete payload[k]; return; }
+        if (payload[k] === null || payload[k] === "") { payload[k] = null; return; }
+        payload[k] = parseFloat(String(payload[k]).replace(",", ".")) || null;
+      });
+      async function _salvarVeic(isEdit, id, p) {
+        try { return isEdit ? await db.patch("veiculos", id, p) : await db.post("veiculos", p); }
+        catch (eV) {
+          var temLoc = _LOCK.some(function(k) { return p[k] !== undefined && p[k] !== null; });
+          if (!temLoc) throw eV;
+          var pSlim = Object.assign({}, p); _LOCK.forEach(function(k) { delete pSlim[k]; });
+          var rV = isEdit ? await db.patch("veiculos", id, pSlim) : await db.post("veiculos", pSlim);
+          toast("Veículo salvo, mas KM livre/excedente/franquia não foram gravados — rode o SQL em Config para habilitar esses campos.", "error");
+          return rV;
+        }
+      }
+      if (edit) { const u = await _salvarVeic(true, edit, payload); setVeiculos(p => p.map(v => v.id === edit ? Object.assign({}, v, u) : v)); toast("Atualizado!"); }
+      else { const c = await _salvarVeic(false, null, payload); setVeiculos(p => [c].concat(p)); toast("Cadastrado!"); }
       setModal(false);
     } catch(e) { toast("Erro: " + e.message, "error"); }
     setLoading(false);
@@ -35396,6 +35407,22 @@ function Frota({ veiculos, setVeiculos, contratos, clientes, toast, despesas }) 
           , React.createElement(Lbl, { label: "Apólice", flex: 2 }, React.createElement('input', { style: FI, value: form.apolice || "", onChange: e => F("apolice", e.target.value), placeholder: "Número da apólice" }))
         )
         , React.createElement(Lbl, { label: "Franquia (R$)" }, React.createElement('input', { style: FI, type: "text", inputMode: "decimal", step: "0.01", min: "0", value: form.seguro_franquia == null ? "" : form.seguro_franquia, onChange: e => F("seguro_franquia", e.target.value === "" ? null : _mv(e.target.value)), placeholder: "Valor da franquia" }))
+
+        /* ── Condições de locação ── valem para todo contrato ativo deste veículo.
+           Campo vazio = nada é cobrado (sem KM livre/excedente, sem franquia). */
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, borderBottom: "1px solid " + C.border, paddingBottom: 4, marginTop: 6 } }, "Condições de locação (usadas nos contratos)")
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "KM livre (franquia)", flex: 1 }, React.createElement('input', { style: FI, type: "number", min: "0", inputMode: "numeric", value: form.km_franquia == null ? "" : form.km_franquia, onChange: e => F("km_franquia", e.target.value === "" ? null : e.target.value), placeholder: "Ex: 300" }))
+          , React.createElement(Lbl, { label: "R$/KM excedente", flex: 1 }, React.createElement('input', { style: FI, type: "text", inputMode: "decimal", value: form.valor_km_excedente == null ? "" : form.valor_km_excedente, onChange: e => F("valor_km_excedente", e.target.value === "" ? null : _mv(e.target.value)), placeholder: "Ex: 1,50" }))
+        )
+        , React.createElement(Lbl, { label: "Franquia em sinistro (% da FIPE)" }, React.createElement('input', { style: FI, type: "number", step: "0.1", min: "0", max: "100", value: form.seguro_franquia_valor == null ? "" : form.seguro_franquia_valor, onChange: e => F("seguro_franquia_valor", e.target.value === "" ? null : e.target.value), placeholder: "Ex: 10" }))
+        , React.createElement('div', { style: { display: "flex", gap: 10 } }
+          , React.createElement(Lbl, { label: "Danos (%)", flex: 1 }, React.createElement('input', { style: FI, type: "number", step: "0.1", min: "0", max: "100", value: form.participacao_danos == null ? "" : form.participacao_danos, onChange: e => F("participacao_danos", e.target.value === "" ? null : e.target.value), placeholder: "Opcional" }))
+          , React.createElement(Lbl, { label: "Roubo/furto (%)", flex: 1 }, React.createElement('input', { style: FI, type: "number", step: "0.1", min: "0", max: "100", value: form.participacao_roubo_furto == null ? "" : form.participacao_roubo_furto, onChange: e => F("participacao_roubo_furto", e.target.value === "" ? null : e.target.value), placeholder: "Opcional" }))
+          , React.createElement(Lbl, { label: "Perda total (%)", flex: 1 }, React.createElement('input', { style: FI, type: "number", step: "0.1", min: "0", max: "100", value: form.participacao_perda_total == null ? "" : form.participacao_perda_total, onChange: e => F("participacao_perda_total", e.target.value === "" ? null : e.target.value), placeholder: "Opcional" }))
+        )
+        , React.createElement(Lbl, { label: "Caução (R$)" }, React.createElement('input', { style: FI, type: "text", inputMode: "decimal", value: form.caucao_valor == null ? "" : form.caucao_valor, onChange: e => F("caucao_valor", e.target.value === "" ? null : _mv(e.target.value)), placeholder: "0,00 — vale quando o contrato tiver tipo de caução" }))
+        , React.createElement('div', { style: { fontSize: 12, color: C.sub, marginTop: -4 } }, "Participações em branco usam a franquia de sinistro. Cada contrato ativo deste veículo usa estes valores.")
 
         /* ── Rastreador ── custo recorrente que não aparecia em lugar nenhum. */
         , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, borderBottom: "1px solid " + C.border, paddingBottom: 4, marginTop: 6 } }, "Rastreador")
@@ -36176,6 +36203,76 @@ function DocsModalBody({ contrato, clientes, veiculos, onSave }) {
 
 // -- CONTRATOS --------------------------------------------------------------
 
+
+/* ── Condições de locação por veículo ─────────────────────────────────────
+   KM livre, R$/KM excedente e franquia/participações de sinistro deixaram de ser
+   digitados em cada contrato: ficam no cadastro do veículo (Frota). O contrato
+   ATIVO usa o valor do veículo quando o próprio campo está vazio; ao salvar, o
+   valor é gravado no contrato (cópia), então contratos já encerrados não mudam
+   se o cadastro do veículo mudar depois. ── */
+var _AG_LOC_KEYS = ["km_franquia", "valor_km_excedente", "seguro_franquia_valor", "participacao_danos", "participacao_roubo_furto", "participacao_perda_total", "caucao_valor"];
+function _agBlank(v) { return v === null || v === undefined || v === "" || (typeof v === "number" && isNaN(v)); }
+function _agPrefsLoc() { try { return JSON.parse(localStorage.getItem("ag_prefs_v1") || "{}") || {}; } catch (e) { return {}; } }
+function _agCondLocVeic(ve, pr) {
+  pr = pr || _agPrefsLoc();
+  var o = {};
+  _AG_LOC_KEYS.forEach(function (k) { o[k] = ve ? ve[k] : undefined; });
+  if (_agBlank(o.km_franquia) && !_agBlank(pr.kmFranquia)) o.km_franquia = pr.kmFranquia;
+  if (_agBlank(o.valor_km_excedente) && !_agBlank(pr.valorKmExc)) o.valor_km_excedente = pr.valorKmExc;
+  return o;
+}
+function _agAplicarVeicNoContrato(f, veiculos) {
+  if (!f || (f.status && f.status !== "ativo")) return f;
+  var ve = (veiculos || []).find(function (v) { return String(v.id) === String(f.veiculo_id); });
+  if (!ve) return f;
+  var d = _agCondLocVeic(ve);
+  _AG_LOC_KEYS.forEach(function (k) { if (k === "caucao_valor" && _agBlank(f.caucao_tipo)) return; if (_agBlank(f[k]) && !_agBlank(d[k])) f[k] = d[k]; });
+  return f;
+}
+function agMesclarContratosVeic(cts, veics) {
+  if (!cts || !cts.length || !veics || !veics.length) return cts;
+  var mapa = {}; veics.forEach(function (v) { if (v && v.id != null) mapa[String(v.id)] = v; });
+  var pr = _agPrefsLoc();
+  return cts.map(function (c) {
+    if (!c || c.status !== "ativo" || c.veiculo_id == null) return c;
+    var ve = mapa[String(c.veiculo_id)]; if (!ve) return c;
+    var d = _agCondLocVeic(ve, pr), novo = null;
+    _AG_LOC_KEYS.forEach(function (k) { if (k === "caucao_valor" && _agBlank(c.caucao_tipo)) return; if (_agBlank(c[k]) && !_agBlank(d[k])) { if (!novo) novo = Object.assign({}, c); novo[k] = d[k]; } });
+    return novo || c;
+  });
+}
+function _agInfoCondVeic(form, veiculos) {
+  var h = React.createElement;
+  var ve = (veiculos || []).find(function (v) { return String(v.id) === String(form.veiculo_id); });
+  if (!ve) return null;
+  var d = _agCondLocVeic(ve);
+  var g = function (k) { return !_agBlank(form[k]) ? form[k] : d[k]; };
+  var km = parseFloat(g("km_franquia")), exc = parseFloat(g("valor_km_excedente")), fr = parseFloat(g("seguro_franquia_valor"));
+  var p = [];
+  if (km > 0) p.push("KM livre: " + km.toLocaleString("pt-BR") + " km");
+  if (exc > 0) p.push(fmtBRL(exc) + "/km excedente");
+  if (fr > 0) p.push("franquia de sinistro: " + fr + "% da FIPE");
+  var cau = parseFloat(g("caucao_valor"));
+  if (cau > 0) p.push("caução: " + fmtBRL(cau) + (form.caucao_tipo ? "" : " (escolha o tipo de caução)"));
+  return h('div', { style: { fontSize: 12, color: C.sub, border: "1px dashed " + C.border, borderRadius: 12, padding: "9px 12px", lineHeight: 1.45 } },
+    p.length ? ("Do cadastro do veículo — " + p.join(" · ")) : "Este veículo não tem KM livre, excedente nem franquia cadastrados, então nada disso será cobrado. Cadastre na Frota.");
+}
+
+/* Placa Mercosul padrão (branca, faixa azul, letras pretas) sob cada carro do pátio. */
+function _agPlacaB1(placa, op, onClick, onEnter) {
+  var h = React.createElement;
+  var t = String(placa || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (!t) return null;
+  return h('svg', { viewBox: "0 0 100 36", role: "img", "aria-label": "Placa " + t, onClick: onClick, onMouseEnter: onEnter, style: { display: "block", width: "100%", marginTop: 5, flex: "none", cursor: "pointer", opacity: op, transition: "opacity .2s" } }
+    , h('rect', { x: 1, y: 1, width: 98, height: 34, rx: 4.5, fill: "#fff", stroke: "#2a2a2a", strokeWidth: 1.5 })
+    , h('path', { d: "M1.75 11 V5.75 a4 4 0 0 1 4-4 H94.25 a4 4 0 0 1 4 4 V11 Z", fill: "#1f4fa8" })
+    , h('rect', { x: 6, y: 4.2, width: 7, height: 4.6, rx: 0.8, fill: "#2e9e5b" })
+    , h('rect', { x: 8.4, y: 5.3, width: 2.2, height: 2.4, fill: "#f2c200", transform: "rotate(45 9.5 6.5)" })
+    , h('text', { x: 50, y: 8.7, textAnchor: "middle", fontSize: 6.6, fill: "#fff", fontFamily: "inherit", fontWeight: 500, letterSpacing: 1.2 }, "BRASIL")
+    , h('circle', { cx: 91, cy: 6.5, r: 2.7, fill: "none", stroke: "#fff", strokeWidth: 0.9 })
+    , h('text', { x: 50, y: 30.5, textAnchor: "middle", fontSize: 21, fill: "#111", stroke: "#111", strokeWidth: 0.7, fontFamily: "ui-monospace,Menlo,Consolas,monospace", fontWeight: 700, textLength: 86, lengthAdjust: "spacingAndGlyphs" }, t));
+}
+
 /* ── Pátio da frota (Contratos): cada vaga é um carro na cor da situação.
    Situação vem de statusEfetivoVeiculo() — mesma fonte da verdade da Frota.
    Toque/clique (ou passar o mouse) mostra veículo + locação; legenda destaca. ── */
@@ -36271,13 +36368,14 @@ function PatioFrota(props) {
       , frota.map(function(x) {
         var sel = String(selId) === String(x.v.id);
         var dot = x.k === "a" && x.restam != null && x.restam <= 3 ? (x.restam <= 0 ? C.red : C.orange) : null;
-        return h('div', { key: x.v.id, style: { aspectRatio: "0.62", borderLeft: "2px solid var(--c-border)", borderBottom: "2px solid var(--c-border)", display: "flex", alignItems: "center", justifyContent: "center", padding: 4 } }
+        return h('div', { key: x.v.id, style: { borderLeft: "2px solid var(--c-border)", borderBottom: "2px solid var(--c-border)", display: "flex", flexDirection: "column", alignItems: "stretch", justifyContent: "flex-start", padding: "4px 4px 5px" } }
           , h('div', { role: "button", "aria-label": x.v.placa, onClick: function() { setSelId(sel ? null : x.v.id); }, onMouseEnter: function() { setHovId(x.v.id); },
-            style: { position: "relative", width: "100%", height: "84%", borderRadius: 9, cursor: "pointer", transition: "opacity .2s, transform .15s", opacity: casa(x) ? 1 : 0.18, transform: sel || String(hovId) === String(x.v.id) ? "scale(1.12)" : "none", outline: sel ? "2.5px solid var(--c-text)" : "none", outlineOffset: 1,
+            style: { position: "relative", width: "100%", aspectRatio: "0.606", flex: "none", borderRadius: 9, cursor: "pointer", transition: "opacity .2s, transform .15s", opacity: casa(x) ? 1 : 0.18, transform: sel || String(hovId) === String(x.v.id) ? "scale(1.12)" : "none", outline: sel ? "2.5px solid var(--c-text)" : "none", outlineOffset: 1,
               background: x.k === "m" ? "repeating-linear-gradient(45deg," + C.orange + " 0 5px, rgba(0,0,0,0.25) 5px 10px)" : COR[x.k] } }
             , h('div', { style: { position: "absolute", left: "18%", right: "18%", top: "22%", height: "18%", background: "rgba(0,0,0,0.28)", borderRadius: 3 } })
             , h('div', { style: { position: "absolute", left: "18%", right: "18%", bottom: "16%", height: "18%", background: "rgba(0,0,0,0.28)", borderRadius: 3 } })
-            , dot && h('span', { style: { position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%", background: dot, border: "1.5px solid " + C.card } })));
+            , dot && h('span', { style: { position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%", background: dot, border: "1.5px solid " + C.card } }))
+          , _agPlacaB1(x.v.placa, casa(x) ? 1 : 0.18, function() { setSelId(sel ? null : x.v.id); }, function() { setHovId(x.v.id); }));
       }))
     , it && h('div', { style: { marginTop: 10 } }, detalhe())
     , h('div', { style: { display: "flex", flexWrap: "nowrap", gap: 6, marginTop: 10, overflowX: "auto" } }
@@ -36384,7 +36482,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
   var _abrirNovoContratoRef = React.useRef(null);
   _abrirNovoContratoRef.current = function() {
     var _p = {}; try { _p = JSON.parse(localStorage.getItem("ag_prefs_v1") || "{}"); } catch(e) {}
-    setForm({ status: "ativo", km_franquia: _p.kmFranquia || "", valor_km_excedente: _p.valorKmExc || "", /* Padrão "Boleto" (pedido do usuário) — a preferência _p.formaPgto (Config)
+    setForm({ status: "ativo", /* Padrão "Boleto" (pedido do usuário) — a preferência _p.formaPgto (Config)
                  guarda valores em minúsculo/snake_case ("pix","cartao_credito"...),
                  diferente do que este select usa (Capitalizado, "Pix"/"Boleto"...);
                  por isso não dá pra reaproveitar o valor salvo aqui sem
@@ -36711,6 +36809,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
         else if (_mkAtual) _form.observacoes = _obsSemMarca;
       }
       Object.keys(_form).forEach(function(k){ if (k.charAt(0) === "_") delete _form[k]; });
+      try { _agAplicarVeicNoContrato(_form, veiculos); } catch (_eV) {}
       // Sanitiza campos numericos: string vazia → null (evita erro "invalid input syntax for type numeric")
       var _numericFields = ["km_inicial","km_final","km_franquia","valor_km_excedente","desconto","acrescimo","valor_pago","seguro_franquia_valor","participacao_danos","participacao_roubo_furto","participacao_perda_total","valor_mensal","multa_meses"];
       _numericFields.forEach(function(k) {
@@ -37525,7 +37624,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
       , React.createElement('div', { style: { display: "flex", gap: 8, flexWrap: "wrap" }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 955}}
         , React.createElement('button', { style: PILL_FILTER_STYLE, onClick: () => setMostrarFiltros(p => !p), __self: this, __source: {fileName: _jsxFileName, lineNumber: 956}}, temFiltro ? "🔶" : "🔍", " Filtros" , temFiltro ? " ●" : "")
         , React.createElement('button', { style: PILL_FILTER_STYLE, onClick: () => setDispModal(true), __self: this, __source: {fileName: _jsxFileName, lineNumber: 957}}, "📅 Disponibilidade" )
-        , React.createElement('button', { className: bCls(Btn()) + " ag-add-btn", style: bStyle(Btn()), onClick: () => { var _p = {}; try { _p = JSON.parse(localStorage.getItem("ag_prefs_v1") || "{}"); } catch(e){} setForm({ status: "ativo", km_franquia: _p.kmFranquia || "", valor_km_excedente: _p.valorKmExc || "", /* Padrão "Boleto" (pedido do usuário) — a preferência _p.formaPgto (Config)
+        , React.createElement('button', { className: bCls(Btn()) + " ag-add-btn", style: bStyle(Btn()), onClick: () => { var _p = {}; try { _p = JSON.parse(localStorage.getItem("ag_prefs_v1") || "{}"); } catch(e){} setForm({ status: "ativo", /* Padrão "Boleto" (pedido do usuário) — a preferência _p.formaPgto (Config)
                  guarda valores em minúsculo/snake_case ("pix","cartao_credito"...),
                  diferente do que este select usa (Capitalizado, "Pix"/"Boleto"...);
                  por isso não dá pra reaproveitar o valor salvo aqui sem
@@ -38020,10 +38119,7 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
           , React.createElement(Lbl, { label: "KM Saida" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1140}}, React.createElement('input', { style: FI, type: "number", value: form.km_inicial || "", onChange: e => F("km_inicial", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1140}} ))
           , React.createElement(Lbl, { label: "KM Retorno" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1141}}, React.createElement('input', { style: FI, type: "number", value: form.km_final || "", onChange: e => F("km_final", e.target.value), __self: this, __source: {fileName: _jsxFileName, lineNumber: 1141}} ))
         )
-        , React.createElement('div', { style: { display: "flex", gap: 10 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1143}}
-          , React.createElement(Lbl, { label: "Franquia KM" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1144}}, React.createElement('input', { style: FI, type: "number", value: form.km_franquia || "", onChange: e => F("km_franquia", e.target.value), placeholder: "Ex: 300" , __self: this, __source: {fileName: _jsxFileName, lineNumber: 1144}} ))
-          , React.createElement(Lbl, { label: "R$/KM excedente" , flex: 1, __self: this, __source: {fileName: _jsxFileName, lineNumber: 1145}}, React.createElement('input', { style: FI, type: "text", inputMode: "decimal", step: "0.01", value: form.valor_km_excedente || "", onChange: e => F("valor_km_excedente", _mv(e.target.value)), placeholder: "Ex: 1.50", __self: this, __source: {fileName: _jsxFileName, lineNumber: 1145}} ))
-        )
+        , _agInfoCondVeic(form, veiculos)
         , React.createElement('div', { style: { display: "flex", gap: 10 } }
           , React.createElement(Lbl, { label: "Combustível — Saída", flex: 1 }
             , React.createElement('select', { style: FI, value: form.combustivel_saida || "", onChange: function(e){ F("combustivel_saida", e.target.value); } }
@@ -38070,9 +38166,6 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
             , React.createElement(Lbl, { label: "Valor Seguro/dia (R$)", flex: 1 }
               , React.createElement('input', { style: FI, type: "text", inputMode: "decimal", step: "0.01", min: "0", value: form.seguro_valor_dia || "", onChange: function(e){ F("seguro_valor_dia", _mv(e.target.value)); }, placeholder: "0,00" })
             )
-          )
-          , React.createElement(Lbl, { label: "Franquia em caso de sinistro (% da FIPE)" }
-            , React.createElement('input', { style: FI, type: "number", step: "0.1", min: "0", max: "100", value: form.seguro_franquia_valor || "", onChange: function(e){ F("seguro_franquia_valor", e.target.value); }, placeholder: "Ex: 10" })
           )
           /* Participações por tipo de sinistro. O Termo de Proteções distingue
              dano, roubo/furto e perda total — um valor só para os três é o que
@@ -38163,9 +38256,6 @@ function Contratos({ contratos, setContratos, veiculos, setVeiculos, clientes, e
                 , React.createElement('option', { value: "transferencia" }, "Transferência / PIX")
                 , React.createElement('option', { value: "outro" }, "Outro")
               )
-            )
-            , React.createElement(Lbl, { label: "Valor (R$)", flex: 1 }
-              , React.createElement('input', { style: FI, type: "text", inputMode: "decimal", step: "0.01", min: "0", value: form.caucao_valor || "", onChange: function(e){ F("caucao_valor", _mv(e.target.value)); }, placeholder: "0,00" })
             )
           )
           , form.caucao_tipo && React.createElement('div', { style: { display: "flex", gap: 10 } }
@@ -51654,7 +51744,7 @@ function Config({ empresa, setEmpresa, toast, darkMode, toggleDark, setThemeDire
         React.createElement('button', {
           style:{background:C.blue,color:'#fff',border:'none',borderRadius:10,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer'},
           onClick:function(){
-            var sql="alter table usuarios add column if not exists email text unique;\nalter table usuarios add column if not exists auth_user_id uuid references auth.users(id);\ncreate table if not exists despesas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, observacoes text);\ncreate table if not exists receitas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, forma_pagamento text, observacoes text);\ncreate table if not exists contas (id bigserial primary key, descricao text, categoria text, valor numeric, vencimento date, status text default 'pendente', tipo text default 'pagar', observacoes text);\ncreate table if not exists orcamento_pessoal (id bigserial primary key, descricao text, categoria text, valor numeric, tipo text default 'despesa', mes text, data date, data_pagamento date, status text default 'previsto', observacoes text, recorrente boolean default false, prazo_recorrencia integer, recorrencia_origem_id bigint, forma_pagamento text);\nalter table clientes add column if not exists bloqueado boolean default false;\nalter table veiculos add column if not exists venc_ipva date;\nalter table veiculos add column if not exists venc_seguro date;\nalter table reservas add column if not exists veiculo_id bigint references veiculos(id);\nalter table reservas add column if not exists cliente_id bigint references clientes(id);\nalter table reservas add column if not exists contrato_id bigint references contratos(id);\ncreate index if not exists idx_reservas_veiculo on reservas(veiculo_id);\nalter table veiculos add column if not exists km_atual integer;\nalter table veiculos add column if not exists km_revisao_proxima integer;\nalter table veiculos add column if not exists seguradora text;\nalter table veiculos add column if not exists apolice text;\nalter table veiculos add column if not exists seguro_franquia numeric;\nalter table veiculos add column if not exists rastreador boolean default false;\nalter table veiculos add column if not exists rastreador_fornecedor text;\nalter table veiculos add column if not exists rastreador_mensalidade numeric;\nalter table veiculos add column if not exists pneus_km_troca integer;\nalter table veiculos add column if not exists pneus_vida_util_km integer default 40000;\nalter table contratos add column if not exists combustivel_saida text;\nalter table contratos add column if not exists combustivel_retorno text;\nalter table contratos add column if not exists combustivel_cobranca numeric;\ncreate table if not exists fornecedores (id bigserial primary key, nome text not null, tipo text default 'oficina', cnpj text, telefone text, email text, endereco text, observacoes text, ativo boolean default true);\nalter table manutencao add column if not exists fornecedor_id bigint references fornecedores(id);\ncreate index if not exists idx_manutencao_fornecedor on manutencao(fornecedor_id);\ncreate table if not exists sinistros (id bigserial primary key, veiculo_id bigint references veiculos(id), contrato_id bigint references contratos(id), cliente_id bigint references clientes(id), data date, tipo text, descricao text, valor_prejuizo numeric, valor_franquia numeric, status text default 'aberto', numero_sinistro text, terceiro_envolvido text, boletim_ocorrencia text, observacoes text);\ncreate index if not exists idx_sinistros_veiculo on sinistros(veiculo_id);\nalter table contratos add column if not exists km_franquia numeric;\nalter table contratos add column if not exists forma_pagamento text;\nalter table contratos add column if not exists previsao_pagamento date;\nalter table contratos add column if not exists status_pagamento text default 'pendente';\nalter table despesas add column if not exists status text default 'previsto';\nalter table despesas add column if not exists data_pagamento date;\nalter table despesas add column if not exists recorrente boolean default false;\nalter table despesas add column if not exists prazo_recorrencia integer;\nalter table despesas add column if not exists recorrencia_origem_id bigint;\nalter table despesas add column if not exists manutencao_id bigint;\nalter table receitas add column if not exists status text default 'previsto';\nalter table receitas add column if not exists data_pagamento date;\nalter table receitas add column if not exists recorrente boolean default false;\nalter table receitas add column if not exists prazo_recorrencia integer;\nalter table manutencao add column if not exists status_financeiro text default 'pendente';\nalter table manutencao add column if not exists data_pagamento date;\nalter table manutencao add column if not exists data_previsao_pagamento date;\nalter table multas add column if not exists vencimento date;\nalter table multas add column if not exists data_pagamento date;\nalter table multas add column if not exists cobrado_cliente text default 'nao';\nalter table multas add column if not exists valor_cobrado numeric;\ncreate table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());\ncreate table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);\nalter table contratos add column if not exists condutor_adicional_nome text;\nalter table contratos add column if not exists condutor_adicional_cpf text;\nalter table contratos add column if not exists condutor_adicional_cnh text;\nalter table contratos add column if not exists condutor_adicional_categoria text;\nalter table contratos add column if not exists condutor_adicional_validade_cnh date;\nalter table contratos add column if not exists condutor_adicional_telefone text;\nalter table contratos add column if not exists local_retirada text;\nalter table contratos add column if not exists local_devolucao text;\nalter table contratos add column if not exists seguro_tipo text;\nalter table contratos add column if not exists seguro_valor_dia numeric;\nalter table contratos add column if not exists seguro_franquia_valor numeric;\nalter table contratos add column if not exists caucao_valor numeric;\nalter table contratos add column if not exists caucao_tipo text;\nalter table contratos add column if not exists caucao_status text;\nalter table contratos add column if not exists caucao_data_devolucao date;\nalter table contratos add column if not exists contrato_anual boolean default false;\nalter table contratos add column if not exists valor_mensal numeric;\nalter table contratos add column if not exists multa_meses integer;\nalter table contratos add column if not exists participacao_danos numeric;\nalter table contratos add column if not exists participacao_roubo_furto numeric;\nalter table contratos add column if not exists participacao_perda_total numeric;\nalter table config add column if not exists taxa_admin_multa numeric;";
+            var sql="alter table usuarios add column if not exists email text unique;\nalter table usuarios add column if not exists auth_user_id uuid references auth.users(id);\ncreate table if not exists despesas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, observacoes text);\ncreate table if not exists receitas (id bigserial primary key, descricao text, categoria text, valor numeric, data date, forma_pagamento text, observacoes text);\ncreate table if not exists contas (id bigserial primary key, descricao text, categoria text, valor numeric, vencimento date, status text default 'pendente', tipo text default 'pagar', observacoes text);\ncreate table if not exists orcamento_pessoal (id bigserial primary key, descricao text, categoria text, valor numeric, tipo text default 'despesa', mes text, data date, data_pagamento date, status text default 'previsto', observacoes text, recorrente boolean default false, prazo_recorrencia integer, recorrencia_origem_id bigint, forma_pagamento text);\nalter table clientes add column if not exists bloqueado boolean default false;\nalter table veiculos add column if not exists venc_ipva date;\nalter table veiculos add column if not exists venc_seguro date;\nalter table reservas add column if not exists veiculo_id bigint references veiculos(id);\nalter table reservas add column if not exists cliente_id bigint references clientes(id);\nalter table reservas add column if not exists contrato_id bigint references contratos(id);\ncreate index if not exists idx_reservas_veiculo on reservas(veiculo_id);\nalter table veiculos add column if not exists km_atual integer;\nalter table veiculos add column if not exists km_revisao_proxima integer;\nalter table veiculos add column if not exists seguradora text;\nalter table veiculos add column if not exists apolice text;\nalter table veiculos add column if not exists seguro_franquia numeric;\nalter table veiculos add column if not exists rastreador boolean default false;\nalter table veiculos add column if not exists rastreador_fornecedor text;\nalter table veiculos add column if not exists rastreador_mensalidade numeric;\nalter table veiculos add column if not exists pneus_km_troca integer;\nalter table veiculos add column if not exists pneus_vida_util_km integer default 40000;\nalter table veiculos add column if not exists km_franquia numeric;\nalter table veiculos add column if not exists valor_km_excedente numeric;\nalter table veiculos add column if not exists seguro_franquia_valor numeric;\nalter table veiculos add column if not exists participacao_danos numeric;\nalter table veiculos add column if not exists participacao_roubo_furto numeric;\nalter table veiculos add column if not exists participacao_perda_total numeric;\nalter table veiculos add column if not exists caucao_valor numeric;\nalter table contratos add column if not exists combustivel_saida text;\nalter table contratos add column if not exists combustivel_retorno text;\nalter table contratos add column if not exists combustivel_cobranca numeric;\ncreate table if not exists fornecedores (id bigserial primary key, nome text not null, tipo text default 'oficina', cnpj text, telefone text, email text, endereco text, observacoes text, ativo boolean default true);\nalter table manutencao add column if not exists fornecedor_id bigint references fornecedores(id);\ncreate index if not exists idx_manutencao_fornecedor on manutencao(fornecedor_id);\ncreate table if not exists sinistros (id bigserial primary key, veiculo_id bigint references veiculos(id), contrato_id bigint references contratos(id), cliente_id bigint references clientes(id), data date, tipo text, descricao text, valor_prejuizo numeric, valor_franquia numeric, status text default 'aberto', numero_sinistro text, terceiro_envolvido text, boletim_ocorrencia text, observacoes text);\ncreate index if not exists idx_sinistros_veiculo on sinistros(veiculo_id);\nalter table contratos add column if not exists km_franquia numeric;\nalter table contratos add column if not exists forma_pagamento text;\nalter table contratos add column if not exists previsao_pagamento date;\nalter table contratos add column if not exists status_pagamento text default 'pendente';\nalter table despesas add column if not exists status text default 'previsto';\nalter table despesas add column if not exists data_pagamento date;\nalter table despesas add column if not exists recorrente boolean default false;\nalter table despesas add column if not exists prazo_recorrencia integer;\nalter table despesas add column if not exists recorrencia_origem_id bigint;\nalter table despesas add column if not exists manutencao_id bigint;\nalter table receitas add column if not exists status text default 'previsto';\nalter table receitas add column if not exists data_pagamento date;\nalter table receitas add column if not exists recorrente boolean default false;\nalter table receitas add column if not exists prazo_recorrencia integer;\nalter table manutencao add column if not exists status_financeiro text default 'pendente';\nalter table manutencao add column if not exists data_pagamento date;\nalter table manutencao add column if not exists data_previsao_pagamento date;\nalter table multas add column if not exists vencimento date;\nalter table multas add column if not exists data_pagamento date;\nalter table multas add column if not exists cobrado_cliente text default 'nao';\nalter table multas add column if not exists valor_cobrado numeric;\ncreate table if not exists audit_log (id bigserial primary key, tabela text, operacao text, registro_id text, dados jsonb, criado_em timestamptz default now());\ncreate table if not exists ocupacao_historico (id bigserial primary key, dia date unique, total int, alugados int, disponiveis int, manutencao int, taxa numeric);\nalter table contratos add column if not exists condutor_adicional_nome text;\nalter table contratos add column if not exists condutor_adicional_cpf text;\nalter table contratos add column if not exists condutor_adicional_cnh text;\nalter table contratos add column if not exists condutor_adicional_categoria text;\nalter table contratos add column if not exists condutor_adicional_validade_cnh date;\nalter table contratos add column if not exists condutor_adicional_telefone text;\nalter table contratos add column if not exists local_retirada text;\nalter table contratos add column if not exists local_devolucao text;\nalter table contratos add column if not exists seguro_tipo text;\nalter table contratos add column if not exists seguro_valor_dia numeric;\nalter table contratos add column if not exists seguro_franquia_valor numeric;\nalter table contratos add column if not exists caucao_valor numeric;\nalter table contratos add column if not exists caucao_tipo text;\nalter table contratos add column if not exists caucao_status text;\nalter table contratos add column if not exists caucao_data_devolucao date;\nalter table contratos add column if not exists contrato_anual boolean default false;\nalter table contratos add column if not exists valor_mensal numeric;\nalter table contratos add column if not exists multa_meses integer;\nalter table contratos add column if not exists participacao_danos numeric;\nalter table contratos add column if not exists participacao_roubo_furto numeric;\nalter table contratos add column if not exists participacao_perda_total numeric;\nalter table config add column if not exists taxa_admin_multa numeric;";
             _agLimparSchemaCache();
             if(navigator.clipboard){navigator.clipboard.writeText(sql).then(function(){toast('✅ SQL copiado! Cole no Supabase → SQL Editor','success');}).catch(function(){toast('Erro ao copiar','error');});}
             else{var ta=document.createElement('textarea');ta.value=sql;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();toast('✅ SQL copiado!','success');}
@@ -62185,7 +62275,7 @@ function App() {
       document.removeEventListener('ag:set-theme', onSetTheme);
     };
   }, []);
-  const [contratos, setContratos] = useState(() => cache.get("contratos") || []);
+  const [_contratosBase, setContratos] = useState(() => cache.get("contratos") || []);
   const [veiculos, setVeiculos] = useState(function() {
     // Ao ler do cache, recalcula status usando contratos do cache
     // para que o badge seja correto já no primeiro render (antes do fetch terminar)
@@ -62198,6 +62288,7 @@ function App() {
     });
   });
   const [clientes, setClientes] = useState(() => cache.get("clientes") || []);
+  const contratos = React.useMemo(function () { return agMesclarContratosVeic(_contratosBase, veiculos); }, [_contratosBase, veiculos]);
   const [reservas, setReservas] = useState(() => cache.get("reservas") || []);
   const [multas, setMultas] = useState(() => cache.get("multas") || []);
   const [manutencoes, setManutencoes] = useState(() => cache.get("manutencao") || []);

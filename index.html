@@ -742,13 +742,9 @@ body.pearl .lg-banner-panel, body.nevoa .lg-banner-panel{background:linear-gradi
    janela vêm de style inline (ver Modal() em React). */
 @media(max-width:767px){
   .lg-modal-overlay-full{padding:0!important;}
-  .ag-fin-cmp-grid{display:flex;flex-direction:column;gap:14px;}
-  .ag-fin-cmp-b{display:none;}
-  @media (min-width:1024px){
-    .ag-fin-cmp-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;}
-    .ag-fin-cmp-b{display:block;}
-    .ag-fin-svg{max-height:260px;}
-  }
+  .ag-fin-cmp-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start;}
+  .ag-fin-cmp-grid > *{min-width:0;}
+  .ag-fin-cmp-b > div > div:last-child{pointer-events:none;}
   /* A barra do topo do app (.ag-mobile-topbar) é fixa com z-index 99998 —
      bem acima do overlay do modal (10000). Enquanto a janela era flutuante
      e centralizada isso não incomodava; em tela cheia ela passou a pintar
@@ -25684,7 +25680,7 @@ var STATUS = {
 };
 function MesPicker({ value, onChange, style }) {
   var ano = (value||"").slice(0,4); var mm = (value||"").slice(5,7);
-  var anos = ["2023","2024","2025","2026","2027"];
+  var anos = []; for (var _a = 2023; _a <= Math.max(new Date().getFullYear() + 3, parseInt(ano,10) || 0); _a++) anos.push(String(_a));
   var nms = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
   var mms = ["01","02","03","04","05","06","07","08","09","10","11","12"];
   var base = Object.assign({}, FI, { width: 60, padding: "6px 8px", fontSize: 13 }, style||{});
@@ -46688,8 +46684,13 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   const [budEmpState, setBudEmpState] = useState(function(){ try{ return JSON.parse(localStorage.getItem("ag_budgets_emp_v1")||"{}"); }catch(e){ return {}; } });
   function saveBudEmp(nb){ localStorage.setItem("ag_budgets_emp_v1",JSON.stringify(nb)); setBudEmpState(nb); }
   const [subOrcState, setSubOrcState] = useState("visao");
-  const [cmpAnoA, setCmpAnoA] = useState(null);
-  const [cmpAnoB, setCmpAnoB] = useState(null);
+  const [cmpMes, setCmpMes] = useState(null);
+  const [_finW, _setFinW] = useState(function(){ return typeof window !== "undefined" ? window.innerWidth : 0; });
+  React.useEffect(function(){
+    function h(){ _setFinW(window.innerWidth); }
+    window.addEventListener("resize", h);
+    return function(){ window.removeEventListener("resize", h); };
+  }, []);
   agUseHist("finTab", tab, setTab);
   agUseHist("finSub", subOrcState, setSubOrcState);
   const [filtroModeloVei, setFiltroModeloVei] = useState("todos");
@@ -47772,6 +47773,240 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
     : manSemDesp.filter(function(x){ return !filtroCatDesp || filtroCatDesp === "Manutenção"; })
   );
   var despExibidas = despExibidasBase;
+
+  /* ── Comparativo lado a lado (PC): mesmo painel de Receitas/Despesas/Faturas para outro mês ── */
+  function _mesDelta(m, d){ var dt = new Date(parseInt(m.slice(0,4),10), parseInt(m.slice(5,7),10) - 1 + d, 1); return dt.getFullYear() + "-" + String(dt.getMonth()+1).padStart(2,"0"); }
+  function _finCmpSeletor(m){
+    var bt = { background:"transparent", border:"none", cursor:"pointer", fontSize:16, lineHeight:1, padding:"0 4px", color:C.sub };
+    return React.createElement('span', { style:{ display:"inline-flex", alignItems:"center", gap:2, letterSpacing:0 } }
+      , React.createElement('button', { style:bt, onClick:function(){ setCmpMes(_mesDelta(m,-1)); }, "aria-label":"Mês anterior" }, "\u2039")
+      , React.createElement(MesPicker, { value:m, onChange:setCmpMes, style:{ fontSize:12, padding:"3px 6px" } })
+      , React.createElement('button', { style:bt, onClick:function(){ setCmpMes(_mesDelta(m,1)); }, "aria-label":"Próximo mês" }, "\u203A")
+    );
+  }
+  function _finSide(painelA, builder){
+    if (_finW < 1024) return painelA;
+    var m2 = cmpMes || _mesDelta(filtroMes, -1);
+    return React.createElement('div', { className:"ag-fin-cmp-grid" }
+      , painelA
+      , React.createElement('div', { className:"ag-fin-cmp-b" }, builder(m2))
+    );
+  }
+function _recExibidasDoMes(filtroMes){
+  var recFiltradas = receitas.map(r => rdReceitaComContrato(r, contratos)).filter(r => receitaDoMes(r, filtroMes)).map(r => {
+    if (r.ref_fatura) {
+      var m = r.ref_fatura.match(/^fat_(\d+)_/);
+      if (m) {
+        var ct = contratos.find(c => String(c.id) === m[1]);
+        // Contrato parcial: a receita reflete o VALOR TOTAL do contrato (previsto);
+        // _valorPago guarda a parcela já recebida. Mantém sincronia com a tela de Contratos.
+        if (ct && ct.status_pagamento === "parcial" && ct.valor_pago) {
+          return Object.assign({}, r, { status: "parcial", valor: parseFloat(ct.valor_total||r.valor||0).toFixed(2), _valorPago: parseFloat(ct.valor_pago), data_pagamento: ct.data_pagamento || r.data_pagamento });
+        }
+        // Contrato pago integralmente
+        if (ct && ct.status_pagamento === "pago" && r.status !== "recebido") {
+          return Object.assign({}, r, { status: "recebido", valor: parseFloat(ct.valor_total||r.valor||0).toFixed(2), data_pagamento: ct.data_pagamento || r.data_pagamento });
+        }
+      }
+    }
+    if (r.recorrente && !r.ref_fatura && (r.data||"").slice(0,7) !== filtroMes) {
+      var diaR = (r.data || "").slice(8, 10);
+      var recebiuEsteMes = r.data_pagamento && r.data_pagamento.slice(0,7) === filtroMes;
+      return Object.assign({}, r, { status: recebiuEsteMes ? r.status : "previsto", data_pagamento: recebiuEsteMes ? r.data_pagamento : null, data: filtroMes + "-" + diaR });
+    }
+    return r;
+  }).filter(function(r) {
+    // Remove receitas órfãs: ref_fatura aponta para contrato excluído
+    if (!r.ref_fatura) return true;
+    var _mfO = r.ref_fatura.match(/^fat_(\d+)_/);
+    if (_mfO && !_ctIdsExistentes.has(_mfO[1])) return false;
+    // Contrato cancelado: a fatura não recebida some (a já recebida é dinheiro que entrou e fica)
+    if (_mfO && _ctIdsCancelados.has(_mfO[1]) && r.status !== "recebido" && !r.data_pagamento) return false;
+    return true;
+  });
+  // Deduplica ref_fatura — mantém o de status mais avançado
+  var _refPrio = { "recebido": 4, "parcial": 3.5, "emitida": 3, "prevista": 2, "cancelada": 1 };
+  var _refMap = {};
+  recFiltradas.forEach(function(r) {
+    if (!r.ref_fatura) return;
+    var prev = _refMap[r.ref_fatura];
+    if (!prev || (_refPrio[r.status]||0) > (_refPrio[prev.status]||0)) _refMap[r.ref_fatura] = r.id;
+  });
+  recFiltradas = recFiltradas.filter(function(r) {
+    if (!r.ref_fatura) return true;
+    // Manter apenas a entrada de maior prioridade por ref_fatura (evita duplicatas)
+    if (_refMap[r.ref_fatura] !== r.id) return false;
+    return true;
+  });
+  // Incluir contratos do mês (por previsao_pagamento, igual ao Resumo)
+  // Mostra todos independente de status_pagamento — igual às despesas
+  var ctsDoMes = contratos.filter(c => {
+    if (!c.previsao_pagamento) return false;
+    if (c.status === "cancelado" || c.status === "concluido") return false;
+    if (c.renovado_para) return false;
+
+    if (c.previsao_pagamento.slice(0,7) !== filtroMes) return false;
+    // Se já existe qualquer receita vinculada a este contrato (single ou parcelada CC), não duplicar
+    if (receitas.some(r => r.ref_fatura && r.ref_fatura.startsWith("fat_" + c.id + "_"))) return false;
+    return true;
+  }).map(c => {
+    var isPago = c.status_pagamento === "pago";
+    var isParcial = c.status_pagamento === "parcial";
+    var isIsento = c.status_pagamento === "isento";
+    // Sempre usa o valor TOTAL do contrato como previsto; parcela recebida vai em _valorPago.
+    var valor = parseFloat(c.valor_total || 0);
+    return {
+      _fromContrato: true,
+      id: "ct_" + c.id,
+      descricao: (() => { var cl = (clientes||[]).find(x => x.id == c.cliente_id); var ve = (veiculos||[]).find(x => x.id == c.veiculo_id); return (cl ? cl.nome : c.cliente_nome || "Cliente") + " — " + (ve ? ve.placa : c.veiculo_placa || "#" + c.id); })(),
+      categoria: "Locação",
+      valor: valor,
+      _valorPago: isParcial && c.valor_pago ? parseFloat(c.valor_pago) : null,
+      status: isPago ? "recebido" : isParcial ? "parcial" : isIsento ? "isento" : "pendente",
+      data: c.previsao_pagamento,
+      data_pagamento: c.data_pagamento || "",
+      contrato_id: c.id};
+  });
+  recFiltradas = recFiltradas.concat(ctsDoMes);
+  // Dedup pós-concatenação: remove _fromContrato se já existe receita com ref_fatura
+  // para o mesmo contrato no mês — evita dupla contagem independente do formato do ref_fatura
+  var _ctComFatura = new Set();
+  recFiltradas.forEach(function(r) {
+    if (r.ref_fatura) { var _mf = r.ref_fatura.match(/^fat_(\d+)_/); if (_mf) _ctComFatura.add(_mf[1]); }
+  });
+  recFiltradas = recFiltradas.filter(function(r) {
+    if (r._fromContrato && _ctComFatura.has(String(r.contrato_id))) return false;
+    return true;
+  });
+  function _pendRec(r){ return (r.status !== "recebido" && r.status !== "isento") ? 0 : 1; }
+  function _pendDesp(d){ return d.status !== "pago" ? 0 : 1; }
+  if (sortRec === "pendentes") recFiltradas.sort(function(a,b){ var p = _pendRec(a) - _pendRec(b); return p !== 0 ? p : (a.data||"").localeCompare(b.data||""); });
+  else if (sortRec === "data_asc") recFiltradas.sort(function(a,b){return (a.data||"").localeCompare(b.data||"");});
+  else if (sortRec === "data_desc") recFiltradas.sort(function(a,b){return (b.data||"").localeCompare(a.data||"");});
+  else if (sortRec === "valor_desc") recFiltradas.sort(function(a,b){return parseFloat(b.valor||0)-parseFloat(a.valor||0);});
+  // Filtro por categoria — receitas
+  var catsRec = [];
+  recFiltradas.forEach(function(r){ var c = r.categoria||""; if (c && catsRec.indexOf(c) < 0) catsRec.push(c); });
+  var recExibidas = filtroCatRec ? recFiltradas.filter(function(r){ return (r.categoria||"") === filtroCatRec; }) : recFiltradas;
+  return recExibidas;
+}
+function _despExibidasDoMes(filtroMes){
+  var despFiltradas = resolverDespesasDoMes(despesas, filtroMes).filter(function(d){ return filtroCatDesp === "Retirada de Lucro" || filtroCatDesp === "Ajuste de Saldo" ? true : !isRetLucro(d); });
+  var manMesAll = manutencoes.filter(m => manDoMes(m, filtroMes)).map(function(m) {
+    var dataMes = (m.data_previsao_pagamento || m.data_entrada || "").slice(0, 7);
+    if (m.recorrente && dataMes && dataMes < filtroMes && (m.data_pagamento || "").slice(0, 7) !== filtroMes) {
+      return Object.assign({}, m, { status_financeiro: "previsto", data_pagamento: null, _projetado: true });
+    }
+    return m;
+  });
+  var manMes = manMesAll.reduce((s,m) => s+parseFloat(m.custo||0),0);
+  var manMesPago = manMesAll.filter(function(m){ var dv=despesas.find(function(d){return String(d.manutencao_id)===String(m.id);}); return dv?(dv.status==="pago"||!!dv.data_pagamento):(m.status_financeiro==="pago"||!!m.data_pagamento); }).reduce((s,m) => s+parseFloat(m.custo||0),0);
+  var manMesPendente = manMes - manMesPago;
+  // Manutenções do mês SEM despesa vinculada → itens virtuais na aba Despesas
+  var manSemDesp = manMesAll.filter(function(mn){
+    if (parseFloat(mn.custo||0) <= 0) return false;
+    // Exclui se existe despesa vinculada a esta manutenção (em qualquer mês)
+    var despVinc = despesas.find(function(d){ return String(d.manutencao_id) === String(mn.id); });
+    if (despVinc) return false;
+    return true;
+  }).map(function(mn){
+    var veM = (veiculos||[]).find(function(v){ return v.id == mn.veiculo_id; });
+    return {
+      _fromManutencao: true,
+      id: "man_" + mn.id,
+      manutencao_id: mn.id,
+      descricao: "Manutenção: " + mn.tipo + (veM ? " - " + veM.placa : ""),
+      categoria: "Manutenção",
+      veiculo_id: mn.veiculo_id || null,
+      valor: mn.custo,
+      data: mn.data_previsao_pagamento || mn.data_entrada || "",
+      status: mn.status_financeiro === "pago" ? "pago" : "previsto",
+      data_pagamento: mn.data_pagamento || null,
+      _mn: mn
+    };
+  });
+  var despExibidasBase = (filtroCatDesp
+    ? despFiltradas.filter(function(d){ return (d.categoria||"") === filtroCatDesp; })
+    : despFiltradas.filter(function(d){ return !isRetLucro(d); })
+  ).concat(
+    (filtroCatDesp === "Retirada de Lucro" || filtroCatDesp === "Ajuste de Saldo") ? []
+    : manSemDesp.filter(function(x){ return !filtroCatDesp || filtroCatDesp === "Manutenção"; })
+  );
+  var despExibidas = despExibidasBase;
+  return despExibidas;
+}
+function _painelRecCmp(filtroMes, recExibidas){
+  return (function(){
+          var recPrevistoBar = recExibidas.reduce((s,r)=>s+parseFloat(r.valor||0),0);
+          var recRecebidoBar = recExibidas.reduce(function(s,r){
+              if (r.status === "recebido") return s + parseFloat(r.valor||0);
+              if (r.status === "parcial") {
+                if (r._valorPago != null) return s + parseFloat(r._valorPago);
+                if (r._fromContrato) return s + parseFloat(r.valor||0);
+                if (r.ref_fatura) { var _mfT = r.ref_fatura.match(/^fat_(\d+)_/); if (_mfT) { var _ctT = (contratos||[]).find(function(c){ return String(c.id)===_mfT[1]; }); if (_ctT && _ctT.valor_pago) return s + parseFloat(_ctT.valor_pago); } }
+              }
+              return s;
+            }, 0);
+          var recVencidasBar = recExibidas.reduce(function(s,r){
+              var _dr = r.data || "";
+              var _hj = _brNow().toISOString().slice(0,10);
+              var _recv = r.status === "recebido" || r.status === "isento";
+              if (!_recv && _dr && _dr < _hj) {
+                var _venc = (r.status === "parcial" && r._valorPago != null) ? Math.max(0, parseFloat(r.valor||0) - parseFloat(r._valorPago)) : parseFloat(r.valor||0);
+                return s + _venc;
+              }
+              return s;
+            }, 0);
+          var recPctBar = recPrevistoBar > 0 ? Math.round(recRecebidoBar/recPrevistoBar*100) : 0;
+          return React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" } }
+            , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }
+              , React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub, letterSpacing: 0.4 } }, _finCmpSeletor(filtroMes))
+              , React.createElement('span', { style: { fontSize: 13, fontWeight: 800, color: C.green } }, recPctBar + "%")
+            )
+            , React.createElement(CurvaAcumulada, { title:'finRecCmp', hideTotal:true, hideFooter:true, margem:4, total:recPrevistoBar, color:C.green, items:[], mes:filtroMes, C:C, desktop:(_finW >= 768), rotuloPendente:'a receber', rotuloPago:'recebido',
+                rowsAll: recExibidas.map(function(r){
+                  var _v = parseFloat(r.valor||0), _pago = 0;
+                  if (r.status === "recebido") _pago = _v;
+                  else if (r.status === "parcial") {
+                    if (r._valorPago != null) _pago = parseFloat(r._valorPago);
+                    else if (r._fromContrato) _pago = _v;
+                    else if (r.ref_fatura) { var _mfR = r.ref_fatura.match(/^fat_(\d+)_/); if (_mfR) { var _ctR = (contratos||[]).find(function(c){ return String(c.id)===_mfR[1]; }); if (_ctR && _ctR.valor_pago) _pago = parseFloat(_ctR.valor_pago); } }
+                  }
+                  var _isenta = r.status === "isento";
+                  var _d = String(((r.status === "recebido" || r.status === "parcial") && r.data_pagamento) ? r.data_pagamento : (r.data||'')).slice(0,10);
+                  if (_d.slice(0,7) !== filtroMes) _d = String(r.data||'').slice(0,10);
+                  return { data:_d, valor:_v, pendente:(_isenta ? 0 : Math.max(0, _v - _pago)) };
+                }) })
+            , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginTop: 7 } }
+              , React.createElement('span', { style: { fontSize: 12, fontWeight: 600, color: C.blue } }, "● Previsto: ", React.createElement(BRLValue,{v:recPrevistoBar,size:12,weight:600,color:C.blue}))
+              , React.createElement('span', { style: { fontSize: 12, fontWeight: 600, color: C.green } }, "● Recebido: ", React.createElement(BRLValue,{v:recRecebidoBar,size:12,weight:600,color:C.green}))
+              , recVencidasBar > 0
+                ? React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.red } }, "⚠️ Vencidas: ", React.createElement(BRLValue,{v:recVencidasBar,size:12,weight:700,color:C.red}))
+                : React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.green } }, "✓ Vencidas: ", React.createElement(BRLValue,{v:0,size:12,weight:700,color:C.green}))
+            )
+          );
+        })();
+}
+function _painelDespCmp(filtroMes, despExibidas){
+  return (function(){
+          var despPrevistoBar = despExibidas.reduce((s,d)=>s+parseFloat(d.valor||0),0);
+          var despPagoBar = despExibidas.filter(d=>d.status==="pago").reduce((s,d)=>s+parseFloat(d.valor||0),0);
+          var despPctBar = despPrevistoBar > 0 ? Math.round(despPagoBar/despPrevistoBar*100) : 0;
+          return React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" } }
+            , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }
+              , React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub, letterSpacing: 0.4 } }, _finCmpSeletor(filtroMes))
+              , React.createElement('span', { style: { fontSize: 13, fontWeight: 800, color: C.green } }, despPctBar + "%")
+            )
+            , React.createElement(CurvaAcumulada, { title:'finDespCmp', hideTotal:true, hideFooter:true, margem:4, total:despPrevistoBar, color:C.red, items:[], mes:filtroMes, C:C, desktop:(_finW >= 768), rotuloPendente:'a pagar', rotuloPago:'pago',
+                rowsAll: despExibidas.map(function(d){ var _v = parseFloat(d.valor||0); var _p = d.status==="pago"; var _dd = String((_p && d.data_pagamento) ? d.data_pagamento : (d.data||'')).slice(0,10); if (_dd.slice(0,7) !== filtroMes) _dd = String(d.data||'').slice(0,10); return { data:_dd, valor:_v, pendente:_p ? 0 : _v }; }) })
+            , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginTop: 7 } }
+              , React.createElement('span', { style: { fontSize: 12, fontWeight: filtroStatusDesp === "previstas" ? 800 : 600, color: C.orange, textDecoration: filtroStatusDesp === "previstas" ? "underline" : "none", cursor: "pointer" }, onClick: function(){ setFiltroStatusDesp(filtroStatusDesp==="previstas"?"todas":"previstas"); } }, "● Previsto: ", React.createElement(BRLValue,{v:despPrevistoBar,size:12,weight:filtroStatusDesp === "previstas" ? 800 : 600,color:C.orange}))
+              , React.createElement('span', { style: { fontSize: 12, fontWeight: filtroStatusDesp === "pagas" ? 800 : 600, color: C.green, textDecoration: filtroStatusDesp === "pagas" ? "underline" : "none", cursor: "pointer" }, onClick: function(){ setFiltroStatusDesp(filtroStatusDesp==="pagas"?"todas":"pagas"); } }, "● Pago: ", React.createElement(BRLValue,{v:despPagoBar,size:12,weight:filtroStatusDesp === "pagas" ? 800 : 600,color:C.green}))
+            )
+          );
+        })();
+}
+
   /* [carrega-atrasados] Receita/despesa que venceu em mês anterior e não foi recebida/paga segue para o mês seguinte
      (até o mês atual): aparece PRIMEIRO, na seção "Atrasados". Janela de 12 meses. Despesa recorrente fica de fora
      (a baixa dela é por mês) e o que já aparece no mês não duplica. */
@@ -48030,12 +48265,12 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               return s;
             }, 0);
           var recPctBar = recPrevistoBar > 0 ? Math.round(recRecebidoBar/recPrevistoBar*100) : 0;
-          return React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" }, onTouchStart: _finBarTouchStart, onTouchEnd: _finBarTouchEnd }
+          var _painelA = React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" }, onTouchStart: _finBarTouchStart, onTouchEnd: _finBarTouchEnd }
             , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }
               , React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub, letterSpacing: 0.4 } }, (MESES_PT_CT_FIN[parseInt(filtroMes.slice(5,7),10)-1]||"").toUpperCase())
               , React.createElement('span', { style: { fontSize: 13, fontWeight: 800, color: C.green } }, recPctBar + "%")
             )
-            , React.createElement(CurvaAcumulada, { title:'finRec', hideTotal:true, hideFooter:true, margem:4, total:recPrevistoBar, color:C.green, items:[], mes:filtroMes, C:C, desktop:(typeof desktop!=='undefined' && !!desktop), rotuloPendente:'a receber', rotuloPago:'recebido',
+            , React.createElement(CurvaAcumulada, { title:'finRec', hideTotal:true, hideFooter:true, margem:4, total:recPrevistoBar, color:C.green, items:[], mes:filtroMes, C:C, desktop:(_finW >= 768), rotuloPendente:'a receber', rotuloPago:'recebido',
                 rowsAll: recExibidas.map(function(r){
                   var _v = parseFloat(r.valor||0), _pago = 0;
                   if (r.status === "recebido") _pago = _v;
@@ -48057,6 +48292,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 : React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.green } }, "✓ Vencidas: ", React.createElement(BRLValue,{v:0,size:12,weight:700,color:C.green}))
             )
           );
+        return _finSide(_painelA, function(m2){ return _painelRecCmp(m2, _recExibidasDoMes(m2)); });
         })()
       , React.createElement('div', { className: "ag-nm-list", style: { padding: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2213}}
         , recLista.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2214}}, "Nenhuma receita neste período"   )
@@ -48205,18 +48441,19 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
           var despPrevistoBar = despExibidas.reduce((s,d)=>s+parseFloat(d.valor||0),0);
           var despPagoBar = despExibidas.filter(d=>d.status==="pago").reduce((s,d)=>s+parseFloat(d.valor||0),0);
           var despPctBar = despPrevistoBar > 0 ? Math.round(despPagoBar/despPrevistoBar*100) : 0;
-          return React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" }, onTouchStart: _finBarTouchStart, onTouchEnd: _finBarTouchEnd }
+          var _painelA = React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" }, onTouchStart: _finBarTouchStart, onTouchEnd: _finBarTouchEnd }
             , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }
               , React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub, letterSpacing: 0.4 } }, (MESES_PT_CT_FIN[parseInt(filtroMes.slice(5,7),10)-1]||"").toUpperCase())
               , React.createElement('span', { style: { fontSize: 13, fontWeight: 800, color: C.green } }, despPctBar + "%")
             )
-            , React.createElement(CurvaAcumulada, { title:'finDesp', hideTotal:true, hideFooter:true, margem:4, total:despPrevistoBar, color:C.red, items:[], mes:filtroMes, C:C, desktop:(typeof desktop!=='undefined' && !!desktop), rotuloPendente:'a pagar', rotuloPago:'pago',
+            , React.createElement(CurvaAcumulada, { title:'finDesp', hideTotal:true, hideFooter:true, margem:4, total:despPrevistoBar, color:C.red, items:[], mes:filtroMes, C:C, desktop:(_finW >= 768), rotuloPendente:'a pagar', rotuloPago:'pago',
                 rowsAll: despExibidas.map(function(d){ var _v = parseFloat(d.valor||0); var _p = d.status==="pago"; var _dd = String((_p && d.data_pagamento) ? d.data_pagamento : (d.data||'')).slice(0,10); if (_dd.slice(0,7) !== filtroMes) _dd = String(d.data||'').slice(0,10); return { data:_dd, valor:_v, pendente:_p ? 0 : _v }; }) })
             , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginTop: 7 } }
               , React.createElement('span', { style: { fontSize: 12, fontWeight: filtroStatusDesp === "previstas" ? 800 : 600, color: C.orange, textDecoration: filtroStatusDesp === "previstas" ? "underline" : "none", cursor: "pointer" }, onClick: function(){ setFiltroStatusDesp(filtroStatusDesp==="previstas"?"todas":"previstas"); } }, "● Previsto: ", React.createElement(BRLValue,{v:despPrevistoBar,size:12,weight:filtroStatusDesp === "previstas" ? 800 : 600,color:C.orange}))
               , React.createElement('span', { style: { fontSize: 12, fontWeight: filtroStatusDesp === "pagas" ? 800 : 600, color: C.green, textDecoration: filtroStatusDesp === "pagas" ? "underline" : "none", cursor: "pointer" }, onClick: function(){ setFiltroStatusDesp(filtroStatusDesp==="pagas"?"todas":"pagas"); } }, "● Pago: ", React.createElement(BRLValue,{v:despPagoBar,size:12,weight:filtroStatusDesp === "pagas" ? 800 : 600,color:C.green}))
             )
           );
+        return _finSide(_painelA, function(m2){ return _painelDespCmp(m2, _despExibidasDoMes(m2)); });
         })()
       , React.createElement('div', { className: "ag-nm-list", style: { padding: 0 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2280}}
         , despLista.length === 0 && React.createElement('div', { style: { color: C.sub, textAlign: "center", padding: 30 }, __self: this, __source: {fileName: _jsxFileName, lineNumber: 2281}}, "Nenhuma despesa neste período"   )
@@ -49023,75 +49260,32 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
         /* ════════ GRÁFICOS ════════ */
         subOrc==="graficos" && React.createElement(React.Fragment,null,
-          /* Gráfico barras 12 meses — comparativo lado a lado (PC): qualquer ano, passado ou previsão */
-          (function(){
-            function _yr(v){ var y=parseInt(String(v||"").slice(0,4),10); return (y>=2000&&y<=2100)?y:null; }
-            var anoMin=anoAtual-1;
-            (contratos||[]).forEach(function(c){ var y=_yr(c.data_inicio||c.data); if(y&&y<anoMin) anoMin=y; });
-            (despesas||[]).forEach(function(d){ var y=_yr(d.prev_pgto||d.data||d.vencimento); if(y&&y<anoMin) anoMin=y; });
-            (receitas||[]).forEach(function(r){ var y=_yr(r.prev_pgto||r.data||r.vencimento); if(y&&y<anoMin) anoMin=y; });
-            var anosOpc=[]; for(var y2=anoAtual+2;y2>=anoMin;y2--) anosOpc.push(y2);
-            var anoA=cmpAnoA||anoAtual, anoB=cmpAnoB||(anoAtual-1);
-            function serie(ano){
-              var out=[];
-              for(var m=0;m<12;m++){
-                var ms=ano+"-"+String(m+1).padStart(2,"0");
-                var d=dadosMeses.find(function(x){ return x.mes===ms; })||calcMes(ms);
-                var fut=ms>mesHoje;
-                out.push({mes:ms,fut:fut,rec:fut?d.recPrev:d.recReal,desp:fut?d.despPrev:d.despReal});
-              }
-              return out;
-            }
-            var sA=serie(anoA), sB=serie(anoB);
-            var maxCmp=Math.max.apply(null,sA.concat(sB).map(function(d){ return Math.max(d.rec,d.desp); }).concat([1]));
-            function cardAno(ano,setAno,s,cls){
-              var totR=s.reduce(function(a,d){ return a+d.rec; },0);
-              var totD=s.reduce(function(a,d){ return a+d.desp; },0);
-              var temFut=s.some(function(d){ return d.fut; });
-              return React.createElement('div',{className:CARD_CLS+cls,style:{background:"var(--c-card)",borderRadius:18,border:"1px solid "+C.border,padding:16}},
-                React.createElement('div',{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8,flexWrap:"wrap"}},
-                  React.createElement('div',{style:{display:"flex",alignItems:"center",gap:8}},
-                    React.createElement('div',{style:{fontSize:12,fontWeight:700}},"\uD83D\uDCCA Receita vs Despesa"),
-                    React.createElement('select',{value:ano,onChange:function(e){ setAno(parseInt(e.target.value,10)); },
-                      style:{fontSize:11,fontWeight:600,background:"var(--c-bg)",color:"var(--c-text)",border:"1px solid "+C.border,borderRadius:8,padding:"3px 6px"}},
-                      anosOpc.map(function(a){ return React.createElement('option',{key:a,value:a},a+(a>anoAtual?" (previsão)":a===anoAtual?" (atual)":"")); })
-                    )
-                  ),
-                  React.createElement('div',{style:{display:"flex",gap:10,fontSize:10,color:C.sub}},
-                    React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.green,borderRadius:2,marginRight:3}}),"Receita"),
-                    React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.red,borderRadius:2,marginRight:3}}),"Despesa")
-                  )
-                ),
-                React.createElement('svg',{className:"ag-fin-svg",viewBox:"0 0 360 "+(BAR_H+28),style:{width:"100%",overflow:"visible"}},
-                  s.map(function(d,i){
-                    var bw=10; var sp=(360-40)/12; var x=20+i*sp;
-                    var hR=d.rec>0?Math.max(3,Math.round((d.rec/maxCmp)*BAR_H)):0;
-                    var hD=d.desp>0?Math.max(3,Math.round((d.desp/maxCmp)*BAR_H)):0;
-                    var isSel3=d.mes===mesSel;
-                    var op=d.fut?.35:(isSel3?1:.5);
-                    var nc=new Date(d.mes+"-15").toLocaleString("pt-BR",{month:"short"}).replace(".","").toUpperCase().slice(0,3);
-                    return React.createElement(React.Fragment,{key:d.mes},
-                      isSel3&&React.createElement('rect',{x:x-3,y:0,width:bw*2+12,height:BAR_H,fill:C.purple+"18",rx:4}),
-                      hR>0&&React.createElement('rect',{x:x,y:BAR_H-hR,width:bw,height:hR,fill:C.green,opacity:op,rx:2,stroke:d.fut?C.green:"none",strokeDasharray:"2,2"}),
-                      hD>0&&React.createElement('rect',{x:x+bw+2,y:BAR_H-hD,width:bw,height:hD,fill:C.red,opacity:op,rx:2,stroke:d.fut?C.red:"none",strokeDasharray:"2,2"}),
-                      React.createElement('text',{x:x+bw,y:BAR_H+14,textAnchor:"middle",fontSize:8,fill:isSel3?"var(--c-text)":C.sub,fontWeight:isSel3?700:400},nc)
-                    );
-                  }),
-                  React.createElement('line',{x1:20,y1:BAR_H,x2:340,y2:BAR_H,stroke:C.border,strokeWidth:.5})
-                ),
-                React.createElement('div',{style:{display:"flex",gap:14,flexWrap:"wrap",marginTop:8,fontSize:11,color:C.sub}},
-                  React.createElement('span',null,"Receita ",React.createElement(BRLValue,{v:totR,size:11,weight:700,color:C.green})),
-                  React.createElement('span',null,"Despesa ",React.createElement(BRLValue,{v:totD,size:11,weight:700,color:C.red})),
-                  React.createElement('span',null,"Resultado ",React.createElement(BRLValue,{v:totR-totD,size:11,weight:700,color:(totR-totD)>=0?C.green:C.red}))
-                ),
-                temFut&&React.createElement('div',{style:{fontSize:10,color:C.sub,marginTop:4}},"Barras claras tracejadas = meses futuros (valores previstos)")
-              );
-            }
-            return React.createElement('div',{className:"ag-fin-cmp-grid"},
-              cardAno(anoA,setCmpAnoA,sA,""),
-              cardAno(anoB,setCmpAnoB,sB," ag-fin-cmp-b")
-            );
-          })(),
+          /* Gráfico barras 12 meses */
+          React.createElement('div',{className:CARD_CLS,style:{background:"var(--c-card)",borderRadius:18,border:"1px solid "+C.border,padding:16}},
+            React.createElement('div',{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}},
+              React.createElement('div',{style:{fontSize:12,fontWeight:700}},"\uD83D\uDCCA Receita vs Despesa — "+anoAtual),
+              React.createElement('div',{style:{display:"flex",gap:10,fontSize:10,color:C.sub}},
+                React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.green,borderRadius:2,marginRight:3}}),"Receita"),
+                React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.red,borderRadius:2,marginRight:3}}),"Despesa")
+              )
+            ),
+            React.createElement('svg',{viewBox:"0 0 360 "+(BAR_H+28),style:{width:"100%",overflow:"visible"}},
+              dreAnual.map(function(d,i){
+                var bw=10; var sp=(360-40)/12; var x=20+i*sp;
+                var hR=d.recReal>0?Math.max(3,Math.round((d.recReal/maxBar12)*BAR_H)):0;
+                var hD=d.despReal>0?Math.max(3,Math.round((d.despReal/maxBar12)*BAR_H)):0;
+                var isSel3=d.mes===mesSel;
+                var nc=new Date(d.mes+"-15").toLocaleString("pt-BR",{month:"short"}).replace(".","").toUpperCase().slice(0,3);
+                return React.createElement(React.Fragment,{key:d.mes},
+                  isSel3&&React.createElement('rect',{x:x-3,y:0,width:bw*2+12,height:BAR_H,fill:C.purple+"18",rx:4}),
+                  hR>0&&React.createElement('rect',{x:x,y:BAR_H-hR,width:bw,height:hR,fill:C.green,opacity:isSel3?1:.5,rx:2}),
+                  hD>0&&React.createElement('rect',{x:x+bw+2,y:BAR_H-hD,width:bw,height:hD,fill:C.red,opacity:isSel3?1:.5,rx:2}),
+                  React.createElement('text',{x:x+bw,y:BAR_H+14,textAnchor:"middle",fontSize:8,fill:isSel3?"var(--c-text)":C.sub,fontWeight:isSel3?700:400},nc)
+                );
+              }),
+              React.createElement('line',{x1:20,y1:BAR_H,x2:340,y2:BAR_H,stroke:C.border,strokeWidth:.5})
+            )
+          ),
           /* Pizza despesas + legenda */
           React.createElement('div',{className:CARD_CLS,style:{background:"var(--c-card)",borderRadius:18,border:"1px solid "+C.border,padding:16}},
             React.createElement('div',{style:{fontSize:12,fontWeight:700,marginBottom:12}},"\uD83C\uDF69 Despesas por Categoria — "+nomeMesSel),
@@ -49122,7 +49316,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               var range=Math.max(mx-mn,1); var W=320; var H=70;
               var pts=vals.map(function(v,i){ return [(20+i*(W-40)/11),(H-Math.round(((v-mn)/range)*(H-10))-5)]; });
               var d="M"+pts.map(function(p){ return p[0]+","+p[1]; }).join(" L");
-              return React.createElement('svg',{className:"ag-fin-svg",viewBox:"0 0 "+(W+20)+" "+(H+24),style:{width:"100%",overflow:"visible"}},
+              return React.createElement('svg',{viewBox:"0 0 "+(W+20)+" "+(H+24),style:{width:"100%",overflow:"visible"}},
                 React.createElement('line',{x1:20,y1:H-Math.round(((0-mn)/range)*(H-10))-5,x2:W,y2:H-Math.round(((0-mn)/range)*(H-10))-5,stroke:C.border,strokeWidth:.5,strokeDasharray:"3,3"}),
                 React.createElement('path',{d:d,fill:"none",stroke:C.purple,strokeWidth:2}),
                 pts.map(function(p,i){
@@ -49626,7 +49820,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.red,borderRadius:2,marginRight:3}}),"Despesas")
               )
             ),
-            React.createElement('svg',{className:"ag-fin-svg",viewBox:"0 0 320 "+(BAR_H+28),style:{width:"100%",overflow:"visible"}},
+            React.createElement('svg',{viewBox:"0 0 320 "+(BAR_H+28),style:{width:"100%",overflow:"visible"}},
               proj6.map(function(d,i){
                 var bw=18; var sp=290/6; var x=20+i*sp;
                 var hR=d.recPrev>0?Math.max(3,Math.round((d.recPrev/maxBarProj)*BAR_H)):0;
@@ -49960,6 +50154,157 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
       var totV = competencias.filter(function(f){ return f.status==="vencida"; }).reduce(function(s,f){ return s+f.valor; },0);
       var totPg = competencias.filter(function(f){ return f.status==="paga"; }).reduce(function(s,f){ return s+f.valor; },0);
 
+      function _painelFatCmp(mesFat){
+  var hoje = _brNow().toISOString().split("T")[0];
+  var anoFat = parseInt(mesFat.split("-")[0]);
+      var mesFatN = parseInt(mesFat.split("-")[1]);
+      var diasNoMes = new Date(anoFat, mesFatN, 0).getDate();
+      var inicioMes = mesFat + "-01";
+      var fimMes = mesFat + "-" + String(diasNoMes).padStart(2, "0");
+      var mesSegN = mesFatN === 12 ? 1 : mesFatN + 1;
+      var mesSegA = mesFatN === 12 ? anoFat + 1 : anoFat;
+      var dtVencPadrao = String(mesSegA) + "-" + String(mesSegN).padStart(2, "0") + "-10";
+
+      // Índices por chave (O(1)) em vez de .find() repetido por contrato — evita um scan
+      // O(contratos × receitas) a cada render desta aba (fica pesado com o histórico crescendo).
+      var _recByRefFat = {}; (receitas || []).forEach(function(r) { if (r.ref_fatura) _recByRefFat[r.ref_fatura] = r; });
+      var _clById = {}; (clientes || []).forEach(function(x) { _clById[x.id] = x; });
+      var _veById = {}; (veiculos || []).forEach(function(x) { _veById[x.id] = x; });
+      var competenciasContratos = (contratos || []).filter(function(c) {
+        if (c.status === "cancelado") return false;
+        // A fatura aparece no mês da previsao_pagamento (ou data_fim como fallback)
+        var dtRef = c.previsao_pagamento || c.data_fim || "";
+        if (!dtRef) return false;
+        return dtRef.slice(0, 7) === mesFat;
+      }).map(function(c) {
+        var cl = _clById[c.cliente_id];
+        var ve = _veById[c.veiculo_id];
+        // refKey baseado no contrato + mês da previsão (único por contrato)
+        var dtPrevMes = (c.previsao_pagamento || c.data_fim || mesFat + "-01").slice(0, 7);
+        var refKey = "fat_" + c.id + "_" + dtPrevMes;
+        var recExist = _recByRefFat[refKey];
+        // Dias efetivos = duração total do contrato
+        var d1 = new Date((c.data_inicio || inicioMes) + "T00:00:00");
+        var d2 = new Date((c.data_fim || hoje) + "T00:00:00");
+        var diasEf = Math.max(1, Math.round((d2 - d1) / 86400000) + 1);
+        var valor = recExist ? parseFloat(recExist.valor || 0) : parseFloat(c.valor_total || 0);
+        var dtVenc = c.previsao_pagamento || c.data_fim || dtVencPadrao;
+        var status;
+        if (recExist) {
+          var rs = recExist.status;
+          if (rs === "recebido" || rs === "pago") status = "paga";
+          else if (rs === "emitida" && dtVenc < hoje) status = "vencida";
+          else if (rs === "emitida") status = "emitida";
+          else if (rs === "cancelado") status = "cancelada";
+          else if (dtVenc < hoje) status = "vencida";
+          else status = "prevista";
+        } else {
+          status = dtVenc < hoje ? "vencida" : "prevista";
+        }
+        /* [fatura-emitida] "Vencida" é a SITUAÇÃO (o que precisa de ação) e
+           tem que continuar ganhando de "emitida" — mas ela apagava o fato de
+           a fatura já ter sido emitida. Resultado: o filtro "Emitidas" não
+           achava nenhuma em nenhum mês passado, o botão "Emitir" reaparecia
+           numa fatura que já tinha número (emitir de novo sobrescrevia o
+           número) e não dava pra cancelar. Mesma regra do relatório de
+           Faturas, que já usava `foiEmitida`. */
+        var foiEmitida = !!(recExist && (recExist.data_emissao || recExist.numero_fatura));
+        return {
+          c: c, cl: cl || {}, ve: ve || {}, foiEmitida: foiEmitida,
+          refKey: refKey, recId: recExist ? recExist.id : null,
+          numero: recExist ? recExist.numero_fatura : null,
+          cliente: cl ? cl.nome : "—",
+          placa: ve ? ve.placa : "—",
+          veiculo: ve ? (ve.marca + " " + ve.modelo) : "—",
+          vencimento: dtVenc, valor: valor, diasEf: diasEf, status: status,
+          emissao: recExist ? recExist.data_emissao : null,
+          pagamento: recExist ? recExist.data_pagamento : null
+        };
+      });
+
+      // Faturas avulsas (receitas sem contrato/ref_fatura com fatura emitida via
+      // swipe "Fatura" na tela de Receitas) — precisam aparecer aqui também, não só
+      // as ligadas a contrato (regra de cobertura de dados do CLAUDE.md).
+      var competenciasAvulsas = (receitas || []).filter(function(r) {
+        /* [receita-avulsa-fatura] Receita avulsa "a receber" É fatura prevista:
+           antes só entrava aqui depois de emitida (numero_fatura), então a
+           receita lançada no Financeiro nunca aparecia para ser emitida, nem
+           nos totais "Prevista/Vencida" — a tela mentia sobre o que há a
+           receber. Entra: tudo que não é de contrato (sem ref_fatura) e que
+           ou já tem fatura, ou ainda está em aberto. Já recebida sem fatura é
+           só dinheiro que entrou, não cobrança. Template de recorrente
+           (recorrente sem fatura) não é lançamento: é a régua que projeta. */
+        if (r.ref_fatura) return false;
+        if (r.numero_fatura) return true;
+        if (r.recorrente) return false;
+        return r.status !== "recebido" && r.status !== "pago" && r.status !== "cancelado" && r.status !== "cancelada";
+      }).filter(function(r) {
+        /* Emitida fica na competência em que saiu ([fatura-nao-migra]);
+           em aberto vale o vencimento, como a fatura de contrato. */
+        var dtRef = r.numero_fatura ? (r.data_emissao || r.data || "") : (r.data_vencimento || r.data || "");
+        return dtRef.slice(0, 7) === mesFat;
+      }).map(function(r) {
+        var _ctAv = r.contrato_id ? (contratos || []).find(function(c){ return String(c.id) === String(r.contrato_id); }) : null;
+        var clAv = (r.cliente_id || (_ctAv && _ctAv.cliente_id)) ? _clById[r.cliente_id || _ctAv.cliente_id] : null;
+        var veAv = (r.veiculo_id || (_ctAv && _ctAv.veiculo_id)) ? _veById[r.veiculo_id || _ctAv.veiculo_id] : null;
+        var dtVencAv = r.data_vencimento || r.data || dtVencPadrao;
+        var statusAv;
+        if (r.status === "recebido" || r.status === "pago") statusAv = "paga";
+        else if (r.status === "cancelado") statusAv = "cancelada";
+        else if (r.status === "emitida" && dtVencAv < hoje) statusAv = "vencida";
+        else if (r.status === "emitida") statusAv = "emitida";
+        else statusAv = dtVencAv < hoje ? "vencida" : "prevista";
+        return {
+          c: null, cl: clAv || {}, ve: veAv || {}, avulsa: true, recObj: r,
+          foiEmitida: !!(r.data_emissao || r.numero_fatura),
+          refKey: "avulsa_" + r.id, recId: r.id, numero: r.numero_fatura,
+          cliente: (clAv && clAv.nome) || r.descricao || "—",
+          placa: veAv ? veAv.placa : "—",
+          veiculo: veAv ? (veAv.marca + " " + veAv.modelo) : "—",
+          vencimento: dtVencAv, valor: parseFloat(r.valor || 0), diasEf: null, status: statusAv,
+          emissao: r.data_emissao, pagamento: r.data_pagamento
+        };
+      });
+
+      var competencias = competenciasContratos.concat(competenciasAvulsas);
+  var totP = competencias.filter(function(f){ return f.status==="prevista"; }).reduce(function(s,f){ return s+f.valor; },0);
+      /* [fatura-emitida] Mesma lista do filtro "Emitidas": o que já saiu e
+         ainda não voltou. Soma junto com as vencidas emitidas de propósito —
+         são o mesmo dinheiro visto de dois ângulos (quanto está na rua ×
+         quanto já passou do prazo), por isso o total da barra abaixo NÃO
+         soma as quatro pílulas, e sim as competências do mês. */
+      var totE = competencias.filter(function(f){ return f.foiEmitida && f.status!=="paga" && f.status!=="cancelada"; }).reduce(function(s,f){ return s+f.valor; },0);
+      var totV = competencias.filter(function(f){ return f.status==="vencida"; }).reduce(function(s,f){ return s+f.valor; },0);
+      var totPg = competencias.filter(function(f){ return f.status==="paga"; }).reduce(function(s,f){ return s+f.valor; },0);
+
+  return (function(){
+            /* Antes: totP+totE+totV+totPg. Com "Emitidas" se sobrepondo a
+               "Vencidas", essa soma contaria o mesmo dinheiro duas vezes e
+               derrubaria o percentual pago. O total do mês é o que vale. */
+            var fatTotalBar = competencias.filter(function(f){ return f.status!=="cancelada"; }).reduce(function(s,f){ return s+f.valor; },0);
+            var fatPctBar = fatTotalBar > 0 ? Math.round(totPg/fatTotalBar*100) : 0;
+            return React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" } }
+              , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }
+                , React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub, letterSpacing: 0.4 } }, _finCmpSeletor(mesFat))
+                , React.createElement('span', { style: { fontSize: 13, fontWeight: 800, color: C.green } }, fatPctBar + "%")
+              )
+              , React.createElement(CurvaAcumulada, { title:'finFatCmp', hideTotal:true, hideFooter:true, margem:4, total:fatTotalBar, color:C.green, items:[], mes:mesFat, C:C, desktop:(_finW >= 768), rotuloPendente:'a receber', rotuloPago:'pago',
+                  rowsAll: competencias.filter(function(f){ return f.status!=="cancelada"; }).map(function(f){ var _vf = parseFloat(f.valor||0); return { data:String(f.vencimento||'').slice(0,10), valor:_vf, pendente:(f.status==="paga" ? 0 : _vf) }; }) })
+              , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginTop: 7 } }
+                , React.createElement('span', { style: { fontSize: 12, fontWeight: 600, color: C.sub } }, "● Previstas: ", React.createElement(BRLValue,{v:totP,size:12,weight:600,color:C.sub}))
+                , /* "Já emitidas" e não "Emitidas": esta pílula ATRAVESSA as outras (uma
+                     fatura já emitida também pode estar vencida), então somar as quatro
+                     não dá o total do mês — o rótulo precisa dizer isso sozinho. */
+                  React.createElement('span', { style: { fontSize: 12, fontWeight: 600, color: C.blue } }, "● Já emitidas: ", React.createElement(BRLValue,{v:totE,size:12,weight:600,color:C.blue}))
+                , totV > 0
+                  ? React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.red } }, "⚠️ Vencidas: ", React.createElement(BRLValue,{v:totV,size:12,weight:700,color:C.red}))
+                  : React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.green } }, "✓ Vencidas: ", React.createElement(BRLValue,{v:0,size:12,weight:700,color:C.green}))
+                , React.createElement('span', { style: { fontSize: 12, fontWeight: 600, color: C.green } }, "● Pagas: ", React.createElement(BRLValue,{v:totPg,size:12,weight:600,color:C.green}))
+              )
+            );
+          })();
+}
+
       async function proximoNumFatura() {
         return proximoNumeroFatura(receitas);
       }
@@ -50153,12 +50498,12 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                derrubaria o percentual pago. O total do mês é o que vale. */
             var fatTotalBar = competencias.filter(function(f){ return f.status!=="cancelada"; }).reduce(function(s,f){ return s+f.valor; },0);
             var fatPctBar = fatTotalBar > 0 ? Math.round(totPg/fatTotalBar*100) : 0;
-            return React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" }, onTouchStart: _finBarTouchStart, onTouchEnd: _finBarTouchEnd }
+            var _painelA = React.createElement('div', { style: { background: C.card, borderRadius: 14, padding: "12px 14px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", touchAction: "pan-y" }, onTouchStart: _finBarTouchStart, onTouchEnd: _finBarTouchEnd }
               , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }
                 , React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: C.sub, letterSpacing: 0.4 } }, (MESES_PT_CT_FIN[parseInt(filtroMes.slice(5,7),10)-1]||"").toUpperCase())
                 , React.createElement('span', { style: { fontSize: 13, fontWeight: 800, color: C.green } }, fatPctBar + "%")
               )
-              , React.createElement(CurvaAcumulada, { title:'finFat', hideTotal:true, hideFooter:true, margem:4, total:fatTotalBar, color:C.green, items:[], mes:mesFat, C:C, desktop:(typeof desktop!=='undefined' && !!desktop), rotuloPendente:'a receber', rotuloPago:'pago',
+              , React.createElement(CurvaAcumulada, { title:'finFat', hideTotal:true, hideFooter:true, margem:4, total:fatTotalBar, color:C.green, items:[], mes:mesFat, C:C, desktop:(_finW >= 768), rotuloPendente:'a receber', rotuloPago:'pago',
                   rowsAll: competencias.filter(function(f){ return f.status!=="cancelada"; }).map(function(f){ var _vf = parseFloat(f.valor||0); return { data:String(f.vencimento||'').slice(0,10), valor:_vf, pendente:(f.status==="paga" ? 0 : _vf) }; }) })
               , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginTop: 7 } }
                 , React.createElement('span', { style: { fontSize: 12, fontWeight: 600, color: C.sub } }, "● Previstas: ", React.createElement(BRLValue,{v:totP,size:12,weight:600,color:C.sub}))
@@ -50172,7 +50517,8 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 , React.createElement('span', { style: { fontSize: 12, fontWeight: 600, color: C.green } }, "● Pagas: ", React.createElement(BRLValue,{v:totPg,size:12,weight:600,color:C.green}))
               )
             );
-          })()
+          return _finSide(_painelA, function(m2){ return _painelFatCmp(m2); });
+        })()
         , competencias.length > 0 && React.createElement('div', { style: { display:"flex", gap:8, alignItems:"center" } }
           , React.createElement('button', { onClick: function(){ setFatSelMode(function(v){ if(v){ setFatSel({}); } return !v; }); },
               style: { flex: fatSelMode ? "0 0 auto" : "1", padding:"9px 12px", borderRadius:12, border:"1.5px solid "+(fatSelMode?C.blue:C.border), background: fatSelMode?"rgba(0,122,255,0.1)":"transparent", color: fatSelMode?C.blue:C.text, fontSize:13, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" } },
@@ -67979,7 +68325,7 @@ html body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix):not(#__) .
 </style>
 
 <style id="cabecalhos-c-suave-gradiente">
-/* [cabecalhos-c-suave-gradiente] (19/11) Opção C aprovada: cor mais suave + gradiente maior (diagonal 100deg) + brilho um pouco mais forte no topo.
+/* [cabecalhos-c-suave-gradiente] (19/11) Opção C aprovada (gradiente com o centro levemente espalhado, mesmas cores): cor mais suave + gradiente maior (diagonal 100deg) + brilho um pouco mais forte no topo.
    Só cor/gradiente/sombra interna; textos, valores e medidas não mudam. REVERSÃO: apague este bloco inteiro (volta ao "vitrificado suave"). */
 html body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix):not(#__) .inicio-fade-top .agk2-day-col-head,
 html body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix):not(#__) .inicio-fade-top .agk2-day-col-head-clicavel,
@@ -67994,8 +68340,28 @@ html body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix):not(#__) .
   background-color:#adb1bc !important;
   background-image:
     linear-gradient(180deg,rgba(255,255,255,.46) 0%,rgba(255,255,255,.14) 50%,rgba(255,255,255,0) 100%),
-    linear-gradient(100deg,#9aa1b1 0%,#c8cbd4 50%,#a9adb9 100%) !important;
+    linear-gradient(100deg,#9aa1b1 0%,#bcc0cb 30%,#c8cbd4 50%,#bbbfca 70%,#a9adb9 100%) !important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.88),inset 0 0 0 1px rgba(255,255,255,.28),inset 0 -1px 0 rgba(255,255,255,.34),0 6px 10px -8px rgba(40,44,60,.20) !important;
+}
+</style>
+
+<style id="agenda-pc-fundo-translucido-igual-mobile">
+/* PC: o painel atrás dos cards da agenda (fora do cabeçalho) fica translúcido, com contorno fininho, igual ao mobile.
+   Antes o corpo da coluna tinha fundo branco .48 com blur. REVERSÃO: apague este bloco. */
+html body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix) .agk2-board:not(.agk2-board-mobile) .agk2-day-col {
+  background:rgba(255,255,255,.04) !important;
+  border:1px solid rgba(157,148,128,.035) !important;
+  border-radius:22px !important;
+  box-shadow:none !important;
+  -webkit-backdrop-filter:blur(18px) saturate(120%) !important;
+  backdrop-filter:blur(18px) saturate(120%) !important;
+}
+html body:not(.dark):not(.dim):not(.indigo):not(.midnight):not(.onix) .agk2-board:not(.agk2-board-mobile) .agk2-day-col > .agk2-day-col-body {
+  background:transparent !important;
+  border:0 !important;
+  box-shadow:none !important;
+  -webkit-backdrop-filter:none !important;
+  backdrop-filter:none !important;
 }
 </style>
 

@@ -742,6 +742,13 @@ body.pearl .lg-banner-panel, body.nevoa .lg-banner-panel{background:linear-gradi
    janela vêm de style inline (ver Modal() em React). */
 @media(max-width:767px){
   .lg-modal-overlay-full{padding:0!important;}
+  .ag-fin-cmp-grid{display:flex;flex-direction:column;gap:14px;}
+  .ag-fin-cmp-b{display:none;}
+  @media (min-width:1024px){
+    .ag-fin-cmp-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;}
+    .ag-fin-cmp-b{display:block;}
+    .ag-fin-svg{max-height:260px;}
+  }
   /* A barra do topo do app (.ag-mobile-topbar) é fixa com z-index 99998 —
      bem acima do overlay do modal (10000). Enquanto a janela era flutuante
      e centralizada isso não incomodava; em tela cheia ela passou a pintar
@@ -26072,7 +26079,53 @@ function UndoToast({ data, onDismiss }) {
   return el;
 }
 
+/* ── Botão "voltar" (Windows/navegador): modais e sub-telas entram no histórico ── */
+(function(){
+  window.addEventListener('popstate', function(){
+    if (window.__agPopIgnore > 0) { window.__agPopIgnore--; window.__agPopSkip = true; }
+    else { window.__agPopSkip = false; }
+  }, true);
+})();
+function agUseHist(key, value, setValue) {
+  var first = React.useRef(true);
+  React.useEffect(function(){
+    var st = window.history.state || {};
+    var x = st.agX || {};
+    if (first.current) {
+      first.current = false;
+      if (x[key] === undefined) {
+        try { var n0 = Object.assign({}, x); n0[key] = value; window.history.replaceState(Object.assign({}, st, { agX: n0 }), ''); } catch(e) {}
+      }
+      return;
+    }
+    if (x[key] === value) return;
+    try { var n1 = Object.assign({}, x); n1[key] = value; window.history.pushState(Object.assign({}, st, { agX: n1 }), ''); } catch(e) {}
+  }, [value]);
+  React.useEffect(function(){
+    function onPop(e) {
+      if (window.__agPopSkip) return;
+      var x = e.state && e.state.agX;
+      if (x && x[key] !== undefined && x[key] !== value) setValue(x[key]);
+    }
+    window.addEventListener('popstate', onPop);
+    return function(){ window.removeEventListener('popstate', onPop); };
+  }, [value]);
+}
 function Modal({ open, onClose, title, children, wide, full }) {
+  var _ocRef = React.useRef(onClose); _ocRef.current = onClose;
+  React.useEffect(function() {
+    if (!open) return;
+    var nivel = ((window.history.state && window.history.state.agModal) || 0) + 1;
+    var empilhou = false;
+    try { window.history.pushState(Object.assign({}, window.history.state, { agModal: nivel }), ''); empilhou = true; } catch(e) {}
+    function onPop() { if (window.__agPopSkip) return; if (_ocRef.current) _ocRef.current(); }
+    window.addEventListener('popstate', onPop);
+    return function() {
+      window.removeEventListener('popstate', onPop);
+      var st = window.history.state;
+      if (empilhou && st && st.agModal === nivel) { window.__agPopIgnore = (window.__agPopIgnore || 0) + 1; window.history.back(); }
+    };
+  }, [open]);
   React.useEffect(function() {
     if (!open) return;
     var prev = document.body.style.overflow;
@@ -46635,6 +46688,10 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
   const [budEmpState, setBudEmpState] = useState(function(){ try{ return JSON.parse(localStorage.getItem("ag_budgets_emp_v1")||"{}"); }catch(e){ return {}; } });
   function saveBudEmp(nb){ localStorage.setItem("ag_budgets_emp_v1",JSON.stringify(nb)); setBudEmpState(nb); }
   const [subOrcState, setSubOrcState] = useState("visao");
+  const [cmpAnoA, setCmpAnoA] = useState(null);
+  const [cmpAnoB, setCmpAnoB] = useState(null);
+  agUseHist("finTab", tab, setTab);
+  agUseHist("finSub", subOrcState, setSubOrcState);
   const [filtroModeloVei, setFiltroModeloVei] = useState("todos");
   const [sortLucVeiState, setSortLucVeiState] = useState("lucro");
   const [expandedVeiId, setExpandedVeiId] = useState(null);
@@ -48966,32 +49023,75 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
 
         /* ════════ GRÁFICOS ════════ */
         subOrc==="graficos" && React.createElement(React.Fragment,null,
-          /* Gráfico barras 12 meses */
-          React.createElement('div',{className:CARD_CLS,style:{background:"var(--c-card)",borderRadius:18,border:"1px solid "+C.border,padding:16}},
-            React.createElement('div',{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}},
-              React.createElement('div',{style:{fontSize:12,fontWeight:700}},"\uD83D\uDCCA Receita vs Despesa — "+anoAtual),
-              React.createElement('div',{style:{display:"flex",gap:10,fontSize:10,color:C.sub}},
-                React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.green,borderRadius:2,marginRight:3}}),"Receita"),
-                React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.red,borderRadius:2,marginRight:3}}),"Despesa")
-              )
-            ),
-            React.createElement('svg',{viewBox:"0 0 360 "+(BAR_H+28),style:{width:"100%",overflow:"visible"}},
-              dreAnual.map(function(d,i){
-                var bw=10; var sp=(360-40)/12; var x=20+i*sp;
-                var hR=d.recReal>0?Math.max(3,Math.round((d.recReal/maxBar12)*BAR_H)):0;
-                var hD=d.despReal>0?Math.max(3,Math.round((d.despReal/maxBar12)*BAR_H)):0;
-                var isSel3=d.mes===mesSel;
-                var nc=new Date(d.mes+"-15").toLocaleString("pt-BR",{month:"short"}).replace(".","").toUpperCase().slice(0,3);
-                return React.createElement(React.Fragment,{key:d.mes},
-                  isSel3&&React.createElement('rect',{x:x-3,y:0,width:bw*2+12,height:BAR_H,fill:C.purple+"18",rx:4}),
-                  hR>0&&React.createElement('rect',{x:x,y:BAR_H-hR,width:bw,height:hR,fill:C.green,opacity:isSel3?1:.5,rx:2}),
-                  hD>0&&React.createElement('rect',{x:x+bw+2,y:BAR_H-hD,width:bw,height:hD,fill:C.red,opacity:isSel3?1:.5,rx:2}),
-                  React.createElement('text',{x:x+bw,y:BAR_H+14,textAnchor:"middle",fontSize:8,fill:isSel3?"var(--c-text)":C.sub,fontWeight:isSel3?700:400},nc)
-                );
-              }),
-              React.createElement('line',{x1:20,y1:BAR_H,x2:340,y2:BAR_H,stroke:C.border,strokeWidth:.5})
-            )
-          ),
+          /* Gráfico barras 12 meses — comparativo lado a lado (PC): qualquer ano, passado ou previsão */
+          (function(){
+            function _yr(v){ var y=parseInt(String(v||"").slice(0,4),10); return (y>=2000&&y<=2100)?y:null; }
+            var anoMin=anoAtual-1;
+            (contratos||[]).forEach(function(c){ var y=_yr(c.data_inicio||c.data); if(y&&y<anoMin) anoMin=y; });
+            (despesas||[]).forEach(function(d){ var y=_yr(d.prev_pgto||d.data||d.vencimento); if(y&&y<anoMin) anoMin=y; });
+            (receitas||[]).forEach(function(r){ var y=_yr(r.prev_pgto||r.data||r.vencimento); if(y&&y<anoMin) anoMin=y; });
+            var anosOpc=[]; for(var y2=anoAtual+2;y2>=anoMin;y2--) anosOpc.push(y2);
+            var anoA=cmpAnoA||anoAtual, anoB=cmpAnoB||(anoAtual-1);
+            function serie(ano){
+              var out=[];
+              for(var m=0;m<12;m++){
+                var ms=ano+"-"+String(m+1).padStart(2,"0");
+                var d=dadosMeses.find(function(x){ return x.mes===ms; })||calcMes(ms);
+                var fut=ms>mesHoje;
+                out.push({mes:ms,fut:fut,rec:fut?d.recPrev:d.recReal,desp:fut?d.despPrev:d.despReal});
+              }
+              return out;
+            }
+            var sA=serie(anoA), sB=serie(anoB);
+            var maxCmp=Math.max.apply(null,sA.concat(sB).map(function(d){ return Math.max(d.rec,d.desp); }).concat([1]));
+            function cardAno(ano,setAno,s,cls){
+              var totR=s.reduce(function(a,d){ return a+d.rec; },0);
+              var totD=s.reduce(function(a,d){ return a+d.desp; },0);
+              var temFut=s.some(function(d){ return d.fut; });
+              return React.createElement('div',{className:CARD_CLS+cls,style:{background:"var(--c-card)",borderRadius:18,border:"1px solid "+C.border,padding:16}},
+                React.createElement('div',{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8,flexWrap:"wrap"}},
+                  React.createElement('div',{style:{display:"flex",alignItems:"center",gap:8}},
+                    React.createElement('div',{style:{fontSize:12,fontWeight:700}},"\uD83D\uDCCA Receita vs Despesa"),
+                    React.createElement('select',{value:ano,onChange:function(e){ setAno(parseInt(e.target.value,10)); },
+                      style:{fontSize:11,fontWeight:600,background:"var(--c-bg)",color:"var(--c-text)",border:"1px solid "+C.border,borderRadius:8,padding:"3px 6px"}},
+                      anosOpc.map(function(a){ return React.createElement('option',{key:a,value:a},a+(a>anoAtual?" (previsão)":a===anoAtual?" (atual)":"")); })
+                    )
+                  ),
+                  React.createElement('div',{style:{display:"flex",gap:10,fontSize:10,color:C.sub}},
+                    React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.green,borderRadius:2,marginRight:3}}),"Receita"),
+                    React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.red,borderRadius:2,marginRight:3}}),"Despesa")
+                  )
+                ),
+                React.createElement('svg',{className:"ag-fin-svg",viewBox:"0 0 360 "+(BAR_H+28),style:{width:"100%",overflow:"visible"}},
+                  s.map(function(d,i){
+                    var bw=10; var sp=(360-40)/12; var x=20+i*sp;
+                    var hR=d.rec>0?Math.max(3,Math.round((d.rec/maxCmp)*BAR_H)):0;
+                    var hD=d.desp>0?Math.max(3,Math.round((d.desp/maxCmp)*BAR_H)):0;
+                    var isSel3=d.mes===mesSel;
+                    var op=d.fut?.35:(isSel3?1:.5);
+                    var nc=new Date(d.mes+"-15").toLocaleString("pt-BR",{month:"short"}).replace(".","").toUpperCase().slice(0,3);
+                    return React.createElement(React.Fragment,{key:d.mes},
+                      isSel3&&React.createElement('rect',{x:x-3,y:0,width:bw*2+12,height:BAR_H,fill:C.purple+"18",rx:4}),
+                      hR>0&&React.createElement('rect',{x:x,y:BAR_H-hR,width:bw,height:hR,fill:C.green,opacity:op,rx:2,stroke:d.fut?C.green:"none",strokeDasharray:"2,2"}),
+                      hD>0&&React.createElement('rect',{x:x+bw+2,y:BAR_H-hD,width:bw,height:hD,fill:C.red,opacity:op,rx:2,stroke:d.fut?C.red:"none",strokeDasharray:"2,2"}),
+                      React.createElement('text',{x:x+bw,y:BAR_H+14,textAnchor:"middle",fontSize:8,fill:isSel3?"var(--c-text)":C.sub,fontWeight:isSel3?700:400},nc)
+                    );
+                  }),
+                  React.createElement('line',{x1:20,y1:BAR_H,x2:340,y2:BAR_H,stroke:C.border,strokeWidth:.5})
+                ),
+                React.createElement('div',{style:{display:"flex",gap:14,flexWrap:"wrap",marginTop:8,fontSize:11,color:C.sub}},
+                  React.createElement('span',null,"Receita ",React.createElement(BRLValue,{v:totR,size:11,weight:700,color:C.green})),
+                  React.createElement('span',null,"Despesa ",React.createElement(BRLValue,{v:totD,size:11,weight:700,color:C.red})),
+                  React.createElement('span',null,"Resultado ",React.createElement(BRLValue,{v:totR-totD,size:11,weight:700,color:(totR-totD)>=0?C.green:C.red}))
+                ),
+                temFut&&React.createElement('div',{style:{fontSize:10,color:C.sub,marginTop:4}},"Barras claras tracejadas = meses futuros (valores previstos)")
+              );
+            }
+            return React.createElement('div',{className:"ag-fin-cmp-grid"},
+              cardAno(anoA,setCmpAnoA,sA,""),
+              cardAno(anoB,setCmpAnoB,sB," ag-fin-cmp-b")
+            );
+          })(),
           /* Pizza despesas + legenda */
           React.createElement('div',{className:CARD_CLS,style:{background:"var(--c-card)",borderRadius:18,border:"1px solid "+C.border,padding:16}},
             React.createElement('div',{style:{fontSize:12,fontWeight:700,marginBottom:12}},"\uD83C\uDF69 Despesas por Categoria — "+nomeMesSel),
@@ -49022,7 +49122,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
               var range=Math.max(mx-mn,1); var W=320; var H=70;
               var pts=vals.map(function(v,i){ return [(20+i*(W-40)/11),(H-Math.round(((v-mn)/range)*(H-10))-5)]; });
               var d="M"+pts.map(function(p){ return p[0]+","+p[1]; }).join(" L");
-              return React.createElement('svg',{viewBox:"0 0 "+(W+20)+" "+(H+24),style:{width:"100%",overflow:"visible"}},
+              return React.createElement('svg',{className:"ag-fin-svg",viewBox:"0 0 "+(W+20)+" "+(H+24),style:{width:"100%",overflow:"visible"}},
                 React.createElement('line',{x1:20,y1:H-Math.round(((0-mn)/range)*(H-10))-5,x2:W,y2:H-Math.round(((0-mn)/range)*(H-10))-5,stroke:C.border,strokeWidth:.5,strokeDasharray:"3,3"}),
                 React.createElement('path',{d:d,fill:"none",stroke:C.purple,strokeWidth:2}),
                 pts.map(function(p,i){
@@ -49526,7 +49626,7 @@ function Financeiro({ despesas, setDespesas, receitas, setReceitas, contas, setC
                 React.createElement('span',null,React.createElement('span',{style:{display:"inline-block",width:8,height:8,background:C.red,borderRadius:2,marginRight:3}}),"Despesas")
               )
             ),
-            React.createElement('svg',{viewBox:"0 0 320 "+(BAR_H+28),style:{width:"100%",overflow:"visible"}},
+            React.createElement('svg',{className:"ag-fin-svg",viewBox:"0 0 320 "+(BAR_H+28),style:{width:"100%",overflow:"visible"}},
               proj6.map(function(d,i){
                 var bw=18; var sp=290/6; var x=20+i*sp;
                 var hR=d.recPrev>0?Math.max(3,Math.round((d.recPrev/maxBarProj)*BAR_H)):0;
@@ -62281,21 +62381,32 @@ function App() {
   // Conecta troca de tab ao window.history para o swipe-back funcionar
   var _tabFromHistory = React.useRef(false);
   React.useEffect(function() {
-    if (!_tabFromHistory.current) {
-      var isFirst = !window.history.state || !window.history.state.agTab;
-      var state = { agTab: String(tab) };
-      try {
-        if (isFirst) window.history.replaceState(state, '');
-        else window.history.pushState(state, '');
-      } catch(e) {}
-    }
-    _tabFromHistory.current = false;
-  }, [tab]);
+    var sub = { c: cadastroSubTab, g: gestaoSubTab, f: financeiroSubTab, o: operacionalSubTab, k: configSubTab };
+    var key = String(tab) + "|" + [sub.c, sub.g, sub.f, sub.o, sub.k].join("|");
+    var cur = window.history.state;
+    if (cur && cur.agKey === key) return; // já é a entrada atual (voltar / F5)
+    var state = { agTab: String(tab), agSub: sub, agKey: key };
+    var isFirst = !cur || !cur.agTab;
+    try {
+      if (isFirst) window.history.replaceState(Object.assign({}, cur || {}, state), '');
+      else window.history.pushState(state, '');
+    } catch(e) {}
+  }, [tab, cadastroSubTab, gestaoSubTab, financeiroSubTab, operacionalSubTab, configSubTab]);
   React.useEffect(function() {
     function onPop(e) {
-      var t = e.state && e.state.agTab;
-      if (t) { _tabFromHistory.current = true; setTab(t); }
-      // Se não tem state, ignora — o swipe já cuida via ag:swipeback
+      if (window.__agPopSkip) return;
+      var st = e.state;
+      var t = st && st.agTab;
+      if (!t) return; // sem state: ignora — o swipe já cuida via ag:swipeback
+      setTab(t);
+      var sb = st.agSub;
+      if (sb) {
+        if (sb.c) setCadastroSubTab(sb.c);
+        if (sb.g) setGestaoSubTab(sb.g);
+        if (sb.f) setFinanceiroSubTab(sb.f);
+        if (sb.o) setOperacionalSubTab(sb.o);
+        if (sb.k) setConfigSubTab(sb.k);
+      }
     }
     function onSwipeBack() {
       // Swipe da borda: vai para Início sem tocar no history do browser
